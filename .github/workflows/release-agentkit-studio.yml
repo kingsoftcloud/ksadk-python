@@ -31,6 +31,29 @@ on:
       update_origin:
         description: "HTTPS origin that will serve the Studio feed"
         required: true
+        default: https://agentkit.ks3-cn-beijing.ksyuncs.com
+        type: string
+      storage_origin:
+        description: "KS3 origin for versioned Studio binaries"
+        required: true
+        default: https://agentkit.ks3-cn-beijing.ksyuncs.com
+        type: string
+      release_layout:
+        description: "Versioned studio/<version> storage or legacy DSH layout"
+        required: true
+        default: studio
+        type: choice
+        options: [studio, legacy]
+      update_mode:
+        description: "Incremental update or full-only ZIP using the official full-download fallback"
+        required: true
+        default: incremental
+        type: choice
+        options: [incremental, full]
+      compatibility_origin:
+        description: "Old installed-app origin receiving a compatibility feed; empty disables it"
+        required: false
+        default: ""
         type: string
       build_version:
         description: "Semver build version; use a higher test suffix for update and rollback qualification"
@@ -42,6 +65,14 @@ on:
         required: true
         default: false
         type: boolean
+      candidate_run_id:
+        description: "Reuse artifacts from a completed run with successful signing; empty builds a new candidate"
+        required: false
+        type: string
+      release_tools_ref:
+        description: "Optional immutable release-tools SHA; defaults to studio_ref, does not change signed sources"
+        required: false
+        type: string
       expected_previous_version:
         description: "Existing feed version required before publishing; empty skips the precondition"
         required: false
@@ -58,6 +89,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.build_version }}-${{ inputs.channel }}
@@ -65,6 +97,7 @@ concurrency:
 
 jobs:
   macos-arm64:
+    if: ${{ inputs.candidate_run_id == '' }}
     runs-on: macos-14
     environment: studio-signing
     timeout-minutes: 60
@@ -72,25 +105,14 @@ jobs:
       - name: Checkout workflow repository
         uses: actions/checkout@v4
 
-      - name: Verify private Studio checkout token is configured
-        shell: bash
-        env:
-          STUDIO_SOURCE_TOKEN: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$STUDIO_SOURCE_TOKEN" || {
-            echo 'studio-signing is missing AGENTKIT_STUDIO_SOURCE_TOKEN (read-only Contents token for kingsoftcloud/agentkit-studio)' >&2
-            exit 1
-          }
-
       - name: Checkout AgentKit Studio
         uses: actions/checkout@v4
         with:
           repository: kingsoftcloud/agentkit-studio
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
           ref: ${{ inputs.studio_checkout_ref }}
           path: studio
           fetch-depth: 0
-          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
 
       - name: Checkout pinned DSH
         uses: actions/checkout@v4
@@ -316,6 +338,7 @@ jobs:
           }
           NODE
           codesign --verify --deep --strict --verbose=2 "$app"
+          node scripts/verify-codex-signing.mjs "$app" "$artifacts/mac-arm64-release.json"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
           printf 'artifacts=%s\ndmg=%s\nzip=%s\nblockmap=%s\nmetadata=%s\n' "$artifacts" "$dmg" "$zip" "$blockmap" "$metadata" >> "$GITHUB_STEP_SUMMARY"
@@ -375,9 +398,9 @@ jobs:
           [ -z "$keychain_path" ] || security delete-keychain "$keychain_path"
 
   publish-mac-arm64:
-    if: ${{ inputs.publish_feed }}
+    if: ${{ always() && inputs.publish_feed && (needs.macos-arm64.result == 'success' || (needs.macos-arm64.result == 'skipped' && inputs.candidate_run_id != '')) }}
     needs: macos-arm64
-    runs-on: macos-14
+    runs-on: ubuntu-latest
     environment: studio-signing
     timeout-minutes: 60
     concurrency:
@@ -390,10 +413,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kingsoftcloud/agentkit-studio
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
           ref: ${{ inputs.studio_checkout_ref }}
           path: studio
           fetch-depth: 0
-          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
       - name: Checkout pinned DSH
         uses: actions/checkout@v4
         with:
@@ -406,6 +429,8 @@ jobs:
         with:
           name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-mac-arm64
           path: candidate
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run_id || github.run_id }}
       - name: Set up Node and pnpm
         uses: actions/setup-node@v4
         with:
@@ -417,19 +442,44 @@ jobs:
         working-directory: studio
         env:
           STUDIO_REF_VALUE: ${{ inputs.studio_ref }}
+          TOOLS_REF_VALUE: ${{ inputs.release_tools_ref || inputs.studio_ref }}
+          EXPECTED_BUILD_VERSION: ${{ inputs.build_version }}
+          EXPECTED_DSH_COMMIT: ${{ inputs.dsh_commit }}
+          EXPECTED_UPDATE_ORIGIN: ${{ inputs.update_origin }}
+          SIGNED_RUN_ID: ${{ inputs.candidate_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           STUDIO_DOWNLOAD_PROD_KS3_BUCKET: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_BUCKET }}
           STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY }}
           STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY }}
           EXPECTED_PREVIOUS: ${{ inputs.expected_previous_version }}
+          STORAGE_ORIGIN: ${{ inputs.storage_origin || inputs.update_origin }}
+          RELEASE_LAYOUT: ${{ inputs.release_layout || 'legacy' }}
+          UPDATE_MODE: ${{ inputs.update_mode || 'incremental' }}
+          COMPATIBILITY_ORIGIN: ${{ inputs.compatibility_origin }}
         run: |
           set -euo pipefail
+          [[ "$TOOLS_REF_VALUE" =~ ^[0-9a-f]{40}$ ]]
           git merge-base --is-ancestor "$STUDIO_REF_VALUE" HEAD
-          git checkout --detach "$STUDIO_REF_VALUE"
-          test "$(git rev-parse HEAD)" = "$STUDIO_REF_VALUE"
+          git merge-base --is-ancestor "$TOOLS_REF_VALUE" HEAD
+          git checkout --detach "$TOOLS_REF_VALUE"
+          test "$(git rev-parse HEAD)" = "$TOOLS_REF_VALUE"
           pnpm install --frozen-lockfile
-          args=(publish --candidate "$GITHUB_WORKSPACE/candidate" --origin '${{ inputs.update_origin }}'
+          node -e 'const r = require(process.env.GITHUB_WORKSPACE + "/candidate/mac-arm64-release.json"); if (r.version !== process.env.EXPECTED_BUILD_VERSION || r.target !== "mac-arm64" || r.commit !== process.env.EXPECTED_DSH_COMMIT || r.publicUrl !== process.env.EXPECTED_UPDATE_ORIGIN + "/dsh-desk/feeds/mac-arm64/") throw Error("Signed candidate identity mismatch")'
+          node scripts/verify-codex-signing.mjs --record-only "$GITHUB_WORKSPACE/candidate/mac-arm64-release.json"
+          if [[ -n "$SIGNED_RUN_ID" ]]; then
+            test "$(gh api "repos/$GH_REPO/actions/runs/$SIGNED_RUN_ID" --jq .status)" = completed
+            test "$(gh api "repos/$GH_REPO/actions/runs/$SIGNED_RUN_ID" --jq .path)" = .github/workflows/release-desktop.yml
+            test "$(gh api "repos/$GH_REPO/actions/runs/$SIGNED_RUN_ID/jobs" --jq '.jobs[] | select(.name == "macos-arm64") | .conclusion')" = success
+          fi
+          (cd "$GITHUB_WORKSPACE/candidate" && shasum -a 256 -c SHA256SUMS)
+          node scripts/verify-ks3-multipart.mjs --origin "$STORAGE_ORIGIN" \
+            --output "$GITHUB_WORKSPACE/candidate/.desktop-release/ks3-multipart-probe.json"
+          args=(publish --candidate "$GITHUB_WORKSPACE/candidate" --origin "$EXPECTED_UPDATE_ORIGIN"
+            --storage-origin "$STORAGE_ORIGIN" --layout "$RELEASE_LAYOUT" --update-mode "$UPDATE_MODE"
             --channel '${{ inputs.channel }}')
           if [[ -n "$EXPECTED_PREVIOUS" ]]; then args+=(--expected-previous-version "$EXPECTED_PREVIOUS"); fi
+          if [[ -n "$COMPATIBILITY_ORIGIN" ]]; then args+=(--compatibility-origin "$COMPATIBILITY_ORIGIN"); fi
           node scripts/desktop-release.mjs "${args[@]}"
       - name: Upload publication evidence
         if: ${{ always() }}
@@ -437,7 +487,8 @@ jobs:
         with:
           name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-publication
           path: candidate/.desktop-release/**
-          if-no-files-found: ignore
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 30
 
   qualify-installed-update:
@@ -451,10 +502,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kingsoftcloud/agentkit-studio
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
           ref: ${{ inputs.studio_checkout_ref }}
           path: studio
           fetch-depth: 0
-          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
       - name: Download signed baseline DMG
         working-directory: studio
         env:
@@ -468,16 +519,22 @@ jobs:
         working-directory: studio
         env:
           STUDIO_REF_VALUE: ${{ inputs.studio_ref }}
+          TOOLS_REF_VALUE: ${{ inputs.release_tools_ref || inputs.studio_ref }}
+          STORAGE_ORIGIN: ${{ inputs.storage_origin || inputs.update_origin }}
+          RELEASE_LAYOUT: ${{ inputs.release_layout || 'legacy' }}
         run: |
+          set -euo pipefail
           git merge-base --is-ancestor "$STUDIO_REF_VALUE" HEAD
-          git checkout --detach "$STUDIO_REF_VALUE"
-          test "$(git rev-parse HEAD)" = "$STUDIO_REF_VALUE"
+          git merge-base --is-ancestor "$TOOLS_REF_VALUE" HEAD
+          git checkout --detach "$TOOLS_REF_VALUE"
+          test "$(git rev-parse HEAD)" = "$TOOLS_REF_VALUE"
           npm install --ignore-scripts
           node scripts/verify-desktop-installed-update.mjs \
             --dmg "$RUNNER_TEMP/baseline.dmg" \
             --origin '${{ inputs.update_origin }}' \
             --channel '${{ inputs.channel }}' \
-            --version '${{ inputs.build_version }}'
+            --version '${{ inputs.build_version }}' \
+            --layout "$RELEASE_LAYOUT" --storage-origin "$STORAGE_ORIGIN"
       - name: Upload installed-update evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -486,3 +543,52 @@ jobs:
           path: studio/.artifacts/desktop-release/installed-*/**
           if-no-files-found: ignore
           retention-days: 30
+
+  github-release:
+    if: ${{ always() && inputs.publish_feed && needs.publish-mac-arm64.result == 'success' }}
+    needs: [macos-arm64, publish-mac-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-mac-arm64
+          path: candidate
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run_id || github.run_id }}
+      - name: Publish the same signed bytes on Studio Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_VERSION: ${{ inputs.build_version }}
+          STUDIO_SHA: ${{ inputs.studio_ref }}
+          UPDATE_ORIGIN: ${{ inputs.update_origin }}
+        run: |
+          set -euo pipefail
+          tag="desktop-$BUILD_VERSION"
+          if ! gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            gh api "repos/$GH_REPO/git/refs" --method POST -f "ref=refs/tags/$tag" -f "sha=$STUDIO_SHA" >/dev/null
+          fi
+          test "$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha)" = "$STUDIO_SHA"
+          printf 'Signed and notarized AgentKit Studio desktop build.\n\nStudio source: %s\nPublic binaries: %s/dsh-desk/bin/mac-arm64/\nThe DMG, ZIP and blockmap are the same files used by the KS3 updater.\n' "$STUDIO_SHA" "$UPDATE_ORIGIN" > "$RUNNER_TEMP/release-notes.md"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            # The tag's exact source SHA was verified above. Supplying the
+            # off-main commit again as target_commitish unnecessarily requires
+            # Workflows write when its workflow files differ from main.
+            gh release create "$tag" --verify-tag --title "AgentKit Studio $BUILD_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease --draft
+          fi
+          for file in candidate/*.dmg candidate/*.zip candidate/*.blockmap candidate/mac-arm64-release.json candidate/*-mac.yml; do
+            name="$(basename "$file")"
+            digest="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
+            # REST releases/tags deliberately excludes drafts. The CLI also
+            # resolves drafts through the authenticated release listing.
+            existing="$(gh release view "$tag" --json assets --jq '.assets[] | {name,digest}' | jq -r --arg name "$name" 'select(.name == $name) | .digest')"
+            if [[ -n "$existing" ]]; then
+              test "$existing" = "$digest"
+            else
+              gh release upload "$tag" "$file"
+            fi
+          done
+          gh release edit "$tag" --draft=false --prerelease
