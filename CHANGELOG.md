@@ -5,6 +5,12 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [未发布]
+
+### 修复
+
+- 恢复审计统一识别 `run_resume`、`runtime_resume` 与 `continuation.resumed`，同一恢复尝试的新旧载荷只计一次；没有尝试 ID 的历史记录保持独立计数。
+
 ## [0.8.5] - 2026-09-19
 
 ### 亮点
