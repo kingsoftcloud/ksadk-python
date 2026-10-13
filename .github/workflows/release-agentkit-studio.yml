@@ -69,6 +69,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
+          package_json_file: dsh-source/package.json
       - name: Prepare short isolated build root
         shell: pwsh
         run: |
