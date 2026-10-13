@@ -370,6 +370,7 @@ jobs:
           }
           NODE
           codesign --verify --deep --strict --verbose=2 "$app"
+          node scripts/verify-desktop-module-graph.mjs "$app"
           node scripts/verify-codex-signing.mjs "$app" "$artifacts/mac-arm64-release.json"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
