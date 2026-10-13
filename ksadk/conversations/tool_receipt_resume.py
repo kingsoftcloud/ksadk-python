@@ -122,12 +122,54 @@ def _tool_receipt_arguments_digest(tool_args: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _pending_approval_events(events: Sequence[SessionEvent]) -> list[SessionEvent]:
+    from ksadk.conversations.runtime_resume import (
+        _approval_lifecycle_event_type,
+        _approval_request_id_from_event,
+    )
+
+    pending: list[SessionEvent] = []
+    for event in events:
+        event_type = _approval_lifecycle_event_type(event)
+        if event_type == "approval_request":
+            pending.append(event)
+            continue
+        if event_type != "approval_response" or not pending:
+            continue
+        resume_input = (event.metadata or {}).get("resume_input")
+        response_id = ""
+        if isinstance(resume_input, Mapping):
+            response_id = str(
+                resume_input.get("approval_request_id")
+                or resume_input.get("interrupt_id") or resume_input.get("id") or ""
+            )
+        content = event.content or {}
+        payload = content.get("runtime_event") or content.get("payload")
+        if not response_id and isinstance(payload, Mapping):
+            response_id = str(
+                payload.get("interaction_id") or payload.get("approval_id")
+                or payload.get("call_id") or ""
+            )
+        if response_id:
+            remaining = []
+            for item in pending:
+                request_ids = {_approval_request_id_from_event(item)}
+                request_payload = (item.content or {}).get("runtime_event")
+                if isinstance(request_payload, Mapping):
+                    request_ids.add(str(request_payload.get("interaction_id") or ""))
+                if response_id not in request_ids:
+                    remaining.append(item)
+            pending = remaining
+        else:
+            pending.pop()
+    return pending
+
+
 def _has_pending_approval_for_resume(
     events: Sequence[SessionEvent], resume_input: Mapping[str, Any]
 ) -> bool:
     from ksadk.conversations.runtime_resume import (
         _approval_request_id_from_event,
-        _pending_approval_events,
     )
 
     decision = resume_input.get("approval")

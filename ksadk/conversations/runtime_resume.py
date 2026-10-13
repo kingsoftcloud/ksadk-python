@@ -16,6 +16,7 @@ from ksadk.conversations.runtime_persistence import append_conversation_event
 from ksadk.conversations.tool_receipt_resume import (
     ToolReceiptUncertainError,  # noqa: F401
     _claim_approved_builtin_tool_resume,  # noqa: F401
+    _pending_approval_events,
     claim_or_replay_tool_receipt,
     replay_existing_tool_receipt_event,
     settle_claimed_tool_receipt,
@@ -52,33 +53,6 @@ def _approval_request_id_from_event(event: SessionEvent) -> str:
     if value:
         return str(value)
     return str(event.id or "")
-
-
-def _pending_approval_events(events: Sequence[SessionEvent]) -> list[SessionEvent]:
-    pending: list[SessionEvent] = []
-    for event in events:
-        event_type = _approval_lifecycle_event_type(event)
-        if event_type == "approval_request":
-            pending.append(event)
-            continue
-        if event_type != "approval_response" or not pending:
-            continue
-        resume_input = (event.metadata or {}).get("resume_input")
-        response_id = ""
-        if isinstance(resume_input, Mapping):
-            response_id = str(
-                resume_input.get("approval_request_id")
-                or resume_input.get("interrupt_id")
-                or resume_input.get("id")
-                or ""
-            )
-        if response_id:
-            pending = [
-                item for item in pending if _approval_request_id_from_event(item) != response_id
-            ]
-        else:
-            pending.pop()
-    return pending
 
 
 def _approval_request_events(events: Sequence[SessionEvent]) -> list[SessionEvent]:

@@ -344,7 +344,7 @@ connection.
   / `run_resume` / `tool_result` events and supports cross-instance recovery.
 </Callout>
 
-The runtime exposes five hosted UI actions for run-level checkpoint, resume,
+The runtime exposes hosted UI actions for run-level checkpoint, resume,
 cancel, and tool receipts. Every action is `POST /agentengine/api/v1/<Action>`
 with a JSON body, and the response is a uniform
 `{ Code, Message, RequestId, Action, Data }` envelope.
