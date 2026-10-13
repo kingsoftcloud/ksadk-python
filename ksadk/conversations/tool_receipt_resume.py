@@ -6,6 +6,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from ksadk.conversations.runtime_persistence import append_conversation_event
@@ -121,6 +122,26 @@ def _tool_receipt_arguments_digest(tool_args: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _has_pending_approval_for_resume(
+    events: Sequence[SessionEvent], resume_input: Mapping[str, Any]
+) -> bool:
+    from ksadk.conversations.runtime_resume import (
+        _approval_request_id_from_event,
+        _pending_approval_events,
+    )
+
+    decision = resume_input.get("approval")
+    decision = decision if isinstance(decision, Mapping) else {}
+    request_id = str(
+        resume_input.get("approval_request_id") or resume_input.get("interrupt_id")
+        or decision.get("approval_request_id") or ""
+    )
+    pending = _pending_approval_events(events)
+    if not request_id:
+        return bool(pending)
+    return any(_approval_request_id_from_event(event) == request_id for event in pending)
+
+
 async def _claim_approved_builtin_tool_resume(
     *,
     session_id: str,
@@ -128,6 +149,7 @@ async def _claim_approved_builtin_tool_resume(
     resume_input: Mapping[str, Any],
     session_service_provider: Callable[[], Any],
     existing_events: Sequence[SessionEvent],
+    require_existing: bool = False,
 ) -> tuple[dict[str, Any] | None, ToolReceiptClaim | None]:
     """Reserve an approved builtin before consuming its approval response."""
 
@@ -186,6 +208,18 @@ async def _claim_approved_builtin_tool_resume(
             raise LegacyToolReceiptCheckpointAmbiguityError()
     if _builtin_tool_callable(tool_name) is None:
         return None, None
+    if require_existing:
+        # No approval is pending. A crash retry may only inspect/replay the
+        # previous claim; it must not acquire a new right to perform effects.
+        claim = await session_service_provider().get_tool_receipt_claim(
+            session_id, idempotency_key=str(receipt["idempotency_key"])
+        )
+        if claim is None:
+            raise ValueError("Responses resume input requires a pending approval_request")
+        if (claim.tool_name != tool_name
+                or claim.arguments_digest != _tool_receipt_arguments_digest(call_args)):
+            raise ValueError("tool receipt idempotency key conflict")
+        return receipt, _validate_tool_receipt_claim(replace(claim, acquired=False))
     claim = await session_service_provider().claim_tool_receipt(
         session_id,
         idempotency_key=str(receipt["idempotency_key"]),

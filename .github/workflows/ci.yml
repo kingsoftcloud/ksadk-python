@@ -48,6 +48,8 @@ jobs:
           uv run --no-sync pytest \
             tests/server/test_checkpoint_resume_audit.py \
             tests/server/test_postgres_jsonb_codec_guard.py \
+            tests/server/test_checkpoint_resume_attempt_audit.py \
+            tests/test_tool_receipt_claim_concurrency.py \
             -q --junitxml="$RUNNER_TEMP/postgres-junit.xml"
           test_code=$?
           set -e

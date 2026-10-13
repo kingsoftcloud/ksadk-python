@@ -59,7 +59,10 @@ class _LocalToolReceiptMixin:
             ).fetchone()
             if row is None:
                 raise RuntimeError("tool receipt claim disappeared")
-            return self._tool_receipt_from_row(row, acquired=inserted.rowcount == 1)
+            result = self._tool_receipt_from_row(row, acquired=inserted.rowcount == 1)
+            if result.tool_name != tool_name or result.arguments_digest != arguments_digest:
+                raise ValueError("tool receipt idempotency key conflict")
+            return result
 
     def _settle_tool_receipt_sync(
         self,

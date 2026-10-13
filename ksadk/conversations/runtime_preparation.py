@@ -65,7 +65,6 @@ from ksadk.conversations.runtime_resume import (
     _execute_approved_builtin_tool_resume,
     _find_tool_receipt_event_by_key,
     _format_resume_response_text,
-    _has_pending_approval,
     _is_approval_resume_input,
     _is_checkpoint_resume_input,
     _normalize_approval_resume_input,
@@ -74,6 +73,7 @@ from ksadk.conversations.runtime_resume import (
     _tool_receipt_idempotency_key_for_resume,
     _validate_tool_receipt_event,
 )
+from ksadk.conversations.tool_receipt_resume import _has_pending_approval_for_resume
 from ksadk.ids import new_run_id
 from ksadk.model_policy import model_policy_options_for_model
 from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY, PlatformIdentityContext
@@ -248,13 +248,16 @@ async def build_run_input(
 
         existing_events = await service.get_events(resolved_session_id)
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
+        has_pending_approval = _has_pending_approval_for_resume(
+            existing_events, normalized_resume_input
+        )
         preclaimed_receipt = None
         replay_candidate = normalized_resume_input
         if is_approval_resume:
             replay_candidate = _normalize_approval_resume_input(
                 normalized_resume_input,
                 existing_events,
-                include_resolved=not _has_pending_approval(existing_events),
+                include_resolved=not has_pending_approval,
             )
             decision = replay_candidate.get("approval")
             if not isinstance(decision, Mapping):
@@ -279,7 +282,7 @@ async def build_run_input(
                         events=existing_events,
                     )
         existing_tool_receipt_event = None
-        if is_approval_resume and not _has_pending_approval(existing_events):
+        if is_approval_resume and not has_pending_approval:
             receipt_key = _tool_receipt_idempotency_key_for_resume(
                 session_id=resolved_session_id,
                 resume_input=replay_candidate,
@@ -345,8 +348,11 @@ async def build_run_input(
                         resume_input=normalized_resume_input,
                         session_service_provider=provider,
                         existing_events=existing_events,
+                        require_existing=not has_pending_approval,
                     )
                 )
+                if not has_pending_approval and preclaimed_claim is None:
+                    raise ValueError("Responses resume input requires a pending approval_request")
                 if preclaimed_claim is not None and _preclaimed_receipt is not None:
                     if not preclaimed_claim.acquired and preclaimed_claim.state == "unknown":
                         raise ToolReceiptUncertainError(preclaimed_claim.idempotency_key)

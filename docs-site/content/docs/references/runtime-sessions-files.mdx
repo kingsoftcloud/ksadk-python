@@ -143,7 +143,7 @@ workspace.mkdir(parents=True, exist_ok=True)
   `run_resume` / `tool_result` 事件,支持跨实例恢复。
 </Callout>
 
-运行时通过五个 hosted UI action 管理 run 级 checkpoint、恢复、取消与工具回执。所有
+运行时通过以下 hosted UI action 管理 run 级 checkpoint、恢复、取消与工具回执。所有
 action 走 `POST /agentengine/api/v1/<Action>`,请求体为 JSON,响应统一为
 `{ Code, Message, RequestId, Action, Data }` envelope。
 
@@ -154,6 +154,8 @@ action 走 `POST /agentengine/api/v1/<Action>`,请求体为 JSON,响应统一为
 | `ResumeRun` | `POST /agentengine/api/v1/ResumeRun` | 从 checkpoint 恢复 run 执行 |
 | `CancelRun` | `POST /agentengine/api/v1/CancelRun` | 取消正在进行的 run(以 `InvocationId` 为主键) |
 | `ListToolReceipts` | `POST /agentengine/api/v1/ListToolReceipts` | 列出某 run / checkpoint 下的工具调用回执 |
+| `GetToolReceiptClaim` | `POST /agentengine/api/v1/GetToolReceiptClaim` | 查询内置工具执行占位及不确定状态 |
+| `ReconcileToolReceiptClaim` | `POST /agentengine/api/v1/ReconcileToolReceiptClaim` | 人工关闭已核对的未知占位，保留失败回执 |
 
 <Callout type="warning" title="鉴权与边界">
   本地 `agentengine web` 默认 owner 隔离;hosted 链路需在请求头携带
@@ -702,6 +704,109 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListToolReceipts"
 
 </Tab>
 </Tabs>
+
+### 工具执行占位与对账
+
+审批恢复执行内置工具前，SDK 先原子写入 `(session_id, idempotency_key)` 占位。键包含 run、checkpoint、工具名与参数；跨实例竞争只有一个调用获得执行权。拒绝、取消或不存在的审批不能新建占位；没有待审批请求时只允许回放匹配的既有 claim 或合法工具回执。
+
+| State | 含义 | 同键重试 |
+| --- | --- | --- |
+| `unknown` | 已占位但尚无持久化终态；既可能正在执行，也可能执行后、结果落库前崩溃 | 阻断，不再次执行工具 |
+| `completed` | 成功结果已落库 | 回放结果，不执行工具 |
+| `failed` | 失败结果已落库，或人工关闭了未知占位 | 回放失败结果，不执行工具 |
+
+这提供有界的重复执行防护，不保证 exactly-once。外部副作用已经发生、结果尚未落库时，SDK 无法自动判断外部系统是否成功。内存后端只在当前进程内保留占位；跨进程保障需使用共享 PostgreSQL，或共享同一持久化 SQLite 数据库。自定义后端必须实现 claim 能力，否则执行会明确失败，不回退到进程内锁。
+
+两个 action 都沿用现有会话鉴权：`AgentId`、会话 owner 与可信调用身份必须匹配；本地模式检查既有 owner，hosted 模式使用网关验证并注入的身份。`UserId` 可选，不能通过请求体伪造 owner。接口没有新增独立管理员角色，运维访问策略仍由宿主的权限配置决定。SDK 负责占位存储，网关/控制面负责可信身份与外部访问策略。
+
+#### GetToolReceiptClaim
+
+`POST /agentengine/api/v1/GetToolReceiptClaim`
+
+请求字段：`AgentId`、`SessionId`、`IdempotencyKey` 必填，`UserId` 可选。幂等键从 SDK 不确定执行错误或已知工具回执取得，不要自行拼接或更换 checkpoint 来绕过阻断。
+
+```json
+{
+  "AgentId": "my-agent",
+  "SessionId": "<session-id>",
+  "IdempotencyKey": "<tool-receipt-key>"
+}
+```
+
+成功 envelope 的 `Data`：
+
+```json
+{
+  "Found": true,
+  "ToolReceiptClaim": {
+    "SessionId": "<session-id>",
+    "IdempotencyKey": "<tool-receipt-key>",
+    "ToolName": "write_workspace_file",
+    "ArgumentsDigest": "<arguments-digest>",
+    "State": "unknown",
+    "ClaimId": "<claim-id>",
+    "Output": null,
+    "ReconciliationRequired": true
+  }
+}
+```
+
+没有该键时正常返回 `Found: false`、`ToolReceiptClaim: null`。`Output` 可以是 JSON 对象、数组、标量或 null；`ClaimId` 是具体占位的身份，人工对账时必须原样提供。查询不产生审批应答，也不会执行或取消工具。
+
+#### ReconcileToolReceiptClaim
+
+`POST /agentengine/api/v1/ReconcileToolReceiptClaim`
+
+在查询字段之外，还必须提供 `ClaimId` 与 `Reason`（1–1000 个字符的说明）。只允许当前 `unknown` 且 ClaimId 匹配的占位。不要在 Reason 中填写凭证、下载 token 或客户数据。
+
+```json
+{
+  "AgentId": "my-agent",
+  "SessionId": "<session-id>",
+  "IdempotencyKey": "<tool-receipt-key>",
+  "ClaimId": "<claim-id>",
+  "Reason": "执行者已停止；外部系统核对完成；人工关闭本次不确定执行"
+}
+```
+
+成功 envelope 的 `Data`：
+
+```json
+{
+  "ToolReceiptClaim": {
+    "SessionId": "<session-id>",
+    "IdempotencyKey": "<tool-receipt-key>",
+    "State": "failed",
+    "ClaimId": "<claim-id>",
+    "Output": {
+      "ok": false,
+      "error_type": "ToolReceiptReconciled",
+      "error_message": "<reason>"
+    },
+    "ReconciliationRequired": false
+  }
+}
+```
+
+当前操作固定关闭为 `failed`，不补记成功，也不授权同键重新执行。`failed` 不能证明外部副作用未发生；同键重试只回放这份失败结果。该 action 不主动停止正在执行的工具，没有执行租约或自动恢复机制。
+
+对账步骤：
+
+1. 保存查询结果与 ClaimId，确认会话、checkpoint、工具和参数身份。
+2. 停止或隔离原执行者，并确认它不会继续执行或写回；`unknown` 也包含正在执行的占位，不能仅凭查询结果判定进程已崩溃。
+3. 在外部系统核对写入、命令或其他副作用，记录结果与处理说明。
+4. 使用查询返回的同一 ClaimId 调用对账，再查询确认 `State=failed`。如需新的业务操作，重新走正常审批流程；不要删除/重建会话或更换键绕过旧占位。
+
+| HTTP / SDK 错误 | 语义 |
+| --- | --- |
+| `400` | 缺少 AgentId 等现有会话 action 前置条件 |
+| `404` | 会话不可见、不存在；或对账目标 claim 不存在 |
+| `409` | 既有 owner 冲突；claim 已终态、ClaimId 不匹配，或结果并发变更 |
+| `422` | 请求模型校验失败，例如 Reason 为空或超过长度限制 |
+| `ToolReceiptUncertainError` | SDK 恢复发现 unknown，不执行工具，不追加重复审批应答；携带幂等键供查询 |
+| `ValueError` | 缺少有效待审批请求，或工具/参数身份冲突；本次恢复被阻断 |
+
+存在 `unknown` claim 时会话删除被拒绝；SQLite/PostgreSQL 删除与新 claim 插入使用数据库锁协调。仅在占位均已终态后允许正常删除，删除会话会同时清理其回执。删除不是对账的替代操作。
 
 ### ResumeMode
 

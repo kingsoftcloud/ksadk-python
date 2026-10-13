@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from ksadk.sessions._postgres_tables import pg_tool_receipts_table
+from ksadk.sessions._postgres_tables import KSADK_PG_SESSIONS_TABLE, pg_tool_receipts_table
 from ksadk.sessions.base import ToolReceiptClaim
 
 
@@ -47,6 +47,15 @@ class _PostgresToolReceiptMixin:
         await self._ensure_schema()
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                # Share the session parent fence with delete_session. The
+                # key-share lock permits parallel claims, while deletion's
+                # update lock waits until the claim is durable.
+                if not await connection.fetchval(
+                    f"SELECT 1 FROM {KSADK_PG_SESSIONS_TABLE} "
+                    "WHERE namespace=$1 AND id=$2 FOR KEY SHARE",
+                    self.namespace, session_id,
+                ):
+                    raise ValueError(f"Session {session_id} not found")
                 inserted = await connection.execute(
                     f"""INSERT INTO {pg_tool_receipts_table}
                     (namespace, tenant_id, workspace_id, session_id, idempotency_key,

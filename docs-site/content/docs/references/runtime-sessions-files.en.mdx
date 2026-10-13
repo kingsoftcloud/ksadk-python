@@ -356,6 +356,8 @@ with a JSON body, and the response is a uniform
 | `ResumeRun` | `POST /agentengine/api/v1/ResumeRun` | resume run execution from a checkpoint |
 | `CancelRun` | `POST /agentengine/api/v1/CancelRun` | cancel an in-progress run (keyed by `InvocationId`) |
 | `ListToolReceipts` | `POST /agentengine/api/v1/ListToolReceipts` | list tool-call receipts under a run / checkpoint |
+| `GetToolReceiptClaim` | `POST /agentengine/api/v1/GetToolReceiptClaim` | query a builtin execution claim |
+| `ReconcileToolReceiptClaim` | `POST /agentengine/api/v1/ReconcileToolReceiptClaim` | close an inspected unknown claim as failed |
 
 <Callout type="warning" title="Auth and boundaries">
   Local `agentengine web` isolates per owner by default. Hosted deployments must
@@ -920,6 +922,41 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListToolReceipts"
 
 </Tab>
 </Tabs>
+
+### Durable tool execution claims and reconciliation
+
+Before an approved builtin performs effects, the SDK atomically claims `(session_id, idempotency_key)`. The key includes run, checkpoint, tool and arguments. Rejected, cancelled or absent approvals cannot create a claim; retries without a pending request may only replay a matching existing claim or validated receipt. This guards concurrent duplicate execution, but does not guarantee exactly-once: a crash after an external effect and before settlement remains uncertain.
+
+| State | Meaning | Same-key retry |
+| --- | --- | --- |
+| `unknown` | Reserved, possibly still running or crashed before a durable result | Block execution; require inspection |
+| `completed` | Durable successful result | Replay only |
+| `failed` | Durable failure or manually closed uncertainty | Replay failure only |
+
+Both actions reuse session-owner and trusted invocation identity checks. `AgentId`, `SessionId` and `IdempotencyKey` are required; `UserId` is optional and cannot override ownership. Hosted credentials and trusted identity come from the gateway. No separate administrator role is introduced; the host controls operator access. Memory claims survive only in the current process. Cross-instance durability requires shared PostgreSQL or the same persistent SQLite database. Unsupported custom backends fail closed.
+
+`POST /agentengine/api/v1/GetToolReceiptClaim` accepts:
+
+```json
+{"AgentId":"my-agent","SessionId":"<session-id>","IdempotencyKey":"<tool-receipt-key>"}
+```
+
+The usual action envelope contains `Data.Found` and `Data.ToolReceiptClaim`. A found claim includes `SessionId`, `IdempotencyKey`, `ToolName`, `ArgumentsDigest`, `State`, `ClaimId`, `Output` and `ReconciliationRequired` (true for unknown). Output may be any JSON value. A missing key returns `Found=false` and `ToolReceiptClaim=null`; querying never executes or cancels a tool. Copy the key from the SDK uncertainty error or an existing receipt.
+
+`POST /agentengine/api/v1/ReconcileToolReceiptClaim` additionally requires the exact `ClaimId` and a `Reason` of 1–1000 characters:
+
+```json
+{"AgentId":"my-agent","SessionId":"<session-id>","IdempotencyKey":"<tool-receipt-key>","ClaimId":"<claim-id>","Reason":"Executor stopped; external system inspected; close uncertain execution"}
+```
+
+Only a matching unknown claim is reconcilable. The response contains `Data.ToolReceiptClaim` with `State=failed`, the same ClaimId, `ReconciliationRequired=false`, and `Output={"ok":false,"error_type":"ToolReceiptReconciled","error_message":"<reason>"}`. This action always records a failed terminal result. It does not record success, cancel an active tool or permit another execution under the same key. Failed does not prove the external effect was absent.
+
+1. Save the query result and verify session, checkpoint, tool and argument identity.
+2. Stop or isolate the executor and confirm it cannot continue or settle later. Unknown also includes active execution, and there is no execution lease or automatic crash detector.
+3. Inspect the external system and record what occurred. Keep credentials and customer data out of Reason.
+4. Reconcile with the returned ClaimId, then query the failed result. A new business operation requires normal approval; never delete/recreate a session or change its key to bypass uncertainty.
+
+Errors: 400 for existing action prerequisites such as a missing AgentId; 404 for an invisible/missing session or a missing reconciliation target; 409 for owner conflicts, stale ClaimId, terminal state or concurrent settlement; 422 for request validation such as invalid Reason length. SDK `ToolReceiptUncertainError` carries the key and blocks execution without another approval response. Missing pending approval or claim identity conflicts raise ValueError. While unknown claims exist, deletion is rejected; SQLite/PostgreSQL coordinate claim insertion and deletion using database locks. Normal deletion after all claims are terminal also removes their receipts.
 
 ### ResumeMode
 

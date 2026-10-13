@@ -201,6 +201,12 @@ class PostgresSessionService(_PostgresToolReceiptMixin, _PostgresSchemaMixin, Ba
         await self._ensure_schema()
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                if not await connection.fetchval(
+                    f"SELECT 1 FROM {KSADK_PG_SESSIONS_TABLE} "
+                    "WHERE namespace=$1 AND id=$2 FOR UPDATE",
+                    self.namespace, session_id,
+                ):
+                    return False
                 if await connection.fetchval(
                     f"SELECT 1 FROM {pg_tool_receipts_table} "
                     "WHERE namespace=$1 AND session_id=$2 AND state='unknown' LIMIT 1",

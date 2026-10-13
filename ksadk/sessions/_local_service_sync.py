@@ -464,6 +464,10 @@ class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
 
     def _delete_session_sync(self, session_id: str) -> bool:
         with self._connection() as connection:
+            # Take the database writer fence before reading claims. A plain
+            # SELECT does not begin sqlite3's transaction and cannot fence a
+            # different service instance inserting a claim before DELETE.
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 f"SELECT 1 FROM {KSADK_SESSIONS_TABLE} WHERE id = ?",
                 (session_id,),
