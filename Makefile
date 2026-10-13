@@ -192,7 +192,7 @@ studio-react-install-browser:
 	uv run playwright install chromium
 
 studio-react-test: build-studio-static
-	@if [ -f "ksadk/studio/react-ui/package.json" ]; then \
+	@set -e; if [ -f "ksadk/studio/react-ui/package.json" ]; then \
 		npm --prefix ksadk/studio/react-ui test; \
 		npm --prefix ksadk/studio/react-ui run test:ui; \
 		(cd ksadk/studio/react-ui && npx tsc --noEmit); \
@@ -204,13 +204,7 @@ studio-react-test: build-studio-static
 	fi
 	PYTHONPATH=. uv run python tests/studio/e2e/studio_browser_smoke.py
 	PYTHONPATH=. uv run python tests/studio/e2e/studio_workspace_navigation_smoke.py --output "$$(mktemp -d)"
-	@# studio_responsive_smoke validates the composer re-enable flow on
-	@# session switch.  It is green locally and the composer fix ships in
-	@# this release, but the headless CI runner leaves the locator disabled
-	@# past the assertion budget (a behavior we cannot reproduce off CI).
-	@# Keep it advisory for 0.8.3 so the browser smoke stays the hard gate;
-	@# track and re-enable as a blocking gate once the CI variance is resolved.
-	-PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
+	PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
 
 # ============================================================
 # 构建和发布

@@ -7,7 +7,7 @@ runs:
       uses: actions/checkout@v7
       with:
         repository: AgentArcLab/ksadk-web
-        ref: 3c4218c66f8c1c8eeb9b871bacb68721cffe8c1a
+        ref: 2042e2e4b12b3bdd998a1d6c95eb6401f7b54e63
         path: .cache/ksadk-web-candidate
         persist-credentials: false
     - name: Pack the companion source
@@ -22,7 +22,7 @@ runs:
         if [ "$RUNNER_OS" = Windows ]; then tarball="$(cygpath -u "$tarball")"; fi
         test -f "$tarball"
         echo "KSADK_WEB_TARBALL=$tarball" >> "$GITHUB_ENV"
-        echo 'Shared Web source: AgentArcLab/ksadk-web@3c4218c66f8c1c8eeb9b871bacb68721cffe8c1a (0.3.12). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
+        echo 'Shared Web source: AgentArcLab/ksadk-web@2042e2e4b12b3bdd998a1d6c95eb6401f7b54e63 (0.3.12). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
       env:
         # The candidate's build:ksadk script uses POSIX VAR=value syntax.
         # npm invokes scripts through cmd.exe on Windows unless this is set.

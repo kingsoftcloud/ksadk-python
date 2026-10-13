@@ -99,6 +99,23 @@ def test_preflight_enables_real_managed_dsh_toolchain_gate(monkeypatch) -> None:
         "managedDshToolchain": "passed",
         "studioBrowser": "passed",
     }
+    install = next(
+        (command, environment) for command, environment in calls
+        if command[1:] == ("-m", "ksadk.cli", "plugin", "toolchain", "install")
+    )
+    browser_calls = [(command, env) for command, env in calls if command[-1] in BROWSER_GATES]
+    assert len(browser_calls) == len(BROWSER_GATES)
+    assert all(env == install[1] for _, env in browser_calls)
+    assert install[1]["AGENTENGINE_PLUGIN_TOOLCHAIN_HOME"]
+    assert calls.index(install) < min(calls.index(call) for call in browser_calls)
+
+
+def test_skipped_browser_gate_does_not_claim_passed(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr("scripts.release_preflight._run", lambda cmd, **kwargs: calls.append(cmd))
+    statuses = run_release_test_gates(skip_browser_gates=True)
+    assert statuses["studioBrowser"] == "not_run"
+    assert not any(command[-1] in BROWSER_GATES for command in calls)
 
 
 def test_release_check_builds_provenance_bound_pair_before_release_gate() -> None:

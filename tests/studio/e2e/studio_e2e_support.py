@@ -48,7 +48,9 @@ def studio_server(
     thread.start()
     base_url = f"http://127.0.0.1:{port}"
     try:
-        deadline = time.monotonic() + 30.0
+        # A fresh profile installs and registers the real official providers.
+        # Readiness still requires a live health response, including cold boots.
+        deadline = time.monotonic() + 120.0
         while time.monotonic() < deadline:
             if not thread.is_alive():
                 raise AssertionError("Studio server thread exited before becoming healthy")
@@ -60,7 +62,7 @@ def studio_server(
                 time.sleep(0.05)
         else:
             raise AssertionError(
-                "Studio server did not become healthy within 30 seconds "
+                "Studio server did not become healthy within 120 seconds "
                 f"(started={server.started}, thread_alive={thread.is_alive()})"
             )
         yield base_url

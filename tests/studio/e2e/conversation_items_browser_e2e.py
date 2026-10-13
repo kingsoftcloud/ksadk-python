@@ -73,6 +73,7 @@ def _seed_agent(service: StudioService) -> None:
             ),
             instructions=Instructions(system="Render every canonical item by identity."),
             security=SecuritySpec(
+                allowed_permissions=["process:host-user"],
                 network=NetworkPolicy(allowed_hosts=["model.example.com"]),
             ),
         ),
@@ -550,32 +551,30 @@ def main() -> None:
             codex_runtime_inspector=_runtime_inspector,
             runtime_executor=fixture.executor,
         )
-        _seed_agent(service)
-        with (
-            studio_server(workspace, service=service) as base_url,
-            sync_playwright() as playwright,
-        ):
-            browser = playwright.chromium.launch(headless=True)
-            try:
-                context = browser.new_context(viewport={"width": 1440, "height": 960})
-                page = context.new_page()
-                second_page = context.new_page()
-                page_errors: list[str] = []
-                page.on("pageerror", lambda error: page_errors.append(str(error)))
-                second_page.on("pageerror", lambda error: page_errors.append(str(error)))
+        with studio_server(workspace, service=service) as base_url:
+            _seed_agent(service)
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
                 try:
-                    _exercise_conversation_items(page, second_page, base_url)
-                except Exception:
-                    page.screenshot(path="/tmp/items_fail.png", full_page=True)
-                    body = page.evaluate("() => (document.body.innerText || '').slice(-1200)")
-                    print("!!! FAIL BODY TAIL:", body, flush=True)
-                    raise
-                assert page_errors == [], f"Uncaught React page errors: {page_errors}"
-            finally:
-                browser.close()
+                    context = browser.new_context(viewport={"width": 1440, "height": 960})
+                    page = context.new_page()
+                    second_page = context.new_page()
+                    page_errors: list[str] = []
+                    page.on("pageerror", lambda error: page_errors.append(str(error)))
+                    second_page.on("pageerror", lambda error: page_errors.append(str(error)))
+                    try:
+                        _exercise_conversation_items(page, second_page, base_url)
+                    except Exception:
+                        page.screenshot(path="/tmp/items_fail.png", full_page=True)
+                        body = page.evaluate("() => (document.body.innerText || '').slice(-1200)")
+                        print("!!! FAIL BODY TAIL:", body, flush=True)
+                        raise
+                    assert page_errors == [], f"Uncaught React page errors: {page_errors}"
+                finally:
+                    browser.close()
 
-    assert len(fixture.start_requests) == 1
-    assert list(event_stream.phases.values()) == [3]
+        assert len(fixture.start_requests) == 1
+        assert list(event_stream.phases.values()) == [3]
 
 
 if __name__ == "__main__":

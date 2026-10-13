@@ -16,6 +16,7 @@ import json
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -59,9 +60,15 @@ def _json(
         headers={"Content-Type": "application/json"},
         method=method,
     )
-    with urlopen(request) as response:
-        raw = response.read()
-        assert response.status < 300, raw.decode("utf-8")
+    try:
+        with urlopen(request) as response:
+            raw = response.read()
+            assert response.status < 300, raw.decode("utf-8")
+    except HTTPError as error:
+        detail = json.loads(error.read()).get("error", {})
+        raise AssertionError(
+            f"{method} {path}: HTTP {error.code}: {detail.get('code')} {detail.get('message')}"
+        ) from error
     return json.loads(raw) if raw else {}
 
 
@@ -418,7 +425,9 @@ def main() -> None:
                 # final registry, as an Agent created through the UI would be.
                 build_id = _prepare_agent(service, base_url=base_url)
                 asyncio.run(
-                    service.session_service.create_session(AGENT_ID, "local-user", CONTINUE_SESSION_ID)
+                    service.session_service.create_session(
+                        AGENT_ID, "local-user", CONTINUE_SESSION_ID
+                    )
                 )
                 with sync_playwright() as playwright:
                     browser = playwright.chromium.launch(headless=True)
