@@ -60,7 +60,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}
+  group: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.build_version }}-${{ inputs.channel }}
   cancel-in-progress: false
 
 jobs:
@@ -378,6 +378,9 @@ jobs:
     runs-on: macos-14
     environment: studio-signing
     timeout-minutes: 60
+    concurrency:
+      group: studio-feed-mac-arm64-${{ inputs.channel }}
+      cancel-in-progress: false
     steps:
       - name: Checkout workflow repository
         uses: actions/checkout@v4
