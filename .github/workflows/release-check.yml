@@ -23,6 +23,8 @@ on:
       - "scripts/verify_ksadk_web_static.py"
       - "scripts/write_build_provenance.py"
       - "docs/release-plugin-compatibility.md"
+      - "docs-site/content/docs/framework/guides/agentkit-studio-release.mdx"
+      - ".github/workflows/release-agentkit-studio.yml"
       - ".github/workflows/release-check.yml"
 
 jobs:

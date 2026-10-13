@@ -12,6 +12,7 @@ from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from ksadk.ids import new_session_id
+from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
 from ksadk.sessions._postgres_schema import _PostgresSchemaMixin
 from ksadk.sessions._postgres_tables import (
     KSADK_PG_EVENTS_TABLE,
@@ -768,7 +769,7 @@ class PostgresSessionService(_PostgresToolReceiptMixin, _PostgresSchemaMixin, Ba
         )
         candidate = None
         max_seq_id = 0
-        resume_count = 0
+        resume_audit = CheckpointResumeAudit()
         last_resumed_at = None
         for event in events:
             metadata = event.metadata or {}
@@ -787,10 +788,13 @@ class PostgresSessionService(_PostgresToolReceiptMixin, _PostgresSchemaMixin, Ba
                 identity = checkpoint_resume_identity(event)
                 if identity is None or identity[:2] != (run_id, checkpoint_id):
                     continue
-                resume_count += 1
-                last_resumed_at = max(last_resumed_at or identity[2], identity[2])
-        return {"candidate": candidate, "max_seq_id": max_seq_id, "resume_count": resume_count,
-                "last_resumed_at": last_resumed_at}
+                resume_audit.record(event, identity)
+                last_resumed_at = resume_audit["last_resumed_at"]
+        return {
+            "candidate": candidate, "max_seq_id": max_seq_id,
+            "resume_count": resume_audit["resume_count"],
+            "last_resumed_at": last_resumed_at,
+        }
 
     async def get_checkpoint_stats(
         self, keys: list[tuple[str, str, str]]

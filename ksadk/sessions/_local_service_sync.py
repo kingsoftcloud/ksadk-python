@@ -12,6 +12,7 @@ import time
 from typing import Optional
 
 from ksadk.ids import new_session_id
+from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
 from ksadk.sessions._local_tables import (
     KSADK_EVENTS_TABLE,
     KSADK_SESSIONS_TABLE,
@@ -249,7 +250,7 @@ class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
         events = [self._event_from_query_row(row) for row in rows]
         candidate = None
         max_seq_id = 0
-        resume_count = 0
+        resume_audit = CheckpointResumeAudit()
         last_resumed_at = None
         for event in events:
             metadata = event.metadata or {}
@@ -268,12 +269,12 @@ class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
                 identity = checkpoint_resume_identity(event)
                 if identity is None or identity[:2] != (run_id, checkpoint_id):
                     continue
-                resume_count += 1
-                last_resumed_at = max(last_resumed_at or identity[2], identity[2])
+                resume_audit.record(event, identity)
+                last_resumed_at = resume_audit["last_resumed_at"]
         return {
             "candidate": candidate,
             "max_seq_id": max_seq_id,
-            "resume_count": resume_count,
+            "resume_count": resume_audit["resume_count"],
             "last_resumed_at": last_resumed_at,
         }
 

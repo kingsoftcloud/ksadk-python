@@ -227,7 +227,7 @@ def checkpoint_resume_identity(event: SessionEvent) -> tuple[str, str, float] | 
         timestamp = 0.0
     if not math.isfinite(timestamp):
         timestamp = 0.0
-    if event.event_type == "run_resume":
+    if event.event_type in {"run_resume", "runtime_resume"}:
         run_id = str(metadata.get("run_id") or "").strip()
         checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
     elif event.event_type == "continuation.resumed":
