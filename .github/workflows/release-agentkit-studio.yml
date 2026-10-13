@@ -184,9 +184,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force .artifacts/windows-diagnostics | Out-Null
-          Get-ChildItem "$env:RUNNER_TEMP/studio-build/desktop-checkouts/*/source/apps/desktop/.desktop-build/packaging-runs" -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -in @('.json', '.jsonl', '.log') } |
-            ForEach-Object { Copy-Item $_.FullName (Join-Path '.artifacts/windows-diagnostics' ($_.Directory.Name + '-' + $_.Name)) }
+          Get-ChildItem "$env:RUNNER_TEMP/studio-build/desktop-checkouts" -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            $runs = Join-Path $_.FullName 'source/apps/desktop/.desktop-build/packaging-runs'
+            if (Test-Path $runs) {
+              Get-ChildItem -LiteralPath $runs -Recurse -File -Force |
+                Where-Object { $_.Extension -in @('.json', '.jsonl', '.log') } |
+                ForEach-Object { Copy-Item $_.FullName (Join-Path '.artifacts/windows-diagnostics' ($_.Directory.Name + '-' + $_.Name)) }
+            }
+          }
       - name: Retain signed installer and acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
