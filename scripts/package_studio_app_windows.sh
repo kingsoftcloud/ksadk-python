@@ -127,16 +127,16 @@ PNPX
 # On macOS the toolchain is pre-built on the host; on Windows the runner
 # re-installs it so optionalDependencies (sharp, node-addon-require-builtin)
 # resolve their win32-x64 variants from the npm registry.
-dsh_source="${STUDIO_APP_DSH_ROOT:-$HOME/.agentengine/plugin-toolchains/dsh/0.1.5-rc.1}"
+dsh_source="${STUDIO_APP_DSH_ROOT:-$HOME/.agentengine/plugin-toolchains/dsh/0.1.7-rc.1}"
 # Sanity-check the toolchain installed. npm on Windows creates dsh.cmd (not a
 # Unix `dsh` shim), so accept either; the real presence signal is the package dir.
 if [ ! -d "$dsh_source/node_modules/@deepseek-ai/dsh" ]; then
   echo "ERROR: pinned DSH toolchain is missing or not Windows-ready: $dsh_source" >&2
-  echo "       run 'npm install @deepseek-ai/dsh@0.1.5-rc.1' on a Windows host first." >&2
+  echo "       run 'npm install @deepseek-ai/dsh@0.1.7-rc.1' on a Windows host first." >&2
   exit 1
 fi
-rm -rf "$resources/plugin-toolchains/dsh/0.1.5-rc.1"
-cp -R "$dsh_source" "$resources/plugin-toolchains/dsh/0.1.5-rc.1"
+rm -rf "$resources/plugin-toolchains/dsh/0.1.7-rc.1"
+cp -R "$dsh_source" "$resources/plugin-toolchains/dsh/0.1.7-rc.1"
 # Prune non-win32-x64 prebuilds + debug/type/map files (runtime never reads them).
 find "$resources/plugin-toolchains" \
   \( -name "*.pdb" -o -name "*.d.ts" -o -name "*.tsbuildinfo" -o -name "*.map" \) \

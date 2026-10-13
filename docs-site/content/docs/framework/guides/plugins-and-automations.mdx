@@ -23,7 +23,7 @@ Codex 云端交付把插件字节与准入引用冻结为 Agent 版本关联的�
 
 通用 Python wheel 包含 Web 0.3.12 与编译后的 Studio 页面；安装器会按 `pyproject.toml` 解析声明的 Python 依赖，但 wheel 本身不包含 Node/Codex/DSH 二进制、社区插件或凭证。额外能力按需安装 extra；完全断网安装还需准备依赖 wheelhouse 及原生工具链。既有云端 Agent 只有显式重新构建、更新部署后才变化。
 
-DSH 插件管理的受管工具链固定为 Node.js 22、DSH `0.1.5-rc.1` 和 `pnpm@11.7.0`。Studio 桌面打包会使用随工具链提供的 Node/npm 安装该版本；开发者如覆盖 `AGENTENGINE_PNPM_BIN`，必须提供经过验证的同一版本。
+DSH 插件管理的受管工具链固定为 Node.js 22、DSH `0.1.7-rc.1` 和 `pnpm@11.7.0`。Studio 桌面打包会使用随工具链提供的 Node/npm 安装该版本；开发者如覆盖 `AGENTENGINE_PNPM_BIN`，必须提供经过验证的同一版本。
 
 ## 选择接入方式
 

@@ -237,14 +237,14 @@ jobs:
       - name: Prepare DSH toolchain (win32-x64 prebuilds)
         shell: bash
         run: |
-          dsh_root="$HOME/.agentengine/plugin-toolchains/dsh/0.1.5-rc.1"
+          dsh_root="$HOME/.agentengine/plugin-toolchains/dsh/0.1.7-rc.1"
           # Install the pinned DSH CLI on Windows so optionalDependencies
           # (sharp, node-addon-require-builtin) resolve their win32-x64 variants.
           # If npm registry lacks a win32 build the install fails here — that is
           # the intended early signal rather than a broken bundle at runtime.
           mkdir -p "$dsh_root"
           cd "$dsh_root"
-          echo '{"name":"agentengine-managed-dsh-toolchain","private":true,"dependencies":{"@deepseek-ai/dsh":"0.1.5-rc.1"}}' > package.json
+          echo '{"name":"agentengine-managed-dsh-toolchain","private":true,"dependencies":{"@deepseek-ai/dsh":"0.1.7-rc.1"}}' > package.json
           npm install --no-audit --no-fund
           test -d node_modules/@deepseek-ai/dsh || { echo "ERROR: @deepseek-ai/dsh not installed"; exit 1; }
 

@@ -42,4 +42,4 @@ def test_public_npm_toolchain_validates_generated_tgz_and_official_plugin(
     official = developer.validate(f"@deepseek-ai/dsh-subagent-codex@{DSH_VERSION}")
     assert official.package_name == "@deepseek-ai/dsh-subagent-codex"
     assert official.package_version == DSH_VERSION
-    assert DSH_PACKAGE_SPEC == "@deepseek-ai/dsh@0.1.5-rc.1"
+    assert DSH_PACKAGE_SPEC == "@deepseek-ai/dsh@0.1.7-rc.1"

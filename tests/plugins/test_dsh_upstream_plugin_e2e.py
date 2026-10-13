@@ -18,8 +18,12 @@ import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from ksadk.plugins.bridges.dsh import DshProfilePluginBridge, dsh_subprocess_environment
-from ksadk.plugins.dsh_toolchain import DshToolchainManager
+from ksadk.plugins.bridges.dsh import (
+    DshPluginMutationError,
+    DshProfilePluginBridge,
+    dsh_subprocess_environment,
+)
+from ksadk.plugins.dsh_toolchain import DSH_VERSION, DshToolchainManager
 from ksadk.plugins.providers.dsh_capabilities import DshProfileCapabilityHost
 
 # A real upstream third-party plugin from the public npm registry: a minimal
@@ -66,6 +70,18 @@ async def test_real_upstream_cordis_plugin_runs_unmodified_through_profile_mcp(
     host: DshProfileCapabilityHost | None = None
     try:
         bridge.start()
+        # This legacy fixture declares rc.6 peers. Preserve the official
+        # runtime's rejection, then grant only this known exact tuple in the
+        # disposable test profile; production installs keep the default guard.
+        with pytest.raises(DshPluginMutationError, match="incompatible with dsh"):
+            bridge.install_plugin(PINNED_SOURCE, accept_host_permissions=True)
+        subprocess.run(
+            [*command, "plugin", "--profile", "web", "allow-version", PINNED_SOURCE,
+             "--dsh-version", DSH_VERSION, "--accept-risk"],
+            cwd=workspace,
+            env=dsh_subprocess_environment(dsh_home=dsh_home),
+            check=True, capture_output=True, text=True, timeout=30,
+        )
         installed = bridge.install_plugin(
             PINNED_SOURCE,
             accept_host_permissions=True,

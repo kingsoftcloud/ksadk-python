@@ -33,10 +33,10 @@ from ksadk.plugins.bridges.dsh import (
 )
 
 DSH_PACKAGE = "@deepseek-ai/dsh"
-DSH_VERSION = "0.1.5-rc.1"
+DSH_VERSION = "0.1.7-rc.1"
 DSH_PACKAGE_SPEC = f"{DSH_PACKAGE}@{DSH_VERSION}"
-DSH_GITHUB_TAG = "dsh-v0.1.5-rc.1"
-DSH_GITHUB_COMMIT = "183f08e9c6dde7e36cd2318eaee70b0da08fb35e"
+DSH_GITHUB_TAG = "dsh-v0.1.7-rc.1"
+DSH_GITHUB_COMMIT = "46a7f68b0922371ce7144b668b90e377d8e799f4"
 CORDIS_VERSION_RANGE = "^4.0.2"
 PNPM_VERSION = "11.7.0"
 
@@ -48,7 +48,7 @@ DSH_CORE_PACKAGES = (
     "@deepseek-ai/dsh-web-app",
     "@deepseek-ai/dsh-cordis-client-runner",
     "@deepseek-ai/dsh-client-ui-cordis",
-    "@deepseek-ai/dsh-app-boot",
+    "@deepseek-ai/dsh-app-boot", "@deepseek-ai/dsh-hmr",
     "@deepseek-ai/dsh-headless",
     "@deepseek-ai/dsh-sdk-app",
     "@deepseek-ai/dsh-mcp-client",
@@ -114,7 +114,7 @@ class _ToolchainModel(BaseModel):
 
 class DshToolchainStatus(_ToolchainModel):
     package: Literal["@deepseek-ai/dsh"] = DSH_PACKAGE
-    expected_version: Literal["0.1.5-rc.1"] = DSH_VERSION
+    expected_version: Literal["0.1.7-rc.1"] = DSH_VERSION
     installed: bool
     usable: bool
     root: str

@@ -114,6 +114,26 @@ describe("Conversation v1 browser contract", () => {
     ]);
   });
 
+  it("keeps repeated tool call IDs separate across runs and scopes", () => {
+    let state = createConversationItemState();
+    for (const [runId, scopeId, itemId] of [
+      ["run-1", "scope-1", "call-a"],
+      ["run-1", "scope-2", "call-b"],
+      ["run-2", "scope-1", "call-c"],
+    ]) {
+      state = reduceConversationItem(state, decodeConversationItem(item({
+        itemId, runId, sourceEventIds: [`event-${itemId}`],
+        nativeRef: { scopeId }, kind: "tool_call",
+        payloadSchemaRef: "conversation.item.tool-call/v1",
+        payload: { callId: "call-1", tool: "search", args: {} },
+      }))!);
+    }
+    const { timeline } = projectConversationItems(state);
+    expect(timeline).toHaveLength(3);
+    expect(new Set(timeline.map(entry => entry.key)).size).toBe(3);
+    expect(timeline.map(entry => entry.item.itemId)).toEqual(["call-a", "call-b", "call-c"]);
+  });
+
   it("coalesces a separate tool result into its original call card by callId", () => {
     const call = decodeConversationItem(item({
       itemId: "tool-call-item",
@@ -138,7 +158,7 @@ describe("Conversation v1 browser contract", () => {
 
     expect(projectConversationItems(state).timeline).toHaveLength(1);
     expect(entry).toMatchObject({
-      key: "tool:call-1",
+      key: `tool:${JSON.stringify(["run-1", "", "call-1"])}`,
       sourceItemIds: ["tool-call-item", "tool-result-item"],
       item: expect.objectContaining({
         itemId: "tool-call-item",

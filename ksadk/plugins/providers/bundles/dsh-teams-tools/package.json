@@ -19,7 +19,7 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@kingsoftcloud/dsh-teams-router": "0.1.0",
-    "@deepseek-ai/dsh-tools": "0.1.5-rc.1"
+    "@deepseek-ai/dsh-tools": "0.1.7-rc.1"
   },
   "dsh": {
     "bundle": {
