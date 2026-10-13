@@ -1,0 +1,65 @@
+name: Encrypt Studio signing configuration for migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      destination_key:
+        description: "Public encryption key for agentkit-studio/studio-signing"
+        required: true
+        type: string
+      destination_key_id:
+        description: "GitHub Environment encryption key ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  encrypt:
+    runs-on: ubuntu-latest
+    environment: studio-signing
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install sealed-box implementation
+        run: npm install --ignore-scripts --prefix "$RUNNER_TEMP/seal" libsodium-wrappers@0.7.15
+      - name: Encrypt existing secrets for the destination environment
+        env:
+          DESTINATION_KEY: ${{ inputs.destination_key }}
+          DESTINATION_KEY_ID: ${{ inputs.destination_key_id }}
+          STUDIO_APPLE_P12_BASE64: ${{ secrets.STUDIO_APPLE_P12_BASE64 }}
+          STUDIO_APPLE_P12_PASSWORD: ${{ secrets.STUDIO_APPLE_P12_PASSWORD }}
+          STUDIO_APPLE_ID: ${{ secrets.STUDIO_APPLE_ID }}
+          STUDIO_APPLE_APP_PASSWORD: ${{ secrets.STUDIO_APPLE_APP_PASSWORD }}
+          STUDIO_APPLE_TEAM_ID: ${{ secrets.STUDIO_APPLE_TEAM_ID }}
+          STUDIO_DOWNLOAD_PROD_KS3_BUCKET: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_BUCKET }}
+          STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY }}
+          STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY }}
+        run: |
+          node <<'JS'
+          const fs = require('node:fs');
+          const sodium = require(process.env.RUNNER_TEMP + '/seal/node_modules/libsodium-wrappers');
+          (async () => {
+            await sodium.ready;
+            const key = sodium.from_base64(process.env.DESTINATION_KEY, sodium.base64_variants.ORIGINAL);
+            if (key.length !== sodium.crypto_box_PUBLICKEYBYTES || !/^\d+$/.test(process.env.DESTINATION_KEY_ID)) throw Error('Invalid destination public key');
+            const names = ['STUDIO_APPLE_P12_BASE64', 'STUDIO_APPLE_P12_PASSWORD', 'STUDIO_APPLE_ID', 'STUDIO_APPLE_APP_PASSWORD', 'STUDIO_APPLE_TEAM_ID', 'STUDIO_DOWNLOAD_PROD_KS3_BUCKET', 'STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY', 'STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY'];
+            const directory = process.env.RUNNER_TEMP + '/encrypted-studio-secrets';
+            fs.mkdirSync(directory, { mode: 0o700 });
+            for (const name of names) {
+              if (!process.env[name]) throw Error('Missing configured secret: ' + name);
+              const encrypted_value = sodium.to_base64(sodium.crypto_box_seal(sodium.from_string(process.env[name]), key), sodium.base64_variants.ORIGINAL);
+              fs.writeFileSync(directory + '/' + name + '.json', JSON.stringify({ encrypted_value, key_id: process.env.DESTINATION_KEY_ID }), { mode: 0o600 });
+            }
+            console.log('Encrypted ' + names.length + ' configured secrets. No plaintext output.');
+          })().catch(error => { console.error(error.message); process.exitCode = 1; });
+          JS
+      - name: Retain encrypted configuration for destination API
+        uses: actions/upload-artifact@v4
+        with:
+          name: encrypted-studio-secrets
+          path: ${{ runner.temp }}/encrypted-studio-secrets/*.json
+          retention-days: 1
