@@ -170,7 +170,7 @@ jobs:
           BUILD_VERSION_VALUE: ${{ inputs.build_version }}
         run: |
           set -euo pipefail
-          [[ "$BASELINE_DMG_URL" =~ ^https://[^/[:space:]]+$ ]] || {
+          node -e 'const u = new URL(process.env.BASELINE_DMG_URL); if (u.protocol !== "https:" || u.username || u.password || !u.pathname.endsWith(".dmg")) process.exit(1)' || {
             echo 'qualify_installed_update requires an HTTPS installed_dmg_url' >&2
             exit 1
           }
@@ -411,12 +411,15 @@ jobs:
       - name: Publish via Studio KS3 uploader and verify public feed
         working-directory: studio
         env:
+          STUDIO_REF_VALUE: ${{ inputs.studio_ref }}
           STUDIO_DOWNLOAD_PROD_KS3_BUCKET: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_BUCKET }}
           STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY }}
           STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY }}
           EXPECTED_PREVIOUS: ${{ inputs.expected_previous_version }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$STUDIO_REF_VALUE"
+          pnpm install --frozen-lockfile
           args=(publish --candidate "$GITHUB_WORKSPACE/candidate" --origin '${{ inputs.update_origin }}'
             --channel '${{ inputs.channel }}')
           if [[ -n "$EXPECTED_PREVIOUS" ]]; then args+=(--expected-previous-version "$EXPECTED_PREVIOUS"); fi
@@ -434,6 +437,7 @@ jobs:
     if: ${{ always() && inputs.qualify_installed_update && needs.macos-arm64.result == 'success' && (needs.publish-mac-arm64.result == 'success' || needs.publish-mac-arm64.result == 'skipped') }}
     needs: [macos-arm64, publish-mac-arm64]
     runs-on: macos-14
+    environment: studio-signing
     timeout-minutes: 30
     steps:
       - name: Checkout AgentKit Studio release tools
@@ -446,18 +450,25 @@ jobs:
           token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
       - name: Download signed baseline DMG
         working-directory: studio
-        run: curl --fail --location --proto '=https' --output "$RUNNER_TEMP/baseline.dmg" '${{ inputs.installed_dmg_url }}'
+        env:
+          BASELINE_DMG_URL: ${{ inputs.installed_dmg_url }}
+        run: curl --fail --location --proto '=https' --proto-redir '=https' --output "$RUNNER_TEMP/baseline.dmg" "$BASELINE_DMG_URL"
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
       - name: Verify real installed update and retained data
         working-directory: studio
-        run: node scripts/verify-desktop-installed-update.mjs \
-          --dmg "$RUNNER_TEMP/baseline.dmg" \
-          --origin '${{ inputs.update_origin }}' \
-          --channel '${{ inputs.channel }}' \
-          --version '${{ inputs.build_version }}'
+        env:
+          STUDIO_REF_VALUE: ${{ inputs.studio_ref }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$STUDIO_REF_VALUE"
+          npm install --ignore-scripts
+          node scripts/verify-desktop-installed-update.mjs \
+            --dmg "$RUNNER_TEMP/baseline.dmg" \
+            --origin '${{ inputs.update_origin }}' \
+            --channel '${{ inputs.channel }}' \
+            --version '${{ inputs.build_version }}'
       - name: Upload installed-update evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
