@@ -3,6 +3,14 @@ name: Release AgentKit Studio Windows
 on:
   workflow_dispatch:
     inputs:
+      candidate_run_id:
+        description: Completed run whose signed installer and installation checks passed
+        type: string
+        default: ''
+      release_tools_ref:
+        description: Immutable commit for qualification tools; defaults to studio_ref
+        type: string
+        default: ''
       diagnostic_only:
         description: Run unsigned packaging smoke without publishing or installer qualification
         type: boolean
@@ -31,6 +39,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: studio-windows-signing
@@ -66,6 +75,14 @@ jobs:
           if ($LASTEXITCODE -or (git rev-parse HEAD) -ne $env:STUDIO_SHA) { throw 'Studio checkout mismatch' }
       - uses: actions/checkout@v4
         with:
+          repository: kingsoftcloud/agentkit-studio
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+          ref: ${{ inputs.release_tools_ref || inputs.studio_ref }}
+          path: .qualification-tools
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: ${{ inputs.candidate_run_id == '' }}
+        with:
           repository: deepseek-ai/deepseek-harness
           ref: dsh-v0.2.0-rc.2
           path: dsh-source
@@ -74,10 +91,35 @@ jobs:
         with:
           node-version: '24'
       - uses: pnpm/action-setup@v4
+        if: ${{ inputs.candidate_run_id == '' }}
         with:
           version: 11.7.0
           package_json_file: dsh-source/package.json
+      - uses: pnpm/action-setup@v4
+        if: ${{ inputs.candidate_run_id != '' }}
+        with:
+          version: 10.33.2
+          package_json_file: package.json
+      - name: Prepare verified signed candidate reuse
+        if: ${{ inputs.candidate_run_id != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.studio_ref }}
+          BUILD_VERSION: ${{ inputs.build_version }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
+        run: |
+          if ('${{ inputs.diagnostic_only }}' -eq 'true') { throw 'Signed candidate reuse cannot be diagnostic-only' }
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE) { throw 'Qualification dependencies failed' }
+          node .qualification-tools/scripts/prepare-windows-candidate.mjs --repository '${{ github.repository }}' --run $env:CANDIDATE_RUN --source $env:SOURCE_SHA --version $env:BUILD_VERSION --output .artifacts/windows-candidate
+          if ($LASTEXITCODE) { throw 'Signed candidate identity or digest failed' }
+          Expand-Archive -LiteralPath .artifacts/windows-candidate/candidate.zip -DestinationPath .artifacts/windows-candidate/unpacked
+          $candidate = @(Get-ChildItem .artifacts/windows-candidate/unpacked -Directory -Recurse | Where-Object { $_.Name -eq 'windows-release' })
+          if ($candidate.Count -ne 1) { throw 'Expected one signed release directory' }
+          "STUDIO_REUSE_ARTIFACTS=$($candidate[0].FullName)" | Out-File $env:GITHUB_ENV -Append
       - name: Prepare short isolated build root
+        if: ${{ inputs.candidate_run_id == '' }}
         shell: pwsh
         run: |
           if ((git -C dsh-source rev-parse HEAD) -ne '639ed015397290b3745d163aafe02ffee4aa3f84') { throw 'DSH baseline mismatch' }
@@ -93,7 +135,7 @@ jobs:
           "DSH_DESKTOP_PLUGIN_INPUTS=$inputRoot" | Out-File $env:GITHUB_ENV -Append
           "STUDIO_PACKAGE_VERSION=$version" | Out-File $env:GITHUB_ENV -Append
       - name: Prepare fresh Certum authentication URI
-        if: ${{ ! inputs.diagnostic_only }}
+        if: ${{ ! inputs.diagnostic_only && inputs.candidate_run_id == '' }}
         id: certum
         shell: pwsh
         env:
@@ -112,7 +154,7 @@ jobs:
           "uri=$uri" | Out-File $env:GITHUB_OUTPUT -Append
           "account=$account" | Out-File $env:GITHUB_OUTPUT -Append
       - name: Authenticate Certum cloud certificate
-        if: ${{ ! inputs.diagnostic_only }}
+        if: ${{ ! inputs.diagnostic_only && inputs.candidate_run_id == '' }}
         uses: dismine/windows-app-signing-setup-action@89ae3b032d4bc7a5b98d1a42a34e61ecb6faad64
         with:
           certum-username: ${{ steps.certum.outputs.account }}
@@ -120,7 +162,7 @@ jobs:
           certum-key-id: ${{ secrets.CERTUM_THUMBPRINT }}
           capture-diagnostics: 'false'
       - name: Configure verified certificate-store signing
-        if: ${{ ! inputs.diagnostic_only }}
+        if: ${{ ! inputs.diagnostic_only && inputs.candidate_run_id == '' }}
         shell: pwsh
         env:
           CERTUM_THUMBPRINT: ${{ secrets.CERTUM_THUMBPRINT }}
@@ -128,7 +170,7 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
         run: ./scripts/prepare-windows-signing.ps1 -DshRoot "$PWD/dsh-source" -UpdateOrigin $env:UPDATE_ORIGIN -Channel $env:CHANNEL
       - name: Configure isolated unsigned diagnostic package
-        if: ${{ inputs.diagnostic_only }}
+        if: ${{ inputs.diagnostic_only && inputs.candidate_run_id == '' }}
         shell: pwsh
         env:
           UPDATE_ORIGIN: ${{ inputs.update_origin }}
@@ -146,6 +188,7 @@ jobs:
           $lines = foreach ($entry in $settings.GetEnumerator()) { "$($entry.Key)='$($entry.Value)'" }
           [IO.File]::WriteAllText("$PWD/dsh-source/apps/desktop/.env.windows", ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
       - name: Package the official DSH Windows target
+        if: ${{ inputs.candidate_run_id == '' }}
         shell: pwsh
         env:
           BUILD_VERSION: ${{ inputs.build_version }}
@@ -165,19 +208,23 @@ jobs:
           CERTUM_THUMBPRINT: ${{ secrets.CERTUM_THUMBPRINT }}
           BUILD_VERSION: ${{ inputs.build_version }}
         run: |
-          $candidates = @(Get-Item "$env:RUNNER_TEMP/studio-build/desktop-checkouts/*/source/apps/desktop/.desktop-build/targets/win-x64/artifacts")
-          if ($candidates.Count -ne 1) { throw 'Expected exactly one signed output directory' }
-          $artifacts = $candidates[0].FullName
-          ./scripts/verify-windows-install.ps1 -Artifacts $artifacts -Version $env:BUILD_VERSION -Evidence .artifacts/windows-proof
+          if ($env:STUDIO_REUSE_ARTIFACTS) { $artifacts = $env:STUDIO_REUSE_ARTIFACTS }
+          else {
+            $candidates = @(Get-Item "$env:RUNNER_TEMP/studio-build/desktop-checkouts/*/source/apps/desktop/.desktop-build/targets/win-x64/artifacts")
+            if ($candidates.Count -ne 1) { throw 'Expected exactly one signed output directory' }
+            $artifacts = $candidates[0].FullName
+          }
+          ./.qualification-tools/scripts/verify-windows-install.ps1 -Artifacts $artifacts -Version $env:BUILD_VERSION -Evidence .artifacts/windows-proof
           New-Item -ItemType Directory -Force .artifacts/windows-release | Out-Null
           Copy-Item "$artifacts/*" .artifacts/windows-release -Recurse
+          if (Test-Path .artifacts/windows-candidate/provenance.json) { Copy-Item .artifacts/windows-candidate/provenance.json .artifacts/windows-proof/candidate-provenance.json }
       - name: Verify the actually installed Windows App UI
         if: ${{ ! inputs.diagnostic_only }}
         shell: pwsh
         env:
           BUILD_VERSION: ${{ inputs.build_version }}
         run: |
-          node scripts/verify-windows-app-ui.mjs
+          node .qualification-tools/scripts/verify-windows-app-ui.mjs
           if ($LASTEXITCODE) { throw 'Installed Windows App UI acceptance failed' }
       - name: Collect credential-free packaging diagnostics
         if: always() && inputs.diagnostic_only
