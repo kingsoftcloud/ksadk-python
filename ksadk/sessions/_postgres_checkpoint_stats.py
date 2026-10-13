@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
+from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
 from ksadk.sessions._postgres_tables import KSADK_PG_EVENTS_TABLE
 from ksadk.sessions.base import (
     SessionEvent,
@@ -28,18 +30,27 @@ def _raw_session_event(session_id: str, raw_event: object) -> SessionEvent:
     )
 
 
-async def get_checkpoint_stats(
-    service: Any, keys: list[tuple[str, str, str]]
-) -> dict[str, object]:
+def _json_rows(value: object) -> tuple[object, ...]:
+    """Decode asyncpg JSONB aggregates whether codecs return text or lists."""
+
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("canonical checkpoint carrier aggregate is not valid JSON") from error
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("canonical checkpoint carrier aggregate is not an array")
+    return tuple(value)
+
+
+async def get_checkpoint_stats(service: Any, keys: list[tuple[str, str, str]]) -> dict[str, object]:
     if len(keys) > 50:
         raise ValueError("checkpoint stats batch cannot exceed 50 keys")
     unique_keys = list(dict.fromkeys(keys))
-    audits = {
-        key: {"resume_count": 0, "last_resumed_at": None} for key in unique_keys
-    }
-    run_keys = list(
-        dict.fromkeys((session_id, run_id) for session_id, run_id, _ in unique_keys)
-    )
+    audits = {key: {"resume_count": 0, "last_resumed_at": None} for key in unique_keys}
+    run_keys = list(dict.fromkeys((session_id, run_id) for session_id, run_id, _ in unique_keys))
     latest = {key: 0 for key in run_keys}
     if not unique_keys:
         return {"audits": audits, "latest_seq_ids": latest}
@@ -55,12 +66,12 @@ async def get_checkpoint_stats(
             )
             SELECT requested.session_id,requested.run_id,requested.checkpoint_id,
                    MAX(event_row.timestamp) FILTER (
-                     WHERE event_row.event_type='run_resume'
+                     WHERE event_row.event_type IN ('run_resume','runtime_resume')
                        AND event_row.timestamp > '-Infinity'::double precision
                        AND event_row.timestamp < 'Infinity'::double precision
                    ) AS legacy_last_resumed_at,
                    COUNT(event_row.id) FILTER (
-                     WHERE event_row.event_type='run_resume'
+                     WHERE event_row.event_type IN ('run_resume','runtime_resume')
                    ) AS legacy_resume_count,
                    ARRAY_AGG(event_row.timestamp ORDER BY event_row.id) FILTER (
                      WHERE event_row.event_type='continuation.resumed'
@@ -91,15 +102,17 @@ async def get_checkpoint_stats(
                      FROM {KSADK_PG_EVENTS_TABLE} resume_row
                      WHERE resume_row.namespace=$1
                        AND resume_row.session_id=requested.session_id
-                       AND resume_row.event_type='continuation.resumed'
-                   ) AS canonical_resume_rows
+                       AND resume_row.event_type IN (
+                         'run_resume','runtime_resume','continuation.resumed'
+                       )
+                   ) AS resume_rows
             FROM requested
             LEFT JOIN {KSADK_PG_EVENTS_TABLE} event_row
               ON event_row.namespace=$1
              AND event_row.session_id=requested.session_id
              AND (
                (
-                 event_row.event_type='run_resume'
+                 event_row.event_type IN ('run_resume','runtime_resume')
                  AND event_row.metadata_json->>'run_id'=requested.run_id
                  AND event_row.metadata_json->>'checkpoint_id'=requested.checkpoint_id
                )
@@ -183,15 +196,25 @@ async def get_checkpoint_stats(
         if owns_connection:
             await service._pool.release(connection)
     for row in audit_rows:
+        # Live SQL returns complete identities for both carrier families.
+        # Validate known canonical rows even when they target another checkpoint.
+        if row.get("resume_rows") is not None:
+            audit = CheckpointResumeAudit()
+            for raw_event in _json_rows(row["resume_rows"]):
+                event = _raw_session_event(str(row["session_id"]), raw_event)
+                identity = checkpoint_resume_identity(event)
+                if identity is not None and identity[:2] == (row["run_id"], row["checkpoint_id"]):
+                    audit.record(event, identity)
+            audits[(row["session_id"], row["run_id"], row["checkpoint_id"])] = audit
+            continue
         # Validate every known canonical resume carrier in the session before
         # applying the identity filter above.  The SQL join intentionally
         # narrows counts to the requested checkpoint, but that must not hide a
         # corrupt known carrier from the same fail-loud policy used by REST,
         # in-memory, and SQLite paths.
-        canonical_rows = row.get("canonical_resume_rows")
-        resume_count = int(
-            row.get("legacy_resume_count", row.get("resume_count", 0)) or 0
-        )
+        canonical_value = row.get("canonical_resume_rows")
+        canonical_rows = _json_rows(canonical_value) if canonical_value is not None else None
+        resume_count = int(row.get("legacy_resume_count", row.get("resume_count", 0)) or 0)
         for raw_event in canonical_rows or ():
             event = _raw_session_event(str(row["session_id"]), raw_event)
             identity = checkpoint_resume_identity(event)
@@ -219,9 +242,7 @@ async def get_checkpoint_stats(
         fallback_pairs = (
             zip(
                 row.get("canonical_carrier_timestamps") or (),
-                row.get("canonical_timestamps")
-                or row.get("canonical_payloads")
-                or (),
+                row.get("canonical_timestamps") or row.get("canonical_payloads") or (),
             )
             if canonical_rows is None
             else ()
@@ -287,10 +308,8 @@ async def get_checkpoint_stats(
             "last_resumed_at": last_resumed_at,
         }
     for row in latest_rows:
-        for raw_event in row.get("canonical_creation_rows") or ():
+        for raw_event in _json_rows(row.get("canonical_creation_rows")):
             event = _raw_session_event(str(row["session_id"]), raw_event)
             checkpoint_creation_identity(event)
-        latest[(row["session_id"], row["run_id"])] = int(
-            row["latest_seq_id"] or 0
-        )
+        latest[(row["session_id"], row["run_id"])] = int(row["latest_seq_id"] or 0)
     return {"audits": audits, "latest_seq_ids": latest}
