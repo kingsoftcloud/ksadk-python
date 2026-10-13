@@ -10,6 +10,7 @@ from ksadk.events.canonical import (
     UnknownCanonicalEvent,
 )
 from ksadk.sessions import SessionEvent
+from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
 from ksadk.sessions.base import validate_canonical_resume_payload
 
 
@@ -32,7 +33,7 @@ def _record_resume_audit(
     audit_by_session: dict[str, dict[tuple[str, str], dict[str, Any]]],
     event: SessionEvent,
 ) -> None:
-    if event.event_type == "run_resume":
+    if event.event_type in {"run_resume", "runtime_resume"}:
         metadata = event.metadata or {}
         run_id = str(metadata.get("run_id") or "").strip()
         checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
@@ -62,10 +63,9 @@ def _record_resume_audit(
     session_audit = audit_by_session.setdefault(event.session_id, {})
     item = session_audit.setdefault(
         (run_id, checkpoint_id),
-        {"resume_count": 0, "last_resumed_at": None},
+        CheckpointResumeAudit(),
     )
-    item["resume_count"] = int(item["resume_count"]) + 1
-    item["last_resumed_at"] = max(item["last_resumed_at"] or timestamp, timestamp)
+    item.record(event, (run_id, checkpoint_id, timestamp))
 
 
 def _resume_audit_by_checkpoint(
