@@ -157,6 +157,9 @@ def _pending_approval_events(events: Sequence[SessionEvent]) -> list[SessionEven
                 request_payload = (item.content or {}).get("runtime_event")
                 if isinstance(request_payload, Mapping):
                     request_ids.add(str(request_payload.get("interaction_id") or ""))
+                    request = request_payload.get("request")
+                    if isinstance(request, Mapping):
+                        request_ids.add(str(request.get("call_id") or ""))
                 if response_id not in request_ids:
                     remaining.append(item)
             pending = remaining

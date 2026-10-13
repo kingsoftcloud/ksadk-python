@@ -101,10 +101,10 @@ def _approval_interrupt_info_from_event(event: SessionEvent) -> dict[str, Any]:
         if isinstance(request, Mapping):
             raw_detail = request.get("detail")
             detail = dict(raw_detail) if isinstance(raw_detail, Mapping) else {}
-            approval_id = request.get("call_id") or canonical_payload.get("interaction_id")
+            approval_id = canonical_payload.get("interaction_id") or request.get("call_id")
             if approval_id:
-                detail.setdefault("approval_request_id", approval_id)
-                detail.setdefault("id", approval_id)
+                detail["approval_request_id"] = approval_id
+                detail["id"] = approval_id
             if request.get("call_id"):
                 detail.setdefault("run_id", request.get("call_id"))
             return detail
