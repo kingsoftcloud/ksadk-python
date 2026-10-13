@@ -285,6 +285,7 @@ def _project_interleaved_blocks(
             continue
         if event_type == "assistant_stream_delta":
             append_text(text, seq_id)
+            latest_snapshot_text += text
             saw_stream_text = saw_stream_text or bool(text)
             continue
         if event_type == "assistant_stream_snapshot":

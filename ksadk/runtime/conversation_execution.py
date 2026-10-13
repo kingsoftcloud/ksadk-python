@@ -633,8 +633,10 @@ async def iter_runtime_conversation_semantic_events(
             if event.interaction_kind == "approval" and event.request.request_type == "approval":
                 detail = event.request.detail
                 approval = dict(detail) if isinstance(detail, Mapping) else {}
-                approval.setdefault("approval_request_id", event.interaction_id)
-                approval.setdefault("id", event.interaction_id)
+                # Live controls must use the same public identity as durable
+                # resume; the detail may still contain a provider-native ID.
+                approval["approval_request_id"] = event.interaction_id
+                approval["id"] = event.interaction_id
                 approval.setdefault("call_id", event.request.call_id)
                 approval.setdefault("kind", event.request.kind)
         elif isinstance(event, RunInterrupted):
