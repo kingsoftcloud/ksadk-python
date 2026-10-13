@@ -98,6 +98,7 @@ concurrency:
 jobs:
   source-gate:
     runs-on: ubuntu-latest
+    environment: studio-signing
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
