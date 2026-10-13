@@ -136,16 +136,21 @@ jobs:
         if: ${{ inputs.publish_feed }}
         shell: bash
         env:
-          PROD_BUCKET: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_BUCKET }}
-          PROD_SECRET_ID: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_SECRET_ID }}
-          PROD_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_SECRET_KEY }}
+          PROD_BUCKET: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_BUCKET }}
+          PROD_ACCESS_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY }}
+          PROD_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY }}
           BASELINE_DMG_URL: ${{ inputs.installed_dmg_url }}
         run: |
           set -euo pipefail
-          test -n "$PROD_BUCKET" -a -n "$PROD_SECRET_ID" -a -n "$PROD_SECRET_KEY" || {
-            echo 'studio-signing requires STUDIO_DOWNLOAD_PROD_COS_BUCKET, STUDIO_DOWNLOAD_PROD_COS_SECRET_ID, and STUDIO_DOWNLOAD_PROD_COS_SECRET_KEY for feed publication' >&2
+          test -n "$PROD_ACCESS_KEY" -a -n "$PROD_SECRET_KEY" || {
+            echo 'studio-signing requires STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY and STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY for KS3 feed publication' >&2
             exit 1
           }
+          if [[ -n "$PROD_BUCKET" ]]; then
+            echo 'KS3 bucket provided explicitly'
+          else
+            echo 'KS3 bucket will be derived from the HTTPS update origin'
+          fi
 
       - name: Verify installed-update qualification URL
         if: ${{ inputs.qualify_installed_update }}
@@ -393,18 +398,17 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
-      - name: Publish via official DSH COS uploader and verify public feed
+      - name: Publish via Studio KS3 uploader and verify public feed
         working-directory: studio
         env:
-          DOWNLOAD_PROD_COS_BUCKET: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_BUCKET }}
-          DOWNLOAD_PROD_COS_SECRET_ID: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_SECRET_ID }}
-          DOWNLOAD_PROD_COS_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_SECRET_KEY }}
+          STUDIO_DOWNLOAD_PROD_KS3_BUCKET: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_BUCKET }}
+          STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY }}
+          STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY }}
           EXPECTED_PREVIOUS: ${{ inputs.expected_previous_version }}
         run: |
           set -euo pipefail
           args=(publish --candidate "$GITHUB_WORKSPACE/candidate" --origin '${{ inputs.update_origin }}'
-            --channel '${{ inputs.channel }}' --dsh-root "$GITHUB_WORKSPACE/dsh-source"
-            --dsh-commit '${{ inputs.dsh_commit }}' --dsh-version '0.2.0-rc.2')
+            --channel '${{ inputs.channel }}')
           if [[ -n "$EXPECTED_PREVIOUS" ]]; then args+=(--expected-previous-version "$EXPECTED_PREVIOUS"); fi
           node scripts/desktop-release.mjs "${args[@]}"
       - name: Upload publication evidence
