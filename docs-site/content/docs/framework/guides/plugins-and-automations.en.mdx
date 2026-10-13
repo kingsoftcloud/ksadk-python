@@ -6,7 +6,7 @@ status: experimental
 KsADK 0.8.5 provides local-first plugin lifecycle operations, ecosystem host bridges, platform resource plugins, Scheduler Lite, and a shared conversation surface. Released Agents and precisely identified historical Bundles remain on their original paths and do not require a Runtime rebuild or upgrade.
 
 Studio and Hosted UI pin the versioned Conversation v1 headless module from
-`@kingsoftcloud/ksadk-web@0.3.11`. Release artifacts are rebuilt from the public
+`@kingsoftcloud/ksadk-web@0.3.12`. Release artifacts are rebuilt from the public
 npm package and pass source, browser, and artifact audits. Each cloud environment
 still needs its control plane, resource authorization, and Runtime image verified
 against the boundaries below.
@@ -23,7 +23,7 @@ Codex cloud delivery freezes plugin bytes and admitted references into immutable
 
 Knowledge bases, long-term memory, and Skill Center enter the same Build/Activation path through official platform resource plugins. Studio stores resource connection identifiers without writing AK/SK values or runtime tokens into the Agent spec. The Build freezes the connection reference, resource type, and plugin digest; Runtime resolves the connection using account, region, and platform-injected credentials. Knowledge is exposed as read-only retrieval tools, memory recall and writes follow the Agent policy, and Skill Center supplies skill discovery and loading. A visible bound state means that configuration entered the Agent Revision; it does not grant server-side authorization or prove current network reachability.
 
-The universal Python wheel includes Web 0.3.11 and built Studio pages. The installer resolves the Python dependencies declared by `pyproject.toml`, while the wheel itself does not contain Node/Codex/DSH binaries, community plugins, or credentials. Extras provide additional capabilities; a fully disconnected installation also requires a prepared dependency wheelhouse and native toolchains. Existing cloud Agents are unchanged until explicitly rebuilt and redeployed.
+The universal Python wheel includes Web 0.3.12 and built Studio pages. The installer resolves the Python dependencies declared by `pyproject.toml`, while the wheel itself does not contain Node/Codex/DSH binaries, community plugins, or credentials. Extras provide additional capabilities; a fully disconnected installation also requires a prepared dependency wheelhouse and native toolchains. Existing cloud Agents are unchanged until explicitly rebuilt and redeployed.
 
 The managed DSH toolchain pins Node.js 22, DSH `0.1.5-rc.1`, and `pnpm@11.7.0`. Studio packaging installs that version with the bundled Node/npm runtime. If developers override `AGENTENGINE_PNPM_BIN`, it must point to the same verified version.
 

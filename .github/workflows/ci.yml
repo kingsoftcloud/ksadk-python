@@ -69,7 +69,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.11"
+      KSADK_WEB_VERSION: "0.3.12"
     steps:
       - uses: actions/checkout@v7
 
@@ -142,9 +142,7 @@ jobs:
   test-studio-react:
     name: React Studio responsive browser gate
     runs-on: ubuntu-latest
-    # Browser navigation requires the provisioned Studio/DSH runtime. Keep
-    # the hosted runner gate opt-in while that environment is unavailable.
-    if: ${{ vars.KSADK_STUDIO_BROWSER_E2E_ENABLED == 'true' }}
+    # This job provisions its own Python runtime, Web candidate and Chromium.
     steps:
       - uses: actions/checkout@v7
 
@@ -183,7 +181,7 @@ jobs:
     name: full pytest (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.11"
+      KSADK_WEB_VERSION: "0.3.12"
     strategy:
       fail-fast: false
       matrix:
@@ -246,7 +244,7 @@ jobs:
     name: local-process heavy tests (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.11"
+      KSADK_WEB_VERSION: "0.3.12"
     strategy:
       fail-fast: false
       matrix:
@@ -363,14 +361,10 @@ jobs:
 
   # DSH/Codex plugin E2E: installs the pinned DSH toolchain and a real upstream
   # Cordis plugin, then exercises the single full-Core Web UI + MCP host.
-  # Gated env vars enable tests that are skipped by default (see §8.6 T6).
+  # Test env vars enable real native hosts after this job installs the toolchains.
   test-plugin-e2e:
     name: DSH/Codex plugin E2E (real toolchain + upstream plugin)
     runs-on: ubuntu-latest
-    # The public runner does not always have the complete pinned DSH
-    # companion graph. Keep this expensive integration gate opt-in until a
-    # runner with the official toolchain is provisioned.
-    if: ${{ vars.KSADK_DSH_E2E_ENABLED == 'true' }}
     env:
       KSADK_DSH_TOOLCHAIN_E2E: "1"
       KSADK_DSH_UPSTREAM_E2E: "1"

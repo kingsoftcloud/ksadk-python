@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from ksadk.configs.env_registry_pcm import PCM_ENV_VAR_REGISTRY_ITEMS
-from ksadk.configs.env_var_spec import EnvVarSpec
 from ksadk.configs.env_registry_studio import STUDIO_ENV_VAR_REGISTRY_ITEMS
+from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     *STUDIO_ENV_VAR_REGISTRY_ITEMS,
@@ -960,7 +960,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.10",
+        "0.3.12",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",
