@@ -112,7 +112,11 @@ def test_resume_audit_uses_monotonic_timestamp_and_skips_unknown_events() -> Non
     older = runtime_event_to_session_event(
         "session-1",
         _continuation_resumed().model_copy(
-            update={"event_id": "event-checkpoint-resumed-older", "timestamp": 99.0}
+            update={
+                "event_id": "event-checkpoint-resumed-older",
+                "timestamp": 99.0,
+                "resume_attempt_id": "attempt-event-checkpoint-resumed-older",
+            }
         ),
     )
     unknown = SessionEvent(
@@ -150,12 +154,18 @@ def test_resume_audit_uses_monotonic_timestamp_and_skips_unknown_events() -> Non
 
 def test_resume_audit_ignores_nan_and_accepts_numeric_string_timestamp() -> None:
     nan_event = runtime_event_to_session_event(
-        "session-1", _continuation_resumed().model_copy(update={"event_id": "nan"})
+        "session-1",
+        _continuation_resumed().model_copy(
+            update={"event_id": "nan", "resume_attempt_id": "attempt-nan"}
+        ),
     )
     nan_event.content["runtime_event"]["timestamp"] = float("nan")
     nan_event.timestamp = 50.0
     numeric_event = runtime_event_to_session_event(
-        "session-1", _continuation_resumed().model_copy(update={"event_id": "numeric"})
+        "session-1",
+        _continuation_resumed().model_copy(
+            update={"event_id": "numeric", "resume_attempt_id": "attempt-numeric"}
+        ),
     )
     numeric_event.content["runtime_event"]["timestamp"] = "102.5"
     numeric_event.timestamp = 50.0
@@ -208,7 +218,10 @@ def test_known_canonical_carrier_mismatch_fails_loud() -> None:
         _checkpoint_event_to_action_payload(mismatched)
 
     mismatched_metadata = runtime_event_to_session_event(
-        "session-1", _continuation_resumed().model_copy(update={"event_id": "metadata"})
+        "session-1",
+        _continuation_resumed().model_copy(
+            update={"event_id": "metadata", "resume_attempt_id": "attempt-metadata"}
+        ),
     )
     mismatched_metadata.metadata["canonical_event_id"] = "wrong-event-id"
     with pytest.raises(ValueError, match="event id metadata"):
@@ -241,9 +254,7 @@ async def test_checkpoint_stats_count_canonical_resume_facts(tmp_path, backend: 
 
     assert audit == {"resume_count": 1, "last_resumed_at": 101.0}
     assert stats["latest_seq_ids"][("session-1", "run-1")] == 1
-    lookup = await service.get_checkpoint_lookup_stats(
-        "session-1", "run-1", "checkpoint-1"
-    )
+    lookup = await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
     assert lookup["candidate"] is not None
     assert lookup["candidate"].event_type == "continuation.created"
     assert lookup["candidate"].seq_id == 1
@@ -253,7 +264,11 @@ async def test_checkpoint_stats_count_canonical_resume_facts(tmp_path, backend: 
         "session-1",
         [
             _continuation_resumed().model_copy(
-                update={"event_id": "event-checkpoint-resumed-older", "timestamp": 99.0}
+                update={
+                    "event_id": "event-checkpoint-resumed-older",
+                    "timestamp": 99.0,
+                    "resume_attempt_id": "attempt-event-checkpoint-resumed-older",
+                }
             )
         ],
     )
@@ -264,7 +279,11 @@ async def test_checkpoint_stats_count_canonical_resume_facts(tmp_path, backend: 
     mismatched = runtime_event_to_session_event(
         "session-1",
         _continuation_resumed().model_copy(
-            update={"event_id": "event-checkpoint-resumed-mismatch", "timestamp": 102.0}
+            update={
+                "event_id": "event-checkpoint-resumed-mismatch",
+                "timestamp": 102.0,
+                "resume_attempt_id": "attempt-event-checkpoint-resumed-mismatch",
+            }
         ),
     )
     mismatched.timestamp = 50.0  # carrier timestamp must not override canonical v2 time
@@ -330,19 +349,28 @@ async def test_checkpoint_stats_ignores_malformed_canonical_timestamp(
     )
     await service.create_session("agent-1", "user-1", session_id="session-1")
     malformed = runtime_event_to_session_event(
-        "session-1", _continuation_resumed().model_copy(update={"event_id": "malformed"})
+        "session-1",
+        _continuation_resumed().model_copy(
+            update={"event_id": "malformed", "resume_attempt_id": "attempt-malformed"}
+        ),
     )
     malformed.content["runtime_event"]["timestamp"] = "1e999999999999999999999"
     malformed.timestamp = 50.0
     await service.append_event("session-1", malformed)
     numeric = runtime_event_to_session_event(
-        "session-1", _continuation_resumed().model_copy(update={"event_id": "numeric"})
+        "session-1",
+        _continuation_resumed().model_copy(
+            update={"event_id": "numeric", "resume_attempt_id": "attempt-numeric"}
+        ),
     )
     numeric.content["runtime_event"]["timestamp"] = "102.5"
     numeric.timestamp = 50.0
     await service.append_event("session-1", numeric)
     stale_carrier = runtime_event_to_session_event(
-        "session-1", _continuation_resumed().model_copy(update={"event_id": "stale-carrier"})
+        "session-1",
+        _continuation_resumed().model_copy(
+            update={"event_id": "stale-carrier", "resume_attempt_id": "attempt-stale-carrier"}
+        ),
     )
     stale_carrier.content["runtime_event"]["timestamp"] = 101.0
     stale_carrier.timestamp = 1000.0
@@ -357,9 +385,7 @@ async def test_checkpoint_stats_ignores_malformed_canonical_timestamp(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["memory", "local"])
-async def test_checkpoint_stats_rejects_malformed_known_resume(
-    tmp_path, backend: str
-) -> None:
+async def test_checkpoint_stats_rejects_malformed_known_resume(tmp_path, backend: str) -> None:
     """Stats must fail loud like projection for broken known canonical facts."""
 
     service = (
@@ -369,7 +395,10 @@ async def test_checkpoint_stats_rejects_malformed_known_resume(
     )
     await service.create_session("agent-1", "user-1", session_id="session-1")
     malformed = runtime_event_to_session_event(
-        "session-1", _continuation_resumed().model_copy(update={"event_id": "malformed"})
+        "session-1",
+        _continuation_resumed().model_copy(
+            update={"event_id": "malformed", "resume_attempt_id": "attempt-malformed"}
+        ),
     )
     malformed.content["runtime_event"].pop("resume_attempt_id")
     await service.append_event("session-1", malformed)
@@ -397,34 +426,39 @@ async def test_checkpoint_stats_postgres_ignores_malformed_canonical_timestamp(
         await service.create_session("agent-1", "user-1", session_id="session-1")
         await RuntimeEventStore(service).append("session-1", [_continuation_created()])
         malformed = runtime_event_to_session_event(
-            "session-1", _continuation_resumed().model_copy(update={"event_id": "malformed-pg"})
+            "session-1",
+            _continuation_resumed().model_copy(
+                update={"event_id": "malformed-pg", "resume_attempt_id": "attempt-malformed-pg"}
+            ),
         )
         malformed.content["runtime_event"]["timestamp"] = "1e999999999999999999999"
         malformed.timestamp = 50.0
         await service.append_event("session-1", malformed)
         numeric = runtime_event_to_session_event(
-            "session-1", _continuation_resumed().model_copy(update={"event_id": "numeric-pg"})
+            "session-1",
+            _continuation_resumed().model_copy(
+                update={"event_id": "numeric-pg", "resume_attempt_id": "attempt-numeric-pg"}
+            ),
         )
         numeric.content["runtime_event"]["timestamp"] = "102.5"
         numeric.timestamp = 50.0
         await service.append_event("session-1", numeric)
         stale_carrier = runtime_event_to_session_event(
-            "session-1", _continuation_resumed().model_copy(update={"event_id": "stale-pg"})
+            "session-1",
+            _continuation_resumed().model_copy(
+                update={"event_id": "stale-pg", "resume_attempt_id": "attempt-stale-pg"}
+            ),
         )
         stale_carrier.content["runtime_event"]["timestamp"] = 101.0
         stale_carrier.timestamp = 1000.0
         await service.append_event("session-1", stale_carrier)
 
-        stats = await service.get_checkpoint_stats(
-            [("session-1", "run-1", "checkpoint-1")]
-        )
+        stats = await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
         assert stats["audits"][("session-1", "run-1", "checkpoint-1")] == {
             "resume_count": 3,
             "last_resumed_at": 102.5,
         }
-        lookup = await service.get_checkpoint_lookup_stats(
-            "session-1", "run-1", "checkpoint-1"
-        )
+        lookup = await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
         assert lookup["candidate"] is not None
         assert lookup["candidate"].event_type == "continuation.created"
         assert lookup["candidate"].seq_id == 1
@@ -499,9 +533,7 @@ async def test_postgres_stats_prefers_payload_timestamp_over_stale_carrier() -> 
         async def _ensure_schema(self) -> None:
             return None
 
-    stats = await get_checkpoint_stats(
-        FakeService(), [("session-1", "run-1", "checkpoint-1")]
-    )
+    stats = await get_checkpoint_stats(FakeService(), [("session-1", "run-1", "checkpoint-1")])
     assert stats["audits"][("session-1", "run-1", "checkpoint-1")] == {
         "resume_count": 1,
         "last_resumed_at": 101.0,
