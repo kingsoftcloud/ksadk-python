@@ -3,6 +3,10 @@ name: Release AgentKit Studio Windows
 on:
   workflow_dispatch:
     inputs:
+      diagnostic_only:
+        description: Run unsigned packaging smoke without publishing or installer qualification
+        type: boolean
+        default: false
       studio_ref:
         description: Immutable Studio source commit
         type: string
@@ -89,6 +93,7 @@ jobs:
           "DSH_DESKTOP_PLUGIN_INPUTS=$inputRoot" | Out-File $env:GITHUB_ENV -Append
           "STUDIO_PACKAGE_VERSION=$version" | Out-File $env:GITHUB_ENV -Append
       - name: Prepare fresh Certum authentication URI
+        if: ${{ ! inputs.diagnostic_only }}
         id: certum
         shell: pwsh
         env:
@@ -107,6 +112,7 @@ jobs:
           "uri=$uri" | Out-File $env:GITHUB_OUTPUT -Append
           "account=$account" | Out-File $env:GITHUB_OUTPUT -Append
       - name: Authenticate Certum cloud certificate
+        if: ${{ ! inputs.diagnostic_only }}
         uses: dismine/windows-app-signing-setup-action@89ae3b032d4bc7a5b98d1a42a34e61ecb6faad64
         with:
           certum-username: ${{ steps.certum.outputs.account }}
@@ -114,12 +120,31 @@ jobs:
           certum-key-id: ${{ secrets.CERTUM_THUMBPRINT }}
           capture-diagnostics: 'false'
       - name: Configure verified certificate-store signing
+        if: ${{ ! inputs.diagnostic_only }}
         shell: pwsh
         env:
           CERTUM_THUMBPRINT: ${{ secrets.CERTUM_THUMBPRINT }}
           UPDATE_ORIGIN: ${{ inputs.update_origin }}
           CHANNEL: ${{ inputs.channel }}
         run: ./scripts/prepare-windows-signing.ps1 -DshRoot "$PWD/dsh-source" -UpdateOrigin $env:UPDATE_ORIGIN -Channel $env:CHANNEL
+      - name: Configure isolated unsigned diagnostic package
+        if: ${{ inputs.diagnostic_only }}
+        shell: pwsh
+        env:
+          UPDATE_ORIGIN: ${{ inputs.update_origin }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          $uri = [Uri]$env:UPDATE_ORIGIN
+          if ($uri.Scheme -ne 'https' -or $uri.UserInfo -or $uri.AbsolutePath -ne '/') { throw 'Invalid update origin' }
+          $settings = @{
+            DSH_DESKTOP_APP_ID = 'com.kingsoftcloud.agentkit-studio'
+            DSH_DESKTOP_AUTO_UPDATE_ENV = 'production'
+            DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN = $env:UPDATE_ORIGIN
+            DSH_DESKTOP_UPDATE_ORIGIN = $env:UPDATE_ORIGIN
+            DSH_DESKTOP_UPDATE_CHANNEL = $env:CHANNEL
+          }
+          $lines = foreach ($entry in $settings.GetEnumerator()) { "$($entry.Key)='$($entry.Value)'" }
+          [IO.File]::WriteAllText("$PWD/dsh-source/apps/desktop/.env.windows", ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
       - name: Package the official DSH Windows target
         shell: pwsh
         env:
@@ -128,10 +153,12 @@ jobs:
           DSH_DESKTOP_PLUGIN_ROOTS: '@kingsoftcloud/agentkit-studio'
           DSH_DESKTOP_PLUGIN_BUNDLES: '@kingsoftcloud/agentkit-studio'
         run: |
+          $mode = if ('${{ inputs.diagnostic_only }}' -eq 'true') { @('--unsigned') } else { @() }
           $env:DSH_DESKTOP_PRODUCT_ICON = "$PWD/assets/agentkit-studio-macos.png"
-          pnpm exec node scripts/package-desktop.mjs --source "$PWD/dsh-source" --output "$env:RUNNER_TEMP/studio-build" --patches "$PWD/patches/dsh-v0.2.0-rc.2" --commit 639ed015397290b3745d163aafe02ffee4aa3f84 --target win-x64 --dsh-version 0.2.0-rc.2 --studio-version $env:STUDIO_PACKAGE_VERSION --build-version $env:BUILD_VERSION
+          pnpm exec node scripts/package-desktop.mjs --source "$PWD/dsh-source" --output "$env:RUNNER_TEMP/studio-build" --patches "$PWD/patches/dsh-v0.2.0-rc.2" --commit 639ed015397290b3745d163aafe02ffee4aa3f84 --target win-x64 --dsh-version 0.2.0-rc.2 --studio-version $env:STUDIO_PACKAGE_VERSION --build-version $env:BUILD_VERSION @mode
           if ($LASTEXITCODE) { throw 'Signed Windows packaging failed' }
       - name: Verify timestamped installer and actual installation
+        if: ${{ ! inputs.diagnostic_only }}
         shell: pwsh
         env:
           CERTUM_THUMBPRINT: ${{ secrets.CERTUM_THUMBPRINT }}
@@ -144,12 +171,21 @@ jobs:
           New-Item -ItemType Directory -Force .artifacts/windows-release | Out-Null
           Copy-Item "$artifacts/*" .artifacts/windows-release -Recurse
       - name: Verify the actually installed Windows App UI
+        if: ${{ ! inputs.diagnostic_only }}
         shell: pwsh
         env:
           BUILD_VERSION: ${{ inputs.build_version }}
         run: |
           node scripts/verify-windows-app-ui.mjs
           if ($LASTEXITCODE) { throw 'Installed Windows App UI acceptance failed' }
+      - name: Collect credential-free packaging diagnostics
+        if: always() && inputs.diagnostic_only
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .artifacts/windows-diagnostics | Out-Null
+          Get-ChildItem "$env:RUNNER_TEMP/studio-build/desktop-checkouts/*/source/apps/desktop/.desktop-build/packaging-runs" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in @('.json', '.jsonl', '.log') } |
+            ForEach-Object { Copy-Item $_.FullName (Join-Path '.artifacts/windows-diagnostics' ($_.Directory.Name + '-' + $_.Name)) }
       - name: Retain signed installer and acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -158,6 +194,7 @@ jobs:
           path: |
             .artifacts/windows-release/
             .artifacts/windows-proof/
+            .artifacts/windows-diagnostics/
           if-no-files-found: error
           retention-days: 14
       - name: Remove local signing settings
