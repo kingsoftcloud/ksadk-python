@@ -652,13 +652,6 @@ def run_release_test_gates(*, skip_browser_gates: bool = False) -> dict[str, str
     """Run every source-level release gate with its required host enabled."""
 
     _run([sys.executable, "-m", "pytest", "-q", *COMPATIBILITY_TESTS])
-    # Two Codex App Server *turn* tests (install+turn+skill, failed-install
-    # rollback) are green locally and the marketplace fixture is valid, but on
-    # the headless ubuntu CI runner the Codex app-server turn leaves the
-    # marketplace "without a supported manifest" in a way we cannot reproduce
-    # off CI.  Keep the rest of the credential-free native suite (including
-    # plugin add/read/install) as the hard gate for 0.8.3; track and re-enable
-    # the two turn cases once the CI variance is resolved.
     _run(
         [
             sys.executable,
@@ -666,9 +659,6 @@ def run_release_test_gates(*, skip_browser_gates: bool = False) -> dict[str, str
             "pytest",
             "-q",
             *CREDENTIAL_FREE_NATIVE_TESTS,
-            "-k",
-            "not test_real_codex_app_server_turn_uses_installed_plugin_skill "
-            "and not test_real_app_server_failed_install_restores_previous_inventory",
         ],
         environment={
             "KSADK_CODEX_PLUGIN_E2E": "1",
@@ -693,24 +683,30 @@ def run_release_test_gates(*, skip_browser_gates: bool = False) -> dict[str, str
             "KSADK_DSH_UPSTREAM_E2E": "1",
         },
     )
-    for browser_gate in BROWSER_GATES:
-        if skip_browser_gates:
-            break
+    if skip_browser_gates:
+        return {
+            name: "not_run" if name == "studioBrowser" else "passed"
+            for name in SOURCE_E2E_STATUS_KEYS
+        }
+    # Provider registration is required before StudioService construction.
+    # Native tests install isolated toolchains of their own; browser processes
+    # share a separate disposable installation, never the user's profiles.
+    with tempfile.TemporaryDirectory(prefix="ksadk-browser-toolchain-") as toolchain_home:
         python_path = os.pathsep.join(
             value for value in (str(ROOT), os.environ.get("PYTHONPATH", "")) if value
         )
+        browser_environment = {
+            "PYTHONPATH": python_path,
+            "AGENTENGINE_PLUGIN_TOOLCHAIN_HOME": toolchain_home,
+            "KSADK_STUDIO_CHANNEL_DEFAULT": "0",
+            "KSADK_STUDIO_TEAMS_DEFAULT": "0",
+        }
         _run(
-            [sys.executable, browser_gate],
-            environment={
-                "PYTHONPATH": python_path,
-                # Browser gates verify core Studio + Scheduler.  The optional
-                # DSH Channel/Teams default activations run a Profile-maintenance
-                # fence whose toolchain is absent on gate machines; they are not
-                # what these gates assert.
-                "KSADK_STUDIO_CHANNEL_DEFAULT": "0",
-                "KSADK_STUDIO_TEAMS_DEFAULT": "0",
-            },
+            [sys.executable, "-m", "ksadk.cli", "plugin", "toolchain", "install"],
+            environment=browser_environment,
         )
+        for browser_gate in BROWSER_GATES:
+            _run([sys.executable, browser_gate], environment=browser_environment)
     return {name: "passed" for name in SOURCE_E2E_STATUS_KEYS}
 
 

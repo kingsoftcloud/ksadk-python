@@ -145,6 +145,17 @@ make public-preflight
 make public-preflight PUBLIC_PREFLIGHT_MODE=source-sync
 ```
 
+联合验证尚未发布的 Web 修复时，应使用与 CI 固定源码提交一致、已构建并审计的 tarball：
+
+```bash
+make public-preflight PUBLIC_PREFLIGHT_MODE=source-sync \
+  KSADK_WEB_VERSION=0.3.12 KSADK_WEB_TARBALL=/tmp/ksadk-web-reviewed.tgz
+```
+
+验证记录必须同时保留 Web 源码提交和 tarball SHA-256，区分 npm registry 的正式包与源码候选。源码候选通过门禁不表示待审 Web 修复已经发布，也不授予发布权限。
+
+完整公开预检会在临时目录安装官方 DSH 工具链，再启动浏览器测试所需的 Provider 注册。主机需要 Node、pnpm、Chromium 与工具链下载网络；测试使用独立 profile，不修改用户已有插件配置。响应式浏览器检查及 Codex 插件 turn/回滚检查均为阻断项，不能以跳过后的证据声明完整通过。
+
 该模式允许保留当前已发布版本，仍拒绝降版；其余公开测试、文档、浏览器、构建和制品审计不变。默认 `release` 模式仍要求版本高于已发布版本。源码同步结果不是发布授权或发布证据。
 
 该门禁至少覆盖：

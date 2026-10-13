@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from typing import Callable, Iterator
 from urllib.parse import urlsplit, urlunsplit
 
-from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState
+from ksadk.sessions.base import (
+    BaseSessionService,
+    Session,
+    SessionEvent,
+    SessionState,
+    ToolReceiptClaim,
+)
 from ksadk.sessions.continuity import (
     ADKSessionAdapter,
     ConversationSessionCore,
@@ -319,6 +325,7 @@ __all__ = [
     "SessionContinuityStatus",
     "SessionEvent",
     "SessionState",
+    "ToolReceiptClaim",
     "StorageTarget",
     "TranscriptReplayAdapter",
     "close_session_service",

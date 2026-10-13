@@ -16,12 +16,19 @@ from ksadk.conversations.session_title import (
     build_fallback_title,
     build_heuristic_title,
 )
-from ksadk.events.canonical import ContinuationCreated
-from ksadk.events.canonical_store import session_event_to_runtime_event
+from ksadk.events.canonical import (
+    ContinuationCreated,
+    UnknownCanonicalEvent,
+)
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import Session, SessionEvent
 
 from . import dependencies as deps
+from .checkpoint_audit import (  # noqa: F401
+    _parse_canonical_payload,
+    _record_resume_audit,
+    _resume_audit_by_checkpoint,
+)
 from .common import _sanitize_session_state_for_action
 from .models import (
     _EVENT_SCAN_PAGE_SIZE,
@@ -435,7 +442,15 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
     if event.event_type == "run_checkpoint":
         metadata = event.metadata or {}
     else:
-        canonical = session_event_to_runtime_event(event)
+        payload = (event.content or {}).get("runtime_event")
+        if not isinstance(payload, dict):
+            envelope = (event.content or {}).get("session_event")
+            payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        canonical = _parse_canonical_payload(event, payload)
+        if isinstance(canonical, UnknownCanonicalEvent):
+            return None
         if not isinstance(canonical, ContinuationCreated):
             return None
         if canonical.continuation_kind != "graph_checkpoint":
@@ -462,7 +477,7 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
             return default
         durable_raw = capability.get("durable")
         if durable_raw is None:
-            durable_raw = event_meta.get("durable", False)
+            durable_raw = event_meta.get("durable", source_metadata.get("durable", False))
         def _cap_val(key: str, default: Any = None) -> Any:
             value = capability.get(key)
             if value is not None:
@@ -609,25 +624,6 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
     if status:
         payload["Status"] = status
     return payload
-
-
-def _resume_audit_by_checkpoint(
-    events: list[SessionEvent],
-) -> dict[tuple[str, str], dict[str, Any]]:
-    audit: dict[tuple[str, str], dict[str, Any]] = {}
-    for event in events:
-        if event.event_type != "run_resume":
-            continue
-        metadata = event.metadata or {}
-        run_id = str(metadata.get("run_id") or "").strip()
-        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
-        if not run_id or not checkpoint_id:
-            continue
-        key = (run_id, checkpoint_id)
-        item = audit.setdefault(key, {"resume_count": 0, "last_resumed_at": None})
-        item["resume_count"] = int(item["resume_count"]) + 1
-        item["last_resumed_at"] = event.timestamp
-    return audit
 
 
 def _apply_checkpoint_resume_audit(
@@ -1059,26 +1055,6 @@ async def _oldest_unconsumed_session_events(
         after_seq_id=after_seq_id,
     )
     return list(events)
-
-
-def _record_resume_audit(
-    audit_by_session: dict[str, dict[tuple[str, str], dict[str, Any]]],
-    event: SessionEvent,
-) -> None:
-    if event.event_type != "run_resume":
-        return
-    metadata = event.metadata or {}
-    run_id = str(metadata.get("run_id") or "").strip()
-    checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
-    if not run_id or not checkpoint_id:
-        return
-    session_audit = audit_by_session.setdefault(event.session_id, {})
-    item = session_audit.setdefault(
-        (run_id, checkpoint_id),
-        {"resume_count": 0, "last_resumed_at": None},
-    )
-    item["resume_count"] = int(item["resume_count"]) + 1
-    item["last_resumed_at"] = event.timestamp
 
 
 def _apply_latest_checkpoint_policy(

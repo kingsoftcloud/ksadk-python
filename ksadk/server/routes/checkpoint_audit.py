@@ -1,0 +1,88 @@
+"""Checkpoint resume audit extraction shared by REST projections."""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+from ksadk.events.canonical import (
+    ContinuationResumed,
+    UnknownCanonicalEvent,
+)
+from ksadk.sessions import SessionEvent
+from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
+from ksadk.sessions.base import validate_canonical_resume_payload
+
+
+def _finite_audit_timestamp(value: Any) -> float:
+    """Normalize audit timestamps without allowing NaN/Infinity to poison max."""
+
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return timestamp if math.isfinite(timestamp) else 0.0
+
+
+def _parse_canonical_payload(event: SessionEvent, payload: dict[str, Any]) -> Any:
+    """Parse and validate one canonical payload against its SessionEvent carrier."""
+    return validate_canonical_resume_payload(event, payload)
+
+
+def _record_resume_audit(
+    audit_by_session: dict[str, dict[tuple[str, str], dict[str, Any]]],
+    event: SessionEvent,
+) -> None:
+    if event.event_type in {"run_resume", "runtime_resume"}:
+        metadata = event.metadata or {}
+        run_id = str(metadata.get("run_id") or "").strip()
+        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+        timestamp = _finite_audit_timestamp(event.timestamp)
+    else:
+        # Canonical v2 resume facts supersede the legacy ``run_resume`` carrier.
+        # Keep both shapes in one audit map so checkpoint listing and resume
+        # resolution apply the same replay policy during the migration window.
+        payload = (event.content or {}).get("runtime_event")
+        if not isinstance(payload, dict):
+            envelope = (event.content or {}).get("session_event")
+            payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, dict):
+            return
+        canonical = _parse_canonical_payload(event, payload)
+        if isinstance(canonical, UnknownCanonicalEvent):
+            return
+        if not isinstance(canonical, ContinuationResumed):
+            return
+        if canonical.continuation_kind != "graph_checkpoint":
+            return
+        run_id = canonical.run_id.strip()
+        checkpoint_id = canonical.continuation_id.strip()
+        timestamp = _finite_audit_timestamp(canonical.timestamp)
+    if not run_id or not checkpoint_id:
+        return
+    session_audit = audit_by_session.setdefault(event.session_id, {})
+    item = session_audit.setdefault(
+        (run_id, checkpoint_id),
+        CheckpointResumeAudit(),
+    )
+    item.record(event, (run_id, checkpoint_id, timestamp))
+
+
+def _resume_audit_by_checkpoint(
+    events: list[SessionEvent],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    by_session: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    for event in events:
+        _record_resume_audit(by_session, event)
+    audit: dict[tuple[str, str], dict[str, Any]] = {}
+    for session_audit in by_session.values():
+        for key, item in session_audit.items():
+            merged = audit.setdefault(key, {"resume_count": 0, "last_resumed_at": None})
+            merged["resume_count"] = int(merged["resume_count"]) + int(item["resume_count"])
+            timestamp = item.get("last_resumed_at")
+            if timestamp is not None:
+                merged["last_resumed_at"] = max(
+                    merged["last_resumed_at"] or timestamp,
+                    timestamp,
+                )
+    return audit

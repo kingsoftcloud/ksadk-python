@@ -13,8 +13,9 @@ from ksadk.sessions.base import (
     SessionEvent,
     SessionEventQuery,
     SessionState,
+    ToolReceiptClaim,
 )
-from ksadk.sessions.errors import CheckpointScanRestartRequired
+from ksadk.sessions.errors import CheckpointScanRestartRequired, SessionBackendUnavailable
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.resilience import is_session_backend_failure
 
@@ -288,6 +289,37 @@ class ResilientSessionService(BaseSessionService):
         await self._ensure_primary_session(session_id)
         await self._call_primary("append_event", session_id, event)
         return live
+
+    async def claim_tool_receipt(self, session_id: str, **kwargs: Any) -> ToolReceiptClaim:
+        # Falling back to the process-local live store here would re-open the
+        # cross-process duplicate window this claim closes.  Fail closed while
+        # the durable primary is unavailable instead.
+        if not self._primary_enabled:
+            raise SessionBackendUnavailable("durable tool receipt store unavailable")
+        ok, result = await self._call_primary("claim_tool_receipt", session_id, **kwargs)
+        if not ok:
+            raise SessionBackendUnavailable("durable tool receipt store unavailable")
+        return cast(ToolReceiptClaim, result)
+
+    async def settle_tool_receipt(self, session_id: str, **kwargs: Any) -> ToolReceiptClaim:
+        if not self._primary_enabled:
+            raise SessionBackendUnavailable("durable tool receipt store unavailable")
+        ok, result = await self._call_primary("settle_tool_receipt", session_id, **kwargs)
+        if not ok:
+            raise SessionBackendUnavailable("durable tool receipt store unavailable")
+        return cast(ToolReceiptClaim, result)
+
+    async def get_tool_receipt_claim(
+        self, session_id: str, *, idempotency_key: str
+    ) -> ToolReceiptClaim | None:
+        if not self._primary_enabled:
+            raise SessionBackendUnavailable("durable tool receipt store unavailable")
+        ok, result = await self._call_primary(
+            "get_tool_receipt_claim", session_id, idempotency_key=idempotency_key
+        )
+        if not ok:
+            raise SessionBackendUnavailable("durable tool receipt store unavailable")
+        return cast(ToolReceiptClaim | None, result)
 
     async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
         if await self.fallback.get_session_metadata(session_id) is None:

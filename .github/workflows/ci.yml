@@ -9,10 +9,67 @@ on:
       - "open-source/**"
 
 jobs:
+  test-postgres:
+    name: PostgreSQL persistence gates
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ksadk_ci
+          POSTGRES_PASSWORD: ksadk_ci_password
+          POSTGRES_DB: ksadk_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ksadk_ci -d ksadk_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: uv sync --extra dev
+
+      - name: Run live PostgreSQL persistence tests
+        run: |
+          set +e
+          uv run --no-sync pytest \
+            tests/server/test_checkpoint_resume_audit.py \
+            tests/server/test_postgres_jsonb_codec_guard.py \
+            tests/server/test_checkpoint_resume_attempt_audit.py \
+            tests/test_tool_receipt_claim_concurrency.py \
+            -q --junitxml="$RUNNER_TEMP/postgres-junit.xml"
+          test_code=$?
+          set -e
+          TEST_REPORT="$RUNNER_TEMP/postgres-junit.xml" python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          report = ET.parse(os.environ["TEST_REPORT"])
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in report.findall(".//testsuite"))
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in report.findall(".//testsuite"))
+          print(f"PostgreSQL persistence tests executed: {tests}; skipped: {skipped}")
+          if skipped:
+              raise SystemExit("PostgreSQL persistence tests unexpectedly skipped")
+          PY
+          exit "$test_code"
+
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.11"
+      KSADK_WEB_VERSION: "0.3.12"
     steps:
       - uses: actions/checkout@v7
 
@@ -85,9 +142,11 @@ jobs:
   test-studio-react:
     name: React Studio responsive browser gate
     runs-on: ubuntu-latest
-    # Browser navigation requires the provisioned Studio/DSH runtime. Keep
-    # the hosted runner gate opt-in while that environment is unavailable.
-    if: ${{ vars.KSADK_STUDIO_BROWSER_E2E_ENABLED == 'true' }}
+    env:
+      AGENTENGINE_PLUGIN_TOOLCHAIN_HOME: ${{ github.workspace }}/.cache/studio-browser-toolchain
+      KSADK_STUDIO_CHANNEL_DEFAULT: "0"
+      KSADK_STUDIO_TEAMS_DEFAULT: "0"
+    # This job provisions its own Python runtime, Web candidate and Chromium.
     steps:
       - uses: actions/checkout@v7
 
@@ -110,6 +169,13 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --extra dev
 
+      - uses: pnpm/action-setup@v6
+        with:
+          version: "10.33.2"
+
+      - name: Install official Studio provider toolchain
+        run: uv run --no-sync agentengine plugin toolchain install
+
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
 
@@ -126,7 +192,7 @@ jobs:
     name: full pytest (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.11"
+      KSADK_WEB_VERSION: "0.3.12"
     strategy:
       fail-fast: false
       matrix:
@@ -189,7 +255,7 @@ jobs:
     name: local-process heavy tests (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.11"
+      KSADK_WEB_VERSION: "0.3.12"
     strategy:
       fail-fast: false
       matrix:
@@ -306,14 +372,10 @@ jobs:
 
   # DSH/Codex plugin E2E: installs the pinned DSH toolchain and a real upstream
   # Cordis plugin, then exercises the single full-Core Web UI + MCP host.
-  # Gated env vars enable tests that are skipped by default (see §8.6 T6).
+  # Test env vars enable real native hosts after this job installs the toolchains.
   test-plugin-e2e:
     name: DSH/Codex plugin E2E (real toolchain + upstream plugin)
     runs-on: ubuntu-latest
-    # The public runner does not always have the complete pinned DSH
-    # companion graph. Keep this expensive integration gate opt-in until a
-    # runner with the official toolchain is provisioned.
-    if: ${{ vars.KSADK_DSH_E2E_ENABLED == 'true' }}
     env:
       KSADK_DSH_TOOLCHAIN_E2E: "1"
       KSADK_DSH_UPSTREAM_E2E: "1"

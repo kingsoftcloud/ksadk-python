@@ -557,9 +557,6 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 }
 .studio-nav-search .chat-session-search--navigation input::placeholder { color: var(--text-label); opacity: 1; }
 .studio-nav-search .chat-session-search--navigation:has(:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
-@media (min-width: 1024px) {
-  .app-shell[data-rail="expanded"] .global-header > .rail-toggle { display: none; }
-}
 
 /* Adapt the shared chat component's color contract to Studio's palette. */
 .studio-chat-shell {

@@ -27,7 +27,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.11"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.12"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
@@ -192,7 +192,7 @@ studio-react-install-browser:
 	uv run playwright install chromium
 
 studio-react-test: build-studio-static
-	@if [ -f "ksadk/studio/react-ui/package.json" ]; then \
+	@set -e; if [ -f "ksadk/studio/react-ui/package.json" ]; then \
 		npm --prefix ksadk/studio/react-ui test; \
 		npm --prefix ksadk/studio/react-ui run test:ui; \
 		(cd ksadk/studio/react-ui && npx tsc --noEmit); \
@@ -204,13 +204,7 @@ studio-react-test: build-studio-static
 	fi
 	PYTHONPATH=. uv run python tests/studio/e2e/studio_browser_smoke.py
 	PYTHONPATH=. uv run python tests/studio/e2e/studio_workspace_navigation_smoke.py --output "$$(mktemp -d)"
-	@# studio_responsive_smoke validates the composer re-enable flow on
-	@# session switch.  It is green locally and the composer fix ships in
-	@# this release, but the headless CI runner leaves the locator disabled
-	@# past the assertion budget (a behavior we cannot reproduce off CI).
-	@# Keep it advisory for 0.8.3 so the browser smoke stays the hard gate;
-	@# track and re-enable as a blocking gate once the CI variance is resolved.
-	-PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
+	PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
 
 # ============================================================
 # 构建和发布
@@ -387,7 +381,7 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/studio/test_scheduler_runtime.py tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
+PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/studio/test_scheduler_runtime.py tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py tests/server/test_historical_agent_approval_and_blocks.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -727,11 +721,12 @@ STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
 # The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
-# The shared Conversation v1 Web 0.3.8 release; a normal release build must
+# The shared Conversation v1 Web 0.3.12 release; a normal release build must
 # fail rather than silently substituting an older npm package when that release is not
 # visible.  A reviewed local tarball is permitted for a pre-release image
 # build, but remains explicit in the command and provenance output.
-KSADK_WEB_VERSION ?= 0.3.11
+KSADK_WEB_VERSION ?= 0.3.12
+export KSADK_WEB_VERSION
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_TARBALL ?=

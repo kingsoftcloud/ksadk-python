@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import math
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -26,6 +27,26 @@ CANONICAL_EVENT_STORAGE_CAPABILITIES = SessionServiceStorageCapabilities(
     indexed_event_lookup=True,
     indexed_invocation_lookup=True,
 )
+
+
+@dataclass(frozen=True)
+class ToolReceiptClaim:
+    """Durable claim state for an approval-triggered builtin side effect.
+
+    ``unknown`` is written before the builtin is called.  An unknown claim is
+    therefore never eligible for automatic re-execution after a crash; callers
+    must reconcile it explicitly.  ``acquired`` is true only for the process
+    that created the claim.
+    """
+
+    session_id: str
+    idempotency_key: str
+    tool_name: str
+    arguments_digest: str
+    state: Literal["unknown", "completed", "failed"]
+    claim_id: str
+    output: Any = None
+    acquired: bool = False
 
 
 def generate_id() -> str:
@@ -185,6 +206,194 @@ class SessionEvent:
         if self.event_type:
             payload["eventType"] = self.event_type
         return payload
+
+
+def checkpoint_resume_identity(event: SessionEvent) -> tuple[str, str, float] | None:
+    """Return ``(run_id, checkpoint_id, timestamp)`` for resume audit facts.
+
+    ``run_resume`` is the legacy carrier.  Canonical RuntimeEvent/v2 stores
+    the same fact as ``continuation.resumed`` inside ``content.runtime_event``.
+    Keeping the wire-shape check here lets every session backend apply the same
+    idempotent checkpoint statistics without importing the canonical store.
+    """
+
+    metadata = event.metadata or {}
+    # Session backends normalize carrier timestamps, but old rows and direct
+    # imports can still contain non-finite values.  Treat those as missing so
+    # one malformed audit row cannot poison ``MAX(last_resumed_at)``.
+    try:
+        timestamp = float(event.timestamp)
+    except (TypeError, ValueError):
+        timestamp = 0.0
+    if not math.isfinite(timestamp):
+        timestamp = 0.0
+    if event.event_type in {"run_resume", "runtime_resume"}:
+        run_id = str(metadata.get("run_id") or "").strip()
+        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+    elif event.event_type == "continuation.resumed":
+        payload = _canonical_resume_payload(event)
+        if payload is None:
+            return None
+        if payload.get("continuation_kind") != "graph_checkpoint":
+            return None
+        run_id = str(payload.get("run_id") or "").strip()
+        checkpoint_id = str(payload.get("continuation_id") or "").strip()
+        payload_timestamp = payload.get("timestamp")
+        if not isinstance(payload_timestamp, bool):
+            try:
+                candidate = float(payload_timestamp)
+            except (TypeError, ValueError):
+                candidate = None
+            if candidate is not None and math.isfinite(candidate):
+                timestamp = candidate
+    else:
+        return None
+    if not run_id or not checkpoint_id:
+        return None
+    return run_id, checkpoint_id, timestamp
+
+
+def _canonical_resume_payload(event: SessionEvent) -> dict[str, Any] | None:
+    """Validate a known canonical resume carrier and return its payload.
+
+    REST projection and every storage backend share this fail-loud integrity
+    policy.  Timestamp normalization remains deliberately lenient for legacy
+    rows, while identity, sequence, type, and storage-id mismatches are
+    corruption and must never be silently counted as zero resumes.
+    """
+
+    payload = (event.content or {}).get("runtime_event")
+    if not isinstance(payload, dict):
+        envelope = (event.content or {}).get("session_event")
+        payload = envelope.get("payload") if isinstance(envelope, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    payload_event_type = payload.get("event_type")
+    if not isinstance(payload_event_type, str) or not payload_event_type:
+        raise ValueError("canonical SessionEvent event type is missing from content")
+    if payload_event_type != event.event_type:
+        raise ValueError("canonical SessionEvent event type does not match content")
+    from ksadk.events.canonical import UnknownCanonicalEvent, parse_runtime_event_lenient
+    from ksadk.events.canonical_store import canonical_storage_id
+
+    def _finite(value: Any, fallback: float = 0.0) -> float:
+        try:
+            candidate = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return candidate if math.isfinite(candidate) else fallback
+
+    normalized = dict(payload)
+    if "timestamp" in normalized:
+        raw_timestamp = normalized.get("timestamp")
+        candidate = _finite(raw_timestamp, _finite(event.timestamp))
+        if isinstance(raw_timestamp, bool) or not math.isfinite(candidate):
+            candidate = _finite(event.timestamp)
+        normalized["timestamp"] = candidate
+    canonical = parse_runtime_event_lenient(normalized)
+    if isinstance(canonical, UnknownCanonicalEvent):
+        return None
+    if canonical.event_type != event.event_type:
+        raise ValueError("canonical SessionEvent event type does not match content")
+    if int(canonical.seq) != int(event.seq_id or 0):
+        raise ValueError("canonical SessionEvent sequence does not match content")
+    if event.invocation_id and canonical.run_id != event.invocation_id:
+        raise ValueError("canonical SessionEvent invocation does not match content")
+    metadata = event.metadata or {}
+    canonical_event_id = str(metadata.get("canonical_event_id") or "")
+    # Legacy RuntimeEvent carriers use the producer event id as both their
+    # metadata identity and physical storage key. Typed SessionEvent
+    # envelopes have a distinct envelope event id; validate that identity
+    # independently instead of conflating it with the nested runtime payload.
+    is_typed_runtime_envelope = bool(
+        metadata.get("ksadk_session_event_envelope")
+        and metadata.get("family") == "runtime"
+    )
+    if is_typed_runtime_envelope:
+        envelope_content = (event.content or {}).get("session_event")
+        if not isinstance(envelope_content, dict):
+            raise ValueError("canonical SessionEvent is missing session_event content")
+        envelope_event_id = str(envelope_content.get("event_id") or "")
+        if not envelope_event_id:
+            raise ValueError("canonical SessionEvent envelope is missing event id")
+        if canonical_event_id != envelope_event_id:
+            raise ValueError(
+                "canonical SessionEvent event id metadata does not match envelope content"
+            )
+        storage_event_id = envelope_event_id
+    else:
+        if canonical_event_id and canonical_event_id != canonical.event_id:
+            raise ValueError("canonical SessionEvent event id metadata does not match content")
+        storage_event_id = canonical.event_id
+    expected_storage_id = canonical_storage_id(event.session_id, storage_event_id)
+    if event.id != expected_storage_id:
+        raise ValueError("canonical SessionEvent storage id does not match content")
+    return normalized
+
+
+def validate_canonical_resume_payload(event: SessionEvent, payload: dict[str, Any]) -> Any:
+    """Parse and validate a canonical payload for REST and backend callers."""
+
+    # Reuse the same checks as checkpoint_resume_identity while preserving the
+    # parsed RuntimeEvent object expected by projection code.
+    event_copy = SessionEvent(
+        id=event.id,
+        session_id=event.session_id,
+        event_type=event.event_type,
+        content=dict(event.content),
+        timestamp=event.timestamp,
+        seq_id=event.seq_id,
+        invocation_id=event.invocation_id,
+        metadata=event.metadata,
+    )
+    _canonical_resume_payload(event_copy)
+    from ksadk.events.canonical import parse_runtime_event_lenient
+
+    normalized = dict(payload)
+    if "timestamp" in normalized:
+        raw_timestamp = normalized.get("timestamp")
+        try:
+            candidate = float(raw_timestamp)
+        except (TypeError, ValueError):
+            try:
+                candidate = float(event.timestamp)
+            except (TypeError, ValueError):
+                candidate = 0.0
+        if isinstance(raw_timestamp, bool) or not math.isfinite(candidate):
+            try:
+                candidate = float(event.timestamp)
+            except (TypeError, ValueError):
+                candidate = 0.0
+            if not math.isfinite(candidate):
+                candidate = 0.0
+        normalized["timestamp"] = candidate
+    return parse_runtime_event_lenient(normalized)
+
+
+def checkpoint_creation_identity(event: SessionEvent) -> tuple[str, str] | None:
+    """Return ``(run_id, checkpoint_id)`` for checkpoint creation facts."""
+
+    metadata = event.metadata or {}
+    if event.event_type == "run_checkpoint":
+        run_id = str(metadata.get("run_id") or "").strip()
+        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+    elif event.event_type == "continuation.created":
+        payload = (event.content or {}).get("runtime_event")
+        if not isinstance(payload, dict):
+            envelope = (event.content or {}).get("session_event")
+            payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        canonical = validate_canonical_resume_payload(event, payload)
+        if getattr(canonical, "continuation_kind", None) != "graph_checkpoint":
+            return None
+        run_id = str(getattr(canonical, "run_id", "") or "").strip()
+        checkpoint_id = str(getattr(canonical, "continuation_id", "") or "").strip()
+    else:
+        return None
+    if not run_id or not checkpoint_id:
+        return None
+    return run_id, checkpoint_id
 
 
 @dataclass(frozen=True)
@@ -411,6 +620,41 @@ class BaseSessionService(abc.ABC):
         """Indexed physical-id lookup for idempotent event insertion."""
 
         raise NotImplementedError("session backend does not support indexed event lookup")
+
+    async def claim_tool_receipt(
+        self,
+        session_id: str,
+        *,
+        idempotency_key: str,
+        tool_name: str,
+        arguments_digest: str,
+        claim_id: str,
+    ) -> ToolReceiptClaim:
+        """Atomically claim a builtin side-effect key before invoking it."""
+
+        raise NotImplementedError("session backend does not support durable tool receipt claims")
+
+    async def get_tool_receipt_claim(
+        self, session_id: str, *, idempotency_key: str
+    ) -> ToolReceiptClaim | None:
+        """Read a durable claim for operator reconciliation/status checks."""
+
+        raise NotImplementedError("session backend does not support durable tool receipt claims")
+
+    async def settle_tool_receipt(
+        self,
+        session_id: str,
+        *,
+        idempotency_key: str,
+        tool_name: str,
+        arguments_digest: str,
+        claim_id: str,
+        state: Literal["completed", "failed"],
+        output: Any,
+    ) -> ToolReceiptClaim:
+        """Persist a terminal builtin result for later replay."""
+
+        raise NotImplementedError("session backend does not support durable tool receipt claims")
 
     async def get_events_by_invocation_id(
         self,

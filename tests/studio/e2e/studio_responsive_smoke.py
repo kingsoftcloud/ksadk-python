@@ -111,7 +111,7 @@ def create_test_agent(base_url: str) -> None:
         "template": "blank",
         "spec": {
             "description": "Responsive browser fixture",
-            "runtime": {"type": "codex"},
+            "runtime": {"type": "codex", "version": "0.147.0"},
             "instructions": {
                 "system": "You are a responsive browser fixture.",
                 "task": "Answer the request.",
@@ -137,7 +137,7 @@ def create_test_agent(base_url: str) -> None:
             },
             "security": {
                 "toolPolicy": "deny-by-default",
-                "allowedPermissions": [],
+                "allowedPermissions": ["process:host-user"],
                 "network": {
                     "mode": "restricted",
                     "allowedHosts": ["model.example.com"],
@@ -624,7 +624,7 @@ def main() -> None:
                     matrix_page = matrix_context.new_page()
                     open_studio(matrix_page, base_url)
                     open_navigation(matrix_page)
-                    expected_rail = min(300, width - 48) if width <= 1023 else 224
+                    expected_rail = min(300, width - 48) if width <= 1023 else 280
                     sidebar_rect = rect(matrix_page, ".studio-navigation")
                     assert abs(sidebar_rect["width"] - expected_rail) <= 1, (
                         width,
@@ -699,7 +699,8 @@ def main() -> None:
                 first_session_row = workbench_page.locator(".chat-session-item").first.evaluate(
                     "element => element.getBoundingClientRect().toJSON()"
                 )
-                assert first_session_row["height"] <= 42, first_session_row
+                # Allow one CSS pixel for fractional font metrics.
+                assert first_session_row["height"] <= 42 + 1, first_session_row
                 assert workbench_page.locator(".chat-session-item time").count() == 0
                 # The shared composer supports drafting/queueing during a live
                 # run. Its submit control must remain Stop, and navigation or
@@ -707,9 +708,9 @@ def main() -> None:
                 expect(message_input).to_be_enabled()
                 dark_chat_colors = workbench_page.evaluate(
                     """() => {
-                      const header = document.querySelector('.chat-conversation-header');
+                      const header = document.querySelector('.global-header');
                       const composer = document.querySelector('[data-slot="composer"] form');
-                      const sidebar = document.querySelector('.chat-session-sidebar');
+                      const sidebar = document.querySelector('.studio-navigation');
                       const text = header.querySelector('h1');
                       const context = document.createElement('canvas').getContext('2d');
                       const rgb = value => {
@@ -730,10 +731,10 @@ def main() -> None:
                     assert max(dark_chat_colors[surface]) < 100, dark_chat_colors
                 assert min(dark_chat_colors["messageText"]) > 175, dark_chat_colors
                 chat_rect = rect(workbench_page, ".chat-wrap")
-                assert chat_rect["top"] >= 64, chat_rect
+                assert chat_rect["top"] >= 56, chat_rect
                 assert chat_rect["bottom"] <= 769, chat_rect
                 composer_rect = rect(workbench_page, '[data-slot="composer"]')
-                assert composer_rect["top"] >= 64, composer_rect
+                assert composer_rect["top"] >= 56, composer_rect
                 assert composer_rect["bottom"] <= chat_rect["bottom"] + 1, (
                     composer_rect,
                     chat_rect,
@@ -824,7 +825,7 @@ def main() -> None:
                 workbench_page.get_by_role("button", name="运行详情", exact=True).click()
                 expect(workbench_page.locator(".chat-run-panel")).to_be_visible()
                 run_panel_rect = rect(workbench_page, ".chat-run-panel")
-                assert run_panel_rect["top"] >= 64, run_panel_rect
+                assert run_panel_rect["top"] >= 56, run_panel_rect
                 assert run_panel_rect["right"] <= 1025, run_panel_rect
                 assert run_panel_rect["bottom"] <= 769, run_panel_rect
                 assert run_panel_rect["width"] <= 421, run_panel_rect
@@ -834,7 +835,7 @@ def main() -> None:
                     "data-viewport", "desktop"
                 )
                 chat_sidebar = rect(workbench_page, ".studio-navigation")
-                assert abs(chat_sidebar["width"] - 224) <= 1, chat_sidebar
+                assert abs(chat_sidebar["width"] - 280) <= 1, chat_sidebar
                 # Explicit collapse and expansion persist across reloads.
                 workbench_page.get_by_role("button", name="收起导航", exact=True).click()
                 expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "64px")
@@ -842,7 +843,7 @@ def main() -> None:
                 expect(workbench_page.locator(".app-shell")).to_have_attribute(
                     "data-rail", "expanded"
                 )
-                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "224px")
+                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "280px")
                 assert_no_root_overflow(workbench_page)
                 conversation_events.release_live.set()
                 expect(
@@ -854,7 +855,7 @@ def main() -> None:
                 expect(workbench_page.locator(".app-shell")).to_have_attribute(
                     "data-rail", "expanded"
                 )
-                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "224px")
+                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "280px")
                 assert len(conversation_runtime.start_requests) == 2
                 print(
                     "Conversation layout, history switching, permissions and run panel exercised",
@@ -884,7 +885,7 @@ def main() -> None:
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-span-row")).to_have_count(1)
                 trace_sidebar = rect(trace_page, ".studio-navigation")
-                assert abs(trace_sidebar["width"] - 224) <= 1, trace_sidebar
+                assert abs(trace_sidebar["width"] - 280) <= 1, trace_sidebar
                 observability_body = trace_page.locator(".observability-body")
                 body_scroll = observability_body.evaluate(
                     """element => ({
@@ -898,7 +899,7 @@ def main() -> None:
                 assert body_scroll["overflowY"] == "auto", body_scroll
                 trace_page.locator(".trace-workbench").scroll_into_view_if_needed()
                 trace_rect = rect(trace_page, ".trace-workbench")
-                assert trace_rect["top"] >= 64, trace_rect
+                assert trace_rect["top"] >= 56, trace_rect
                 assert trace_rect["top"] < 862, trace_rect
                 assert_no_root_overflow(trace_page)
                 trace_overflows = trace_page.evaluate(
@@ -937,11 +938,18 @@ def main() -> None:
                     """element => ({
                       background: getComputedStyle(element).backgroundColor,
                       key: getComputedStyle(element.querySelector('.otlp-json-key')).color,
+                      keyWeight: getComputedStyle(
+                        element.querySelector('.otlp-json-key')
+                      ).fontWeight,
+                      value: getComputedStyle(element.querySelector('.otlp-json-string')).color,
                       text: getComputedStyle(element).color,
+                      textWeight: getComputedStyle(element).fontWeight,
                     })"""
                 )
                 assert json_colors["background"] != "rgb(32, 38, 49)", json_colors
-                assert json_colors["key"] != json_colors["text"], json_colors
+                # Neutral labels use weight; typed JSON values retain syntax colors.
+                assert json_colors["keyWeight"] != json_colors["textWeight"], json_colors
+                assert json_colors["value"] != json_colors["text"], json_colors
                 trace_page.get_by_role("button", name="全部收起", exact=True).click()
                 expect(json_tree.locator(".otlp-json-expand").first).to_be_visible()
                 trace_page.get_by_role("button", name="全部展开", exact=True).click()
@@ -975,9 +983,9 @@ def main() -> None:
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-list-page")).to_be_visible()
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "expanded")
-                expect(trace_page.locator(".studio-navigation")).to_have_css("width", "224px")
+                expect(trace_page.locator(".studio-navigation")).to_have_css("width", "280px")
                 expanded_sidebar = rect(trace_page, ".studio-navigation")
-                assert abs(expanded_sidebar["width"] - 224) <= 1, expanded_sidebar
+                assert abs(expanded_sidebar["width"] - 280) <= 1, expanded_sidebar
                 reload_studio(trace_page)
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "expanded")
                 trace_page.get_by_role("button", name="收起导航", exact=True).click()

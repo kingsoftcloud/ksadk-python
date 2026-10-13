@@ -106,9 +106,8 @@ jobs:
         run: |
           echo "STUDIO_APP_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = \"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
-      # PR #90's Studio UI consumes the companion Web source candidate. The
-      # published 0.3.11 package predates those exports, so release builds
-      # must use the reviewed source tarball until the Web PR is published.
+      # Exercise the exact companion source commit in source verification.
+      # This tarball is not evidence that the pending Web changes are published.
       - name: Prepare shared Web source candidate
         uses: ./.github/actions/prepare-web-candidate
 
@@ -128,7 +127,7 @@ jobs:
         # make invocation produces the full signed .app bundle.
         run: make studio-app-package
         env:
-          KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_VERSION: "0.3.12"
           KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_CODESIGN_IDENTITY: ${{ env.STUDIO_APP_CODESIGN_IDENTITY }}
@@ -232,20 +231,20 @@ jobs:
           make build-studio-static
           make build-wheel
         env:
-          KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_VERSION: "0.3.12"
           KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
 
       - name: Prepare DSH toolchain (win32-x64 prebuilds)
         shell: bash
         run: |
-          dsh_root="$HOME/.agentengine/plugin-toolchains/dsh/0.1.5-rc.1"
+          dsh_root="$HOME/.agentengine/plugin-toolchains/dsh/0.1.7-rc.1"
           # Install the pinned DSH CLI on Windows so optionalDependencies
           # (sharp, node-addon-require-builtin) resolve their win32-x64 variants.
           # If npm registry lacks a win32 build the install fails here — that is
           # the intended early signal rather than a broken bundle at runtime.
           mkdir -p "$dsh_root"
           cd "$dsh_root"
-          echo '{"name":"agentengine-managed-dsh-toolchain","private":true,"dependencies":{"@deepseek-ai/dsh":"0.1.5-rc.1"}}' > package.json
+          echo '{"name":"agentengine-managed-dsh-toolchain","private":true,"dependencies":{"@deepseek-ai/dsh":"0.1.7-rc.1"}}' > package.json
           npm install --no-audit --no-fund
           test -d node_modules/@deepseek-ai/dsh || { echo "ERROR: @deepseek-ai/dsh not installed"; exit 1; }
 
@@ -262,7 +261,7 @@ jobs:
         shell: bash
         run: make studio-app-package-windows
         env:
-          KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_VERSION: "0.3.12"
           KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_PYTHON_VERSION: "3.13.1"

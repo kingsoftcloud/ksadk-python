@@ -8,7 +8,7 @@ import pytest
 from tests.studio.e2e import studio_e2e_support as support
 
 
-@pytest.mark.parametrize("startup_seconds", [0.0, 7.28])
+@pytest.mark.parametrize("startup_seconds", [0.0, 7.28, 40.0])
 def test_startup_waits_for_real_health_response(monkeypatch, tmp_path, startup_seconds):
     clock, server = _fake_server(monkeypatch, startup_seconds=startup_seconds)
     with support.studio_server(tmp_path) as base_url:
@@ -19,11 +19,11 @@ def test_startup_waits_for_real_health_response(monkeypatch, tmp_path, startup_s
 
 
 def test_startup_deadline_reports_server_state(monkeypatch, tmp_path):
-    clock, server = _fake_server(monkeypatch, startup_seconds=40.0)
-    with pytest.raises(AssertionError, match="30 seconds.*started=False, thread_alive=True"):
+    clock, server = _fake_server(monkeypatch, startup_seconds=130.0)
+    with pytest.raises(AssertionError, match="120 seconds.*started=False, thread_alive=True"):
         with support.studio_server(tmp_path):
             pytest.fail("An unhealthy server cannot be yielded")
-    assert 30.0 <= clock[0] < 30.1
+    assert 120.0 <= clock[0] < 120.1
     assert server.should_exit
 
 

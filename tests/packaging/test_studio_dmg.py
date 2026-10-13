@@ -1,11 +1,31 @@
 """Exercise the DMG Make target without signing or invoking disk utilities."""
-from pathlib import Path
 import os
+import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("script_name", ["package_studio_app.sh", "package_studio_app_windows.sh"])
+@pytest.mark.parametrize("override", [None, "0.3.42"])
+def test_make_exports_web_version_to_desktop_manifest(tmp_path, script_name, override):
+    script = (ROOT / "scripts" / script_name).read_text()
+    expression = re.search(r'"ksadk_web_version": "([^"]+)"', script).group(1)
+    probe = tmp_path / "probe.mk"
+    probe.write_text("probe-web-manifest:\n\t@printf '%s' \""
+                     + expression.replace("$", "$$") + "\"\n")
+    environment = dict(os.environ)
+    environment.pop("KSADK_WEB_VERSION", None)
+    command = ["make", "--no-print-directory", "-f", "Makefile", "-f", str(probe),
+               "probe-web-manifest"]
+    if override is not None:
+        command.append(f"KSADK_WEB_VERSION={override}")
+    result = subprocess.run(command, cwd=ROOT, env=environment,
+                            capture_output=True, text=True, check=True)
+    assert result.stdout == (override or "0.3.12")
 
 
 @pytest.mark.parametrize("image_exit", [0, 17])

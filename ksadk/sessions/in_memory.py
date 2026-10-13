@@ -4,9 +4,10 @@ import asyncio
 import bisect
 import copy
 import time
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Literal, Optional
 
 from ksadk.ids import new_session_id
+from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
 from ksadk.sessions.base import (
     CANONICAL_EVENT_STORAGE_CAPABILITIES,
     BaseSessionService,
@@ -15,6 +16,9 @@ from ksadk.sessions.base import (
     SessionEvent,
     SessionEventQuery,
     SessionState,
+    ToolReceiptClaim,
+    checkpoint_creation_identity,
+    checkpoint_resume_identity,
     generate_id,
 )
 
@@ -38,6 +42,7 @@ class InMemorySessionService(BaseSessionService):
         self._events_by_id: dict[str, SessionEvent] = {}
         self._events_by_invocation: dict[tuple[str, str], list[SessionEvent]] = {}
         self._states: dict[tuple[str, str, str, str], SessionState] = {}
+        self._tool_receipts: dict[tuple[str, str], ToolReceiptClaim] = {}
         self._event_order: list[tuple[float, str, int, str, int, SessionEvent]] = []
         self._event_generation = 0
         self._checkpoint_snapshot_by_task: dict[asyncio.Task[object], int] = {}
@@ -134,9 +139,15 @@ class InMemorySessionService(BaseSessionService):
     async def delete_session(self, session_id: str) -> bool:
         async with self._checkpoint_scan_lock:
             async with self._lock:
-                session = self._sessions.pop(session_id, None)
+                session = self._sessions.get(session_id)
                 if not session:
                     return False
+                if any(
+                    key[0] == session_id and claim.state == "unknown"
+                    for key, claim in self._tool_receipts.items()
+                ):
+                    raise ValueError("session has durable tool receipt claims")
+                self._sessions.pop(session_id, None)
                 for event in session.events:
                     self._events_by_id.pop(event.id, None)
                     if event.invocation_id is not None:
@@ -148,6 +159,8 @@ class InMemorySessionService(BaseSessionService):
                     ),
                     None,
                 )
+                for key in [key for key in self._tool_receipts if key[0] == session_id]:
+                    self._tool_receipts.pop(key, None)
                 return True
 
     async def update_session_metadata(
@@ -237,6 +250,97 @@ class InMemorySessionService(BaseSessionService):
                 )
 
             return copy.deepcopy(stored)
+
+    async def claim_tool_receipt(
+        self,
+        session_id: str,
+        *,
+        idempotency_key: str,
+        tool_name: str,
+        arguments_digest: str,
+        claim_id: str,
+    ) -> ToolReceiptClaim:
+        async with self._lock:
+            if session_id not in self._sessions:
+                raise ValueError(f"Session {session_id} not found")
+            key = (session_id, idempotency_key)
+            existing = self._tool_receipts.get(key)
+            if existing is not None:
+                if (
+                    existing.tool_name != tool_name
+                    or existing.arguments_digest != arguments_digest
+                ):
+                    raise ValueError("tool receipt idempotency key conflict")
+                if existing.state not in {"unknown", "completed", "failed"}:
+                    raise ValueError("tool receipt state is invalid")
+                return ToolReceiptClaim(
+                    session_id=existing.session_id,
+                    idempotency_key=existing.idempotency_key,
+                    tool_name=existing.tool_name,
+                    arguments_digest=existing.arguments_digest,
+                    state=existing.state,
+                    claim_id=existing.claim_id,
+                    output=copy.deepcopy(existing.output),
+                    acquired=False,
+                )
+            claim = ToolReceiptClaim(
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+                tool_name=tool_name,
+                arguments_digest=arguments_digest,
+                state="unknown",
+                claim_id=claim_id,
+                acquired=True,
+            )
+            self._tool_receipts[key] = claim
+            return copy.deepcopy(claim)
+
+    async def settle_tool_receipt(
+        self,
+        session_id: str,
+        *,
+        idempotency_key: str,
+        tool_name: str,
+        arguments_digest: str,
+        claim_id: str,
+        state: Literal["completed", "failed"],
+        output: Any,
+    ) -> ToolReceiptClaim:
+        async with self._lock:
+            key = (session_id, idempotency_key)
+            existing = self._tool_receipts.get(key)
+            if existing is None:
+                raise ValueError("tool receipt claim not found")
+            if (
+                existing.tool_name != tool_name
+                or existing.arguments_digest != arguments_digest
+            ):
+                raise ValueError("tool receipt idempotency key conflict")
+            if existing.claim_id != claim_id:
+                return copy.deepcopy(existing)
+            if existing.state != "unknown":
+                if existing.state != state or existing.output != output:
+                    raise ValueError("tool receipt terminal result conflict")
+                return copy.deepcopy(existing)
+            settled = ToolReceiptClaim(
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+                tool_name=tool_name,
+                arguments_digest=arguments_digest,
+                state=state,
+                claim_id=claim_id,
+                output=copy.deepcopy(output),
+                acquired=False,
+            )
+            self._tool_receipts[key] = settled
+            return copy.deepcopy(settled)
+
+    async def get_tool_receipt_claim(
+        self, session_id: str, *, idempotency_key: str
+    ) -> ToolReceiptClaim | None:
+        async with self._lock:
+            claim = self._tool_receipts.get((session_id, idempotency_key))
+            return copy.deepcopy(claim) if claim is not None else None
 
     async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
         async with self._lock:
@@ -412,27 +516,33 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.get(session_id)
             candidate = None
             max_seq_id = 0
-            resume_count = 0
+            resume_audit = CheckpointResumeAudit()
             last_resumed_at = None
             for event in session.events if session else []:
                 metadata = event.metadata or {}
-                if str(metadata.get("run_id") or "") != run_id:
-                    continue
                 if event.event_type == "run_checkpoint":
+                    if str(metadata.get("run_id") or "") != run_id:
+                        continue
                     max_seq_id = max(max_seq_id, int(event.seq_id or 0))
                     if str(metadata.get("checkpoint_id") or "") == checkpoint_id and (
                         candidate is None or event.seq_id > candidate.seq_id
                     ):
                         candidate = copy.deepcopy(event)
-                elif event.event_type == "run_resume" and str(
-                    metadata.get("checkpoint_id") or ""
-                ) == checkpoint_id:
-                    resume_count += 1
-                    last_resumed_at = max(last_resumed_at or event.timestamp, event.timestamp)
+                elif (creation := checkpoint_creation_identity(event)) is not None:
+                    if creation == (run_id, checkpoint_id):
+                        max_seq_id = max(max_seq_id, int(event.seq_id or 0))
+                        if candidate is None or event.seq_id > candidate.seq_id:
+                            candidate = copy.deepcopy(event)
+                else:
+                    identity = checkpoint_resume_identity(event)
+                    if identity is None or identity[:2] != (run_id, checkpoint_id):
+                        continue
+                    resume_audit.record(event, identity)
+                    last_resumed_at = resume_audit["last_resumed_at"]
             return {
                 "candidate": candidate,
                 "max_seq_id": max_seq_id,
-                "resume_count": resume_count,
+                "resume_count": resume_audit["resume_count"],
                 "last_resumed_at": last_resumed_at,
             }
 
@@ -515,7 +625,7 @@ class InMemorySessionService(BaseSessionService):
         if len(keys) > 50:
             raise ValueError("checkpoint stats batch cannot exceed 50 keys")
         unique_keys = list(dict.fromkeys(keys))
-        audits = {key: {"resume_count": 0, "last_resumed_at": None} for key in unique_keys}
+        audits = {key: CheckpointResumeAudit() for key in unique_keys}
         run_keys = {(session_id, run_id) for session_id, run_id, _ in unique_keys}
         latest_seq_ids = {key: 0 for key in run_keys}
         async with self._lock:
@@ -527,22 +637,29 @@ class InMemorySessionService(BaseSessionService):
                 if snapshot_generation is not None and generation > snapshot_generation:
                     continue
                 metadata = event.metadata or {}
-                run_id = str(metadata.get("run_id") or "")
+                identity = checkpoint_resume_identity(event)
+                creation = checkpoint_creation_identity(event)
+                run_id = str(metadata.get("run_id") or "") or (
+                    identity[0]
+                    if identity is not None
+                    else (creation[0] if creation is not None else "")
+                )
                 run_key = (session_id, run_id)
                 if run_key not in run_keys:
                     continue
+                if creation is not None:
+                    latest_seq_ids[(session_id, creation[0])] = max(
+                        latest_seq_ids[(session_id, creation[0])], int(event.seq_id or 0)
+                    )
                 if event.event_type == "run_checkpoint":
                     latest_seq_ids[run_key] = max(
                         latest_seq_ids[run_key], int(event.seq_id or 0)
                     )
-                elif event.event_type == "run_resume":
-                    key = (session_id, run_id, str(metadata.get("checkpoint_id") or ""))
+                elif identity is not None:
+                    key = (session_id, identity[0], identity[1])
                     if key in audits:
                         audit = audits[key]
-                        audit["resume_count"] = int(audit["resume_count"]) + 1
-                        audit["last_resumed_at"] = max(
-                            audit["last_resumed_at"] or event.timestamp, event.timestamp
-                        )
+                        audit.record(event, identity)
         return {"audits": audits, "latest_seq_ids": latest_seq_ids}
 
     async def get_events_for_agent(

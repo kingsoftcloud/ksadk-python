@@ -255,14 +255,14 @@ PNPX
 chmod 0755 "$node_root/bin/pnpx"
 
 # Bundle the exact pinned DSH CLI/Core runtime for offline provider registration.
-dsh_source="${STUDIO_APP_DSH_ROOT:-$HOME/.agentengine/plugin-toolchains/dsh/0.1.5-rc.1}"
+dsh_source="${STUDIO_APP_DSH_ROOT:-$HOME/.agentengine/plugin-toolchains/dsh/0.1.7-rc.1}"
 test -x "$dsh_source/node_modules/.bin/dsh" || {
   echo "ERROR: pinned DSH toolchain is missing: $dsh_source" >&2
   exit 1
 }
 mkdir -p "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains/dsh"
-rm -rf "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains/dsh/0.1.5-rc.1"
-cp -R "$dsh_source" "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains/dsh/0.1.5-rc.1"
+rm -rf "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains/dsh/0.1.7-rc.1"
+cp -R "$dsh_source" "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains/dsh/0.1.7-rc.1"
 cat > "$STUDIO_APP_BUNDLE/Contents/Resources/app/package.json" <<JSON
 {"name":"agentkit-studio-shell","version":"$STUDIO_APP_VERSION","main":"main.js","dependencies":{"electron-updater":"${STUDIO_APP_UPDATER_VERSION:-6.8.9}"}}
 JSON
@@ -325,7 +325,7 @@ cat > "$STUDIO_APP_BUNDLE/Contents/Resources/manifest.json" <<MANIFEST
   "platform": "macos",
   "arch": "arm64",
   "source_commit": "$(git rev-parse HEAD 2>/dev/null || echo unavailable)",
-  "ksadk_web_version": "${KSADK_WEB_VERSION:-0.3.10}"
+  "ksadk_web_version": "${KSADK_WEB_VERSION:-0.3.12}"
 }
 MANIFEST
 

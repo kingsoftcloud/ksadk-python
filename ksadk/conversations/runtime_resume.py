@@ -6,20 +6,34 @@ import time
 import uuid
 from typing import Any, Callable, Mapping, Sequence
 
-from ksadk.conversations.context import (
-    canonical_event_type,
-)
+from ksadk.conversations.context import canonical_event_type
 from ksadk.conversations.model_options import normalize_model_options
 from ksadk.conversations.run_kinds import (
     RUN_MODE_UNKNOWN,
     validate_run_mode,
 )
 from ksadk.conversations.runtime_persistence import append_conversation_event
-from ksadk.events.v1_compat import EventTypeV1 as EventType
-from ksadk.sessions import SessionEvent
-from ksadk.tools.gateway import (
-    build_tool_receipt_idempotency_key,
+from ksadk.conversations.tool_receipt_resume import (
+    ToolReceiptUncertainError,  # noqa: F401
+    _claim_approved_builtin_tool_resume,  # noqa: F401
+    _pending_approval_events,
+    claim_or_replay_tool_receipt,
+    replay_existing_tool_receipt_event,
+    settle_claimed_tool_receipt,
 )
+from ksadk.conversations.tool_receipts import _validate_tool_receipt_event  # noqa: F401
+from ksadk.events.v1_compat import EventTypeV1 as EventType
+from ksadk.sessions import SessionEvent, ToolReceiptClaim
+from ksadk.tools.gateway import build_tool_receipt_idempotency_key
+
+LEGACY_TOOL_RECEIPT_CHECKPOINT_AMBIGUITY_MESSAGE = (
+    "legacy tool receipt checkpoint identity is ambiguous; reconciliation required"
+)
+
+
+class LegacyToolReceiptCheckpointAmbiguityError(ValueError):
+    def __init__(self) -> None:
+        super().__init__(LEGACY_TOOL_RECEIPT_CHECKPOINT_AMBIGUITY_MESSAGE)
 
 
 def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
@@ -39,33 +53,6 @@ def _approval_request_id_from_event(event: SessionEvent) -> str:
     if value:
         return str(value)
     return str(event.id or "")
-
-
-def _pending_approval_events(events: Sequence[SessionEvent]) -> list[SessionEvent]:
-    pending: list[SessionEvent] = []
-    for event in events:
-        event_type = _approval_lifecycle_event_type(event)
-        if event_type == "approval_request":
-            pending.append(event)
-            continue
-        if event_type != "approval_response" or not pending:
-            continue
-        resume_input = (event.metadata or {}).get("resume_input")
-        response_id = ""
-        if isinstance(resume_input, Mapping):
-            response_id = str(
-                resume_input.get("approval_request_id")
-                or resume_input.get("interrupt_id")
-                or resume_input.get("id")
-                or ""
-            )
-        if response_id:
-            pending = [
-                item for item in pending if _approval_request_id_from_event(item) != response_id
-            ]
-        else:
-            pending.pop()
-    return pending
 
 
 def _approval_request_events(events: Sequence[SessionEvent]) -> list[SessionEvent]:
@@ -114,10 +101,10 @@ def _approval_interrupt_info_from_event(event: SessionEvent) -> dict[str, Any]:
         if isinstance(request, Mapping):
             raw_detail = request.get("detail")
             detail = dict(raw_detail) if isinstance(raw_detail, Mapping) else {}
-            approval_id = request.get("call_id") or canonical_payload.get("interaction_id")
+            approval_id = canonical_payload.get("interaction_id") or request.get("call_id")
             if approval_id:
-                detail.setdefault("approval_request_id", approval_id)
-                detail.setdefault("id", approval_id)
+                detail["approval_request_id"] = approval_id
+                detail["id"] = approval_id
             if request.get("call_id"):
                 detail.setdefault("run_id", request.get("call_id"))
             return detail
@@ -410,9 +397,11 @@ def _tool_receipt_idempotency_key_for_resume(
     run_id = _tool_resume_run_id(resume_input)
     if not run_id:
         return None
+    checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip() or None
     idempotency_key = build_tool_receipt_idempotency_key(
         session_id=session_id,
         run_id=run_id,
+        checkpoint_id=checkpoint_id,
         tool_call_id=run_id,
         tool_name=tool_name,
         tool_args=dict(tool_args),
@@ -423,6 +412,9 @@ def _tool_receipt_idempotency_key_for_resume(
 def _find_tool_receipt_event_by_key(
     events: Sequence[SessionEvent],
     idempotency_key: str,
+    *,
+    expected_receipt: Mapping[str, Any] | None = None,
+    expected_tool_args: Mapping[str, Any] | None = None,
 ) -> SessionEvent | None:
     for event in reversed(events):
         if event.event_type != "tool_result":
@@ -432,8 +424,66 @@ def _find_tool_receipt_event_by_key(
         if not isinstance(receipt, Mapping):
             continue
         if str(receipt.get("idempotency_key") or "") == idempotency_key:
+            if expected_receipt is not None:
+                for field in ("tool_name", "tool_call_id", "run_id", "checkpoint_id"):
+                    expected = str(expected_receipt.get(field) or "")
+                    actual = str(receipt.get(field) or "")
+                    if expected != actual:
+                        raise ValueError(
+                            f"tool receipt idempotency collision: {field} does not match"
+                        )
+                if expected_tool_args is not None:
+                    actual_args = metadata.get("tool_args")
+                    if not isinstance(actual_args, Mapping) or dict(actual_args) != dict(
+                        expected_tool_args
+                    ):
+                        raise ValueError(
+                            "tool receipt idempotency collision: tool_args do not match"
+                        )
             return event
     return None
+
+
+def _find_legacy_tool_receipt_event_for_resume(
+    *,
+    session_id: str,
+    resume_input: Mapping[str, Any],
+    events: Sequence[SessionEvent],
+) -> SessionEvent | None:
+    tool_name = str(resume_input.get("tool_name") or "").strip()
+    tool_args = resume_input.get("tool_args")
+    run_id = _tool_resume_run_id(resume_input)
+    if not tool_name or not isinstance(tool_args, Mapping) or not run_id:
+        return None
+    legacy_receipt = _tool_receipt_metadata(
+        session_id=session_id,
+        run_id=run_id,
+        tool_name=tool_name,
+        tool_args=dict(tool_args),
+        tool_call_id=run_id,
+    )
+    return _find_tool_receipt_event_by_key(
+        events,
+        legacy_receipt["idempotency_key"],
+        expected_receipt=legacy_receipt,
+        expected_tool_args=tool_args,
+    )
+
+
+def _raise_if_legacy_tool_receipt_checkpoint_ambiguous(
+    *,
+    session_id: str,
+    resume_input: Mapping[str, Any],
+    events: Sequence[SessionEvent],
+) -> None:
+    if not str(resume_input.get("checkpoint_id") or "").strip():
+        return
+    if _find_legacy_tool_receipt_event_for_resume(
+        session_id=session_id,
+        resume_input=resume_input,
+        events=events,
+    ) is not None:
+        raise LegacyToolReceiptCheckpointAmbiguityError()
 
 
 def _latest_checkpoint_metadata_for_run(
@@ -468,15 +518,12 @@ async def _execute_approved_builtin_tool_resume(
     resume_input: Mapping[str, Any],
     session_service_provider: Callable[[], Any],
     existing_events: Sequence[SessionEvent] | None = None,
+    preclaimed_receipt: tuple[dict[str, Any], ToolReceiptClaim] | None = None,
 ) -> dict[str, Any] | None:
     approval = resume_input.get("approval")
     if not isinstance(approval, Mapping) or not bool(approval.get("approved")):
         return None
     tool_name = str(resume_input.get("tool_name") or "").strip()
-    tool_func = _builtin_tool_callable(tool_name)
-    if tool_func is None:
-        return None
-
     tool_args = resume_input.get("tool_args")
     if not isinstance(tool_args, Mapping):
         return None
@@ -486,6 +533,12 @@ async def _execute_approved_builtin_tool_resume(
     if existing_events is None:
         existing_events = await service.get_events(session_id)
     checkpoint_metadata = _latest_checkpoint_metadata_for_run(existing_events, run_id)
+    requested_checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
+    if requested_checkpoint_id:
+        checkpoint_metadata = {
+            **checkpoint_metadata,
+            "checkpoint_id": requested_checkpoint_id,
+        }
     receipt = _tool_receipt_metadata(
         session_id=session_id,
         run_id=run_id,
@@ -499,41 +552,51 @@ async def _execute_approved_builtin_tool_resume(
     existing_event = _find_tool_receipt_event_by_key(
         existing_events,
         receipt["idempotency_key"],
+        expected_receipt=receipt,
+        expected_tool_args=call_args,
     )
-    if existing_event is not None:
-        existing_metadata = existing_event.metadata or {}
-        output = existing_metadata.get("tool_output", "")
-        if isinstance(output, Mapping):
-            output = {**dict(output), "replayed": True}
-        replayed_receipt = {
-            **dict((existing_metadata.get("tool_receipt") or receipt)),
-            "replayed": True,
-            "replayed_from_event_id": existing_event.id,
-        }
-        await append_conversation_event(
+    if existing_event is None and requested_checkpoint_id:
+        # Receipts written before checkpoint-scoped keys used an empty
+        # checkpoint field. They cannot be attributed safely to this explicit
+        # checkpoint, so require reconciliation before any replay or tool call.
+        legacy_event = _find_legacy_tool_receipt_event_for_resume(
             session_id=session_id,
-            author="tool",
-            role="user",
-            text=str(output),
-            invocation_id=invocation_id,
-            event_type="tool_result",
-            session_service_provider=session_service_provider,
-            metadata={
-                "tool_name": tool_name,
-                "tool_args": call_args,
-                "tool_output": output,
-                "run_id": run_id,
-                "approval_request_id": resume_input.get("approval_request_id")
-                or resume_input.get("interrupt_id"),
-                "tool_receipt": replayed_receipt,
-                "replayed": True,
-            },
+            resume_input=resume_input,
+            events=existing_events,
         )
-        return {
-            "type": "function_call_output",
-            "call_id": run_id,
-            "output": output,
-        }
+        if legacy_event is not None:
+            raise LegacyToolReceiptCheckpointAmbiguityError()
+    if existing_event is not None:
+        return await replay_existing_tool_receipt_event(
+            existing_event=existing_event,
+            receipt=receipt,
+            session_id=session_id,
+            invocation_id=invocation_id,
+            run_id=run_id,
+            tool_name=tool_name,
+            call_args=call_args,
+            resume_input=resume_input,
+            session_service_provider=session_service_provider,
+        )
+
+    tool_func = _builtin_tool_callable(tool_name)
+    if tool_func is None:
+        return None
+
+    claim, replayed = await claim_or_replay_tool_receipt(
+        service=service,
+        session_id=session_id,
+        receipt=receipt,
+        tool_name=tool_name,
+        call_args=call_args,
+        invocation_id=invocation_id,
+        preclaimed_receipt=preclaimed_receipt,
+        run_id=run_id,
+        resume_input=resume_input,
+        session_service_provider=session_service_provider,
+    )
+    if replayed is not None:
+        return replayed
 
     try:
         if tool_name in {"run_command", "run_code"}:
@@ -543,7 +606,15 @@ async def _execute_approved_builtin_tool_resume(
     except Exception as exc:
         output = {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 
-    receipt["status"] = _tool_receipt_status_from_output(output)
+    await settle_claimed_tool_receipt(
+        service=service,
+        claim=claim,
+        receipt=receipt,
+        session_id=session_id,
+        tool_name=tool_name,
+        call_args=call_args,
+        output=output,
+    )
     await append_conversation_event(
         session_id=session_id,
         author="tool",

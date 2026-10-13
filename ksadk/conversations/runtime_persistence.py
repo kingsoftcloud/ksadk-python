@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
 from typing import Any, Callable, Mapping, Optional, Sequence, cast
@@ -151,6 +152,7 @@ async def append_conversation_event(
     metadata: Optional[dict[str, Any]] = None,
     event_type: Optional[str] = None,
     content: Optional[dict[str, Any]] = None,
+    event_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> SessionEvent:
     """统一的 canonical event 追加入口。
@@ -164,7 +166,7 @@ async def append_conversation_event(
         session_id,
         SessionEvent.from_dict(
             {
-                "id": str(uuid.uuid4()),
+                "id": str(event_id or uuid.uuid4()),
                 "author": author,
                 "event_type": event_type or canonical_event_type(None, author=author, role=role),
                 "invocationId": invocation_id,
@@ -427,6 +429,115 @@ async def append_run_checkpoint_event(
     )
 
 
+def _resume_event_id(
+    session_id: str, resume_attempt_id: str
+) -> str:
+    """Return the stable physical id for one session-scoped resume attempt."""
+
+    # The attempt id is the semantic idempotency key. Keep the physical key
+    # independent of checkpoint details so a concurrent reuse of an attempt
+    # cannot create two rows before the collision validator runs.
+    identity = "\x1f".join((session_id, resume_attempt_id))
+    return "resume_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _resume_identity_matches(
+    event: SessionEvent,
+    *,
+    run_id: str,
+    checkpoint_id: str,
+    resume_attempt_id: str,
+    framework: str,
+    framework_ref: Mapping[str, Any],
+) -> None:
+    identity = _resume_event_identity(event)
+    expected = (run_id, checkpoint_id, resume_attempt_id)
+    if identity is None or identity[:3] != expected:
+        raise ValueError(
+            f"resume_attempt_id {resume_attempt_id!r} is already bound to a different checkpoint"
+        )
+    actual_framework, actual_framework_ref = identity[3:]
+    if actual_framework is not None and actual_framework != framework:
+        raise ValueError(
+            f"resume_attempt_id {resume_attempt_id!r} is already bound to a different framework"
+        )
+    if actual_framework_ref is not None and actual_framework_ref != dict(framework_ref):
+        raise ValueError(
+            f"resume_attempt_id {resume_attempt_id!r} is already bound to a different checkpoint"
+        )
+
+
+def _resume_event_identity(
+    event: SessionEvent,
+) -> tuple[str, str, str, str | None, dict[str, Any] | None] | None:
+    """Extract resume identity from legacy or canonical checkpoint carriers."""
+
+    if canonical_event_type(event.event_type) == "run_resume":
+        metadata = event.metadata or {}
+        run_id = str(metadata.get("run_id") or "").strip()
+        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+        resume_attempt_id = str(metadata.get("resume_attempt_id") or "").strip()
+        if not (run_id and checkpoint_id and resume_attempt_id):
+            return None
+        framework = str(metadata.get("framework") or "").strip() or None
+        framework_ref = metadata.get("framework_ref")
+        return (
+            run_id,
+            checkpoint_id,
+            resume_attempt_id,
+            framework,
+            dict(framework_ref) if isinstance(framework_ref, Mapping) else None,
+        )
+
+    if event.event_type != "continuation.resumed":
+        return None
+    payload = (event.content or {}).get("runtime_event")
+    if not isinstance(payload, Mapping):
+        envelope = (event.content or {}).get("session_event")
+        payload = envelope.get("payload") if isinstance(envelope, Mapping) else None
+    if not isinstance(payload, Mapping) or payload.get("continuation_kind") != "graph_checkpoint":
+        return None
+    run_id = str(payload.get("run_id") or "").strip()
+    checkpoint_id = str(payload.get("continuation_id") or "").strip()
+    resume_attempt_id = str(payload.get("resume_attempt_id") or "").strip()
+    if not (run_id and checkpoint_id and resume_attempt_id):
+        return None
+    source = payload.get("source")
+    framework = str(source.get("framework") or "").strip() if isinstance(source, Mapping) else ""
+    return run_id, checkpoint_id, resume_attempt_id, framework or None, None
+
+
+async def find_resume_attempt_event(
+    service: Any,
+    session_id: str,
+    *,
+    resume_attempt_id: str,
+    run_id: str | None = None,
+    checkpoint_id: str | None = None,
+) -> SessionEvent | None:
+    """Find a prior legacy or canonical resume fact for idempotent API retries."""
+
+    attempt_id = str(resume_attempt_id).strip()
+    if not attempt_id:
+        return None
+
+    def predicate(event: SessionEvent) -> bool:
+        identity = _resume_event_identity(event)
+        if identity is None or identity[2] != attempt_id:
+            return False
+        if run_id is not None and identity[0] != str(run_id).strip():
+            raise ValueError(
+                f"resume_attempt_id {attempt_id!r} is already bound to a different run"
+            )
+        if checkpoint_id is not None and identity[1] != str(checkpoint_id).strip():
+            raise ValueError(
+                f"resume_attempt_id {attempt_id!r} is already bound to a different checkpoint"
+            )
+        return True
+
+    return await _find_latest_session_event(service, session_id, predicate)
+
+
 async def append_run_resume_event(
     *,
     session_id: str,
@@ -440,33 +551,89 @@ async def append_run_resume_event(
     metadata: Optional[dict[str, Any]] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> SessionEvent:
+    service = (session_service_provider or resolve_session_service)()
+    run_id = str(run_id).strip()
+    checkpoint_id = str(checkpoint_id).strip()
+    resume_attempt_id = str(resume_attempt_id).strip()
+    framework = str(framework).strip()
+    if not all((session_id.strip(), run_id, checkpoint_id, resume_attempt_id, framework)):
+        raise ValueError(
+            "session_id, run_id, checkpoint_id, resume_attempt_id, and framework are required"
+        )
+    framework_ref_dict = dict(framework_ref)
+
+    # ``resume_attempt_id`` is the caller's idempotency key. Invocation ids
+    # identify a transport execution and may legitimately change on retry.
+    existing = await find_resume_attempt_event(
+        service,
+        session_id,
+        resume_attempt_id=resume_attempt_id,
+        run_id=run_id,
+        checkpoint_id=checkpoint_id,
+    )
+    if existing is not None:
+        _resume_identity_matches(
+            existing,
+            run_id=run_id,
+            checkpoint_id=checkpoint_id,
+            resume_attempt_id=resume_attempt_id,
+            framework=framework,
+            framework_ref=framework_ref_dict,
+        )
+        return existing
+
     event_metadata = dict(metadata or {})
     event_metadata.update(
         {
-            "run_id": str(run_id),
-            "checkpoint_id": str(checkpoint_id),
-            "resume_attempt_id": str(resume_attempt_id),
-            "framework": str(framework),
-            "framework_ref": dict(framework_ref),
+            "run_id": run_id,
+            "checkpoint_id": checkpoint_id,
+            "resume_attempt_id": resume_attempt_id,
+            "framework": framework,
+            "framework_ref": framework_ref_dict,
         }
     )
-    return await append_conversation_event(
-        session_id=session_id,
-        author=author,
-        role="model",
-        text="checkpoint resume requested",
-        invocation_id=invocation_id,
-        event_type="run_resume",
-        content={
-            "status": "resuming",
-            "run_id": str(run_id),
-            "checkpoint_id": str(checkpoint_id),
-            "resume_attempt_id": str(resume_attempt_id),
-            "framework": str(framework),
-        },
-        metadata=event_metadata,
-        session_service_provider=session_service_provider,
-    )
+    event_id = _resume_event_id(session_id, resume_attempt_id)
+    try:
+        return await append_conversation_event(
+            session_id=session_id,
+            author=author,
+            role="model",
+            text="checkpoint resume requested",
+            invocation_id=invocation_id,
+            event_type="run_resume",
+            event_id=event_id,
+            content={
+                "status": "resuming",
+                "run_id": run_id,
+                "checkpoint_id": checkpoint_id,
+                "resume_attempt_id": resume_attempt_id,
+                "framework": framework,
+            },
+            metadata=event_metadata,
+            session_service_provider=lambda: service,
+        )
+    except Exception:
+        # A concurrent retry can win the deterministic insert. Re-read the
+        # winner and absorb only an identical attempt; unrelated failures stay
+        # visible to the caller.
+        existing = await find_resume_attempt_event(
+            service,
+            session_id,
+            resume_attempt_id=resume_attempt_id,
+            run_id=run_id,
+            checkpoint_id=checkpoint_id,
+        )
+        if existing is None:
+            raise
+        _resume_identity_matches(
+            existing,
+            run_id=run_id,
+            checkpoint_id=checkpoint_id,
+            resume_attempt_id=resume_attempt_id,
+            framework=framework,
+            framework_ref=framework_ref_dict,
+        )
+        return existing
 
 
 async def append_reasoning_event(

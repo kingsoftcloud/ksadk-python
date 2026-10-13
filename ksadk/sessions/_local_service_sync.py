@@ -12,22 +12,27 @@ import time
 from typing import Optional
 
 from ksadk.ids import new_session_id
+from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
 from ksadk.sessions._local_tables import (
     KSADK_EVENTS_TABLE,
     KSADK_SESSIONS_TABLE,
     KSADK_STATES_TABLE,
+    tool_receipts_table,
 )
+from ksadk.sessions._tool_receipt_sync import _LocalToolReceiptMixin
 from ksadk.sessions.base import (
     CheckpointEventQuery,
     Session,
     SessionEvent,
     SessionEventQuery,
     SessionState,
+    checkpoint_creation_identity,
+    checkpoint_resume_identity,
     generate_id,
 )
 
 
-class _LocalServiceSyncMixin:
+class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
     @staticmethod
     def _event_from_query_row(row) -> SessionEvent:
         return SessionEvent(
@@ -229,7 +234,7 @@ class _LocalServiceSyncMixin:
         snapshot_rowid: int | None = None,
     ) -> dict[str, object]:
         where, params = self._event_query_where(
-            SessionEventQuery(session_ids=[session_id], run_id=run_id)
+            SessionEventQuery(session_ids=[session_id])
         )
         if snapshot_rowid is not None:
             where += " AND e.rowid <= ?"
@@ -245,23 +250,31 @@ class _LocalServiceSyncMixin:
         events = [self._event_from_query_row(row) for row in rows]
         candidate = None
         max_seq_id = 0
-        resume_count = 0
+        resume_audit = CheckpointResumeAudit()
         last_resumed_at = None
         for event in events:
             metadata = event.metadata or {}
             if event.event_type == "run_checkpoint":
+                if str(metadata.get("run_id") or "") != run_id:
+                    continue
                 max_seq_id = max(max_seq_id, event.seq_id)
                 if str(metadata.get("checkpoint_id") or "") == checkpoint_id:
                     candidate = event
-            elif event.event_type == "run_resume" and str(
-                metadata.get("checkpoint_id") or ""
-            ) == checkpoint_id:
-                resume_count += 1
-                last_resumed_at = max(last_resumed_at or event.timestamp, event.timestamp)
+            elif (creation := checkpoint_creation_identity(event)) is not None:
+                if creation == (run_id, checkpoint_id):
+                    max_seq_id = max(max_seq_id, int(event.seq_id or 0))
+                    if candidate is None or event.seq_id > candidate.seq_id:
+                        candidate = event
+            else:
+                identity = checkpoint_resume_identity(event)
+                if identity is None or identity[:2] != (run_id, checkpoint_id):
+                    continue
+                resume_audit.record(event, identity)
+                last_resumed_at = resume_audit["last_resumed_at"]
         return {
             "candidate": candidate,
             "max_seq_id": max_seq_id,
-            "resume_count": resume_count,
+            "resume_count": resume_audit["resume_count"],
             "last_resumed_at": last_resumed_at,
         }
 
@@ -451,12 +464,22 @@ class _LocalServiceSyncMixin:
 
     def _delete_session_sync(self, session_id: str) -> bool:
         with self._connection() as connection:
+            # Take the database writer fence before reading claims. A plain
+            # SELECT does not begin sqlite3's transaction and cannot fence a
+            # different service instance inserting a claim before DELETE.
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 f"SELECT 1 FROM {KSADK_SESSIONS_TABLE} WHERE id = ?",
                 (session_id,),
             ).fetchone()
             if row is None:
                 return False
+            if connection.execute(
+                f"SELECT 1 FROM {tool_receipts_table} "
+                "WHERE session_id = ? AND state = 'unknown' LIMIT 1",
+                (session_id,),
+            ).fetchone():
+                raise ValueError("session has durable tool receipt claims")
 
             connection.execute(
                 f"DELETE FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?", (session_id,)

@@ -30,121 +30,167 @@ def run(output: Path) -> list[dict]:
         service = StudioService(
             workspace, codex_runtime_inspector=_runtime_inspector, runtime_executor=fixture.executor
         )
-        _seed_agent(service)
-        asyncio.run(service.session_service.create_session(
-            AGENT_ID, "local-user", "existing-before-new-chat"
-        ))
-        with studio_server(workspace, service=service) as base, sync_playwright() as pw:
-            browser = pw.chromium.launch()
-            for width, theme in [(1440, "light"), (1024, "dark"), (768, "light"), (390, "dark")]:
-                context = browser.new_context(viewport={"width": width, "height": 900})
-                context.add_init_script(
-                    f"localStorage.setItem('agentkit-studio-theme', '{theme}');"
+        with studio_server(workspace, service=service) as base:
+            _seed_agent(service)
+            asyncio.run(
+                service.session_service.create_session(
+                    AGENT_ID, "local-user", "existing-before-new-chat"
                 )
-                page = context.new_page()
-                errors = []
-                page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto(base + "/#/agents")
-                expect(page.locator(".app-shell")).to_be_visible()
-
-                def capture(name):
-                    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
-                    assert page.locator(".app-main").evaluate(
-                        "e => e.scrollWidth <= e.clientWidth + 1"
-                    )
-                    expect(page.locator("html")).to_have_attribute("data-theme", theme)
-                    page.screenshot(path=str(output / f"{width}-{theme}-{name}.png"))
-                    records.append(
-                        {"width": width, "theme": theme, "scenario": name, "status": "passed"}
-                    )
-
-                def open_navigation():
-                    if (
-                        width < 1024
-                        and not page.get_by_role("navigation", name="产品导航").is_visible()
-                    ):
-                        page.get_by_role("button", name="展开导航", exact=True).click()
-                    return page.get_by_role("navigation", name="产品导航")
-
-                nav = open_navigation()
-                # 四个主入口必须各自存在；DSH teams 插件 lifecycle 可用时会由
-                # useWorkspaceContributions 动态追加第五个"团队"入口，因此不断言精确总数。
-                for primary in ["新对话", "Agent", "资源库", "运行中心"]:
-                    expect(nav.get_by_role("button", name=primary, exact=True)).to_be_visible()
-                button_count = nav.get_by_role("button").count()
-                assert button_count in (4, 5), button_count
-                assert nav.get_by_role("button", name="团队", exact=True).count() == (
-                    button_count - 4
-                )
-                capture("four-primary-destinations")
-                for group, destinations in [
-                    (
-                        "资源库",
-                        [
-                            ("模型与工具", "resources"),
-                            ("运行资源", "runtime-resources"),
-                            ("插件", "plugins"),
-                        ],
-                    ),
-                    (
-                        "运行中心",
-                        [
-                            ("构建", "builds"),
-                            ("部署", "deployments"),
-                            ("自动化", "automations"),
-                            ("可观测", "observability"),
-                            ("评测", "evaluations"),
-                        ],
-                    ),
+            )
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch()
+                for width, theme in [
+                    (1440, "light"),
+                    (1024, "dark"),
+                    (768, "light"),
+                    (390, "dark"),
                 ]:
-                    for label, route in destinations:
-                        nav = open_navigation()
-                        group_button = nav.get_by_role("button", name=group, exact=True)
-                        if group_button.get_attribute("aria-expanded") != "true":
-                            group_button.click()
-                        nav.get_by_role("button", name=label, exact=True).click()
-                        expect(page.locator(".app-shell")).to_have_attribute("data-view", route)
-                        if width < 1024:
-                            expect(
-                                page.get_by_role("dialog", name="工作区导航")
-                            ).not_to_be_visible()
-                        capture("destination-" + route)
-                with page.expect_response(
-                    lambda response: response.url.endswith("/CreateSession")
-                ) as created:
+                    context = browser.new_context(viewport={"width": width, "height": 900})
+                    context.add_init_script(
+                        f"localStorage.setItem('agentkit-studio-theme', '{theme}');"
+                    )
+                    page = context.new_page()
+                    errors = []
+
+                    def record_error(error):
+                        errors.append(str(error))
+                        print(f"Navigation page error at {width}px: {error}", flush=True)
+
+                    page.on("pageerror", record_error)
+                    created_sessions = []
+                    page.on(
+                        "response",
+                        lambda response: (
+                            created_sessions.append(response)
+                            if response.url.endswith("/CreateSession")
+                            else None
+                        ),
+                    )
+                    response = page.goto(base + "/#/agents")
+                    assert response and response.ok, "Studio entry must load successfully"
+                    expect(page.locator(".app-shell")).to_be_visible(timeout=15000)
+
+                    def capture(name):
+                        assert page.evaluate(
+                            "document.documentElement.scrollWidth <= innerWidth + 1"
+                        )
+                        assert page.locator(".app-main").evaluate(
+                            "e => e.scrollWidth <= e.clientWidth + 1"
+                        )
+                        expect(page.locator("html")).to_have_attribute("data-theme", theme)
+                        page.screenshot(path=str(output / f"{width}-{theme}-{name}.png"))
+                        records.append(
+                            {"width": width, "theme": theme, "scenario": name, "status": "passed"}
+                        )
+
+                    def open_navigation():
+                        if (
+                            width < 1024
+                            and not page.get_by_role("navigation", name="产品导航").is_visible()
+                        ):
+                            page.get_by_role("button", name="展开导航", exact=True).click()
+                        return page.get_by_role("navigation", name="产品导航")
+
+                    nav = open_navigation()
+                    # 四个主入口必须各自存在；DSH teams 插件 lifecycle 可用时会由
+                    # useWorkspaceContributions 动态追加第五个"团队"入口，因此不断言精确总数。
+                    for primary in ["新对话", "Agent", "资源库", "运行中心"]:
+                        expect(nav.get_by_role("button", name=primary, exact=True)).to_be_visible()
+                    button_count = nav.get_by_role("button").count()
+                    assert button_count in (4, 5), button_count
+                    assert nav.get_by_role("button", name="团队", exact=True).count() == (
+                        button_count - 4
+                    )
+                    capture("four-primary-destinations")
+                    for group, destinations in [
+                        (
+                            "资源库",
+                            [
+                                ("模型与工具", "resources"),
+                                ("运行资源", "runtime-resources"),
+                                ("插件", "plugins"),
+                            ],
+                        ),
+                        (
+                            "运行中心",
+                            [
+                                ("构建", "builds"),
+                                ("部署", "deployments"),
+                                ("自动化", "automations"),
+                                ("可观测", "observability"),
+                                ("评测", "evaluations"),
+                            ],
+                        ),
+                    ]:
+                        for label, route in destinations:
+                            nav = open_navigation()
+                            group_button = nav.get_by_role("button", name=group, exact=True)
+                            if group_button.get_attribute("aria-expanded") != "true":
+                                group_button.click()
+                            nav.get_by_role("button", name=label, exact=True).click()
+                            expect(page.locator(".app-shell")).to_have_attribute("data-view", route)
+                            if width < 1024:
+                                expect(
+                                    page.get_by_role("dialog", name="工作区导航")
+                                ).not_to_be_visible()
+                            capture("destination-" + route)
                     open_navigation().get_by_role("button", name="新对话", exact=True).click()
-                assert created.value.ok
-                assert created.value.json()["Code"] == 0
-                session_id = created.value.json()["Data"]["Session"]["SessionId"]
-                assert session_id != "existing-before-new-chat"
-                expect(page.get_by_role("heading", name="有什么可以帮你？")).to_be_visible()
-                expect(page.get_by_role("heading", name="新对话", exact=True)).to_have_count(1)
-                expect(
-                    page.locator('.studio-chat-shell[data-integrated-history="true"]')
-                ).to_be_visible()
-                expect(page.locator(".studio-chat-shell .chat-session-sidebar")).to_have_count(0)
-                textarea = page.locator(".studio-composer-area textarea")
-                textarea.fill("导航切换后保留的未发送草稿")
-                open_navigation().get_by_role("button", name="Agent", exact=True).click()
-                expect(page.locator(".app-shell")).to_have_attribute("data-view", "agents")
-                # Browser back restores the mounted conversation, not a new chat.
-                page.go_back()
-                expect(textarea).to_have_value("导航切换后保留的未发送草稿")
-                capture("chat-draft-survives-navigation")
-                open_navigation()
-                expect(page.get_by_role("complementary", name="会话历史")).to_be_visible()
-                if width < 1024:
-                    page.keyboard.press("Escape")
-                    expect(page.get_by_role("button", name="展开导航", exact=True)).to_be_focused()
-                    expect(page.get_by_role("complementary", name="会话历史")).not_to_be_visible()
-                    page.get_by_role("button", name="对话操作", exact=True).click()
-                    expect(page.get_by_role("menuitem", name="刷新", exact=True)).to_be_visible()
-                    page.get_by_role("menuitem", name="运行详情", exact=True).click()
-                    expect(page.locator(".chat-run-panel")).to_be_visible()
-                    capture("mobile-chat-run-details")
-                assert not errors, errors
-                context.close()
-            browser.close()
+                    expect(page.locator(".studio-conversation-welcome h2")).to_be_visible(
+                        timeout=15000
+                    )
+                    expect(page.locator(".studio-conversation-welcome p")).to_have_text(
+                        "Conversation Items Agent"
+                    )
+                    expect(page.get_by_role("heading", name="新对话", exact=True)).to_have_count(1)
+                    expect(
+                        page.locator('.studio-chat-shell[data-integrated-history="true"]')
+                    ).to_be_visible()
+                    expect(page.locator(".studio-chat-shell .chat-session-sidebar")).to_have_count(
+                        0
+                    )
+                    textarea = page.locator(".studio-composer-area textarea")
+                    textarea.fill("导航切换后保留的未发送草稿")
+                    assert created_sessions == [], "A local draft must not create a server session"
+                    open_navigation().get_by_role("button", name="Agent", exact=True).click()
+                    expect(page.locator(".app-shell")).to_have_attribute("data-view", "agents")
+                    # Browser back restores the mounted conversation, not a new chat.
+                    page.go_back()
+                    expect(textarea).to_have_value("导航切换后保留的未发送草稿")
+                    capture("chat-draft-survives-navigation")
+                    open_navigation()
+                    expect(page.get_by_role("complementary", name="会话历史")).to_be_visible()
+                    if width < 1024:
+                        page.keyboard.press("Escape")
+                        expect(
+                            page.get_by_role("button", name="展开导航", exact=True)
+                        ).to_be_focused()
+                        expect(
+                            page.get_by_role("complementary", name="会话历史")
+                        ).not_to_be_visible()
+                        page.get_by_role("button", name="对话操作", exact=True).click()
+                        expect(
+                            page.get_by_role("menuitem", name="刷新", exact=True)
+                        ).to_be_visible()
+                        page.get_by_role("menuitem", name="运行详情", exact=True).click()
+                        expect(page.locator(".chat-run-panel")).to_be_visible()
+                        capture("mobile-chat-run-details")
+                        page.locator(".chat-run-panel").get_by_role(
+                            "button", name="收起", exact=True
+                        ).click()
+                        expect(page.locator(".chat-run-panel")).not_to_be_visible()
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/CreateSession")
+                    ) as created:
+                        page.get_by_role("button", name="发送消息", exact=True).click()
+                    assert created.value.ok
+                    assert created.value.json()["Code"] == 0
+                    session_id = created.value.json()["Data"]["Session"]["SessionId"]
+                    assert session_id != "existing-before-new-chat"
+                    assert len(created_sessions) == 1
+                    assert not errors, errors
+                    print(f"Workspace navigation: {width}px {theme} passed", flush=True)
+                    context.close()
+                browser.close()
     (output / "results.json").write_text(json.dumps(records, ensure_ascii=False, indent=2))
     return records
 

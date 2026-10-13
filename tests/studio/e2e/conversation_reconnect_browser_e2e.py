@@ -43,6 +43,7 @@ def _seed_agent(service: StudioService) -> None:
             ),
             instructions=Instructions(system="Keep every turn identity distinct."),
             security=SecuritySpec(
+                allowed_permissions=["process:host-user"],
                 network=NetworkPolicy(allowed_hosts=["model.example.com"])
             ),
         ),
@@ -131,18 +132,19 @@ def main() -> None:
             codex_runtime_inspector=_runtime_inspector,
             runtime_executor=RuntimeFixture(standard_codex_events).executor,
         )
-        _seed_agent(service)
-        with studio_server(workspace, service=service) as base_url, sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            try:
-                page = browser.new_page(viewport={"width": 1440, "height": 960})
-                page_errors: list[str] = []
-                page.on("pageerror", lambda error: page_errors.append(str(error)))
-                _exercise_reconnect(page, base_url)
-                assert page_errors == [], f"Uncaught React page errors: {page_errors}"
-                page.unroute_all(behavior="wait")
-            finally:
-                browser.close()
+        with studio_server(workspace, service=service) as base_url:
+            _seed_agent(service)
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page(viewport={"width": 1440, "height": 960})
+                    page_errors: list[str] = []
+                    page.on("pageerror", lambda error: page_errors.append(str(error)))
+                    _exercise_reconnect(page, base_url)
+                    assert page_errors == [], f"Uncaught React page errors: {page_errors}"
+                    page.unroute_all(behavior="wait")
+                finally:
+                    browser.close()
 
 
 if __name__ == "__main__":

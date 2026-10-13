@@ -1,5 +1,5 @@
 """Session, UI bootstrap, checkpoint-list, and tool-receipt routes."""
-
+# ruff: noqa: I001
 from __future__ import annotations
 
 import os
@@ -68,6 +68,7 @@ from .projection import (
 )
 from .routers import sessions_router, tools_router, ui_bootstrap_router
 from .streaming import _cancel_detached_streams_for_session
+from .tool_receipt_claim_routes import get_tool_receipt_claim_action, reconcile_tool_receipt_claim_action  # noqa: E501,F401,I001
 
 
 async def _require_identity_action_session(

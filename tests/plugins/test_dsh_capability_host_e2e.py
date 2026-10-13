@@ -95,7 +95,8 @@ async def test_ordinary_cordis_tool_bundle_runs_through_profile_mcp(
         ) as browser:
             handoff = await browser.get(lease.browser_url())
             assert handoff.status_code == 303
-            assert handoff.headers["location"] == "/"
+            redirect = handoff.url.join(handoff.headers["location"])
+            assert redirect == httpx.URL(f"http://127.0.0.1:{handoff.url.port}/")
             assert "HttpOnly" in handoff.headers["set-cookie"]
             core = await browser.get(f"http://127.0.0.1:{handoff.url.port}/")
             assert core.status_code == 200

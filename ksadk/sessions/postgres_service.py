@@ -12,12 +12,15 @@ from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from ksadk.ids import new_session_id
+from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
 from ksadk.sessions._postgres_schema import _PostgresSchemaMixin
 from ksadk.sessions._postgres_tables import (
     KSADK_PG_EVENTS_TABLE,
     KSADK_PG_SESSIONS_TABLE,
     KSADK_PG_STATES_TABLE,
+    pg_tool_receipts_table,
 )
+from ksadk.sessions._postgres_tool_receipts import _PostgresToolReceiptMixin
 from ksadk.sessions.base import (
     CANONICAL_EVENT_STORAGE_CAPABILITIES,
     BaseSessionService,
@@ -26,6 +29,8 @@ from ksadk.sessions.base import (
     SessionEvent,
     SessionEventQuery,
     SessionState,
+    checkpoint_creation_identity,
+    checkpoint_resume_identity,
     generate_id,
 )
 from ksadk.sessions.errors import SessionBackendUnavailable
@@ -33,7 +38,7 @@ from ksadk.sessions.errors import SessionBackendUnavailable
 logger = logging.getLogger(__name__)
 
 
-class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
+class PostgresSessionService(_PostgresToolReceiptMixin, _PostgresSchemaMixin, BaseSessionService):
     storage_capabilities = CANONICAL_EVENT_STORAGE_CAPABILITIES
 
     def __init__(
@@ -196,6 +201,19 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
         await self._ensure_schema()
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                if not await connection.fetchval(
+                    f"SELECT 1 FROM {KSADK_PG_SESSIONS_TABLE} "
+                    "WHERE namespace=$1 AND id=$2 FOR UPDATE",
+                    self.namespace, session_id,
+                ):
+                    return False
+                if await connection.fetchval(
+                    f"SELECT 1 FROM {pg_tool_receipts_table} "
+                    "WHERE namespace=$1 AND session_id=$2 AND state='unknown' LIMIT 1",
+                    self.namespace,
+                    session_id,
+                ):
+                    raise ValueError("session has durable tool receipt claims")
                 await connection.execute(
                     f"""
                     DELETE FROM {KSADK_PG_STATES_TABLE}
@@ -753,99 +771,43 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
         self, session_id: str, run_id: str, checkpoint_id: str
     ) -> dict[str, object]:
         events = await self.query_events(
-            SessionEventQuery(
-                session_ids=[session_id], run_id=run_id, limit=2**31 - 1, from_start=True
-            )
+            SessionEventQuery(session_ids=[session_id], limit=2**31 - 1, from_start=True)
         )
         candidate = None
         max_seq_id = 0
-        resume_count = 0
+        resume_audit = CheckpointResumeAudit()
         last_resumed_at = None
         for event in events:
             metadata = event.metadata or {}
             if event.event_type == "run_checkpoint":
+                if str(metadata.get("run_id") or "") != run_id:
+                    continue
                 max_seq_id = max(max_seq_id, event.seq_id)
                 if str(metadata.get("checkpoint_id") or "") == checkpoint_id:
                     candidate = event
-            elif event.event_type == "run_resume" and str(
-                metadata.get("checkpoint_id") or ""
-            ) == checkpoint_id:
-                resume_count += 1
-                last_resumed_at = max(last_resumed_at or event.timestamp, event.timestamp)
-        return {"candidate": candidate, "max_seq_id": max_seq_id, "resume_count": resume_count,
-                "last_resumed_at": last_resumed_at}
+            elif (creation := checkpoint_creation_identity(event)) is not None:
+                if creation == (run_id, checkpoint_id):
+                    max_seq_id = max(max_seq_id, int(event.seq_id or 0))
+                    if candidate is None or event.seq_id > candidate.seq_id:
+                        candidate = event
+            else:
+                identity = checkpoint_resume_identity(event)
+                if identity is None or identity[:2] != (run_id, checkpoint_id):
+                    continue
+                resume_audit.record(event, identity)
+                last_resumed_at = resume_audit["last_resumed_at"]
+        return {
+            "candidate": candidate, "max_seq_id": max_seq_id,
+            "resume_count": resume_audit["resume_count"],
+            "last_resumed_at": last_resumed_at,
+        }
 
     async def get_checkpoint_stats(
         self, keys: list[tuple[str, str, str]]
     ) -> dict[str, object]:
-        if len(keys) > 50:
-            raise ValueError("checkpoint stats batch cannot exceed 50 keys")
-        unique_keys = list(dict.fromkeys(keys))
-        audits = {
-            key: {"resume_count": 0, "last_resumed_at": None} for key in unique_keys
-        }
-        run_keys = list(
-            dict.fromkeys((session_id, run_id) for session_id, run_id, _ in unique_keys)
-        )
-        latest = {key: 0 for key in run_keys}
-        if not unique_keys:
-            return {"audits": audits, "latest_seq_ids": latest}
-        await self._ensure_schema()
-        connection = self._checkpoint_snapshot_connection.get()
-        owns_connection = connection is None
-        if owns_connection:
-            connection = await self._pool.acquire()
-        try:
-            audit_rows = await connection.fetch(
-                f"""WITH requested(session_id,run_id,checkpoint_id) AS (
-                    SELECT * FROM unnest($2::text[],$3::text[],$4::text[])
-                )
-                SELECT requested.session_id,requested.run_id,requested.checkpoint_id,
-                       COUNT(event_row.id) AS resume_count,
-                       MAX(event_row.timestamp) AS last_resumed_at
-                FROM requested
-                LEFT JOIN {KSADK_PG_EVENTS_TABLE} event_row
-                  ON event_row.namespace=$1
-                 AND event_row.session_id=requested.session_id
-                 AND event_row.event_type='run_resume'
-                 AND event_row.metadata_json->>'run_id'=requested.run_id
-                 AND event_row.metadata_json->>'checkpoint_id'=requested.checkpoint_id
-                GROUP BY requested.session_id,requested.run_id,requested.checkpoint_id""",
-                self.namespace,
-                [key[0] for key in unique_keys],
-                [key[1] for key in unique_keys],
-                [key[2] for key in unique_keys],
-            )
-            latest_rows = await connection.fetch(
-                f"""WITH requested(session_id,run_id) AS (
-                    SELECT * FROM unnest($2::text[],$3::text[])
-                )
-                SELECT requested.session_id,requested.run_id,
-                       COALESCE(MAX(event_row.seq_id),0) AS latest_seq_id
-                FROM requested
-                LEFT JOIN {KSADK_PG_EVENTS_TABLE} event_row
-                  ON event_row.namespace=$1
-                 AND event_row.session_id=requested.session_id
-                 AND event_row.event_type='run_checkpoint'
-                 AND event_row.metadata_json->>'run_id'=requested.run_id
-                GROUP BY requested.session_id,requested.run_id""",
-                self.namespace,
-                [key[0] for key in run_keys],
-                [key[1] for key in run_keys],
-            )
-        finally:
-            if owns_connection:
-                await self._pool.release(connection)
-        for row in audit_rows:
-            audits[(row["session_id"], row["run_id"], row["checkpoint_id"])] = {
-                "resume_count": int(row["resume_count"] or 0),
-                "last_resumed_at": row["last_resumed_at"],
-            }
-        for row in latest_rows:
-            latest[(row["session_id"], row["run_id"])] = int(
-                row["latest_seq_id"] or 0
-            )
-        return {"audits": audits, "latest_seq_ids": latest}
+        from ksadk.sessions._postgres_checkpoint_stats import get_checkpoint_stats
+
+        return await get_checkpoint_stats(self, keys)
 
     def _agent_events_query_parts(
         self,
@@ -1242,7 +1204,6 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
         if isinstance(value, str):
             return dict(json.loads(value or "{}"))
         return dict(value)
-
 
 def create_postgres_session_service(
     *,
