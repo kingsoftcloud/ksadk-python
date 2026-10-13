@@ -38,6 +38,9 @@ jobs:
     environment: studio-signing
     timeout-minutes: 90
     steps:
+      - name: Preserve canonical source line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           repository: kingsoftcloud/agentkit-studio
