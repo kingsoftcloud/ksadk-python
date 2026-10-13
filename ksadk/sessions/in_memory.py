@@ -7,6 +7,7 @@ import time
 from typing import AsyncIterator, Optional
 
 from ksadk.ids import new_session_id
+from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
 from ksadk.sessions.base import (
     CANONICAL_EVENT_STORAGE_CAPABILITIES,
     BaseSessionService,
@@ -414,7 +415,7 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.get(session_id)
             candidate = None
             max_seq_id = 0
-            resume_count = 0
+            resume_audit = CheckpointResumeAudit()
             last_resumed_at = None
             for event in session.events if session else []:
                 metadata = event.metadata or {}
@@ -435,12 +436,12 @@ class InMemorySessionService(BaseSessionService):
                     identity = checkpoint_resume_identity(event)
                     if identity is None or identity[:2] != (run_id, checkpoint_id):
                         continue
-                    resume_count += 1
-                    last_resumed_at = max(last_resumed_at or identity[2], identity[2])
+                    resume_audit.record(event, identity)
+                    last_resumed_at = resume_audit["last_resumed_at"]
             return {
                 "candidate": candidate,
                 "max_seq_id": max_seq_id,
-                "resume_count": resume_count,
+                "resume_count": resume_audit["resume_count"],
                 "last_resumed_at": last_resumed_at,
             }
 
@@ -523,7 +524,7 @@ class InMemorySessionService(BaseSessionService):
         if len(keys) > 50:
             raise ValueError("checkpoint stats batch cannot exceed 50 keys")
         unique_keys = list(dict.fromkeys(keys))
-        audits = {key: {"resume_count": 0, "last_resumed_at": None} for key in unique_keys}
+        audits = {key: CheckpointResumeAudit() for key in unique_keys}
         run_keys = {(session_id, run_id) for session_id, run_id, _ in unique_keys}
         latest_seq_ids = {key: 0 for key in run_keys}
         async with self._lock:
@@ -557,10 +558,7 @@ class InMemorySessionService(BaseSessionService):
                     key = (session_id, identity[0], identity[1])
                     if key in audits:
                         audit = audits[key]
-                        audit["resume_count"] = int(audit["resume_count"]) + 1
-                        audit["last_resumed_at"] = max(
-                            audit["last_resumed_at"] or identity[2], identity[2]
-                        )
+                        audit.record(event, identity)
         return {"audits": audits, "latest_seq_ids": latest_seq_ids}
 
     async def get_events_for_agent(

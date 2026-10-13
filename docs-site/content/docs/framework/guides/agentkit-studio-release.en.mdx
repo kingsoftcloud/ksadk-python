@@ -1,0 +1,46 @@
+---
+title: AgentKit Studio macOS Signing Candidate
+description: Fixed-source signing, notarization, and candidate artifact verification for the new AgentKit Studio.
+---
+
+The macOS signing entry point for the new Studio is
+`.github/workflows/release-agentkit-studio.yml`. It signs and notarizes a fixed source revision,
+verifies the artifacts, and uploads an Actions artifact. It does not publish the online update
+feed.
+
+## Environment configuration
+
+The workflow uses the `studio-signing` Environment and these Apple Secret names:
+
+- `STUDIO_APPLE_P12_BASE64`
+- `STUDIO_APPLE_P12_PASSWORD`
+- `STUDIO_APPLE_ID`
+- `STUDIO_APPLE_APP_PASSWORD`
+- `STUDIO_APPLE_TEAM_ID`
+
+The new Studio repository is private, so `AGENTKIT_STUDIO_SOURCE_TOKEN` is also required. The
+token only needs read-only Contents access to `kingsoftcloud/agentkit-studio` and is used to
+checkout the 40-character commit SHA supplied to the workflow. It is not used for Apple signing,
+notarization, or update-feed publishing. Never put its value in the repository, workflow inputs,
+or logs.
+
+The old repository's default `GITHUB_TOKEN` is not used as an implicit cross-repository checkout
+credential. If `AGENTKIT_STUDIO_SOURCE_TOKEN` is missing, the workflow fails before checkout.
+
+## Trigger and verification
+
+The manual inputs are:
+
+1. `studio_ref`: the 40-character immutable commit SHA for the new Studio;
+2. `dsh_ref` and `dsh_commit`: the DSH ref and expected commit SHA;
+3. `channel`: `stable` or `preview`;
+4. `update_origin`: an HTTPS origin without a path, such as `https://updates.example.com`.
+
+The workflow rechecks both checkout SHAs. Studio's packaging preflight applies the complete DSH
+patch series in an isolated checkout. After signing, the workflow checks the App ID,
+`app-update.yml`, channel metadata version, ZIP size and SHA-512, `codesign`, `stapler`, and
+`spctl`. It then uploads the DMG, ZIP, ZIP blockmap, metadata, and `SHA256SUMS` from a visible
+artifact directory.
+
+The real signing run still needs valid Apple Secrets, the private Studio checkout token, and an
+update origin. Candidate artifact verification and online feed publication remain separate steps.
