@@ -128,8 +128,10 @@ def _project_interleaved_blocks(
     # replace streamed text. Without reliable boundaries, use the existing
     # Content/Reasoning/ToolEvents projection instead of displaying stale or
     # whole-run text for one message.
-    if expected_text is not None and "".join(
-        block["Content"] for block in blocks if block["Type"] == "text"
-    ) != expected_text:
+    if (
+        expected_text is not None
+        and "".join(block["Content"] for block in blocks if block["Type"] == "text")
+        != expected_text
+    ):
         return []
     return blocks
