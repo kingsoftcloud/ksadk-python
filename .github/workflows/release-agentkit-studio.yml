@@ -7,6 +7,11 @@ on:
         description: "AgentKit Studio immutable commit SHA to package"
         required: true
         type: string
+      studio_checkout_ref:
+        description: "Private Studio branch or tag that contains studio_ref (checkout transport only)"
+        required: true
+        default: codex/agentkit-studio-p1-1
+        type: string
       dsh_ref:
         description: "DSH tag or commit used by the Studio release"
         required: true
@@ -82,7 +87,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kingsoftcloud/agentkit-studio
-          ref: ${{ inputs.studio_ref }}
+          ref: ${{ inputs.studio_checkout_ref }}
           path: studio
           fetch-depth: 1
           token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
@@ -108,6 +113,7 @@ jobs:
         env:
           EXPECTED_DSH_COMMIT: ${{ inputs.dsh_commit }}
           STUDIO_REF_VALUE: ${{ inputs.studio_ref }}
+          STUDIO_CHECKOUT_REF_VALUE: ${{ inputs.studio_checkout_ref }}
           UPDATE_ORIGIN_VALUE: ${{ inputs.update_origin }}
           BUILD_VERSION_VALUE: ${{ inputs.build_version }}
         run: |
@@ -116,6 +122,10 @@ jobs:
           test "$actual_dsh_commit" = "$EXPECTED_DSH_COMMIT"
           [[ "$STUDIO_REF_VALUE" =~ ^[0-9a-f]{40}$ ]] || {
             echo "studio_ref must be an immutable 40-character commit SHA" >&2
+            exit 1
+          }
+          [[ "$STUDIO_CHECKOUT_REF_VALUE" =~ ^[A-Za-z0-9._/-]+$ ]] || {
+            echo "studio_checkout_ref must be a branch or tag name" >&2
             exit 1
           }
           test "$(git -C studio rev-parse HEAD)" = "$STUDIO_REF_VALUE"
@@ -375,7 +385,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kingsoftcloud/agentkit-studio
-          ref: ${{ inputs.studio_ref }}
+          ref: ${{ inputs.studio_checkout_ref }}
           path: studio
           fetch-depth: 1
           token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
@@ -430,7 +440,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kingsoftcloud/agentkit-studio
-          ref: ${{ inputs.studio_ref }}
+          ref: ${{ inputs.studio_checkout_ref }}
           path: studio
           fetch-depth: 1
           token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
