@@ -311,6 +311,7 @@ jobs:
           DSH_DESKTOP_BUILD_VERSION="$BUILD_VERSION" make desktop-package-mac-arm64 DSH_ROOT="$DSH_ROOT" DSH_COMMIT="$DSH_COMMIT" DSH_VERSION="$DSH_VERSION" PACK_DIR="$PACK_DIR"
 
       - name: Verify signed and notarized artifacts
+        id: verified-artifacts
         shell: bash
         working-directory: studio
         env:
@@ -393,6 +394,8 @@ jobs:
           if-no-files-found: warn
 
       - name: Stage signed release candidate
+        id: staged-candidate
+        if: ${{ always() && steps.verified-artifacts.conclusion == 'success' }}
         shell: bash
         working-directory: studio
         env:
@@ -416,6 +419,7 @@ jobs:
           printf 'staging=%s\n' "$staging" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload signed Studio release candidate
+        if: ${{ always() && steps.staged-candidate.conclusion == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-mac-arm64
