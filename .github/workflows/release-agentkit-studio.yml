@@ -38,6 +38,38 @@ permissions:
   contents: read
   actions: read
 jobs:
+  source-gate:
+    runs-on: ubuntu-latest
+    environment: studio-signing
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: kingsoftcloud/agentkit-studio
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+          ref: ${{ inputs.studio_checkout_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact Studio source
+        env:
+          SOURCE_SHA: ${{ inputs.studio_ref }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$SOURCE_SHA" HEAD
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: |
+          bash ci/install-gitleaks.sh "$RUNNER_TEMP/gitleaks"
+          echo "GITLEAKS_BIN=$RUNNER_TEMP/gitleaks/gitleaks" >> "$GITHUB_ENV"
+      - run: make public-gate
   online-update:
     runs-on: windows-latest
     environment: studio-signing
