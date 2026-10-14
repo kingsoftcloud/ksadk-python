@@ -1,0 +1,95 @@
+name: Qualify signed AgentKit Studio macOS onboarding
+on:
+  workflow_dispatch:
+    inputs:
+      studio_ref:
+        description: Immutable qualification tools SHA
+        type: string
+        required: true
+      studio_checkout_ref:
+        description: Branch containing qualification tools
+        type: string
+        default: main
+      candidate_repository:
+        description: Repository containing the signed candidate run
+        type: string
+        default: kingsoftcloud/agentkit-studio
+      candidate_run:
+        description: Completed signing run; native GUI may be requalified separately
+        type: string
+        required: true
+      candidate_source:
+        description: Actual immutable signed Studio source
+        type: string
+        required: true
+      candidate_version:
+        description: Actual signed product version
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native-onboarding:
+    runs-on: macos-14
+    environment: studio-signing
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: kingsoftcloud/agentkit-studio
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+          ref: ${{ inputs.studio_checkout_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable qualification tools
+        env:
+          TOOLS_SHA: ${{ inputs.studio_ref }}
+          SIGNED_SHA: ${{ inputs.candidate_source }}
+        run: |
+          [[ "$TOOLS_SHA" =~ ^[0-9a-f]{40}$ && "$SIGNED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$TOOLS_SHA" HEAD
+          git merge-base --is-ancestor "$SIGNED_SHA" HEAD
+          git checkout --detach "$TOOLS_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - run: pnpm install --frozen-lockfile
+      - name: Reverify signed candidate and exercise native configuration
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_REPOSITORY: ${{ inputs.candidate_repository }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+        run: |
+          node scripts/prepare-macos-candidate.mjs --repository "$CANDIDATE_REPOSITORY" --run "$CANDIDATE_RUN" --source "$CANDIDATE_SOURCE" --version "$CANDIDATE_VERSION" --output .artifacts/mac-candidate
+          unzip -q .artifacts/mac-candidate/candidate.zip -d .artifacts/mac-candidate/files
+          (cd .artifacts/mac-candidate/files && shasum -a 256 -c SHA256SUMS)
+          unzip -q ".artifacts/mac-candidate/files/deepseek-harness-$CANDIDATE_VERSION-mac-arm64.zip" -d "$RUNNER_TEMP/studio-onboarding-app"
+          app="$RUNNER_TEMP/studio-onboarding-app/AgentKit Studio.app"
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          node scripts/verify-desktop-module-graph.mjs "$app"
+          export APP_ASAR="$app/Contents/Resources/app.asar"
+          node --input-type=module <<'NODE'
+          import asar from '@electron/asar';
+          import {execFileSync} from 'node:child_process';
+          const expected=execFileSync('git',['show',process.env.CANDIDATE_SOURCE+':dist/client.js'],{maxBuffer:16*1024*1024});
+          const actual=asar.extractFile(process.env.APP_ASAR,'dsh/node_modules/@kingsoftcloud/agentkit-studio/dist/client.js');
+          if(!actual.equals(expected)) throw Error('Signed macOS client differs from its immutable source');
+          NODE
+          node scripts/verify-macos-onboarding.mjs --app "$app" --version "$CANDIDATE_VERSION" --output .artifacts/onboarding-proof
+      - name: Retain native configuration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-onboarding-qualified-${{ inputs.candidate_version }}-mac-arm64
+          path: |
+            .artifacts/mac-candidate/provenance.json
+            .artifacts/onboarding-proof/
+          if-no-files-found: warn
