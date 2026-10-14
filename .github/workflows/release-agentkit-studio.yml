@@ -376,6 +376,22 @@ jobs:
           spctl --assess --type execute --verbose=4 "$app"
           printf 'artifacts=%s\ndmg=%s\nzip=%s\nblockmap=%s\nmetadata=%s\n' "$artifacts" "$dmg" "$zip" "$blockmap" "$metadata" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify native Studio first-use configuration
+        shell: bash
+        working-directory: studio
+        env:
+          BUILD_VERSION: ${{ inputs.build_version }}
+        run: |
+          node scripts/verify-macos-onboarding.mjs --app "$RUNNER_TEMP/agentkit-studio-unpacked/AgentKit Studio.app" --version "$BUILD_VERSION" --output .artifacts/onboarding-proof
+
+      - name: Retain native onboarding diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-onboarding-${{ inputs.build_version }}-mac-arm64
+          path: studio/.artifacts/onboarding-proof/
+          if-no-files-found: warn
+
       - name: Stage signed release candidate
         shell: bash
         working-directory: studio
