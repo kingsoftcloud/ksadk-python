@@ -69,6 +69,10 @@ on:
         description: "Reuse artifacts from a completed run with successful signing; empty builds a new candidate"
         required: false
         type: string
+      upload_release_assets:
+        description: Upload the verified final10 signed assets to the Studio draft release
+        type: boolean
+        default: false
       release_tools_ref:
         description: "Optional immutable release-tools SHA; defaults to studio_ref, does not change signed sources"
         required: false
@@ -649,7 +653,7 @@ jobs:
 
   qualify-retained-onboarding:
     needs: [source-gate]
-    if: ${{ inputs.candidate_run_id != '' }}
+    if: ${{ inputs.candidate_run_id != '' && !inputs.upload_release_assets }}
     runs-on: macos-14
     environment: studio-signing
     timeout-minutes: 20
@@ -712,3 +716,44 @@ jobs:
             .artifacts/mac-candidate/provenance.json
             .artifacts/onboarding-proof/
           if-no-files-found: warn
+
+  upload-final10-assets:
+    needs: [source-gate]
+    if: ${{ inputs.upload_release_assets }}
+    runs-on: ubuntu-latest
+    environment: studio-signing
+    timeout-minutes: 25
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentkit-studio-a3b7c9f7ee3b5302128168c76410c3eb6d9e5478-preview-mac-arm64
+          path: mac-candidate
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          run-id: '38535386678'
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentkit-studio-0.2.0-rc.2.20261014.10-win-x64
+          path: windows-candidate
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          run-id: '38540089620'
+      - name: Match signed asset hashes and upload from the Runner
+        env:
+          GH_TOKEN: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+          BUILD_VERSION: ${{ inputs.build_version }}
+        run: |
+          test "$BUILD_VERSION" = '0.2.0-rc.2.20261014.10'
+          mkdir release-assets
+          cp "mac-candidate/deepseek-harness-$BUILD_VERSION-mac-arm64.dmg" "release-assets/AgentKit-Studio-$BUILD_VERSION-mac-arm64.dmg"
+          cp "mac-candidate/deepseek-harness-$BUILD_VERSION-mac-arm64.zip" "release-assets/AgentKit-Studio-$BUILD_VERSION-mac-arm64.zip"
+          cp "windows-candidate/windows-release/deepseek-harness-$BUILD_VERSION-win-x64.exe" "release-assets/AgentKit-Studio-$BUILD_VERSION-win-x64.exe"
+          cd release-assets
+          sha256sum -c <<'SUMS'
+          7aa7accacd1382c2443d614c90140fe866ad4592d4d814417db9530b86c769f2  AgentKit-Studio-0.2.0-rc.2.20261014.10-mac-arm64.dmg
+          84c57c132cea6f203292409f0e35f2dc804101c3c41a0ec16dd7f70340d19873  AgentKit-Studio-0.2.0-rc.2.20261014.10-mac-arm64.zip
+          855bc063b3b9908e8b44ec74337a174d61ab7f0d91da4a91fb8cc005546d917c  AgentKit-Studio-0.2.0-rc.2.20261014.10-win-x64.exe
+          SUMS
+          test "$(gh api repos/kingsoftcloud/agentkit-studio/git/ref/tags/desktop-$BUILD_VERSION --jq .object.sha)" = 'a3b7c9f7ee3b5302128168c76410c3eb6d9e5478'
+          test "$(gh release view desktop-$BUILD_VERSION --repo kingsoftcloud/agentkit-studio --json isDraft --jq .isDraft)" = true
+          gh release upload "desktop-$BUILD_VERSION" --repo kingsoftcloud/agentkit-studio ./*
