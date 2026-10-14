@@ -1,57 +1,45 @@
-name: Release AgentKit Studio Windows
-
+name: Qualify AgentKit Studio Windows online update (temporary public runner)
 on:
   workflow_dispatch:
     inputs:
-      candidate_run_id:
-        description: Completed run whose signed installer and installation checks passed
-        type: string
-        default: ''
-      release_tools_ref:
-        description: Immutable commit for qualification tools; defaults to studio_ref
-        type: string
-        default: ''
-      diagnostic_only:
-        description: Run unsigned packaging smoke without publishing or installer qualification
-        type: boolean
-        default: false
       studio_ref:
-        description: Immutable Studio source commit
+        description: Immutable qualification tools commit
         type: string
         required: true
       studio_checkout_ref:
-        description: Branch containing the immutable source commit
+        description: Branch containing qualification tools
         type: string
         default: main
-        required: true
-      build_version:
-        description: Desktop semantic version
+      baseline_repository:
+        description: Repository containing the signed baseline run
+        type: string
+        default: kingsoftcloud/agentkit-studio
+      baseline_run:
+        description: Completed signed baseline build run
         type: string
         required: true
-      channel:
-        type: choice
-        default: preview
-        options: [stable, preview]
-      update_origin:
+      baseline_source:
+        description: Actual immutable baseline Studio source
         type: string
-        default: https://agentkit.ks3-cn-beijing.ksyuncs.com
         required: true
-
+      baseline_version:
+        description: Actual baseline version
+        type: string
+        required: true
+      target_version:
+        description: Public feed target to install
+        type: string
+        required: true
 permissions:
   contents: read
   actions: read
-
-concurrency:
-  group: studio-windows-signing
-  cancel-in-progress: false
-
 jobs:
-  windows-x64:
-    runs-on: windows-2025
+  online-update:
+    runs-on: windows-latest
     environment: studio-signing
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
-      - name: Preserve canonical source line endings
+      - name: Preserve source line endings
         shell: pwsh
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
@@ -61,202 +49,59 @@ jobs:
           ref: ${{ inputs.studio_checkout_ref }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify immutable Studio source
+      - name: Verify immutable qualification tools
         shell: pwsh
         env:
-          STUDIO_SHA: ${{ inputs.studio_ref }}
-          VERSION: ${{ inputs.build_version }}
-          TOOLS_SHA: ${{ inputs.release_tools_ref || inputs.studio_ref }}
+          SOURCE_SHA: ${{ inputs.studio_ref }}
         run: |
-          if ($env:STUDIO_SHA -notmatch '^[0-9a-f]{40}$') { throw 'studio_ref must be a full commit SHA' }
-          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') { throw 'Invalid desktop build version' }
-          if ($env:TOOLS_SHA -notmatch '^[0-9a-f]{40}$') { throw 'release_tools_ref must be a full commit SHA' }
-          git merge-base --is-ancestor $env:TOOLS_SHA HEAD
-          if ($LASTEXITCODE) { throw 'Qualification tools are outside the selected branch' }
-          git merge-base --is-ancestor $env:STUDIO_SHA HEAD
-          if ($LASTEXITCODE) { throw 'Source commit is outside the selected branch' }
-          git checkout --detach $env:STUDIO_SHA
-          if ($LASTEXITCODE -or (git rev-parse HEAD) -ne $env:STUDIO_SHA) { throw 'Studio checkout mismatch' }
-      - uses: actions/checkout@v4
-        with:
-          repository: kingsoftcloud/agentkit-studio
-          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
-          ref: ${{ inputs.release_tools_ref || inputs.studio_ref }}
-          path: .qualification-tools
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        if: ${{ inputs.candidate_run_id == '' }}
-        with:
-          repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.2.0-rc.2
-          path: dsh-source
-          persist-credentials: false
+          if ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$') { throw 'Full tools SHA is required' }
+          git merge-base --is-ancestor $env:SOURCE_SHA HEAD
+          if ($LASTEXITCODE) { throw 'Tools are outside the selected branch' }
+          git checkout --detach $env:SOURCE_SHA
+          if ($LASTEXITCODE -or (git rev-parse HEAD) -ne $env:SOURCE_SHA) { throw 'Tools checkout mismatch' }
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - uses: pnpm/action-setup@v4
-        if: ${{ inputs.candidate_run_id == '' }}
-        with:
-          version: 11.7.0
-          package_json_file: dsh-source/package.json
-      - uses: pnpm/action-setup@v4
-        if: ${{ inputs.candidate_run_id != '' }}
         with:
           version: 10.33.2
-          package_json_file: package.json
-      - name: Prepare verified signed candidate reuse
-        if: ${{ inputs.candidate_run_id != '' }}
+      - name: Install qualification dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify and install the actual signed baseline
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ inputs.studio_ref }}
-          BUILD_VERSION: ${{ inputs.build_version }}
-          CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
+          BASELINE_REPOSITORY: ${{ inputs.baseline_repository }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+          BASELINE_SOURCE: ${{ inputs.baseline_source }}
+          BASELINE_VERSION: ${{ inputs.baseline_version }}
         run: |
-          if ('${{ inputs.diagnostic_only }}' -eq 'true') { throw 'Signed candidate reuse cannot be diagnostic-only' }
-          pnpm install --frozen-lockfile
-          if ($LASTEXITCODE) { throw 'Qualification dependencies failed' }
-          node .qualification-tools/scripts/prepare-windows-candidate.mjs --repository '${{ github.repository }}' --run $env:CANDIDATE_RUN --source $env:SOURCE_SHA --version $env:BUILD_VERSION --output .artifacts/windows-candidate
-          if ($LASTEXITCODE) { throw 'Signed candidate identity or digest failed' }
-          Expand-Archive -LiteralPath .artifacts/windows-candidate/candidate.zip -DestinationPath .artifacts/windows-candidate/unpacked
-          $candidate = @(Get-ChildItem .artifacts/windows-candidate/unpacked -Directory -Recurse | Where-Object { $_.Name -eq 'windows-release' })
-          if ($candidate.Count -ne 1) { throw 'Expected one signed release directory' }
-          "STUDIO_REUSE_ARTIFACTS=$($candidate[0].FullName)" | Out-File $env:GITHUB_ENV -Append
-      - name: Prepare short isolated build root
-        if: ${{ inputs.candidate_run_id == '' }}
-        shell: pwsh
-        run: |
-          if ((git -C dsh-source rev-parse HEAD) -ne '639ed015397290b3745d163aafe02ffee4aa3f84') { throw 'DSH baseline mismatch' }
-          git config --system core.longpaths true
-          pnpm install --frozen-lockfile
-          if ($LASTEXITCODE) { throw 'Studio dependency installation failed' }
-          pnpm pack --pack-destination .artifacts
-          if ($LASTEXITCODE) { throw 'Studio plugin pack failed' }
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $inputRoot = Join-Path $env:RUNNER_TEMP 'studio-plugin-input'
-          New-Item -ItemType Directory -Force $inputRoot | Out-Null
-          Copy-Item ".artifacts/kingsoftcloud-agentkit-studio-$version.tgz" $inputRoot
-          "DSH_DESKTOP_PLUGIN_INPUTS=$inputRoot" | Out-File $env:GITHUB_ENV -Append
-          "STUDIO_PACKAGE_VERSION=$version" | Out-File $env:GITHUB_ENV -Append
-      - name: Prepare fresh Certum authentication URI
-        if: ${{ ! inputs.diagnostic_only && inputs.candidate_run_id == '' }}
-        id: certum
+          node scripts/prepare-windows-candidate.mjs --repository $env:BASELINE_REPOSITORY --run $env:BASELINE_RUN --source $env:BASELINE_SOURCE --version $env:BASELINE_VERSION --output .artifacts/online-baseline
+          if ($LASTEXITCODE) { throw 'Signed baseline provenance validation failed' }
+          Expand-Archive .artifacts/online-baseline/candidate.zip .artifacts/online-baseline/unpacked
+          $exe = @(Get-ChildItem .artifacts/online-baseline/unpacked -Recurse -File -Filter "deepseek-harness-$env:BASELINE_VERSION-win-x64.exe")
+          if ($exe.Count -ne 1) { throw 'Expected one signed baseline installer' }
+          $signature=Get-AuthenticodeSignature $exe[0].FullName
+          if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) { throw 'Baseline signature invalid' }
+          $destination=Join-Path $env:RUNNER_TEMP 'studio-online-update-installed'
+          $process=Start-Process $exe[0].FullName -ArgumentList @('/S',"/D=$destination") -Wait -PassThru
+          if ($process.ExitCode) { throw 'Baseline installation failed' }
+          "STUDIO_UPDATE_BASELINE=$destination/AgentKit Studio.exe" | Out-File $env:GITHUB_ENV -Append
+      - name: Exercise public feed, native download, installation and automatic restart
         shell: pwsh
         env:
-          CERTUM_ACCOUNT: ${{ secrets.CERTUM_ACCOUNT }}
-          CERTUM_EMAIL: ${{ secrets.CERTUM_EMAIL }}
-          CERTUM_TOTP_SECRET: ${{ secrets.CERTUM_TOTP_SECRET }}
+          TARGET_VERSION: ${{ inputs.target_version }}
         run: |
-          $account = if ($env:CERTUM_ACCOUNT) {$env:CERTUM_ACCOUNT} else {$env:CERTUM_EMAIL}
-          if (-not $account -or -not $env:CERTUM_TOTP_SECRET) { throw 'Certum account and TOTP configuration are required' }
-          $seed = $env:CERTUM_TOTP_SECRET.Trim()
-          if ($seed.StartsWith('otpauth://')) { $uri = $seed }
-          elseif ($seed -match '^[A-Za-z2-7]+=*$') { $uri = "otpauth://totp/SimplySign?secret=$seed&algorithm=SHA256&digits=6&period=30" }
-          else { throw 'CERTUM_TOTP_SECRET must be a Base32 seed or complete otpauth URI' }
-          Write-Output "::add-mask::$uri"
-          Write-Output "::add-mask::$account"
-          "uri=$uri" | Out-File $env:GITHUB_OUTPUT -Append
-          "account=$account" | Out-File $env:GITHUB_OUTPUT -Append
-      - name: Authenticate Certum cloud certificate
-        if: ${{ ! inputs.diagnostic_only && inputs.candidate_run_id == '' }}
-        uses: dismine/windows-app-signing-setup-action@89ae3b032d4bc7a5b98d1a42a34e61ecb6faad64
-        with:
-          certum-username: ${{ steps.certum.outputs.account }}
-          certum-otp-uri: ${{ steps.certum.outputs.uri }}
-          certum-key-id: ${{ secrets.CERTUM_THUMBPRINT }}
-          capture-diagnostics: 'false'
-      - name: Configure verified certificate-store signing
-        if: ${{ ! inputs.diagnostic_only && inputs.candidate_run_id == '' }}
-        shell: pwsh
-        env:
-          CERTUM_THUMBPRINT: ${{ secrets.CERTUM_THUMBPRINT }}
-          UPDATE_ORIGIN: ${{ inputs.update_origin }}
-          CHANNEL: ${{ inputs.channel }}
-        run: ./scripts/prepare-windows-signing.ps1 -DshRoot "$PWD/dsh-source" -UpdateOrigin $env:UPDATE_ORIGIN -Channel $env:CHANNEL
-      - name: Configure isolated unsigned diagnostic package
-        if: ${{ inputs.diagnostic_only && inputs.candidate_run_id == '' }}
-        shell: pwsh
-        env:
-          UPDATE_ORIGIN: ${{ inputs.update_origin }}
-          CHANNEL: ${{ inputs.channel }}
-        run: |
-          $uri = [Uri]$env:UPDATE_ORIGIN
-          if ($uri.Scheme -ne 'https' -or $uri.UserInfo -or $uri.AbsolutePath -ne '/') { throw 'Invalid update origin' }
-          $settings = @{
-            DSH_DESKTOP_APP_ID = 'com.kingsoftcloud.agentkit-studio'
-            DSH_DESKTOP_AUTO_UPDATE_ENV = 'production'
-            DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN = $env:UPDATE_ORIGIN
-            DSH_DESKTOP_UPDATE_ORIGIN = $env:UPDATE_ORIGIN
-            DSH_DESKTOP_UPDATE_CHANNEL = $env:CHANNEL
-          }
-          $lines = foreach ($entry in $settings.GetEnumerator()) { "$($entry.Key)='$($entry.Value)'" }
-          [IO.File]::WriteAllText("$PWD/dsh-source/apps/desktop/.env.windows", ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
-      - name: Package the official DSH Windows target
-        if: ${{ inputs.candidate_run_id == '' }}
-        shell: pwsh
-        env:
-          BUILD_VERSION: ${{ inputs.build_version }}
-          DSH_CLIENT_TITLE: AgentKit Studio
-          DSH_DESKTOP_PLUGIN_ROOTS: '@kingsoftcloud/agentkit-studio'
-          DSH_DESKTOP_PLUGIN_BUNDLES: '@kingsoftcloud/agentkit-studio'
-        run: |
-          [string[]]$packageArguments = @('--source', "$PWD/dsh-source", '--output', "$env:RUNNER_TEMP/studio-build", '--patches', "$PWD/patches/dsh-v0.2.0-rc.2", '--commit', '639ed015397290b3745d163aafe02ffee4aa3f84', '--target', 'win-x64', '--dsh-version', '0.2.0-rc.2', '--studio-version', $env:STUDIO_PACKAGE_VERSION, '--build-version', $env:BUILD_VERSION)
-          if ('${{ inputs.diagnostic_only }}' -eq 'true') { $packageArguments += '--unsigned' }
-          $env:DSH_DESKTOP_PRODUCT_ICON = "$PWD/assets/agentkit-studio-macos.png"
-          pnpm exec node scripts/package-desktop.mjs @packageArguments
-          if ($LASTEXITCODE) { throw 'Signed Windows packaging failed' }
-      - name: Verify timestamped installer and actual installation
-        if: ${{ ! inputs.diagnostic_only }}
-        shell: pwsh
-        env:
-          CERTUM_THUMBPRINT: ${{ secrets.CERTUM_THUMBPRINT }}
-          BUILD_VERSION: ${{ inputs.build_version }}
-        run: |
-          if ($env:STUDIO_REUSE_ARTIFACTS) { $artifacts = $env:STUDIO_REUSE_ARTIFACTS }
-          else {
-            $candidates = @(Get-Item "$env:RUNNER_TEMP/studio-build/desktop-checkouts/*/source/apps/desktop/.desktop-build/targets/win-x64/artifacts")
-            if ($candidates.Count -ne 1) { throw 'Expected exactly one signed output directory' }
-            $artifacts = $candidates[0].FullName
-          }
-          ./.qualification-tools/scripts/verify-windows-install.ps1 -Artifacts $artifacts -Version $env:BUILD_VERSION -Evidence .artifacts/windows-proof
-          New-Item -ItemType Directory -Force .artifacts/windows-release | Out-Null
-          Copy-Item "$artifacts/*" .artifacts/windows-release -Recurse
-          if (Test-Path .artifacts/windows-candidate/provenance.json) { Copy-Item .artifacts/windows-candidate/provenance.json .artifacts/windows-proof/candidate-provenance.json }
-      - name: Verify the actually installed Windows App UI
-        if: ${{ ! inputs.diagnostic_only }}
-        shell: pwsh
-        env:
-          BUILD_VERSION: ${{ inputs.build_version }}
-        run: |
-          node .qualification-tools/scripts/verify-windows-app-ui.mjs
-          if ($LASTEXITCODE) { throw 'Installed Windows App UI acceptance failed' }
-      - name: Collect credential-free packaging diagnostics
-        if: always() && inputs.diagnostic_only
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force .artifacts/windows-diagnostics | Out-Null
-          Get-ChildItem "$env:RUNNER_TEMP/studio-build/desktop-checkouts" -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
-            $runs = Join-Path $_.FullName 'source/apps/desktop/.desktop-build/packaging-runs'
-            if (Test-Path $runs) {
-              Get-ChildItem -LiteralPath $runs -Recurse -File -Force |
-                Where-Object { $_.Extension -in @('.json', '.jsonl', '.log') } |
-                ForEach-Object { Copy-Item $_.FullName (Join-Path '.artifacts/windows-diagnostics' ($_.Directory.Name + '-' + $_.Name)) }
-            }
-          }
-      - name: Retain signed installer and acceptance evidence
+          node scripts/verify-windows-online-update.mjs --baseline $env:STUDIO_UPDATE_BASELINE --version $env:TARGET_VERSION --output .artifacts/windows-online-update
+          if ($LASTEXITCODE) { throw 'Real online Windows update qualification failed' }
+      - name: Retain credential-free native update evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: agentkit-studio-${{ inputs.build_version }}-win-x64
+          name: windows-online-update-${{ inputs.baseline_version }}-to-${{ inputs.target_version }}
           path: |
-            .artifacts/windows-release/
-            .artifacts/windows-proof/
-            .artifacts/windows-diagnostics/
-          if-no-files-found: error
-          retention-days: 14
-      - name: Remove local signing settings
-        if: always()
-        shell: pwsh
-        run: |
-          Remove-Item dsh-source/apps/desktop/.env.windows -Force -ErrorAction SilentlyContinue
-          Remove-Item "$env:RUNNER_TEMP/studio-code-signing.cer" -Force -ErrorAction SilentlyContinue
+            .artifacts/online-baseline/provenance.json
+            .artifacts/windows-online-update/*.json
+            .artifacts/windows-online-update/*.png
+            .artifacts/windows-online-update/journals/
+          if-no-files-found: warn
