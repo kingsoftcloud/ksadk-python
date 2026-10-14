@@ -203,6 +203,7 @@ jobs:
           [string[]]$packageArguments = @('--source', "$PWD/dsh-source", '--output', "$env:RUNNER_TEMP/studio-build", '--patches', "$PWD/patches/dsh-v0.2.0-rc.2", '--commit', '639ed015397290b3745d163aafe02ffee4aa3f84', '--target', 'win-x64', '--dsh-version', '0.2.0-rc.2', '--studio-version', $env:STUDIO_PACKAGE_VERSION, '--build-version', $env:BUILD_VERSION)
           if ('${{ inputs.diagnostic_only }}' -eq 'true') { $packageArguments += '--unsigned' }
           $env:DSH_DESKTOP_PRODUCT_ICON = "$PWD/assets/agentkit-studio-macos.png"
+          $env:DSH_DESKTOP_PRODUCT_TRAY_ICON = "$PWD/assets/agentkit-studio-tray.ico"
           pnpm exec node scripts/package-desktop.mjs @packageArguments
           if ($LASTEXITCODE) { throw 'Signed Windows packaging failed' }
       - name: Verify timestamped installer and actual installation
