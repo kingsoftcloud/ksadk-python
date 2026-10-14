@@ -30,6 +30,10 @@ on:
         description: Public feed target to install
         type: string
         required: true
+      require_differential:
+        description: Require completed native download bytes smaller than the full installer
+        type: boolean
+        default: true
 permissions:
   contents: read
   actions: read
@@ -91,8 +95,11 @@ jobs:
         shell: pwsh
         env:
           TARGET_VERSION: ${{ inputs.target_version }}
+          REQUIRE_DIFFERENTIAL: ${{ inputs.require_differential }}
         run: |
-          node scripts/verify-windows-online-update.mjs --baseline $env:STUDIO_UPDATE_BASELINE --version $env:TARGET_VERSION --output .artifacts/windows-online-update
+          $options=@()
+          if ($env:REQUIRE_DIFFERENTIAL -eq 'false') { $options+= '--allow-full-fallback' }
+          node scripts/verify-windows-online-update.mjs --baseline $env:STUDIO_UPDATE_BASELINE --version $env:TARGET_VERSION --output .artifacts/windows-online-update @options
           if ($LASTEXITCODE) { throw 'Real online Windows update qualification failed' }
       - name: Retain credential-free native update evidence
         if: always()
