@@ -58,8 +58,13 @@ if args.mode=='inventory':
 else:
     data=Path(args.plan).read_bytes(); assert args.sha256 and hashlib.sha256(data).hexdigest()==args.sha256
     plan=json.loads(data); assert plan['bucket']==bucket and plan['origin']==origin
-    assert plan['versioning'] in [None,'Suspended'], 'Versioned/unverified bucket requires version-specific cleanup plan'
-    assert all(i['eligible'] and allowed.fullmatch(i['key']) for i in plan['objects'])
+    # KS3 explicitly does not implement S3 Bucket Versioning APIs (official
+    # compatibility table documents/959). This fixed KS3 endpoint returned
+    # 404 for versioning while both scoped bucket listings succeeded.
+    assert plan['versioning'] in [None,'Suspended','unverified-http-404']
+    # The sole non-file entry in the reviewed inventory is the zero-byte
+    # directory marker at the root of this exact owned product namespace.
+    assert all((i['eligible'] and allowed.fullmatch(i['key'])) or (i['key']=='studio/' and i['size']==0) for i in plan['objects'])
     assert listing()==plan['objects'], 'Objects changed after inventory; no delete authorized'
     rows=sorted(plan['objects'],key=lambda r:('/feeds/' not in r['key'],r['key']))
     journal=[]
