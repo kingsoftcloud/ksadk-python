@@ -109,9 +109,17 @@ def _active_studio(studio):
     return getattr(studio, "active", studio)
 
 
-def _studio_dsh_options(studio: StudioService) -> tuple[Path, str, tuple[str, ...] | None, str]:
+def _studio_dsh_profile_options(studio: StudioService) -> tuple[Path, str, str]:
+    """Read Profile identity without starting toolchain subprocess probes."""
+
     configured_home = os.environ.get("KSADK_DSH_HOME", "").strip()
     home = studio_dsh_home(studio.workspace.root)
+    profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web"
+    return home, profile, "explicit" if configured_home else "workspace-isolated"
+
+
+def _studio_dsh_options(studio: StudioService) -> tuple[Path, str, tuple[str, ...] | None, str]:
+    home, profile, home_mode = _studio_dsh_profile_options(studio)
     configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
     if configured_bin:
         command = (str(Path(configured_bin).expanduser()),)
@@ -122,8 +130,7 @@ def _studio_dsh_options(studio: StudioService) -> tuple[Path, str, tuple[str, ..
             # Keep the bridge's established PATH lookup when the optional
             # pinned toolchain has not been installed or is unusable.
             command = None
-    profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web"
-    return home, profile, command, "explicit" if configured_home else "workspace-isolated"
+    return home, profile, command, home_mode
 
 
 def _public_host(kind: str, host: Any | None, *, home_mode: str) -> dict[str, Any]:
@@ -552,7 +559,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
     """Register only DSH Profile and Codex App Server lifecycle routes."""
 
     def public_dsh(item: DshPluginInventory, host: DshBridgeHost) -> dict[str, Any]:
-        _, _, _, dsh_mode = _studio_dsh_options(_active_studio(studio))
+        _, _, dsh_mode = _studio_dsh_profile_options(_active_studio(studio))
         return _public_dsh_inventory(
             item,
             host=host,
@@ -775,7 +782,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.get("/api/v1/plugin-ecosystems/dsh/plugins")
     async def list_dsh_plugins():
-        dsh_home, dsh_profile, _, dsh_mode = _studio_dsh_options(_active_studio(studio))
+        dsh_home, dsh_profile, dsh_mode = _studio_dsh_profile_options(_active_studio(studio))
         try:
             host, items = await asyncio.to_thread(call_dsh, lambda bridge: bridge.list_plugins())
             return {
@@ -799,7 +806,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.get("/api/v1/plugin-ecosystems/dsh/profile")
     async def get_dsh_profile_projection():
-        _, dsh_profile, _, dsh_mode = _studio_dsh_options(_active_studio(studio))
+        _, _, dsh_mode = _studio_dsh_profile_options(_active_studio(studio))
         host, projection = await asyncio.to_thread(
             call_dsh, lambda bridge: bridge.project_profile(), write=True,
         )
