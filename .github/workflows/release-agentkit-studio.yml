@@ -245,6 +245,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: studio-refactor-windows-${{ inputs.build_version }}
+          include-hidden-files: true
           path: |
             .artifacts/windows-product-inputs.txt
             .artifacts/windows-product-powershell.json
@@ -308,6 +309,7 @@ jobs:
         if: always()
         with:
           name: studio-refactor-patched-host-${{ matrix.os }}
+          include-hidden-files: true
           path: |-
             .artifacts/patched-host-acceptance.json
             .artifacts/patched-host/host-tests.json
