@@ -174,6 +174,39 @@ def studio_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", [
+    "/api/v1/plugin-ecosystems/dsh/plugins",
+    "/api/v1/plugin-ecosystems/dsh/profile",
+    f"/api/v1/plugin-ecosystems/dsh/plugins/{_PLUGIN_ID}",
+])
+async def test_dsh_reads_never_probe_toolchain_on_http_event_loop(
+    studio_app, monkeypatch: pytest.MonkeyPatch, path: str,
+) -> None:
+    # Managed discovery runs pnpm/Node subprocesses. Slow discovery must stay
+    # off the HTTP loop, including inventory projection after the bridge read.
+    probes: list[int] = []
+
+    class CheckedToolchain:
+        def require_command(self) -> tuple[str, ...]:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                probes.append(threading.get_ident())
+                return ("isolated-dsh",)
+            raise AssertionError("toolchain subprocess probe ran on HTTP event loop")
+
+    monkeypatch.delenv("KSADK_DSH_BIN", raising=False)
+    monkeypatch.setattr(api_plugin_routes, "DshToolchainManager", CheckedToolchain)
+    app, _capabilities = studio_app
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://testserver",
+    ) as client:
+        response = await client.get(path, headers=_headers())
+    assert response.status_code == 200
+    assert probes, "The real command-bearing bridge read must still resolve its toolchain"
+
+
+@pytest.mark.asyncio
 async def test_explicit_legacy_home_can_be_listed_but_new_core_cannot_mutate_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
