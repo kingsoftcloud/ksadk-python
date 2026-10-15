@@ -24,7 +24,9 @@ On Windows, use `.venv-086\Scripts\python.exe` and
 `.venv-086\Scripts\agentengine.exe`. Select extras for additional capabilities
 such as Codex, DeepAgents, or Skill Sandbox. Use `ksadk[all]` when the full set,
 including development dependencies, is needed. The alias package
-`agentengine-sdk-python==0.8.6` requires exactly the same `ksadk` version.
+`agentengine-sdk-python==0.8.6` independently ships the same SDK implementation
+and keeps the `ksadk` import name. Install one distribution name per environment
+to avoid overwriting shared files.
 
 For local wheel validation, replace the installation target:
 

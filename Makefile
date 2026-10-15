@@ -385,6 +385,7 @@ PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/studio/test_sch
 PUBLIC_TEST_TARGETS += tests/a2a/test_public_imports.py tests/studio/test_shared_web_final_snapshot.py
 PUBLIC_TEST_TARGETS += tests/test_cloud_headers.py
 PUBLIC_TEST_TARGETS += tests/test_prepare_ksadk_python_export.py
+PUBLIC_TEST_TARGETS += tests/packaging/test_alias_distribution.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -558,7 +559,7 @@ release-candidate-gate:
 		--preprod "$(RELEASE_PREPROD_EVIDENCE)" \
 		--output "$(RELEASE_FINAL_EVIDENCE)"
 
-public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build release-preflight
+public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build release-preflight public-build-alias-check
 	@echo "✅ public preflight passed"
 
 # Lightweight preflight for the PyPI publish workflow.  The publish job runs

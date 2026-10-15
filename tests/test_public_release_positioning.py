@@ -557,6 +557,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "scripts/audit_docs_site_output.py" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
+    assert workflow.index("name: Build alias distribution") < workflow.index("name: Publish to PyPI")
 
 
 def test_ksadk_web_npm_consumers_use_the_configured_registry():
