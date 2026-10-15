@@ -1,415 +1,67 @@
-name: Qualify Studio macOS refactor candidate
+name: Qualify signed Studio native macOS update without publication
 on:
   workflow_dispatch:
-    inputs:
-      studio_ref:
-        description: AgentKit Studio immutable commit SHA to package
-        required: true
-        type: string
-      studio_checkout_ref:
-        description: Private Studio branch or tag that contains studio_ref (checkout transport only)
-        required: true
-        default: codex/studio-refactor-clean-ci-20261015
-        type: string
-      channel:
-        description: Production update lane; empty uses product configuration
-        required: false
-        default: ""
-        type: string
-      update_origin:
-        description: HTTPS origin that will serve the Studio feed
-        required: false
-        default: ""
-        type: string
-      storage_origin:
-        description: KS3 origin for versioned Studio binaries
-        required: false
-        default: ""
-        type: string
-      release_layout:
-        description: Versioned studio/<version> storage or legacy DSH layout
-        required: true
-        default: studio
-        type: choice
-        options:
-          - studio
-          - legacy
-      update_mode:
-        description: Incremental update or full-only ZIP using the official full-download fallback
-        required: true
-        default: incremental
-        type: choice
-        options:
-          - incremental
-          - full
-      build_version:
-        description: Semver build version; use a higher test suffix for update and rollback qualification
-        required: false
-        default: ""
-        type: string
-      release_tools_ref:
-        description: Optional immutable release-tools SHA; defaults to studio_ref, does not change signed sources
-        required: false
-        type: string
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: studio-macos-signed-candidate
+  group: studio-macos-native-installed-qualification
   cancel-in-progress: false
 jobs:
-  source-gate:
-    runs-on: ubuntu-latest
+  installed-macos:
+    runs-on: macos-14
     timeout-minutes: 25
-    outputs:
-      name: ${{ steps.product.outputs.name }}
-      app_id: ${{ steps.product.outputs.app_id }}
-      channel: ${{ steps.product.outputs.channel }}
-      update_origin: ${{ steps.product.outputs.update_origin }}
-      storage_origin: ${{ steps.product.outputs.storage_origin }}
-      build_version: ${{ steps.product.outputs.build_version }}
-      update_environment: ${{ steps.product.outputs.update_environment }}
-      plugin_roots: ${{ steps.product.outputs.plugin_roots }}
-      plugin_bundles: ${{ steps.product.outputs.plugin_bundles }}
+    environment: studio-signing
     steps:
-      - name: Require immutable fresh signed candidates without publication
-        env:
-          DIAGNOSTIC_ONLY: ${{ false }}
-          CANDIDATE_RUN: ${{ '' }}
-          TOOLS_SHA: ${{ inputs.release_tools_ref || inputs.studio_ref }}
-        run: |-
-          test "$DIAGNOSTIC_ONLY" = false
-          test -z "$CANDIDATE_RUN"
-          [[ "$TOOLS_SHA" =~ ^[0-9a-f]{40}$ ]]
-      - uses: actions/checkout@v4
+      - name: Checkout qualification harness
+        uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.studio_checkout_ref }}
-          fetch-depth: 0
           persist-credentials: false
+      - name: Checkout fixed candidate tools
+        uses: actions/checkout@v4
+        with:
           repository: kingsoftcloud/agentkit-studio
+          ref: 06bfe614775efccf30faefa2cb9a027b96ea084e
+          path: studio-tools
           token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: '22'
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.2
-      - name: Qualify exact public source snapshot
-        shell: bash
+      - name: Install verification dependencies
+        working-directory: studio-tools
+        run: pnpm install --frozen-lockfile
+      - name: Download exact signed candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agentkit-studio-06bfe614775efccf30faefa2cb9a027b96ea084e-preview-mac-arm64
+          run-id: '38751927756'
+          repository: kingsoftcloud/ksadk-python
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: Download signed accepted baseline
         env:
-          STUDIO_SHA: ${{ inputs.studio_ref }}
+          GH_TOKEN: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
-          [[ "$STUDIO_SHA" =~ ^[0-9a-f]{40}$ ]]
-          git merge-base --is-ancestor "$STUDIO_SHA" HEAD
-          git checkout --detach "$STUDIO_SHA"
-          pnpm install --frozen-lockfile
-          bash ci/install-gitleaks.sh "$RUNNER_TEMP/gitleaks"
-          GITLEAKS_BIN="$RUNNER_TEMP/gitleaks/gitleaks" make public-gate
-      - name: Checkout workflow-owned public product resolver
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.release_tools_ref || inputs.studio_ref }}
-          path: .product-tools
-          persist-credentials: false
-          repository: kingsoftcloud/agentkit-studio
-          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
-      - name: Resolve public product inputs
-        id: product
+          mkdir -p "$RUNNER_TEMP/studio-native-baseline"
+          gh api repos/kingsoftcloud/agentkit-studio/releases/assets/640053801 -H 'Accept: application/octet-stream' > "$RUNNER_TEMP/studio-native-baseline/baseline.dmg"
+      - name: Real signed native installation, restart and data retention
         env:
-          STUDIO_PRODUCT_BUILD_VERSION: ${{ inputs.build_version }}
-          STUDIO_PRODUCT_UPDATE_ORIGIN: ${{ inputs.update_origin }}
-          STUDIO_PRODUCT_STORAGE_ORIGIN: ${{ inputs.storage_origin }}
-          STUDIO_PRODUCT_CHANNEL: ${{ inputs.channel }}
-        run: node .product-tools/scripts/product-config.mjs github-outputs "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
-    environment: studio-signing
-  macos-arm64:
-    env:
-      STUDIO_PRODUCT_NAME: ${{ needs.source-gate.outputs.name }}
-      STUDIO_PRODUCT_APP_ID: ${{ needs.source-gate.outputs.app_id }}
-      STUDIO_PRODUCT_UPDATE_ENV: ${{ needs.source-gate.outputs.update_environment }}
-    needs:
-      - source-gate
-    if: ${{ '' == '' }}
-    runs-on: macos-14
-    environment: studio-signing
-    timeout-minutes: 60
-    steps:
-      - name: Checkout workflow repository
-        uses: actions/checkout@v4
-      - name: Checkout AgentKit Studio
-        uses: actions/checkout@v4
-        with:
-          repository: kingsoftcloud/agentkit-studio
-          ref: ${{ inputs.studio_checkout_ref }}
-          path: studio
-          fetch-depth: 0
-          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
-          persist-credentials: false
-      - name: Checkout pinned DSH
-        uses: actions/checkout@v4
-        with:
-          repository: deepseek-ai/deepseek-harness
-          ref: ${{ 'dsh-v0.2.0-rc.2' }}
-          path: dsh-source
-          fetch-depth: 1
-      - name: Set up Node and pnpm
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.7.0
-          package_json_file: dsh-source/package.json
-      - name: Verify immutable source inputs
-        shell: bash
-        env:
-          EXPECTED_DSH_COMMIT: ${{ '639ed015397290b3745d163aafe02ffee4aa3f84' }}
-          STUDIO_REF_VALUE: ${{ inputs.studio_ref }}
-          STUDIO_CHECKOUT_REF_VALUE: ${{ inputs.studio_checkout_ref }}
-          UPDATE_ORIGIN_VALUE: ${{ needs.source-gate.outputs.update_origin }}
-          BUILD_VERSION_VALUE: ${{ needs.source-gate.outputs.build_version }}
-        run: |
-          set -euo pipefail
-          actual_dsh_commit="$(git -C dsh-source rev-parse HEAD)"
-          test "$actual_dsh_commit" = "$EXPECTED_DSH_COMMIT"
-          [[ "$STUDIO_REF_VALUE" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "studio_ref must be an immutable 40-character commit SHA" >&2
-            exit 1
-          }
-          [[ "$STUDIO_CHECKOUT_REF_VALUE" =~ ^[A-Za-z0-9._/-]+$ ]] || {
-            echo "studio_checkout_ref must be a branch or tag name" >&2
-            exit 1
-          }
-          git -C studio merge-base --is-ancestor "$STUDIO_REF_VALUE" HEAD
-          git -C studio checkout --detach "$STUDIO_REF_VALUE"
-          test "$(git -C studio rev-parse HEAD)" = "$STUDIO_REF_VALUE"
-          [[ "$UPDATE_ORIGIN_VALUE" =~ ^https://[^/[:space:]]+$ ]] || {
-            echo "update_origin must be an HTTPS origin with a host" >&2
-            exit 1
-          }
-          [[ "$UPDATE_ORIGIN_VALUE" != *example.com ]] || {
-            echo "update_origin cannot use the example placeholder" >&2
-            exit 1
-          }
-          [[ "$BUILD_VERSION_VALUE" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
-            echo "build_version must be a semantic version" >&2
-            exit 1
-          }
-      - name: Prepare temporary Apple signing keychain
-        shell: bash
-        env:
-          P12_BASE64: ${{ secrets.STUDIO_APPLE_P12_BASE64 }}
-          P12_PASSWORD: ${{ secrets.STUDIO_APPLE_P12_PASSWORD }}
-          APPLE_ID_VALUE: ${{ secrets.STUDIO_APPLE_ID }}
-          APPLE_APP_PASSWORD_VALUE: ${{ secrets.STUDIO_APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID_VALUE: ${{ secrets.STUDIO_APPLE_TEAM_ID }}
-          UPDATE_ORIGIN_VALUE: ${{ needs.source-gate.outputs.update_origin }}
-          UPDATE_CHANNEL_VALUE: ${{ needs.source-gate.outputs.channel }}
-        run: |
-          set -euo pipefail
-          test -n "$P12_BASE64" -a -n "$P12_PASSWORD" -a -n "$APPLE_ID_VALUE" -a -n "$APPLE_APP_PASSWORD_VALUE" -a -n "$APPLE_TEAM_ID_VALUE"
-          umask 077
-          certificate_path="$RUNNER_TEMP/agentkit-studio-signing.p12"
-          keychain_path="$RUNNER_TEMP/agentkit-studio-signing.keychain-db"
-          existing_keychains_file="$RUNNER_TEMP/agentkit-studio-existing-keychains"
-          {
-            echo "STUDIO_KEYCHAIN_PATH=$keychain_path"
-            echo "STUDIO_CERTIFICATE_PATH=$certificate_path"
-            echo "STUDIO_EXISTING_KEYCHAINS_PATH=$existing_keychains_file"
-          } >> "$GITHUB_ENV"
-          existing_keychains_output="$(security list-keychains -d user)"
-          existing_keychains=()
-          while IFS= read -r existing_keychain; do
-            [[ -n "$existing_keychain" ]] && existing_keychains+=("$existing_keychain")
-          done < <(printf '%s\n' "$existing_keychains_output" | sed -E 's/^[[:space:]]*"([^"]+)"$/\1/')
-          printf '%s\n' "${existing_keychains[@]}" > "$existing_keychains_file"
-          keychain_password="$(openssl rand -hex 32)"
-          printf '%s' "$P12_BASE64" | base64 -D > "$certificate_path"
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
-          security import "$certificate_path" -k "$keychain_path" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
-          identity_line="$(security find-identity -v -p codesigning "$keychain_path" | grep 'Developer ID Application' | head -1)"
-          identity_full="${identity_line#*\"}"
-          identity_full="${identity_full%\"}"
-          identity="${identity_full#Developer ID Application: }"
-          test -n "$identity" -a "$identity" != "$identity_full"
-          {
-            echo "STUDIO_CODESIGN_IDENTITY=$identity"
-          } >> "$GITHUB_ENV"
-          {
-            printf '%s\n' \
-              "DSH_DESKTOP_APP_ID=$STUDIO_PRODUCT_APP_ID" \
-              "DSH_DESKTOP_AUTO_UPDATE_ENV=$STUDIO_PRODUCT_UPDATE_ENV" \
-              "DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN=$UPDATE_ORIGIN_VALUE" \
-              "DSH_DESKTOP_UPDATE_ORIGIN=$UPDATE_ORIGIN_VALUE" \
-              "DSH_DESKTOP_UPDATE_CHANNEL=$UPDATE_CHANNEL_VALUE" \
-              "DSH_DESKTOP_MACOS_SIGNING_IDENTITY=$identity" \
-              "DSH_DESKTOP_MACOS_TEAM_ID=$APPLE_TEAM_ID_VALUE" \
-              "CSC_LINK=$certificate_path" \
-              "CSC_KEY_PASSWORD=$P12_PASSWORD" \
-              "APPLE_ID=$APPLE_ID_VALUE" \
-              "APPLE_APP_SPECIFIC_PASSWORD=$APPLE_APP_PASSWORD_VALUE" \
-              "APPLE_TEAM_ID=$APPLE_TEAM_ID_VALUE"
-          } > dsh-source/apps/desktop/.env.macos
-          chmod 600 dsh-source/apps/desktop/.env.macos
-      - name: Build, sign and notarize Studio
-        shell: bash
-        working-directory: studio
-        env:
-          DSH_ROOT: ${{ github.workspace }}/dsh-source
-          DSH_COMMIT: ${{ '639ed015397290b3745d163aafe02ffee4aa3f84' }}
-          DSH_VERSION: 0.2.0-rc.2
-          BUILD_VERSION: ${{ needs.source-gate.outputs.build_version }}
-          PACK_DIR: ${{ github.workspace }}/studio/.artifacts
-          EXPECTED_APP_ID: ${{ needs.source-gate.outputs.app_id }}
-          EXPECTED_UPDATE_ORIGIN: ${{ needs.source-gate.outputs.update_origin }}
-          EXPECTED_UPDATE_CHANNEL: ${{ needs.source-gate.outputs.channel }}
-          EXPECTED_RELEASE_VERSION: ${{ needs.source-gate.outputs.build_version }}
-        run: |
-          set -euo pipefail
-          pnpm install --frozen-lockfile
-          DSH_DESKTOP_BUILD_VERSION="$BUILD_VERSION" make desktop-package-mac-arm64 DSH_ROOT="$DSH_ROOT" DSH_COMMIT="$DSH_COMMIT" DSH_VERSION="$DSH_VERSION" PACK_DIR="$PACK_DIR"
-      - name: Verify signed and notarized artifacts
-        id: verified-artifacts
-        shell: bash
-        working-directory: studio
-        env:
-          DSH_ROOT: ${{ github.workspace }}/dsh-source
-          DSH_COMMIT: ${{ '639ed015397290b3745d163aafe02ffee4aa3f84' }}
-          DSH_VERSION: 0.2.0-rc.2
-          BUILD_VERSION: ${{ needs.source-gate.outputs.build_version }}
-          PACK_DIR: ${{ github.workspace }}/studio/.artifacts
-          EXPECTED_APP_ID: ${{ needs.source-gate.outputs.app_id }}
-          EXPECTED_UPDATE_ORIGIN: ${{ needs.source-gate.outputs.update_origin }}
-          EXPECTED_UPDATE_CHANNEL: ${{ needs.source-gate.outputs.channel }}
-          EXPECTED_RELEASE_VERSION: ${{ needs.source-gate.outputs.build_version }}
-        run: |
-          set -euo pipefail
-          artifacts="$(find "$PACK_DIR/desktop-checkouts" -type d -path '*/source/apps/desktop/.desktop-build/targets/mac-arm64/artifacts' -print -quit)"
-          test -n "$artifacts" -a -d "$artifacts"
-          dmg="$(find "$artifacts" -maxdepth 1 -name '*.dmg' -type f -print -quit)"
-          zip="$(find "$artifacts" -maxdepth 1 -name '*.zip' -type f -print -quit)"
-          blockmap="$(find "$artifacts" -maxdepth 1 -name '*.zip.blockmap' -type f -print -quit)"
-          metadata="$(find "$artifacts" -maxdepth 1 -name '${{ needs.source-gate.outputs.channel }}-mac.yml' -type f -print -quit)"
-          test -n "$dmg" -a -n "$zip" -a -n "$blockmap" -a -n "$metadata"
-          unzip -tq "$zip"
-          unpacked="$RUNNER_TEMP/agentkit-studio-unpacked"
-          rm -rf "$unpacked"
-          mkdir -p "$unpacked"
-          unzip -q "$zip" -d "$unpacked"
-          app="$(find "$unpacked" -name '*.app' -type d -print -quit)"
-          test -n "$app"
-          app_id="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")"
-          test "$app_id" = "$EXPECTED_APP_ID"
-          app_update="$app/Contents/Resources/app-update.yml"
-          test -f "$app_update"
-          export APP_UPDATE_PATH="$app_update" ZIP_PATH="$zip" METADATA_PATH="$metadata"
-          node --input-type=module <<'NODE'
-          import { createHash } from 'node:crypto'
-          import { readFile, stat } from 'node:fs/promises'
-          import { basename } from 'node:path'
-          import YAML from 'yaml'
-
-          const appUpdate = YAML.parse(await readFile(process.env.APP_UPDATE_PATH, 'utf8'))
-          const expectedFeedUrl = `${process.env.EXPECTED_UPDATE_ORIGIN}/dsh-desk/feeds/mac-arm64/`
-          if (appUpdate?.provider !== 'generic' || appUpdate.url !== expectedFeedUrl || appUpdate.channel !== process.env.EXPECTED_UPDATE_CHANNEL) {
-            throw new Error(`packaged app-update.yml does not match the requested Studio feed: expected ${expectedFeedUrl} (${process.env.EXPECTED_UPDATE_CHANNEL}), got ${appUpdate?.url} (${appUpdate?.channel})`)
-          }
-          const metadata = YAML.parse(await readFile(process.env.METADATA_PATH, 'utf8'))
-          const zipName = basename(process.env.ZIP_PATH)
-          if (metadata?.version !== process.env.EXPECTED_RELEASE_VERSION || metadata?.path !== zipName || !Array.isArray(metadata.files)) {
-            throw new Error('update metadata does not match the packaged ZIP/version')
-          }
-          const entry = metadata.files.find(file => file?.url === zipName || file?.url?.endsWith(`/${zipName}`))
-          if (!entry || !Number.isInteger(entry.size) || entry.size !== (await stat(process.env.ZIP_PATH)).size) {
-            throw new Error('update metadata ZIP size is missing or incorrect')
-          }
-          const sha512 = createHash('sha512').update(await readFile(process.env.ZIP_PATH)).digest('base64')
-          if (entry.sha512 !== sha512 || metadata.sha512 !== undefined && metadata.sha512 !== sha512) {
-            throw new Error('update metadata ZIP SHA-512 is missing or incorrect')
-          }
-          NODE
-          codesign --verify --deep --strict --verbose=2 "$app"
-          node scripts/verify-desktop-module-graph.mjs "$app" --studio | tee .artifacts/desktop-module-graph.json
-          node scripts/verify-codex-signing.mjs "$app" "$artifacts/mac-arm64-release.json"
-          xcrun stapler validate "$app"
-          spctl --assess --type execute --verbose=4 "$app"
-          printf 'artifacts=%s\ndmg=%s\nzip=%s\nblockmap=%s\nmetadata=%s\n' "$artifacts" "$dmg" "$zip" "$blockmap" "$metadata" >> "$GITHUB_STEP_SUMMARY"
-      - name: Verify native Studio first-use configuration
-        timeout-minutes: 20
-        shell: bash
-        working-directory: studio
-        env:
-          BUILD_VERSION: ${{ needs.source-gate.outputs.build_version }}
-        run: |
-          node scripts/verify-macos-onboarding.mjs --app "$RUNNER_TEMP/agentkit-studio-unpacked/${STUDIO_PRODUCT_NAME}.app" --version "$BUILD_VERSION" --output .artifacts/onboarding-proof
-      - name: Retain native onboarding diagnostics
+          STUDIO_TOOLS_ROOT: ${{ github.workspace }}/studio-tools
+          STUDIO_BASELINE_DMG: ${{ runner.temp }}/studio-native-baseline/baseline.dmg
+          STUDIO_CANDIDATE_DIR: ${{ github.workspace }}/candidate
+          STUDIO_INSTALL_EVIDENCE: ${{ github.workspace }}/.native-update-evidence
+        run: node scripts/qualify-studio-macos-installed.mjs
+      - name: Retain redacted qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: studio-onboarding-${{ needs.source-gate.outputs.build_version }}-mac-arm64
-          path: |
-            studio/.artifacts/onboarding-proof/
-            studio/.artifacts/desktop-module-graph.json
+          name: studio-macos-native-installed-update
+          path: .native-update-evidence
           include-hidden-files: true
-          if-no-files-found: warn
-      - name: Stage signed release candidate
-        id: staged-candidate
-        if: ${{ always() && steps.verified-artifacts.conclusion == 'success' }}
-        shell: bash
-        working-directory: studio
-        env:
-          PACK_DIR: ${{ github.workspace }}/studio/.artifacts
-          CHANNEL: ${{ needs.source-gate.outputs.channel }}
-        run: |
-          set -euo pipefail
-          artifacts="$(find "$PACK_DIR/desktop-checkouts" -type d -path '*/source/apps/desktop/.desktop-build/targets/mac-arm64/artifacts' -print -quit)"
-          test -n "$artifacts" -a -d "$artifacts"
-          dmg="$(find "$artifacts" -maxdepth 1 -name '*.dmg' -type f -print -quit)"
-          zip="$(find "$artifacts" -maxdepth 1 -name '*.zip' -type f ! -name '*.zip.blockmap' -print -quit)"
-          blockmap="$(find "$artifacts" -maxdepth 1 -name '*.zip.blockmap' -type f -print -quit)"
-          metadata="$artifacts/${CHANNEL}-mac.yml"
-          release_record="$artifacts/mac-arm64-release.json"
-          test -n "$dmg" -a -n "$zip" -a -n "$blockmap" -a -f "$metadata" -a -f "$release_record"
-          staging="$GITHUB_WORKSPACE/release-candidate"
-          rm -rf "$staging"
-          mkdir -p "$staging"
-          cp "$dmg" "$zip" "$blockmap" "$metadata" "$release_record" "$staging/"
-          (cd "$staging" && shasum -a 256 ./* > SHA256SUMS)
-          printf 'staging=%s\n' "$staging" >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload signed Studio release candidate
-        if: ${{ always() && steps.staged-candidate.conclusion == 'success' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: agentkit-studio-${{ inputs.studio_ref }}-${{ needs.source-gate.outputs.channel }}-mac-arm64
-          path: release-candidate/*
           if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
-      - name: Remove temporary signing material
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set +e
-          cleanup_failed=0
-          existing_keychains_path="${STUDIO_EXISTING_KEYCHAINS_PATH:-$RUNNER_TEMP/agentkit-studio-existing-keychains}"
-          if [ -f "$existing_keychains_path" ]; then
-            existing_keychains=()
-            while IFS= read -r existing_keychain; do
-              [[ -n "$existing_keychain" ]] && existing_keychains+=("$existing_keychain")
-            done < "$existing_keychains_path"
-            security list-keychains -d user -s "${existing_keychains[@]}" || cleanup_failed=1
-            rm -f "$existing_keychains_path" || cleanup_failed=1
-          fi
-          certificate_path="${STUDIO_CERTIFICATE_PATH:-$RUNNER_TEMP/agentkit-studio-signing.p12}"
-          rm -f "$certificate_path" "$GITHUB_WORKSPACE/dsh-source/apps/desktop/.env.macos" || cleanup_failed=1
-          keychain_path="${STUDIO_KEYCHAIN_PATH:-$RUNNER_TEMP/agentkit-studio-signing.keychain-db}"
-          if [ -e "$keychain_path" ]; then
-            security delete-keychain "$keychain_path" || cleanup_failed=1
-            rm -f "$keychain_path" || cleanup_failed=1
-          fi
-          exit "$cleanup_failed"
