@@ -15,7 +15,8 @@
 - **最低 Python 版本提高到 3.12**。请在新虚拟环境安装并验证依赖；已有 Agent 可保留原 SDK 与镜像，不会随本地升级自动重建或重新部署。
 - 本版本配套 `@kingsoftcloud/ksadk-web@0.3.13`。wheel/sdist 内嵌已构建的 Web 与 Studio 静态资源，安装后无需现场构建前端；Python 依赖和 Node/Codex/DSH 工具链仍需分别安装或预缓存。
 - 普通本地 Studio 默认选择 Native Harness 与 SQLite 持久化执行账本；显式 Agent 选择、自定义执行宿主和兼容模式继续按配置生效。可用 `KSADK_STUDIO_NATIVE_DEFAULT=0` 选择 Managed 兼容路径；这不改变云端既有 Agent 的执行内核。
-- `agentengine-sdk-python` 别名包与 `ksadk` 同步为 0.8.6，并精确依赖主包；不要在同一环境混装不同版本。
+- `agentengine-sdk-python` 兼容发行包与 `ksadk` 同步为 0.8.6，独立提供相同的 `ksadk` 导入与实现。两种发行名二选一安装，避免在同一环境覆盖共享文件。
+- 修复兼容发行包的 `all` extra 回指主包的问题，改为展开自身发行名的 extras，避免额外安装另一份共享同一导入目录的 SDK。
 
 ### Native Harness 与 Studio
 

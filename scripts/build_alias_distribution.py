@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build a PyPI alias distribution for the ksadk package.
 
-The alias package keeps the Python import/package layout as ``ksadk`` and only
-changes the distribution metadata name. It is used for the compatibility PyPI
-project ``agentengine-sdk-python``.
+The alias keeps the ``ksadk`` import/package layout and changes distribution
+metadata, including self references in extras. It is used for the compatibility
+PyPI project ``agentengine-sdk-python``.
 """
 
 from __future__ import annotations
@@ -65,6 +65,10 @@ def _rewrite_pyproject(pyproject: Path, *, alias_project: str, description: str)
         raise RuntimeError("pyproject.toml 中未找到唯一的 ksadk project name")
     if description_count != 1:
         raise RuntimeError("pyproject.toml 中未找到唯一的 project description")
+    # `all` expands through this project's own extras. Keeping the original
+    # name would install both distributions into their shared `ksadk` namespace.
+    for quote in ('"', "'"):
+        text = text.replace(f"{quote}ksadk[", f"{quote}{alias_project}[")
     pyproject.write_text(text, encoding="utf-8")
 
 

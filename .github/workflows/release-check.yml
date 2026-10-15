@@ -19,6 +19,8 @@ on:
       - "tests/studio/e2e/**"
       - "scripts/open_source_audit.py"
       - "scripts/audit_release_artifacts.py"
+      - "scripts/build_alias_distribution.py"
+      - "tests/packaging/test_alias_distribution.py"
       - "scripts/release_preflight.py"
       - "scripts/verify_ksadk_web_static.py"
       - "scripts/write_build_provenance.py"
@@ -80,6 +82,9 @@ jobs:
           rm -rf dist
           uv run python scripts/write_build_provenance.py
           uv build --out-dir dist
+
+      - name: Build and audit compatibility distribution
+        run: make public-build-alias-check
 
       # PR checks keep artifact validation independent from native runtime E2E.
       # On #67, the combined source gate stopped emitting output after the

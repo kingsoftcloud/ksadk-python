@@ -29,8 +29,8 @@ Record exactly one approved source publication strategy.
 
 The approved strategy names the reviewed source used for both release artifacts:
 
-- `ksadk-python`: Clean public export of reviewed source commit `c5aaaa5a44a90991a05502f440327001f846337d`; publish both `ksadk==0.8.6` and `agentengine-sdk-python==0.8.6` through the reviewed public pull request and GitHub Trusted Publishing. The final approval-record commit only records this decision.
-- `ksadk-web`: `@kingsoftcloud/ksadk-web@0.3.13`, published from GitHub merge commit `b434f83a048f808fb9e4bf5c1c67e3b81f09ff6f`; source provenance `d65c31a42ee92aeb0f6b157084d7194a5d93226f`; npm integrity `sha512-cKLJxdIVpDic9ef3W9yqS/IH+LgqWbPcrbl74zLJlYx5d6kTP8Bd7mA3uvjoarg1b+gatCiLLmEgjPZ7X4KvEQ==`; Python consumer binding reviewed in source commit `c5aaaa5a44a90991a05502f440327001f846337d`.
+- `ksadk-python`: Clean public export of reviewed source commit `3715fbabf8b337d4710f481bff80d6ba8cfeb450`; publish both `ksadk==0.8.6` and `agentengine-sdk-python==0.8.6` through the reviewed public pull request and GitHub Trusted Publishing. The final approval-record commit only records this decision.
+- `ksadk-web`: `@kingsoftcloud/ksadk-web@0.3.13`, published from GitHub merge commit `b434f83a048f808fb9e4bf5c1c67e3b81f09ff6f`; source provenance `d65c31a42ee92aeb0f6b157084d7194a5d93226f`; npm integrity `sha512-cKLJxdIVpDic9ef3W9yqS/IH+LgqWbPcrbl74zLJlYx5d6kTP8Bd7mA3uvjoarg1b+gatCiLLmEgjPZ7X4KvEQ==`; Python consumer binding reviewed in source commit `3715fbabf8b337d4710f481bff80d6ba8cfeb450`.
 
 Both approved source references include the reviewed Python source commit SHA so a changed candidate cannot reuse this record.
 
@@ -42,6 +42,7 @@ Both approved source references include the reviewed Python source commit SHA so
 - Python 3.12 Native regression: 3518 passed; 39 explicitly opted-in live-model cases were skipped. Separate boundary regression passed 49 cases including real SIGKILL and the original 30-second lease. Studio frontend validation passed 77 Node tests and 511 UI tests.
 - Real-model browser acceptance completed three repetitions with the built UI, actual HTTP, SQLite durability, live refresh, cold service recovery, and follow-up recall. Product/source/static digests remained unchanged during acceptance. Model credentials and private evidence remain outside the public tree.
 - Two controlled browser fault scenarios passed real SIGKILL recovery for approval and child runs with unchanged 30-second leases, preserved event prefixes, and unique terminal events. Their model gateway was scripted; they are not real-model quality evidence.
+- Both independently named Python distributions are built and audited before the first PyPI upload. The alias rewrites its own extras to its own distribution name, so selecting `[all]` does not also install `ksadk` over the shared import namespace. Final artifact metadata and resolver checks must confirm this binding.
 - Wheel and sdist exclude the test tree. Static Web payload verification checks all 265 files against the pinned npm package. Package hashes and source provenance are recorded by the build and release-preflight reports.
 - Cloud and pre-production deployment, Native multi-replica recovery, and target-service authorization are outside this local/source-and-package evidence and require their own environment acceptance.
 - Required final remote check: **Branch protection and publish environment are configured** according to `.github/BRANCH_PROTECTION.md`. This source record cannot substitute for those controls or authorize bypassing a review.

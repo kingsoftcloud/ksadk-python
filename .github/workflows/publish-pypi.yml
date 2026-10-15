@@ -83,13 +83,13 @@ jobs:
       - name: Verify release approval gate
         run: make public-publish-gate
 
-      - name: Publish to PyPI
-        if: env.PUBLISH_TARGET == 'full'
-        uses: pypa/gh-action-pypi-publish@release/v1
-
       - name: Build alias distribution
         if: env.PUBLISH_TARGET == 'full'
         run: make public-build-alias-check
+
+      - name: Publish to PyPI
+        if: env.PUBLISH_TARGET == 'full'
+        uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: Publish alias package to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

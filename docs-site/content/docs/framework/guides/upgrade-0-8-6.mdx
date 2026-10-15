@@ -19,7 +19,7 @@ uv pip install --python .venv-086/bin/python "ksadk==0.8.6"
 
 Windows 使用 `.venv-086\Scripts\python.exe` 与 `.venv-086\Scripts\agentengine.exe`。
 需要 Codex、DeepAgents、Skill Sandbox 等附加能力时选择对应 extra；需要全部可选能力
-和开发依赖时再安装 `ksadk[all]`。`agentengine-sdk-python==0.8.6` 是依赖同版本 `ksadk` 的别名包。
+和开发依赖时再安装 `ksadk[all]`。`agentengine-sdk-python==0.8.6` 是独立提供同一份 SDK 的兼容发行名，导入仍用 `ksadk`。两种发行名二选一安装，避免覆盖共享文件。
 
 本地验证 wheel 可以替换上面的安装目标：
 

@@ -16,6 +16,52 @@ from ksadk.sessions.postgres_service import PostgresSessionService
 from ksadk.sessions.resilient import ResilientSessionService
 
 
+def _arm_deadline_after_commit(monkeypatch):
+    """Keep real storage budgets; inject the lost-ack cap after its prerequisite."""
+    from ksadk.sessions import resilient
+
+    original = resilient.DatabaseOperationDeadline
+    captured = []
+
+    class PostCommitDeadline(original):
+        async def run(self, awaitable):
+            # Preserve the production bound while the real COMMIT is pending.
+            async with asyncio.timeout_at(self.expires_at) as timer:
+                self.timer = timer
+                return await awaitable
+
+    def first_write(budget):
+        if captured:
+            return original(budget)
+        deadline = PostCommitDeadline(budget)
+        captured.append(deadline)
+        return deadline
+
+    monkeypatch.setattr(resilient, "DatabaseOperationDeadline", first_write)
+
+    def arm():
+        deadline, = captured
+        deadline.expires_at = asyncio.get_running_loop().time() + 0.1
+        deadline.timer.reschedule(deadline.expires_at)
+
+    return arm
+
+
+async def _wait_for_commit(committed, task):
+    waiter = asyncio.create_task(committed.wait())
+    try:
+        done, _ = await asyncio.wait((waiter, task), timeout=2,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if not committed.is_set():
+            if task in done:
+                await task  # Preserve the actual storage/setup failure.
+                raise AssertionError("write finished before the COMMIT handshake")
+            raise TimeoutError("COMMIT handshake did not complete within two seconds")
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["memory", "postgres"])
 @pytest.mark.parametrize("failure", ["deadline", "cancel", "confirmation"])
@@ -26,7 +72,7 @@ async def test_unconfirmed_commit_fences_mirror_until_full_recovery(backend, fai
         primary = PostgresSessionService(dsn=dsn, namespace="commit_" + uuid4().hex[:16])
     else:
         primary = InMemorySessionService()
-    primary.db_budget = DatabaseBudget(write_operation_seconds=0.1)
+    primary.db_budget = DatabaseBudget()
     service = ResilientSessionService(primary)
     committed = asyncio.Event()
     append = primary.append_event
@@ -34,12 +80,16 @@ async def test_unconfirmed_commit_fences_mirror_until_full_recovery(backend, fai
     get_state = primary.get_state
     get_event = primary.get_event_by_id
     calls = 0
+    task = None
+    arm_deadline = None
 
     async def lost_ack(session_id, event):
         nonlocal calls
         calls += 1
         await append(session_id, event)  # A real PostgreSQL COMMIT in the PG cases.
         committed.set()
+        if arm_deadline is not None:
+            arm_deadline()
         if failure == "confirmation":
             raise ConnectionError("test acknowledgement lost")
         await asyncio.Event().wait()
@@ -59,12 +109,14 @@ async def test_unconfirmed_commit_fences_mirror_until_full_recovery(backend, fai
         monkeypatch.setattr(primary, "append_event", lost_ack)
         if failure == "confirmation":
             monkeypatch.setattr(primary, "get_event_by_id", unavailable)
+        elif failure == "deadline":
+            arm_deadline = _arm_deadline_after_commit(monkeypatch)
         task = asyncio.create_task(
             service.append_event(
                 "session", SessionEvent(id="committed", state_delta={"value": "committed"})
             )
         )
-        await asyncio.wait_for(committed.wait(), 2)
+        await _wait_for_commit(committed, task)
         if failure == "cancel":
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -116,6 +168,10 @@ async def test_unconfirmed_commit_fences_mirror_until_full_recovery(backend, fai
             ("following", 2),
         ]
     finally:
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         await primary.delete_session("session")
         await service.aclose()
 
@@ -129,12 +185,13 @@ async def test_state_only_refresh_cannot_revalidate_an_unsafe_mirror(backend, mo
         primary = PostgresSessionService(dsn=dsn, namespace="state_" + uuid4().hex[:16])
     else:
         primary = InMemorySessionService()
-    primary.db_budget = DatabaseBudget(write_operation_seconds=0.1)
+    primary.db_budget = DatabaseBudget()
     service = ResilientSessionService(primary)
     append = primary.append_event
 
     async def lost_ack(session_id, event):
         await append(session_id, event)
+        arm_deadline()
         await asyncio.Event().wait()
 
     async def unavailable(*args, **kwargs):
@@ -143,6 +200,7 @@ async def test_state_only_refresh_cannot_revalidate_an_unsafe_mirror(backend, mo
     try:
         await service.create_session("agent", "user", "session")
         monkeypatch.setattr(primary, "append_event", lost_ack)
+        arm_deadline = _arm_deadline_after_commit(monkeypatch)
         with pytest.raises(SessionBackendUnavailable):
             await service.append_event(
                 "session", SessionEvent(id="committed", state_delta={"value": "committed"})
@@ -181,7 +239,7 @@ async def test_precommit_snapshot_cannot_revalidate_an_unsafe_mirror(backend, mo
         primary = PostgresSessionService(dsn=dsn, namespace="snapshot_" + uuid4().hex[:16])
     else:
         primary = InMemorySessionService()
-    primary.db_budget = DatabaseBudget(write_operation_seconds=0.1)
+    primary.db_budget = DatabaseBudget()
     service = ResilientSessionService(primary)
     captured = asyncio.Event()
     release = asyncio.Event()
@@ -196,6 +254,7 @@ async def test_precommit_snapshot_cannot_revalidate_an_unsafe_mirror(backend, mo
 
     async def lost_ack(session_id, event):
         await append(session_id, event)
+        arm_deadline()
         await asyncio.Event().wait()
 
     reading = None
@@ -205,6 +264,7 @@ async def test_precommit_snapshot_cannot_revalidate_an_unsafe_mirror(backend, mo
         reading = asyncio.create_task(service.get_session("session"))
         await asyncio.wait_for(captured.wait(), 2)
         monkeypatch.setattr(primary, "append_event", lost_ack)
+        arm_deadline = _arm_deadline_after_commit(monkeypatch)
         with pytest.raises(SessionBackendUnavailable):
             await service.append_event("session", SessionEvent(id="committed"))
         monkeypatch.setattr(primary, "append_event", append)
