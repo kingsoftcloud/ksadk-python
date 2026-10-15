@@ -51,6 +51,15 @@ on:
         description: Optional immutable release-tools SHA; defaults to studio_ref, does not change signed sources
         required: false
         type: string
+      validation_target:
+        description: Qualify one platform first; does not publish
+        type: choice
+        default: mac
+        required: true
+        options:
+          - mac
+          - windows
+          - all
 permissions:
   contents: read
   actions: read
@@ -130,7 +139,7 @@ jobs:
       STUDIO_PRODUCT_UPDATE_ENV: ${{ needs.source-gate.outputs.update_environment }}
     needs:
       - source-gate
-    if: ${{ '' == '' }}
+    if: ${{ inputs.validation_target != 'windows' }}
     runs-on: macos-14
     environment: studio-signing
     timeout-minutes: 60
@@ -673,5 +682,6 @@ jobs:
         run: |
           Remove-Item dsh-source/apps/desktop/.env.windows -Force -ErrorAction SilentlyContinue
           Remove-Item "$env:RUNNER_TEMP/studio-code-signing.cer" -Force -ErrorAction SilentlyContinue
+    if: ${{ inputs.validation_target != 'mac' }}
     needs:
       - source-gate
