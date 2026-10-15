@@ -224,7 +224,9 @@ def create_studio_app(
                         )
                         from ksadk.studio.api_plugin_routes import _studio_dsh_options
 
-                        home, profile, command, _ = _studio_dsh_options(runtime)
+                        home, profile, command, _ = await asyncio.to_thread(
+                            _studio_dsh_options, runtime
+                        )
                         # 可选 bootstrap 必须先确认 DSH 命令真实可用：无工具链的
                         # 环境进入 Profile 维护栅栏后，恢复失败会按契约保持
                         # admission 关闭，导致整个会话面永久 503（回归过）。

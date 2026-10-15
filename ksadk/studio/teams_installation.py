@@ -151,7 +151,7 @@ class StudioTeamsInstallation:
         await self.studio.start()
         from ksadk.studio.api_plugin_routes import _studio_dsh_options
 
-        home, profile, command, _ = _studio_dsh_options(self.studio)
+        home, profile, command, _ = await asyncio.to_thread(_studio_dsh_options, self.studio)
         if profile != "web" or not command:
             raise TeamsError(
                 "dsh_toolchain_required", "请先安装并启用受支持的 DSH 工具链", status=503
