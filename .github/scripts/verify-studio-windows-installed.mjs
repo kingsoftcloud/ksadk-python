@@ -71,9 +71,9 @@ try {
       await models.getByLabel('API 地址', { exact: true }).first().fill(`http://127.0.0.1:${server.address().port}/v1`);
       await models.getByLabel(/^API Key/).first().fill('fixture-native-only');
       await models.getByRole('button', { name: '保存配置', exact: true }).click();
-      await expect(models).toContainText('已保存多个模型配置', { timeout: 90000 });
-      await page.keyboard.press('Escape');
-      await expect(models).toBeHidden({ timeout: 30000 });
+      await expect(guide).toHaveAttribute('data-studio-onboarding-stage', 'cloud', { timeout: 90000 });
+      await guide.getByRole('button', { name: '跳过，开始对话', exact: true }).click();
+      await expect(guide).toBeHidden({ timeout: 30000 });
       await page.getByRole('treeitem').filter({ hasText: /Default workspace|默认工作区/ }).first().hover();
       await page.getByRole('button', { name: /New session in|中新建会话/ }).first().click();
       const composer = page.locator('[contenteditable="true"]').first();
@@ -92,13 +92,14 @@ try {
     await expect(conversation.getByText(userMessage, { exact: true })).toBeVisible({ timeout: 90000 });
     await expect(conversation.getByText(assistantMessage, { exact: true })).toBeVisible({ timeout: 90000 });
     if (restart === 1) {
-      const settings = await page.evaluate(async () => {
+      const settings = await page.evaluate(async expectedEndpoint => {
         const response = await fetch('/agentkit', { method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ method: 'settings/get', payload: {}, rpcId: 'native-restart-model-proof' }) });
         const result = (await response.json()).result;
         return { status: response.status, ok: result?.ok === true,
-          configured: result?.value?.modelProfiles?.some(profile => profile.modelName === 'native-proof' && profile.credentialConfigured === true) };
-      });
+          configured: result?.value?.modelProfiles?.some(profile => profile.modelName === 'native-proof' && profile.credentialConfigured === true
+            && profile.baseUrl === expectedEndpoint && profile.default === true && profile.enabled !== false) };
+      }, `http://127.0.0.1:${server.address().port}/v1`);
       assert.deepEqual(settings, { status: 200, ok: true, configured: true });
       const requestsBefore = modelRequests;
       const composer = page.locator('[contenteditable="true"]').first();
