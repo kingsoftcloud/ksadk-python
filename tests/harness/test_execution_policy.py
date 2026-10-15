@@ -345,6 +345,9 @@ async def test_builtin_command_and_file_tools_share_policy_workspace(tmp_path, m
     from ksadk.plugins.providers.harness_tools import assemble_python_tools
 
     monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "local_process")
+    # This case verifies workspace propagation. Linux's per-UID task limit also
+    # counts the hosted runner's pytest/native threads; use an explicit budget.
+    monkeypatch.setenv("KSADK_LOCAL_PROCESS_MAX_PROCESSES", "256")
     tools, _ = assemble_python_tools(
         tmp_path,
         {
@@ -370,8 +373,8 @@ async def test_builtin_command_and_file_tools_share_policy_workspace(tmp_path, m
         status = await tools["sandbox_status"].handler({}, "status")
 
     assert written["ok"] is True
-    assert command["ok"] is True
-    assert command["exit_code"] == 0
+    assert command["ok"] is True, command
+    assert command["exit_code"] == 0, command
     assert str(policy_root) in command["stdout"]
     assert "shared-root" in command["stdout"]
     assert status["backend"] == "local_process"

@@ -408,7 +408,8 @@ async def test_adk_first_setup_and_write_share_one_operation_budget(
         db_url=_normalize_database_url(postgres_dsn),
         budget=DatabaseBudget(write_operation_seconds=0.2),
     )
-    original_prepare = DatabaseSessionService.prepare_tables
+    prepare_name = "prepare_tables" if hasattr(DatabaseSessionService, "prepare_tables") else "_prepare_tables"
+    original_prepare = getattr(DatabaseSessionService, prepare_name)
     original_create = DatabaseSessionService.create_session
 
     async def delayed_prepare(db):
@@ -417,13 +418,13 @@ async def test_adk_first_setup_and_write_share_one_operation_budget(
         return await original_prepare(db)
 
     async def delayed_create(db, **kwargs):
-        await db.prepare_tables()
+        await getattr(db, prepare_name)()
         await asyncio.sleep(0.12)
         return await original_create(db, **kwargs)
 
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(DatabaseSessionService, "prepare_tables", delayed_prepare)
+            patch.setattr(DatabaseSessionService, prepare_name, delayed_prepare)
             patch.setattr(DatabaseSessionService, "create_session", delayed_create)
             started = asyncio.get_running_loop().time()
             with pytest.raises(TimeoutError):
