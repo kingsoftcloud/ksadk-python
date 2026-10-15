@@ -399,34 +399,48 @@ def _assert_harness_vertical(
 
 
 def _fill_composer(page: Page, text: str) -> None:
-    """Type into the composer, retrying across the async session switch.
-
-    The conversation surface resolves its session asynchronously; a fill that
-    lands before the switch completes is wiped by the new session's empty
-    draft hydration.  Refill until the draft sticks and send is enabled.
-    """
+    """Enter one draft; session restoration must not erase or duplicate it."""
     composer = page.get_by_role("textbox", name="发送消息…", exact=True)
     send = page.get_by_role("button", name="发送消息")
-    for _ in range(6):
-        composer.press_sequentially(text, delay=12)
-        try:
-            expect(composer).to_have_value(text, timeout=1500)
-            expect(send).to_be_enabled(timeout=1500)
-            return
-        except AssertionError:
-            continue
-    expect(send).to_be_enabled(timeout=5000)
+    composer.fill(text)
+    expect(composer).to_have_value(text)
+    expect(send).to_be_enabled()
 
 
-def _assert_conversation_scheduling(page: Page, base_url: str) -> None:
+def _assert_conversation_scheduling(page: Page, base_url: str, model: SchedulingChatStub) -> None:
+    # A late initial list must not adopt an old session over a fresh draft.
+    # Hold the real response until the user has typed, rather than relying on
+    # machine speed to expose the bootstrap/session-restore race.
+    pending_lists = []
+
+    def hold_initial_list(route):
+        pending_lists.append(route)
+
+    page.route("**/ListSessions", hold_initial_list)
     page.goto(f"{base_url}/#/conversations?agentId={AGENT_ID}", wait_until="domcontentloaded")
     composer = page.get_by_role("textbox", name="发送消息…", exact=True)
     expect(composer).to_be_enabled()
-    for text, name in (
+    expect(page.locator(".studio-conversation-welcome h2")).to_be_visible()
+    expect(page.get_by_role("status", name="正在加载会话", exact=True)).to_be_visible()
+    for index, (text, name) in enumerate((
         ("每天10点帮我生成昨日工作日报", "每日简报"),
         ("每7分钟帮我检查服务状态", "服务巡检"),
-    ):
+    )):
         _fill_composer(page, text)
+        if index == 0:
+            assert pending_lists, "Bootstrap must have requested the real session list"
+            with page.expect_response(lambda response: response.url.endswith("/ListSessions")) as listed:
+                for route in tuple(pending_lists):
+                    route.continue_()
+            page.unroute("**/ListSessions", hold_initial_list)
+            assert CONTINUE_SESSION_ID in {
+                session["SessionId"] for session in listed.value.json()["Data"]["Sessions"]
+            }
+            expect(page.get_by_role("status", name="正在加载会话", exact=True)).to_have_count(0)
+            expect(composer).to_have_value(text)
+            expect(page.locator(".chat-session-main[aria-current=true]")).to_have_count(0)
+            expect(page.get_by_text("scheduled harness result 2", exact=True)).to_have_count(0)
+            assert len(model.requests()) == 3, "Restoring the list must not submit a model request"
         page.get_by_role("button", name="发送消息").click()
         expect(page.get_by_text(f"已创建定时任务「{name}」。", exact=False)).to_be_visible(
             timeout=20000
@@ -508,7 +522,7 @@ def main() -> None:
                     _assert_harness_vertical(
                         page, base_url, model, native_default=service._native_harness_default,
                     )
-                    _assert_conversation_scheduling(page, base_url)
+                    _assert_conversation_scheduling(page, base_url, model)
                     assert page_errors == [], f"Uncaught React page errors: {page_errors}"
                 finally:
                     browser.close()

@@ -396,14 +396,18 @@ export default function App() {
 
   useEffect(() => {
     const requestEpoch = ++workspaceDiscoveryEpoch.current;
-    apiFetch("/api/v1/system/bootstrap").then(r => r.json()).then(d => {
+    apiFetch("/api/v1/system/bootstrap").then(r => {
+      if (!r.ok) throw new Error("Workspace bootstrap unavailable");
+      return r.json();
+    }).then(d => {
       if (requestEpoch !== workspaceDiscoveryEpoch.current) return;
       setWorkspace(d.workspace || null);
       setOperationScope(d.operationScope || null);
       setRuntimeReady(Boolean(d.workspace));
     }).catch(() => {
       if (requestEpoch === workspaceDiscoveryEpoch.current) {
-        setOperationScope(null);
+        // Keep the last confirmed owner on a failed refresh. Replacing only
+        // its credential scope would move a live conversation to a new store.
         setRuntimeReady(false);
       }
     }).finally(() => {
@@ -429,8 +433,13 @@ export default function App() {
   function switchAgent(id: string) {
     if (!id) return;
     setCurrentAgentId(id);
+    setRequestedSessionId("");
+    setConversationSessionId("");
     if (view === "automations" && automationAgentScopeId) setAutomationAgentScopeId(id);
-    if (view === "conversations") setChatMounted(true);
+    if (view === "conversations") {
+      setChatMounted(true);
+      window.history.replaceState(null, "", `#/conversations?agentId=${encodeURIComponent(id)}`);
+    }
   }
 
   const studioCloudDeployments = cloudDeployments.filter(
@@ -439,6 +448,35 @@ export default function App() {
   );
   const selectedCloudDeployment = studioCloudDeployments.find(item => item.id === cloudDeploymentId);
   const isCloudChat = view === "conversations" && Boolean(selectedCloudDeployment);
+  const conversationSelection = useRef({ agentId: currentAgentId, local: !isCloudChat, requestedSessionId, newChatRequest });
+  conversationSelection.current = { agentId: currentAgentId, local: !isCloudChat, requestedSessionId, newChatRequest };
+  const confirmedConversation = useRef<{ agentId: string; sessionId: string } | null>(null);
+  const onConversationSessionChanged = useCallback((sessionId: string, ownerAgentId?: string, reason?: "cleanup") => {
+    const selected = conversationSelection.current;
+    if (reason === "cleanup" || !selected.local || ownerAgentId !== selected.agentId) return;
+    setConversationSessionId(sessionId);
+    const route = parseStudioLocationHash(window.location.hash);
+    if (route.view !== "conversations"
+      || (route.conversationAgentId && route.conversationAgentId !== ownerAgentId)) return;
+    if (!sessionId) {
+      const confirmed = confirmedConversation.current;
+      // A cleared selection (for example after deletion) retires only the
+      // confirmed session. An unresolved explicit deep link is still pending.
+      if (!confirmed || confirmed.agentId !== ownerAgentId
+        || (selected.requestedSessionId && selected.requestedSessionId !== confirmed.sessionId)) return;
+      confirmedConversation.current = null;
+      setRequestedSessionId("");
+      window.history.replaceState(null, "", `#/conversations?agentId=${encodeURIComponent(ownerAgentId)}`);
+      return;
+    }
+    if (selected.newChatRequest || (selected.requestedSessionId && route.sessionId !== sessionId)) return;
+    confirmedConversation.current = { agentId: ownerAgentId, sessionId };
+    // Mirror the confirmed selection without opening/reloading it. A browser
+    // reload can then use the existing explicit-session recovery path.
+    const params = new URLSearchParams({ agentId: ownerAgentId, sessionId });
+    const hash = `#/conversations?${params}`;
+    if (window.location.hash !== hash) window.history.replaceState(null, "", hash);
+  }, []);
 
   useEffect(() => {
     if (view !== "conversations" || !agentsLoaded || !cloudDeploymentsLoaded) return;
@@ -502,6 +540,9 @@ export default function App() {
     if (kind === "cloud" && id) {
       if (!studioCloudDeployments.some(item => item.id === id)) return;
       setCloudDeploymentId(id);
+      setRequestedSessionId("");
+      setConversationSessionId("");
+      window.history.replaceState(null, "", "#/conversations");
       setRunPanelOpen(false);
       setChatMounted(true);
       return;
@@ -512,7 +553,8 @@ export default function App() {
     }
   }
 
-  function enterChat(agentId?: string) {
+  function enterChat(agentId?: string, sessionId?: string) {
+    setRequestedSessionId("");
     const localTarget = currentAgent || agents[0];
     const cloudTarget = selectedCloudDeployment || studioCloudDeployments[0];
     if (agentId) {
@@ -533,6 +575,11 @@ export default function App() {
     }
     setChatMounted(true);
     setView("conversations");
+    if (agentId) {
+      const params = new URLSearchParams({ agentId });
+      if (sessionId) params.set("sessionId", sessionId);
+      window.history.replaceState(null, "", `#/conversations?${params}`);
+    }
   }
 
   // Keep the high frequency desktop actions available without making the
@@ -647,6 +694,10 @@ export default function App() {
     || view === "observability"
     || Boolean(pluginPageId);
   const railCanExpand = viewportMode !== "compact";
+  // The conversation store is scoped by workspace and credential identity.
+  // Mounting with an empty scope would move a typed draft when bootstrap
+  // returns the actual owner a moment later.
+  const chatScopeReady = Boolean(workspace?.workspaceId || workspace?.path);
   const railExpanded = railCanExpand && (railExpandedPreference ?? true);
   useEffect(() => { setMobileNavOpen(false); }, [view, resourceKind, viewportMode]);
 
@@ -824,7 +875,14 @@ export default function App() {
           {/* 会话页常驻挂载（display 切换），来回切换不重建工作台 */}
           <div className="chat-wrap" data-layout="workbench" style={{ display: view === "conversations" ? "flex" : "none" }}>
             <div className="chat-host">
-              {chatMounted && isCloudChat && selectedCloudDeployment && (
+              {chatMounted && !chatScopeReady && (
+                <div className="chat-target-loading" role={runtimeChecked ? "alert" : "status"}
+                  aria-label={runtimeChecked ? "工作区暂不可用" : "正在连接工作区"}>
+                  {!runtimeChecked && <i />}
+                  <span>{runtimeChecked ? "工作区暂不可用，请刷新后重试。" : "正在连接工作区…"}</span>
+                </div>
+              )}
+              {chatMounted && chatScopeReady && isCloudChat && selectedCloudDeployment && (
                 <ChatWorkspace
                   newChatRequest={newChatRequest}
                   onNewChatStarted={onNewChatStarted}
@@ -844,14 +902,14 @@ export default function App() {
                   refreshTick={refreshTick}
                 />
               )}
-              {chatMounted && !isCloudChat && currentAgentId && (
+              {chatMounted && chatScopeReady && !isCloudChat && currentAgentId && (
                 <ChatWorkspace
                   newChatRequest={newChatRequest}
                   onNewChatStarted={onNewChatStarted}
                   integratedHistory
                   historyHost={historyHost}
                   headerHost={conversationHeaderHost}
-                  onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
+                  onSelectConversation={sessionId => { enterChat(currentAgentId, sessionId); setMobileNavOpen(false); }}
                   agentId={currentAgentId}
                   workspacePath={workspace?.path}
                   workspaceId={workspace?.workspaceId}
@@ -862,12 +920,12 @@ export default function App() {
                   agentAppearance={currentAgent?.metadata.appearance}
                   active={view === "conversations"}
                   refreshTick={refreshTick}
-                  onSessionChanged={setConversationSessionId}
+                  onSessionChanged={onConversationSessionChanged}
                   onConfigureAgent={() => openEdit(currentAgentId)}
                   onOpenSettings={() => openSettings("models")}
                 />
               )}
-              {chatMounted && !isCloudChat && !currentAgentId && (
+              {chatMounted && chatScopeReady && !isCloudChat && !currentAgentId && (
                 agentsLoaded && cloudDeploymentsLoaded ? (
                   <div className="empty-state chat-agent-empty" role="status">
                     <span className="empty-icon"><KingIcon name="cpu" size={24} /></span>
