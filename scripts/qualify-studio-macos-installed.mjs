@@ -207,10 +207,18 @@ try {
   await expect(dialog.getByText(report.targetVersion, { exact: false }).first()).toBeVisible({ timeout: 90000 });
   await dialog.screenshot({ path: join(evidence, 'download-confirmation.png') });
   await dialog.getByRole('button', { name: /^(下载更新|Download update)$/ }).click();
-  await expect(dialog.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ })).toBeVisible({ timeout: 300000 });
-  await dialog.screenshot({ path: join(evidence, 'install-confirmation.png') });
+  // Completing the download closes its confirmation document. Installation
+  // owns a newly created shell dialog, not the page that authorized download.
+  const installationDialog = await until('separate native installation confirmation', async () => {
+    for (const window of electron.windows()) {
+      if (!window.isClosed() && window.url().includes('shell/update-dialog.html')
+          && await window.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ }).isVisible()) return window;
+    }
+    return false;
+  }, 300000);
+  await installationDialog.screenshot({ path: join(evidence, 'install-confirmation.png') });
   await checkpoint('installing-through-native-squirrel');
-  await dialog.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ }).click();
+  await installationDialog.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ }).click();
   await until('actual bundle version replacement', async () => (await version()).version === report.targetVersion, 300000);
   const successorPid = await until('automatic native successor', async () => {
     const pids = await processIds(); return pids.length === 1 && !pids.includes(initialPid) ? pids[0] : false;
@@ -254,7 +262,8 @@ try {
   report.passed = true; report.dataRetained = true; report.nativeContextContinuedAfterUpdate = true;
   await checkpoint('native-update-accepted-rollback-still-separate');
 } catch (error) {
-  report.failure = { stage: report.stage, name: error.name, message: String(error.message).split('\n')[0].slice(0, 500) };
+  report.failure = { stage: report.stage, name: error.name, message: String(error.message).split('\n')[0].slice(0, 500),
+    detail: String(error.message).replace(/([?&]token=)[^\s"<>]+/g, '$1[redacted]').slice(0, 2000) };
   console.log(JSON.stringify({ failureStage: report.stage, errorName: error.name }));
   process.exitCode = 1;
   if (electron) for (const [index, page] of electron.windows().entries()) await page.screenshot({ path: join(evidence, `failure-${index}.png`), timeout: 10000 }).catch(() => {});
