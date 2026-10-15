@@ -66,6 +66,26 @@ Agents or grant plugins additional execution permissions.
 To use the compatibility path for all local Agents, also clear
 `KSADK_STUDIO_NATIVE_AGENT_IDS`; `DEFAULT=0` does not revoke an exact Native selection.
 
+### Entrypoints that still use Managed Harness
+
+The Studio default does not switch every entrypoint named `harness`:
+
+| Entrypoint | Current default engine |
+| --- | --- |
+| Harness Agents in ordinary local Studio | Native Harness |
+| Studio compatibility mode without selected Native Agents | Managed Harness |
+| SDK `create_harness_session()` / `HarnessSession` | Managed Harness |
+| Default non-Studio Runtime Registry with `runtime_type=harness` | Managed Harness unless the host explicitly injects a different factory |
+| Agents created in the cloud console | Determined by the resulting Framework, deployed image, and host composition; conversational authoring alone does not select an engine |
+
+The server accepts `Framework=harness` with ManagedRuntime deployment. Images
+using the default SDK Registry still execute through Managed Harness. Codex,
+ADK, and LangGraph Agents use their respective Providers. The adapter name
+`ManagedHarnessRuntimeAdapter` and the deployment type `ManagedRuntime` describe
+different layers. Base SDK dependencies retain LangGraph and SQLite checkpoint
+for compatibility entrypoints; Native independence means it does not import
+those frameworks while executing, not that the base package never installs them.
+
 Tool hard denies remain effective. An `unknown` receipt requires inspection and
 explicit reconciliation before another business action is attempted. Durable
 claims prevent concurrent duplicate execution; they do not guarantee exactly-once

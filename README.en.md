@@ -25,13 +25,15 @@ Python 3.12 or newer is required. Existing Agents may keep their original SDK an
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -U "ksadk[all]"
+pip install -U "ksadk[langgraph]"
 
 agentengine init demo-agent -f langgraph
 cd demo-agent
 agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
 agentengine run -i
 ```
+
+The example installs the LangGraph extra. For Native Studio alone, install `ksadk`; `ksadk[all]` also installs the other optional frameworks and development tools.
 
 Start the local debugging Web UI:
 

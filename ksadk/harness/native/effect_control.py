@@ -259,8 +259,9 @@ async def dispatch_cancellable_effect(
                 )
             finally:
                 waiter.cancel()
-                with suppress(asyncio.CancelledError):
-                    await waiter
+                # Consume only the wake waiter's own cancellation. An outer
+                # driver cancellation must reach the effect cleanup below.
+                await asyncio.gather(waiter, return_exceptions=True)
                 wake.clear()
         # A blocking adapter can starve the timeout waiter. The task may be
         # done when control returns even though its result arrived after the

@@ -136,6 +136,21 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    "tests/harness/native/test_effect_cleanup_cancellation.py",
+    "tests/harness/native/test_kernel.py",
+    "tests/studio/test_model_chat_snapshots.py",
+    "tests/studio/test_model_chat_tools.py",
+    "tests/studio/test_model_client.py",
+    "tests/studio/test_model_incomplete_finish_reason.py",
+    "tests/studio/test_model_wire_identity.py",
+    "tests/studio/test_model_wire_usage.py",
+    "tests/studio/test_native_artifact_context_capacity.py",
+    "tests/studio/test_native_model_port.py",
+    "tests/runtime/test_gateway_approval_history.py",
+    "tests/cli/test_hosted_invoke.py",
+    "tests/cli/test_hosted_invoke_session_route.py",
+    "tests/codex/test_proxy_injection.py",
+    "tests/test_code_builder_build_info.py",
     "tests/events/test_managed_scope_reducer.py",
     "tests/a2a/fixtures/remote_agent/v1/a2a_stream_tool_terminal.jsonl",
     "tests/test_cloud_headers.py",

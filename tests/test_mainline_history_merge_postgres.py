@@ -52,9 +52,13 @@ async def test_receipt_parent_lock_is_bounded_and_connection_recovers(service, c
             # Wait for a genuine blocked PG statement, rather than cancelling
             # before acquire/BEGIN has exercised rollback.
             for _ in range(100):
+                # pg_stat_activity is cached within this blocker's open
+                # transaction; refresh before observing the next lock state.
+                await blocker.execute("SELECT pg_stat_clear_snapshot()")
                 waiting = await blocker.fetchval(
                     "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' "
-                    "AND query LIKE '%FOR KEY SHARE%' AND pid<>pg_backend_pid()"
+                    "AND query LIKE '%FOR KEY SHARE%' "
+                    "AND pg_backend_pid() = ANY(pg_blocking_pids(pid))"
                 )
                 if waiting:
                     break

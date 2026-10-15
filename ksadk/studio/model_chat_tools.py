@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 
 from ksadk._model_json import load_model_json
+from ksadk.studio.errors import StudioError
 from ksadk.studio.model_wire_identity import invalid_model_frame
 from ksadk.studio.model_wire_tools import WireTool, _identity, _index, _object, _text
 
@@ -126,16 +127,17 @@ class ChatToolCalls:
                 current.arguments += text
 
     def finish(self) -> tuple[WireTool, ...]:
-        if self.calls and not self.finished:
-            raise invalid_model_frame()
-        result = []
-        for index in sorted(self.calls):
-            current = self.calls[index]
+        result = [self.calls[index] for index in sorted(self.calls)]
+        # Validate every identity before classifying incomplete arguments: an
+        # early empty call cannot hide a later slot's permanent protocol error.
+        for current in result:
             current.seal()
+        for current in result:
             # Missing/empty input cannot acquire {} execution authority.
             # Nonempty bad JSON stays available for nonexecutable feedback in
             # the original ModelPort/normalizer; no repair happens here.
             if not current.arguments:
-                raise invalid_model_frame()
-            result.append(current)
+                raise StudioError("MODEL_RESPONSE_INCOMPLETE", "Model tool input was not completed", status_code=502)
+        if self.calls and not self.finished:
+            raise StudioError("MODEL_RESPONSE_INCOMPLETE", "Model tool stream was not completed", status_code=502)
         return tuple(result)

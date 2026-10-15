@@ -7,7 +7,7 @@ runs:
       uses: actions/checkout@v7
       with:
         repository: kingsoftcloud/ksadk-web
-        ref: 46a9e8f6fe7c78cfade28cb6ecc8420010a42a10
+        ref: 57f144bcef89b0e2d4a99472e264b278df0ec3a8
         path: .cache/ksadk-web-candidate
         persist-credentials: false
     - name: Pack the companion source
@@ -22,7 +22,7 @@ runs:
         if [ "$RUNNER_OS" = Windows ]; then tarball="$(cygpath -u "$tarball")"; fi
         test -f "$tarball"
         echo "KSADK_WEB_TARBALL=$tarball" >> "$GITHUB_ENV"
-        echo 'Shared Web source: kingsoftcloud/ksadk-web@46a9e8f6fe7c78cfade28cb6ecc8420010a42a10 (0.3.13). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
+        echo 'Shared Web source: kingsoftcloud/ksadk-web@57f144bcef89b0e2d4a99472e264b278df0ec3a8 (0.3.13). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
       env:
         # The candidate's build:ksadk script uses POSIX VAR=value syntax.
         # npm invokes scripts through cmd.exe on Windows unless this is set.

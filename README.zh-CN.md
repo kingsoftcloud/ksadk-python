@@ -24,13 +24,15 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -U "ksadk[all]"
+pip install -U "ksadk[langgraph]"
 
 agentengine init demo-agent -f langgraph
 cd demo-agent
 agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
 agentengine run -i
 ```
+
+示例按需安装 LangGraph extra；只使用 Native Studio 可以安装 `ksadk`。`ksadk[all]` 还会安装其他可选框架与开发工具。
 
 启动本地调试 Web UI：
 
