@@ -79,7 +79,7 @@ async function until(name, operation, timeout = 180000) {
   while (Date.now() < end) { try { const result = await operation(); if (result) return result; } catch (error) { last = error; } await sleep(1000); }
   throw new Error(`${name} timed out${last ? ': ' + String(last.message).split('\n')[0].slice(0, 160) : ''}`);
 }
-let electron, model, delivery, trustedFingerprint, initialPid, nativeSession, retained = [];
+let electron, electronProcess, model, delivery, trustedFingerprint, initialPid, nativeSession, retained = [];
 const ownedMainPids = new Set();
 const nativeHome = join(homedir(), '.dsh');
 const productHome = join(homedir(), '.agentkit');
@@ -157,11 +157,12 @@ try {
   await exec('/bin/launchctl', ['setenv', 'DSH_DESKTOP_UPDATE_JOURNAL_DIR', env.DSH_DESKTOP_UPDATE_JOURNAL_DIR]);
   await checkpoint('launching-real-signed-baseline');
   electron = await _electron.launch({ executablePath: join(install, 'Contents/MacOS/AgentKit Studio'), args: [], cwd: scratch, env, timeout: 120000 });
-  initialPid = electron.process().pid;
+  electronProcess = electron.process();
+  initialPid = electronProcess.pid;
   ownedMainPids.add(initialPid);
   assert.ok((await processIds()).includes(initialPid), 'Owned initial main process must be observable with its automation arguments');
   await electron.evaluate(({ app }) => { app.accessibilitySupportEnabled = true; });
-  for (const stream of [electron.process().stdout, electron.process().stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
+  for (const stream of [electronProcess.stdout, electronProcess.stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
   const page = await electron.firstWindow({ timeout: 120000 }); page.setDefaultTimeout(30000);
   const guide = page.locator('.agentkit-credential-onboarding-content'); await expect(guide).toBeVisible({ timeout: 120000 });
   await guide.getByRole('button', { name: '开始设置', exact: true }).click();
@@ -232,8 +233,21 @@ try {
   await checkpoint('installing-through-native-squirrel');
   await installationDialog.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ }).click();
   await until('actual bundle version replacement', async () => (await version()).version === report.targetVersion, 300000);
+  await until('native installer requested the original application exit', async () =>
+    (await journalEvents()).some(event => event.pid === initialPid && event.event === 'quit-requested'));
+  // Playwright's main-process debugger otherwise holds Node at "Waiting for
+  // the debugger to disconnect" after the native updater has requested quit.
+  // Its public close API detaches that debugger. Only do this after the native
+  // installer has replaced the bundle and the original App has requested quit.
+  const initialProcess = electronProcess;
+  await checkpoint('detaching-automation-after-native-quit-request');
+  let detachTimer;
+  await Promise.race([electron.close(), new Promise((_, reject) => { detachTimer = setTimeout(() => reject(Error('Native quit debugger detach deadline')), 30000); })])
+    .finally(() => clearTimeout(detachTimer));
+  electron = undefined;
+  report.debuggerDetachedAfterNativeQuitRequested = true;
   const successorReadiness = await until('automatic native successor', async () => {
-    if (electron.process().exitCode === null && electron.process().signalCode === null) return false;
+    if (initialProcess.exitCode === null && initialProcess.signalCode === null) return false;
     const events = await journalEvents();
     const ready = events.find(event => event.version === report.targetVersion && event.event === 'workspace-ready'
       && event.pid !== initialPid && alive(event.pid));
@@ -262,8 +276,9 @@ try {
   await exec('/bin/kill', ['-TERM', String(successorPid)]);
   await until('observed automatic successor exits normally', async () => !alive(successorPid), 30000);
   electron = await _electron.launch({ executablePath: join(install, 'Contents/MacOS/AgentKit Studio'), args: [], cwd: scratch, env, timeout: 120000 });
-  ownedMainPids.add(electron.process().pid);
-  for (const stream of [electron.process().stdout, electron.process().stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
+  electronProcess = electron.process();
+  ownedMainPids.add(electronProcess.pid);
+  for (const stream of [electronProcess.stdout, electronProcess.stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
   const continued = await electron.firstWindow({ timeout: 120000 }); continued.setDefaultTimeout(30000);
   assert.equal(await electron.evaluate(({ app }) => app.getVersion()), report.targetVersion);
   const row = continued.locator('[data-row-key=' + JSON.stringify('session:' + nativeSession) + ']');
@@ -288,10 +303,10 @@ try {
   if (electron) for (const [index, page] of electron.windows().entries()) await page.screenshot({ path: join(evidence, `failure-${index}.png`), timeout: 10000 }).catch(() => {});
   await checkpoint('failed');
 } finally {
-  if (electron && electron.process().exitCode === null && electron.process().signalCode === null) {
+  if (electron && electronProcess.exitCode === null && electronProcess.signalCode === null) {
     let timer;
     await Promise.race([electron.close(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Baseline close deadline')), 30000); })])
-      .catch(() => { report.cleanupFailure = true; process.exitCode = 1; electron.process().kill('SIGKILL'); })
+      .catch(() => { report.cleanupFailure = true; process.exitCode = 1; electronProcess.kill('SIGKILL'); })
       .finally(() => clearTimeout(timer));
   }
   for (const pid of new Set([...ownedMainPids, ...await processIds()])) if (alive(pid)) await exec('/bin/kill', ['-TERM', String(pid)]).catch(() => {});
