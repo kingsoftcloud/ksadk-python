@@ -332,6 +332,8 @@ def _exception(
 
 def _gateway_failure_category(category: str, code: str, finish_reason: object) -> str:
     """Keep streamed host validation failures aligned with buffered failures."""
+    if code == "MODEL_RESPONSE_INCOMPLETE":
+        return "incomplete_response"
     if code == "MODEL_TOOL_PROTOCOL_INVALID":
         return "malformed_tool_call"
     if code == "MODEL_EMPTY_RESPONSE":

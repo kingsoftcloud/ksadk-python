@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from .artifact_read_contract import ARTIFACT_READ_DEFINITION
 from .effective_configuration import effective_run_configuration
-from .machine import next_transition, reduce_tool
+from .machine import next_transition, reduce_parallel_readonly_tools, reduce_tool
 from .model import ModelToolCall
 from .ports import ToolResult, digest
 from .state import RunPhase
@@ -120,7 +120,7 @@ def artifact_group_capacity(snapshot, configuration, driver):
         before = (current.model_copy(update={"revision": current.revision-1,
                                              "pending_intent": None}) if first else current)
         prepared = next_transition(before, config)
-        if (prepared is None or len(prepared.intents) != 1
+        if (prepared is None or not prepared.intents
                 or prepared.intents[0].kind != "tool"):
             return None
         intent = prepared.intents[0]
@@ -128,15 +128,19 @@ def artifact_group_capacity(snapshot, configuration, driver):
             return None
         current = prepared.snapshot
         calls = intent.payload.get("calls") or [intent.payload["call"]]
-        updated = current
-        for call in calls:
-            # Only these synthetic result *shapes* enter a detached reducer.
-            # Content is not exposed, persisted, or attributed to any tool.
-            result = ToolResult(status="ok", content={"capacity_call": call["call_id"]})
-            updated = reduce_tool(
-                updated.model_copy(update={"pending_intent": intent.operation_key}),
-                result, definition=installed[0],
+        # Only synthetic result shapes enter these detached reducers. The
+        # parent intent owns its child intents; never price them as separate
+        # tool groups or execute their ports while making this estimate.
+        results = [ToolResult(status="ok", content={"capacity_call": call["call_id"]})
+                   for call in calls]
+        if intent.payload.get("parallel_readonly") is True:
+            updated = reduce_parallel_readonly_tools(
+                current, ToolResult(status="ok", content={
+                    "batch_results": [result.model_dump(mode="json") for result in results],
+                }), calls, definitions=config.tools,
             )
+        else:
+            updated = reduce_tool(current, results[0], definition=installed[0])
         current = commit_transition(current, updated, "effect.received").snapshot
         first = False
     completed = next_transition(current, config)

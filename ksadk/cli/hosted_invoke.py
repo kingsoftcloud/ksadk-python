@@ -74,6 +74,7 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
         click.echo(f"Session: {session_id}\nCommand: {command_id or run_id}")
         cursor = 0
         cursor_source = None
+        history_epoch = None
         claimed_message = None
         events = {}
         submitted = set()
@@ -89,6 +90,8 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
             }
             if cursor_source:
                 query["CursorSource"] = cursor_source
+            if history_epoch:
+                query["HistoryEpoch"] = history_epoch
             try:
                 page = action("ListSessionEvents", query, request_timeout=min(45, remaining))
             except requests.exceptions.SSLError:
@@ -114,6 +117,12 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
                 )
             if cursor_source and source != cursor_source:
                 raise click.ClickException("Hosted event cursor source changed; inspect the session above")
+            page_epoch = page.get("HistoryEpoch")
+            if page_epoch is not None and (not isinstance(page_epoch, str) or not page_epoch):
+                raise click.ClickException("Hosted Runtime returned an invalid history epoch")
+            if cursor_source and page_epoch != history_epoch:
+                raise click.ClickException("Hosted history epoch changed; inspect the session above")
+            history_epoch = page_epoch
             cursor_source = source
             rows = page.get("Events")
             next_cursor = page.get("NextCursor")

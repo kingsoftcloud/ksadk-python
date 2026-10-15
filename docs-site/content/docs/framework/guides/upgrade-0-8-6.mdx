@@ -18,8 +18,8 @@ uv pip install --python .venv-086/bin/python "ksadk==0.8.6"
 ```
 
 Windows 使用 `.venv-086\Scripts\python.exe` 与 `.venv-086\Scripts\agentengine.exe`。
-需要 Codex、DeepAgents、Skill Sandbox 等附加能力时选择对应 extra；需要全部开发依赖
-才安装 `ksadk[all]`。`agentengine-sdk-python==0.8.6` 是依赖同版本 `ksadk` 的别名包。
+需要 Codex、DeepAgents、Skill Sandbox 等附加能力时选择对应 extra；需要全部可选能力
+和开发依赖时再安装 `ksadk[all]`。`agentengine-sdk-python==0.8.6` 是依赖同版本 `ksadk` 的别名包。
 
 本地验证 wheel 可以替换上面的安装目标：
 
@@ -55,6 +55,24 @@ wheel 包含 Python 源码以及已编译的 Web/Studio 页面；它不会把测
 
 若要让所有本地 Agent 使用兼容路径，同时清空 `KSADK_STUDIO_NATIVE_AGENT_IDS`；
 `DEFAULT=0` 不会取消已有的精确 Native Agent 选择。
+
+### 哪些入口仍使用 Managed Harness
+
+Studio 的默认切换不等于所有名为 `harness` 的入口都切换了引擎：
+
+| 入口 | 当前默认执行方式 |
+| --- | --- |
+| 普通本地 Studio 的 Harness Agent | Native Harness |
+| Studio 显式兼容模式，且未指定 Native Agent | Managed Harness |
+| SDK `create_harness_session()` / `HarnessSession` | Managed Harness |
+| 非 Studio 的默认 Runtime Registry，`runtime_type=harness` | Managed Harness，除非宿主显式注入其他 factory |
+| 控制台创建的 Agent | 由最终 Framework、部署镜像和宿主装配决定；对话创建方式本身不决定引擎 |
+
+当前服务端允许创建 `Framework=harness` 的 ManagedRuntime；部署镜像若使用 SDK
+默认 Registry，执行时仍走 Managed。Codex、ADK、LangGraph Agent 则走对应 Provider。
+`ManagedHarnessRuntimeAdapter` 是执行适配器名称，`ManagedRuntime` 是部署形态，两者
+不能混为一谈。SDK 基础依赖保留 LangGraph 和 SQLite checkpoint 以服务兼容入口；
+Native 的独立性指执行时不导入这些框架，不表示基础包完全不安装它们。
 
 工具 hard deny 始终生效。`unknown` 表示副作用结果尚未确认；应先查询和显式对账，
 不要通过重发同一业务操作来猜测结果。durable claim 防止并发重复执行，不保证外部
