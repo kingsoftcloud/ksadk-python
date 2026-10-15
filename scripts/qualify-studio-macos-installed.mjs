@@ -14,7 +14,8 @@ import { basename, join, resolve } from 'node:path';
 assert.equal(process.platform, 'darwin');
 assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Trust and native profile qualification are restricted to disposable CI');
 assert.ok(process.env.RUNNER_TEMP);
-const exec = promisify(execFile);
+const execWithTimeout = promisify(execFile);
+const exec = (command, args, options = {}) => execWithTimeout(command, args, { timeout: 120000, ...options });
 const tools = resolve(process.env.STUDIO_TOOLS_ROOT);
 const require = createRequire(join(tools, 'package.json'));
 const { _electron, expect } = require('@playwright/test');
@@ -60,7 +61,7 @@ async function version() {
 async function processIds() {
   const executable = join(install, 'Contents/MacOS/AgentKit Studio');
   const lines = (await exec('/bin/ps', ['-ax', '-o', 'pid=,command='])).stdout.split('\n');
-  return lines.flatMap(line => { const m = line.trim().match(/^(\d+)\s+(.+)$/); return m?.[2] === executable ? [Number(m[1])] : []; });
+  return lines.flatMap(line => { const m = line.trim().match(/^(\d+)\s+(.+)$/); return m && (m[2] === executable || m[2].startsWith(executable + ' ')) ? [Number(m[1])] : []; });
 }
 async function until(name, operation, timeout = 180000) {
   const end = Date.now() + timeout; let last;
@@ -116,7 +117,7 @@ async function sendNativeContinuation(pid, ordinal) {
   end tell`], { timeout: 20000 });
   await until('native successor context response', async () => {
     if (!report.modelRequests.some(item => item.ordinal === ordinal && item.priorAssistantMarker)) return false;
-    const text = await nativeAX(pid); return text.split(marker).length - 1 >= ordinal + 1 && !text.includes('停止生成');
+    const text = await nativeAX(pid); return text.split(marker).length - 1 >= ordinal + 1 && !/停止生成|Stop generating/i.test(text);
   });
 }
 try {
@@ -183,6 +184,7 @@ try {
   await checkpoint('launching-real-signed-baseline');
   electron = await _electron.launch({ executablePath: join(install, 'Contents/MacOS/AgentKit Studio'), args: [], cwd: scratch, env, timeout: 120000 });
   initialPid = electron.process().pid;
+  assert.ok((await processIds()).includes(initialPid), 'Owned initial main process must be observable with its automation arguments');
   for (const stream of [electron.process().stdout, electron.process().stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
   const page = await electron.firstWindow({ timeout: 120000 }); page.setDefaultTimeout(30000);
   const guide = page.locator('.agentkit-credential-onboarding-content'); await expect(guide).toBeVisible({ timeout: 120000 });
@@ -197,8 +199,9 @@ try {
   await guide.getByRole('button', { name: '跳过，开始对话', exact: true }).click();
   await expect(guide).toBeHidden();
   await expect(page.getByRole('button', { name: 'Agents', exact: true })).toBeVisible();
-  const workspace = page.getByRole('treeitem').filter({ has: page.getByText('默认工作区', { exact: true }) });
-  await workspace.hover(); await workspace.getByRole('button', { name: '在“默认工作区”中新建会话', exact: true }).click();
+  await checkpoint('creating-native-session-in-localized-workspace');
+  const workspace = page.getByRole('treeitem').filter({ has: page.getByText(/^(默认工作区|Default workspace)$/) });
+  await workspace.hover(); await workspace.getByRole('button', { name: /在“.*”中新建会话|^New session in / }).click();
   const composer = page.locator('[contenteditable="true"]').first(); await composer.fill('Remember a unique context marker. Reply only with the marker. Do not use tools.'); await composer.press('Enter');
   await expect(page.getByText(marker, { exact: true })).toBeVisible({ timeout: 180000 });
   await expect(page.getByRole('button', { name: /^(停止生成|Stop generating)$/ })).toHaveCount(0, { timeout: 180000 });
@@ -234,10 +237,10 @@ try {
   await expect(dialog.getByText(report.targetVersion, { exact: false }).first()).toBeVisible({ timeout: 90000 });
   await dialog.screenshot({ path: join(evidence, 'download-confirmation.png') });
   await dialog.getByRole('button', { name: /^(下载更新|Download update)$/ }).click();
-  await expect(dialog.getByRole('button', { name: /^(安装并重启|Install and restart)$/ })).toBeVisible({ timeout: 300000 });
+  await expect(dialog.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ })).toBeVisible({ timeout: 300000 });
   await dialog.screenshot({ path: join(evidence, 'install-confirmation.png') });
   await checkpoint('installing-through-native-squirrel');
-  await dialog.getByRole('button', { name: /^(安装并重启|Install and restart)$/ }).click();
+  await dialog.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ }).click();
   await until('actual bundle version replacement', async () => (await version()).version === report.targetVersion, 300000);
   const successorPid = await until('automatic native successor', async () => {
     const pids = await processIds(); return pids.length === 1 && !pids.includes(initialPid) ? pids[0] : false;
@@ -265,11 +268,17 @@ try {
   await checkpoint('native-update-accepted-rollback-still-separate');
 } catch (error) {
   report.failure = { stage: report.stage, name: error.name, message: String(error.message).split('\n')[0].slice(0, 500) };
+  console.log(JSON.stringify({ failureStage: report.stage, errorName: error.name }));
   process.exitCode = 1;
   if (electron) for (const [index, page] of electron.windows().entries()) await page.screenshot({ path: join(evidence, `failure-${index}.png`), timeout: 10000 }).catch(() => {});
   await checkpoint('failed');
 } finally {
-  if (electron && (await processIds()).includes(initialPid)) await Promise.race([electron.close(), sleep(30000).then(() => { throw Error('Baseline close deadline'); })]).catch(() => { report.cleanupFailure = true; process.exitCode = 1; });
+  if (electron && (await processIds()).includes(initialPid)) {
+    let timer;
+    await Promise.race([electron.close(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Baseline close deadline')), 30000); })])
+      .catch(() => { report.cleanupFailure = true; process.exitCode = 1; electron.process().kill('SIGKILL'); })
+      .finally(() => clearTimeout(timer));
+  }
   for (const pid of await processIds()) await exec('/bin/kill', ['-TERM', String(pid)]).catch(() => {});
   await until('owned native processes exit', async () => (await processIds()).length === 0, 30000).catch(() => { report.cleanupFailure = true; process.exitCode = 1; });
   for (const server of [model, delivery]) if (server) { server.closeAllConnections(); await new Promise(done => server.close(done)); }
