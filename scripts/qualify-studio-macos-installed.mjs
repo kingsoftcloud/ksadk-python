@@ -34,6 +34,7 @@ const report = { schemaVersion: 1, passed: false, controlledDelivery: true, publ
   baselineVersion: '0.2.0-rc.2.20261014.10', targetVersion: '0.2.0-rc.2.20261015.38',
   checkpoints: [], modelRequests: [], transfers: [], limits: ['Controlled HTTPS transport; production feed is not modified or qualified by this run.'] };
 const reportFile = join(evidence, 'installed-update-controlled.json');
+const nativeObserver = join(scratch, 'observe-native-window');
 const checkpoint = async stage => {
   report.stage = stage; report.checkpoints.push({ stage, time: new Date().toISOString() });
   await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n');
@@ -71,63 +72,17 @@ async function until(name, operation, timeout = 180000) {
 let electron, model, delivery, trustedFingerprint, initialPid, nativeSession, retained = [];
 const nativeHome = join(homedir(), '.dsh');
 const productHome = join(homedir(), '.agentkit');
-async function nativeAX(pid) {
-  const script = `tell application "System Events"
-    set p to first application process whose unix id is ${pid}
-    set frontmost of p to true
-    try
-      set value of attribute "AXManualAccessibility" of p to true
-    end try
-    try
-      set value of attribute "AXEnhancedUserInterface" of p to true
-    end try
-    set resultText to ""
-    repeat with w in windows of p
-      repeat with element in entire contents of w
-        try
-          set roleText to role of element as text
-          set nameText to ""
-          set valueText to ""
-          try
-            set nameText to name of element as text
-          end try
-          try
-            set valueText to value of element as text
-          end try
-          set resultText to resultText & roleText & "|" & nameText & "|" & valueText & linefeed
-        end try
-      end repeat
-    end repeat
-    return resultText
-  end tell`;
-  return (await exec('/usr/bin/osascript', ['-e', script], { timeout: 20000, maxBuffer: 2e6 })).stdout;
-}
-async function sendNativeContinuation(pid, ordinal) {
-  const question = `Repeat the context marker from the earlier assistant response. Reply only with that marker. Turn ${ordinal}. Do not use tools.`;
-  await exec('/usr/bin/osascript', ['-e', `tell application "System Events"
-    set p to first application process whose unix id is ${pid}
-    set frontmost of p to true
-    set target to missing value
-    repeat with element in entire contents of window 1 of p
-      try
-        if role of element is "AXTextArea" then
-          set target to element
-          exit repeat
-        end if
-      end try
-    end repeat
-    if target is missing value then error "Native composer accessibility element absent"
-    set focused of target to true
-    keystroke ${JSON.stringify(question)}
-    key code 36
-  end tell`], { timeout: 20000 });
-  await until('native successor context response', async () => {
-    if (!report.modelRequests.some(item => item.continuationTurn === ordinal && item.priorAssistantMarker)) return false;
-    const text = await nativeAX(pid); return text.split(marker).length - 1 >= ordinal + 1 && !/停止生成|Stop generating/i.test(text);
-  });
+async function observeNativeWindow(pid, name) {
+  const output = join(evidence, name + '.json');
+  await exec(nativeObserver, [String(pid), install, join(evidence, name + '.png'), output, marker], { timeout: 45000 });
+  const observation = JSON.parse(await readFile(output));
+  assert.equal(observation.retainedSessionMarkerVisible, true);
+  assert.equal(observation.successorLaunchedByObserver, false);
+  return observation;
 }
 try {
   await checkpoint('checking-disposable-native-data');
+  await exec('xcrun', ['swiftc', join(import.meta.dirname, 'observe-studio-native-window.swift'), '-o', nativeObserver], { timeout: 180000 });
   for (const path of [nativeHome, productHome]) {
     assert.equal(await stat(path).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; }), false, 'Native qualification requires an unused runner profile');
   }
@@ -216,12 +171,14 @@ try {
   await expect(page.getByRole('button', { name: /^(停止生成|Stop generating)$/ })).toHaveCount(0, { timeout: 180000 });
   nativeSession = await page.locator('[data-conversation-session]').first().getAttribute('data-conversation-session'); assert.ok(nativeSession);
   await page.screenshot({ path: join(evidence, 'baseline-session.png'), fullPage: true });
-  await checkpoint('observing-baseline-native-accessibility');
-  await until('baseline native accessibility', async () => {
-    const value = await nativeAX(initialPid);
-    await writeFile(join(evidence, 'baseline-native-ax.txt'), value);
-    return value.includes(marker) && value.includes('Agents');
-  }, 30000);
+  await checkpoint('observing-existing-native-baseline-window');
+  report.baselineVisibility = await electron.evaluate(({ app, BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().startsWith('dsh-app://app/'));
+    if (!window) throw Error('Owned native workspace window is missing');
+    window.show(); window.focus(); app.focus({ steal: true });
+    return { pid: process.pid, windowId: window.id, visible: window.isVisible(), minimized: window.isMinimized() };
+  });
+  report.baselineWindow = await observeNativeWindow(initialPid, 'baseline-native-window');
   await checkpoint('recording-existing-native-data');
   const files = [...await walk(nativeHome), ...await walk(productHome)];
   const selected = files.filter(path => path.includes(nativeSession) && /session\.v\d+\.jsonl(?:\.zstd)?$/.test(path) || path === join(productHome, 'config.yaml'));
@@ -267,16 +224,33 @@ try {
     const current = await readFile(retained[i].path); assert.ok(current.subarray(0, retained[i].bytes.length).equals(retained[i].bytes)); report.retainedFiles[i].originalBytesRetained = true;
   }
   await checkpoint('observing-actual-successor-native-ui');
-  const ax = await until('successor retained native session', async () => { const value = await nativeAX(successorPid); return value.includes(marker) && value.includes('Agents') ? value : false; });
-  await writeFile(join(evidence, 'successor-native-ax.txt'), ax);
-  await exec('/usr/sbin/screencapture', ['-x', join(evidence, 'successor-native-screen.png')]);
-  await sendNativeContinuation(successorPid, 2);
-  await exec('/usr/sbin/screencapture', ['-x', join(evidence, 'successor-continuation-screen.png')]);
+  report.successorWindow = await observeNativeWindow(successorPid, 'successor-native-window');
   const journalFiles = await walk(join(evidence, 'journals'));
   const events = (await Promise.all(journalFiles.map(file => readFile(file, 'utf8')))).flatMap(text => text.trim().split('\n').filter(Boolean).map(line => JSON.parse(line)));
   for (const event of ['started', 'check-requested', 'download-requested', 'install-confirmed']) assert.ok(events.some(item => item.event === event));
   assert.ok(events.some(item => item.version === report.targetVersion && item.event === 'workspace-ready'));
   assert.ok(report.transfers.some(item => item.bytes === feed.files[0].size), 'A fresh DMG profile must actually download the signed ZIP');
+  // The existing automatic successor has already been independently observed.
+  // A separate cold restart then verifies native Session use through visible UI.
+  await checkpoint('cold-restarting-observed-updated-app-for-session-continuation');
+  await exec('/bin/kill', ['-TERM', String(successorPid)]);
+  await until('observed automatic successor exits normally', async () => (await processIds()).length === 0, 30000);
+  electron = await _electron.launch({ executablePath: join(install, 'Contents/MacOS/AgentKit Studio'), args: [], cwd: scratch, env, timeout: 120000 });
+  for (const stream of [electron.process().stdout, electron.process().stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
+  const continued = await electron.firstWindow({ timeout: 120000 }); continued.setDefaultTimeout(30000);
+  assert.equal(await electron.evaluate(({ app }) => app.getVersion()), report.targetVersion);
+  const row = continued.locator('[data-row-key=' + JSON.stringify('session:' + nativeSession) + ']');
+  await expect(row).toBeVisible({ timeout: 90000 }); await row.locator(':scope > span').nth(1).click();
+  const conversation = continued.locator('[data-conversation-session=' + JSON.stringify(nativeSession) + ']');
+  await expect(conversation.getByText(marker, { exact: true })).toHaveCount(1);
+  const nextComposer = continued.locator('[contenteditable="true"]').first();
+  await nextComposer.fill('Repeat the context marker from the earlier assistant response. Reply only with that marker. Turn 2. Do not use tools.');
+  await nextComposer.press('Enter');
+  await expect(conversation.getByText(marker, { exact: true })).toHaveCount(2, { timeout: 180000 });
+  await expect(continued.getByRole('button', { name: /^(停止生成|Stop generating)$/ })).toHaveCount(0, { timeout: 180000 });
+  assert.ok(report.modelRequests.some(item => item.continuationTurn === 2 && item.priorAssistantMarker));
+  await continued.screenshot({ path: join(evidence, 'updated-native-session-continuation.png'), fullPage: true });
+  report.sessionContinuationMethod = 'separate cold restart after independently observing the native automatic successor';
   report.passed = true; report.dataRetained = true; report.nativeContextContinuedAfterUpdate = true;
   await checkpoint('native-update-accepted-rollback-still-separate');
 } catch (error) {
@@ -286,7 +260,7 @@ try {
   if (electron) for (const [index, page] of electron.windows().entries()) await page.screenshot({ path: join(evidence, `failure-${index}.png`), timeout: 10000 }).catch(() => {});
   await checkpoint('failed');
 } finally {
-  if (electron && (await processIds()).includes(initialPid)) {
+  if (electron && (await processIds()).includes(electron.process().pid)) {
     let timer;
     await Promise.race([electron.close(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Baseline close deadline')), 30000); })])
       .catch(() => { report.cleanupFailure = true; process.exitCode = 1; electron.process().kill('SIGKILL'); })
