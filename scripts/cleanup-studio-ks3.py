@@ -72,7 +72,12 @@ else:
         for row in rows:
             status,_,headers=request('HEAD',row['key'])
             normalized={k.lower():v for k,v in headers.items()}
-            assert status==200 and normalized.get('etag')==row['etag'] and int(normalized['content-length'])==row['size'], 'Object changed before deletion'
+            # HTTP ETag is quoted; ListObjects returns the identical digest
+            # without quotes. Preserve exact digest comparison and byte size.
+            actual_etag=normalized.get('etag','').removeprefix('"').removesuffix('"')
+            expected_etag=row['etag'].removeprefix('"').removesuffix('"')
+            (out/'last-head-verification.json').write_text(json.dumps({'key':row['key'],'status':status,'actualEtag':actual_etag,'expectedEtag':expected_etag,'actualBytes':normalized.get('content-length'),'expectedBytes':row['size']},indent=2)+'\n')
+            assert status==200 and actual_etag==expected_etag and int(normalized['content-length'])==row['size'], 'Object changed before deletion'
             status,_,_=request('DELETE',row['key']); assert status in [200,204], 'KS3 deletion HTTP '+str(status)
             status,_,_=request('HEAD',row['key']); assert status==404,'Deleted object remains accessible'
             journal.append({'key':row['key'],'bytes':row['size'],'deleted':True,'authenticatedHead':status})
