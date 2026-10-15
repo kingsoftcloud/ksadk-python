@@ -22,6 +22,7 @@ on:
         options:
           - windows
           - host
+          - both
 permissions:
   contents: read
 concurrency:
@@ -105,8 +106,29 @@ jobs:
         with:
           version: 11.7.0
           package_json_file: dsh-source/package.json
+      - name: Resolve product inputs and validate PowerShell syntax
+        id: product
+        shell: pwsh
+        env:
+          STUDIO_PRODUCT_BUILD_VERSION: ${{ inputs.build_version }}
+        run: |
+          $values = & node scripts/product-config.mjs github-outputs "$PWD"
+          if ($LASTEXITCODE) { throw 'Public product input resolution failed' }
+          $values | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          New-Item -ItemType Directory -Force .artifacts | Out-Null
+          $values | Out-File .artifacts/windows-product-inputs.txt -Encoding utf8
+          $tokens = $null
+          $syntaxErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/prepare-windows-signing.ps1", [ref]$tokens, [ref]$syntaxErrors)
+          if ($syntaxErrors.Count) { throw 'Windows signing input script has PowerShell syntax errors' }
+          @{powershellVersion="$($PSVersionTable.PSVersion)"; signingScriptParsed=$true; signingExecuted=$false} | ConvertTo-Json | Out-File .artifacts/windows-product-powershell.json -Encoding utf8
       - name: Prepare frozen Studio package and diagnostic settings
         shell: pwsh
+        env:
+          UPDATE_ORIGIN: ${{ steps.product.outputs.update_origin }}
+          CHANNEL: ${{ steps.product.outputs.channel }}
+          STUDIO_PRODUCT_APP_ID: ${{ steps.product.outputs.app_id }}
+          STUDIO_PRODUCT_UPDATE_ENV: ${{ steps.product.outputs.update_environment }}
         run: |
           pnpm install --frozen-lockfile
           if ($LASTEXITCODE) { throw 'Studio dependency installation failed' }
@@ -119,11 +141,11 @@ jobs:
           "DSH_DESKTOP_PLUGIN_INPUTS=$inputRoot" | Out-File $env:GITHUB_ENV -Append
           "STUDIO_PACKAGE_VERSION=$version" | Out-File $env:GITHUB_ENV -Append
           $settings = @{
-            DSH_DESKTOP_APP_ID = 'com.kingsoftcloud.agentkit-studio'
-            DSH_DESKTOP_AUTO_UPDATE_ENV = 'production'
-            DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN = 'https://agentkit.ks3-cn-beijing.ksyuncs.com'
-            DSH_DESKTOP_UPDATE_ORIGIN = 'https://agentkit.ks3-cn-beijing.ksyuncs.com'
-            DSH_DESKTOP_UPDATE_CHANNEL = 'preview'
+            DSH_DESKTOP_APP_ID = $env:STUDIO_PRODUCT_APP_ID
+            DSH_DESKTOP_AUTO_UPDATE_ENV = $env:STUDIO_PRODUCT_UPDATE_ENV
+            DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN = $env:UPDATE_ORIGIN
+            DSH_DESKTOP_UPDATE_ORIGIN = $env:UPDATE_ORIGIN
+            DSH_DESKTOP_UPDATE_CHANNEL = $env:CHANNEL
           }
           $lines = foreach ($entry in $settings.GetEnumerator()) { "$($entry.Key)='$($entry.Value)'" }
           [IO.File]::WriteAllText("$PWD/dsh-source/apps/desktop/.env.windows", ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
@@ -131,13 +153,15 @@ jobs:
         shell: pwsh
         env:
           BUILD_VERSION: ${{ inputs.build_version }}
-          DSH_CLIENT_TITLE: AgentKit Studio
-          DSH_DESKTOP_PLUGIN_ROOTS: "@kingsoftcloud/agentkit-studio"
-          DSH_DESKTOP_PLUGIN_BUNDLES: "@kingsoftcloud/agentkit-studio"
+          DSH_CLIENT_TITLE: ${{ steps.product.outputs.name }}
+          DSH_DESKTOP_PLUGIN_ROOTS: ${{ steps.product.outputs.plugin_roots }}
+          DSH_DESKTOP_PLUGIN_BUNDLES: ${{ steps.product.outputs.plugin_bundles }}
+          STUDIO_PRODUCT_ICON: ${{ steps.product.outputs.windows_icon }}
+          STUDIO_PRODUCT_TRAY_ICON: ${{ steps.product.outputs.windows_tray_icon }}
         run: |
           [string[]]$options = @('--source', "$PWD/dsh-source", '--output', "$env:RUNNER_TEMP/studio-build", '--patches', "$PWD/patches/dsh-v0.2.0-rc.2", '--commit', '639ed015397290b3745d163aafe02ffee4aa3f84', '--target', 'win-x64', '--dsh-version', '0.2.0-rc.2', '--studio-version', $env:STUDIO_PACKAGE_VERSION, '--build-version', $env:BUILD_VERSION, '--unsigned')
-          $env:DSH_DESKTOP_PRODUCT_ICON = "$PWD/assets/agentkit-studio-macos.png"
-          $env:DSH_DESKTOP_PRODUCT_TRAY_ICON = "$PWD/assets/agentkit-studio-tray.ico"
+          $env:DSH_DESKTOP_PRODUCT_ICON = Join-Path $PWD $env:STUDIO_PRODUCT_ICON
+          $env:DSH_DESKTOP_PRODUCT_TRAY_ICON = Join-Path $PWD $env:STUDIO_PRODUCT_TRAY_ICON
           pnpm exec node scripts/package-desktop.mjs @options 2>&1 | ForEach-Object { "$_" -replace '([?&]token=)[^\s"<>]+', '$1[redacted]' } | Tee-Object -FilePath .artifacts/windows-package.log
           if ($LASTEXITCODE) { throw 'Unsigned Windows packaging failed' }
       - name: Check actual packaged Studio imports and record hashes
@@ -176,6 +200,8 @@ jobs:
         with:
           name: studio-refactor-windows-${{ inputs.build_version }}
           path: |
+            .artifacts/windows-product-inputs.txt
+            .artifacts/windows-product-powershell.json
             .artifacts/windows-package.log
             .artifacts/windows-studio-module-graph.json
             .artifacts/windows-package-acceptance.json
@@ -188,7 +214,7 @@ jobs:
         run: Remove-Item dsh-source/apps/desktop/.env.windows -Force -ErrorAction SilentlyContinue
     if: ${{ inputs.validation_target != 'host' }}
   patched-host:
-    if: ${{ inputs.validation_target == 'host' }}
+    if: ${{ inputs.validation_target != 'windows' }}
     needs: source-gate
     runs-on: ${{ matrix.os }}
     environment: studio-signing
