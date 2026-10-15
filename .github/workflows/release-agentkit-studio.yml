@@ -1,76 +1,53 @@
-name: Qualify signed Studio native macOS update without publication
+name: Clean obsolete Studio prerelease storage without publication
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [inventory, cleanup]
+        default: inventory
+        required: true
+      plan_run:
+        type: string
+        required: false
+      plan_sha256:
+        type: string
+        required: false
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: studio-macos-native-installed-qualification
+  group: studio-obsolete-storage-cleanup
   cancel-in-progress: false
 jobs:
-  installed-macos:
-    runs-on: macos-14
-    timeout-minutes: 25
+  studio-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: studio-signing
     steps:
-      - name: Checkout qualification harness
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Checkout fixed candidate tools
-        uses: actions/checkout@v4
-        with:
-          repository: kingsoftcloud/agentkit-studio
-          ref: 06bfe614775efccf30faefa2cb9a027b96ea084e
-          path: studio-tools
-          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.2
-      - name: Install verification dependencies
-        working-directory: studio-tools
-        run: pnpm install --frozen-lockfile
-      - name: Download exact signed candidate artifact
+      - name: Download exact reviewed inventory
+        if: inputs.mode == 'cleanup'
         uses: actions/download-artifact@v4
         with:
-          name: agentkit-studio-06bfe614775efccf30faefa2cb9a027b96ea084e-preview-mac-arm64
-          run-id: '38751927756'
-          repository: kingsoftcloud/ksadk-python
+          name: studio-old-ks3-inventory
+          run-id: ${{ inputs.plan_run }}
           github-token: ${{ github.token }}
-          path: candidate
-      - name: Download signed accepted baseline
+          path: plan
+      - name: Inventory or remove only fixed Studio prerelease namespace
         env:
-          GH_TOKEN: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/studio-native-baseline"
-          gh api repos/kingsoftcloud/agentkit-studio/releases/assets/640053801 -H 'Accept: application/octet-stream' > "$RUNNER_TEMP/studio-native-baseline/baseline.dmg"
-      - name: Download fixed signed higher-version rollback candidate
-        uses: actions/download-artifact@v4
-        with:
-          name: agentkit-studio-9b20aee585956c30239ab1775098cdab25ada9cb-preview-mac-arm64
-          run-id: '38770609458'
-          repository: kingsoftcloud/ksadk-python
-          github-token: ${{ github.token }}
-          path: rollback-candidate
-      - name: Real signed native installation, restart and data retention
-        env:
-          STUDIO_TOOLS_ROOT: ${{ github.workspace }}/studio-tools
-          STUDIO_BASELINE_DMG: ${{ runner.temp }}/studio-native-baseline/baseline.dmg
-          STUDIO_CANDIDATE_DIR: ${{ github.workspace }}/candidate
-          STUDIO_ROLLBACK_CANDIDATE_DIR: ${{ github.workspace }}/rollback-candidate
-          STUDIO_INSTALL_EVIDENCE: ${{ github.workspace }}/.native-update-evidence
-        run: node scripts/qualify-studio-macos-installed.mjs
-      - name: Retain redacted qualification evidence
+          STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_ACCESS_KEY }}
+          STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_KS3_SECRET_KEY }}
+          CLEANUP_MODE: ${{ inputs.mode }}
+          PLAN_SHA256: ${{ inputs.plan_sha256 }}
+        run: python3 scripts/cleanup-studio-ks3.py "$CLEANUP_MODE" --sha256 "$PLAN_SHA256"
+      - name: Retain object names and redacted status only
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: studio-macos-native-installed-update
-          path: .native-update-evidence
+          name: studio-old-ks3-${{ inputs.mode }}
+          path: .studio-cleanup-evidence
           include-hidden-files: true
           if-no-files-found: error
