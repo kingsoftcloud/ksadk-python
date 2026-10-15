@@ -29,8 +29,8 @@ Record exactly one approved source publication strategy.
 
 The approved strategy names the reviewed source used for both release artifacts:
 
-- `ksadk-python`: Clean public export of reviewed source commit `3715fbabf8b337d4710f481bff80d6ba8cfeb450`; publish both `ksadk==0.8.6` and `agentengine-sdk-python==0.8.6` through the reviewed public pull request and GitHub Trusted Publishing. The final approval-record commit only records this decision.
-- `ksadk-web`: `@kingsoftcloud/ksadk-web@0.3.13`, published from GitHub merge commit `b434f83a048f808fb9e4bf5c1c67e3b81f09ff6f`; source provenance `d65c31a42ee92aeb0f6b157084d7194a5d93226f`; npm integrity `sha512-cKLJxdIVpDic9ef3W9yqS/IH+LgqWbPcrbl74zLJlYx5d6kTP8Bd7mA3uvjoarg1b+gatCiLLmEgjPZ7X4KvEQ==`; Python consumer binding reviewed in source commit `3715fbabf8b337d4710f481bff80d6ba8cfeb450`.
+- `ksadk-python`: Clean public export of reviewed source commit `9f6a3fe0f20c11314a525c132e3619dea67aaae1`; publish both `ksadk==0.8.6` and `agentengine-sdk-python==0.8.6` through the reviewed public pull request and GitHub Trusted Publishing. The final approval-record commit only records this decision.
+- `ksadk-web`: `@kingsoftcloud/ksadk-web@0.3.13`, published from GitHub merge commit `b434f83a048f808fb9e4bf5c1c67e3b81f09ff6f`; source provenance `d65c31a42ee92aeb0f6b157084d7194a5d93226f`; npm integrity `sha512-cKLJxdIVpDic9ef3W9yqS/IH+LgqWbPcrbl74zLJlYx5d6kTP8Bd7mA3uvjoarg1b+gatCiLLmEgjPZ7X4KvEQ==`; Python consumer binding reviewed in source commit `9f6a3fe0f20c11314a525c132e3619dea67aaae1`.
 
 Both approved source references include the reviewed Python source commit SHA so a changed candidate cannot reuse this record.
 

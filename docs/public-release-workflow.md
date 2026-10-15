@@ -209,7 +209,7 @@ git push github v<version>
 
 - 触发条件：GitHub Release `published` 或手动 `workflow_dispatch`。
 - 输入：`ksadk_web_version`、`approved_source_commit` 和 `publish_target`。
-- 正常发版使用 `publish_target=full`：workflow 会跑完整 `make public-preflight`，发布 `ksadk` 主包，构建并发布 `agentengine-sdk-python` 别名包，并部署 GitHub Pages。
+- 正常发版使用 `publish_target=full`：公开候选先通过本地完整 `make public-preflight`、PR review 和 CI；发布 workflow 再运行 `make public-preflight-publish`，复核版本、公开审计、公开测试及主包构建。主包与 `agentengine-sdk-python` 兼容发行包必须都完成构建、`twine check` 和制品审计后，才依次上传 PyPI；同一 workflow 随后部署 GitHub Pages。
 - 补发别名包使用 `publish_target=alias-only`：workflow 只跑公开审计、公开测试、别名包构建审计和 approval gate，只发布 `agentengine-sdk-python`，不重发 `ksadk`，也不部署 GitHub Pages。
 - workflow 先同步 npm registry 中的 UI 静态资源。
 - workflow 再按 `publish_target` 运行对应发布前检查。
