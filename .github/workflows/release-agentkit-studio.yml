@@ -279,6 +279,22 @@ jobs:
           cp "$patch" studio/patches/dsh-v0.2.0-rc.2/039-exclude-package-ci-metadata.patch
           pnpm --dir qualification-tools install --frozen-lockfile
           node -e 'const fs=require("node:fs");fs.writeFileSync("rollback-input.json",JSON.stringify({studioSource:"9b20aee585956c30239ab1775098cdab25ada9cb",packagingTools:"06bfe614775efccf30faefa2cb9a027b96ea084e",additionalPackagingPatch:"039",patchSha256:"1566a70eef9f6438b7c086d2f69fb80b2f38223ac61e9bcaa4049f1177051ec0",baselineRuntimeFilesVerified:123,expectedStudioSourceSha256:"b9d8a44e2baea87a1b449aba373eae865a6322201d59ac1741f80e532e7221a6",expectedStudioPackageSha256:"a6a80b62e519e57c4095dedb2a83c078ab2fdb4e65745ca7b7035fa55d17986e",published:false},null,2))'
+      - name: Freeze the exact accepted Studio package independently of host packaging fixes
+        env:
+          GH_TOKEN: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+          STUDIO_BASELINE_ASAR: ${{ runner.temp }}/rollback-original.asar
+          STUDIO_BASELINE_PACKAGE: ${{ runner.temp }}/rollback-original-package
+        shell: bash
+        run: |-
+          set -euo pipefail
+          baseline_zip="$RUNNER_TEMP/rollback-original.zip"
+          gh api repos/kingsoftcloud/agentkit-studio/releases/assets/640053803 -H 'Accept: application/octet-stream' > "$baseline_zip"
+          test "$(shasum -a 256 "$baseline_zip" | cut -d ' ' -f 1)" = 84c57c132cea6f203292409f0e35f2dc804101c3c41a0ec16dd7f70340d19873
+          unzip -p "$baseline_zip" 'AgentKit Studio.app/Contents/Resources/app.asar' > "$STUDIO_BASELINE_ASAR"
+          node scripts/freeze-studio-baseline-package.mjs
+          mkdir -p "$RUNNER_TEMP/rollback-original-input"
+          tar -czf "$RUNNER_TEMP/rollback-original-input/kingsoftcloud-agentkit-studio-0.0.2.tgz" -C "$STUDIO_BASELINE_PACKAGE" package
+          rm -f "$baseline_zip" "$STUDIO_BASELINE_ASAR"
       - name: Build, sign and notarize Studio
         shell: bash
         working-directory: studio
@@ -295,7 +311,7 @@ jobs:
         run: |
           set -euo pipefail
           pnpm install --frozen-lockfile
-          DSH_DESKTOP_BUILD_VERSION="$BUILD_VERSION" make desktop-package-mac-arm64 DSH_ROOT="$DSH_ROOT" DSH_COMMIT="$DSH_COMMIT" DSH_VERSION="$DSH_VERSION" PACK_DIR="$PACK_DIR"
+          DSH_DESKTOP_BUILD_VERSION="$BUILD_VERSION" make desktop-package-mac-arm64 DSH_ROOT="$DSH_ROOT" DSH_COMMIT="$DSH_COMMIT" DSH_VERSION="$DSH_VERSION" PACK_DIR="$PACK_DIR" PLUGIN_TARBALL="$RUNNER_TEMP/rollback-original-input/kingsoftcloud-agentkit-studio-0.0.2.tgz"
       - name: Verify signed and notarized artifacts
         id: verified-artifacts
         shell: bash
@@ -454,5 +470,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: studio-macos-rollback-input
-          path: rollback-input.json
+          path: |-
+            rollback-input.json
+            rollback-frozen-package.json
           if-no-files-found: error
