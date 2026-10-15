@@ -18,6 +18,7 @@ const output = resolve(values.report), executablePath = resolve(values.executabl
 await mkdir(dirname(output), { recursive: true });
 const userMessage = 'Windows refactor acceptance marker: retain this conversation after restarting.';
 const assistantMessage = 'Windows refactor acceptance reply retained.';
+let modelRequests = 0;
 const server = createServer((request, response) => {
   request.resume();
   if (request.url === '/v1/models') {
@@ -25,6 +26,7 @@ const server = createServer((request, response) => {
     response.end(JSON.stringify({ object: 'list', data: [{ id: 'native-proof', object: 'model' }] }));
     return;
   }
+  modelRequests++;
   response.setHeader('Content-Type', 'text/event-stream');
   for (const [content, finish] of [[assistantMessage, null], ['', 'stop']]) {
     response.write('data: ' + JSON.stringify({ id: 'native-proof', object: 'chat.completion.chunk', model: 'native-proof', created: 1,
@@ -89,6 +91,25 @@ try {
     const conversation = page.locator(`[data-conversation-session=${JSON.stringify(sessionId)}]`);
     await expect(conversation.getByText(userMessage, { exact: true })).toBeVisible({ timeout: 90000 });
     await expect(conversation.getByText(assistantMessage, { exact: true })).toBeVisible({ timeout: 90000 });
+    if (restart === 1) {
+      const settings = await page.evaluate(async () => {
+        const response = await fetch('/agentkit', { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ method: 'settings/get', payload: {}, rpcId: 'native-restart-model-proof' }) });
+        const result = (await response.json()).result;
+        return { status: response.status, ok: result?.ok === true,
+          configured: result?.value?.modelProfiles?.some(profile => profile.modelName === 'native-proof' && profile.credentialConfigured === true) };
+      });
+      assert.deepEqual(settings, { status: 200, ok: true, configured: true });
+      const requestsBefore = modelRequests;
+      const composer = page.locator('[contenteditable="true"]').first();
+      const continuation = 'Windows refactor continuation after the native restart.';
+      await composer.fill(continuation); await composer.press('Enter');
+      await expect(conversation.getByText(continuation, { exact: true })).toBeVisible({ timeout: 90000 });
+      await expect(conversation.getByText(assistantMessage, { exact: true })).toHaveCount(2, { timeout: 120000 });
+      assert.ok(modelRequests > requestsBefore, 'The restarted native Host must execute a new provider request');
+      report.modelConfigurationRetained = true;
+      report.continuationAfterRestart = true;
+    }
     assert.deepEqual(errors, [], 'Native renderer must not report uncaught errors');
     report.launches.push({ restart: restart + 1, runtime, elapsedMs: Date.now() - started,
       nativeSession: true, userMessageRetained: true, assistantReplyRetained: true, rendererErrors: errors.length });
@@ -96,7 +117,6 @@ try {
     await app.close(); app = undefined; page = undefined;
   }
   report.defaultNativeDataDirectories = true;
-  report.modelConfigurationRetained = true;
   report.passed = true;
 } catch (error) {
   report.failure = { message: String(error.message).split('\n')[0].slice(0, 250), completedLaunches: report.launches.length };
