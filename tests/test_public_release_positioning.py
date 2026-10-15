@@ -635,7 +635,10 @@ def test_public_release_approval_is_current_or_explicitly_historical():
     historical_approval = "| Python package version | 0.8.5 |"
     if current_approval in approval_record:
         assert "This is the historical" not in approval_record
-        assert "Approved | 2026-09-09" in approval_record
+        from scripts.check_approval_record import validate_approval_record
+
+        checks = validate_approval_record(ROOT / "docs/maintainer-approval-record.md", version=current_version)
+        assert all(check.ok for check in checks), [check for check in checks if not check.ok]
     else:
         assert historical_approval in approval_record
         assert "does not authorize PyPI publication" in approval_record

@@ -384,6 +384,7 @@ PUBLIC_RELEASE_TAG ?= v$(V)
 PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/studio/test_scheduler_runtime.py tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py tests/test_deploy_env_forward.py tests/server/test_historical_agent_approval_and_blocks.py
 PUBLIC_TEST_TARGETS += tests/a2a/test_public_imports.py tests/studio/test_shared_web_final_snapshot.py
 PUBLIC_TEST_TARGETS += tests/test_cloud_headers.py
+PUBLIC_TEST_TARGETS += tests/test_prepare_ksadk_python_export.py
 
 public-status:
 	@echo "==> internal worktree"
