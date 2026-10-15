@@ -246,12 +246,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra all
 
-      - name: Pin google-adk for this matrix leg
-        run: uv pip install "google-adk==${{ matrix.google-adk }}"
-
-      - name: Verify google-adk version
-        run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
-
       # Both internal and public branches compile Studio from source.
       # Generated assets belong in packages, never in the Git tree.
       - name: Prepare companion Web source
@@ -270,8 +264,15 @@ jobs:
       # 2-core runner 上进程表/内存耗尽(Cannot fork/超时)。
       # 这些测试由下方 test-local-process-heavy job 在干净进程表里单独跑,不丢覆盖。
       # -n auto: pytest-xdist 并行(实测 4 核 19:52→6:25, 7039 全过)。
+      - name: Pin google-adk for this matrix leg
+        run: uv pip install "google-adk==${{ matrix.google-adk }}"
+
       - name: Run full test suite
-        run: uv run --no-sync pytest tests/ -q -m "not local_process_heavy" -n auto
+        env:
+          EXPECTED_GOOGLE_ADK: ${{ matrix.google-adk }}
+        run: |
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected)'
+          uv run --no-sync pytest tests/ -q -m "not local_process_heavy" -n auto
 
   # 真实 fork 子进程的 Native recovery/sandbox/skill/browser 测试。
   # 与全量套件拆开跑——单独 pytest 进程没有前面 7000 测试累积的资源占用,不会 Cannot fork。
@@ -309,9 +310,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra all
 
-      - name: Pin google-adk for this matrix leg
-        run: uv pip install "google-adk==${{ matrix.google-adk }}"
-
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
 
@@ -326,10 +324,16 @@ jobs:
       - name: Build package artifacts
         run: uv build
 
+      - name: Pin google-adk for this matrix leg
+        run: uv pip install "google-adk==${{ matrix.google-adk }}"
+
       - name: Run local_process_heavy tests
+        env:
+          EXPECTED_GOOGLE_ADK: ${{ matrix.google-adk }}
         # Native SIGKILL 恢复用例也在公开导出树内，必须在这里串行执行。
         # 公开候选缺少测试或零收集都必须失败，不能用绿色 job 掩盖漏测。
         run: |
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected)'
           test -f tests/harness/native/test_partial_summary_process.py
           test -f tests/harness/native/test_summary_recovery_process.py
           test -f tests/harness/native/test_compaction_reserve_process_recovery.py
