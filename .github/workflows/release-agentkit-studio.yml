@@ -14,6 +14,14 @@ on:
         description: Local unsigned diagnostic version
         type: string
         required: true
+      validation_target:
+        description: Diagnostic verification target
+        type: choice
+        required: true
+        default: windows
+        options:
+          - windows
+          - host
 permissions:
   contents: read
 concurrency:
@@ -46,7 +54,7 @@ jobs:
           version: 10.33.2
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: "24"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install verified scanner
@@ -92,7 +100,7 @@ jobs:
           git config --system core.longpaths true
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: "24"
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
@@ -124,8 +132,8 @@ jobs:
         env:
           BUILD_VERSION: ${{ inputs.build_version }}
           DSH_CLIENT_TITLE: AgentKit Studio
-          DSH_DESKTOP_PLUGIN_ROOTS: '@kingsoftcloud/agentkit-studio'
-          DSH_DESKTOP_PLUGIN_BUNDLES: '@kingsoftcloud/agentkit-studio'
+          DSH_DESKTOP_PLUGIN_ROOTS: "@kingsoftcloud/agentkit-studio"
+          DSH_DESKTOP_PLUGIN_BUNDLES: "@kingsoftcloud/agentkit-studio"
         run: |
           [string[]]$options = @('--source', "$PWD/dsh-source", '--output', "$env:RUNNER_TEMP/studio-build", '--patches', "$PWD/patches/dsh-v0.2.0-rc.2", '--commit', '639ed015397290b3745d163aafe02ffee4aa3f84', '--target', 'win-x64', '--dsh-version', '0.2.0-rc.2', '--studio-version', $env:STUDIO_PACKAGE_VERSION, '--build-version', $env:BUILD_VERSION, '--unsigned')
           $env:DSH_DESKTOP_PRODUCT_ICON = "$PWD/assets/agentkit-studio-macos.png"
@@ -178,3 +186,57 @@ jobs:
         if: always()
         shell: pwsh
         run: Remove-Item dsh-source/apps/desktop/.env.windows -Force -ErrorAction SilentlyContinue
+    if: ${{ inputs.validation_target != 'host' }}
+  patched-host:
+    if: ${{ inputs.validation_target == 'host' }}
+    needs: source-gate
+    runs-on: ${{ matrix.os }}
+    environment: studio-signing
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: kingsoftcloud/agentkit-studio
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+          ref: ${{ inputs.studio_checkout_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable source
+        env:
+          SOURCE_SHA: ${{ inputs.studio_ref }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$SOURCE_SHA" HEAD
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: dsh-v0.2.0-rc.2
+          path: dsh-source
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          package_json_file: dsh-source/package.json
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec node scripts/verify-patched-dsh-host.mjs --source dsh-source --patches patches/dsh-v0.2.0-rc.2 --output .artifacts/patched-host --report .artifacts/patched-host-acceptance.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: studio-refactor-patched-host-${{ matrix.os }}
+          path: |-
+            .artifacts/patched-host-acceptance.json
+            .artifacts/patched-host/host-tests.json
+          if-no-files-found: error
+          retention-days: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-2025
