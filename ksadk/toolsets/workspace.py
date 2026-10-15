@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import ast
-import difflib
 import fnmatch
+import hashlib
 import json
 import re
 import shutil
-import subprocess
+from dataclasses import replace
+from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,8 +15,35 @@ from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tools.gateway import ToolPolicy, default_tool_gateway
 from ksadk.tools.result_budget import budget_tool_output, default_tool_result_budget
 from ksadk.toolsets._langchain import as_tool
+from ksadk.toolsets.workspace_editing import (
+    _apply_single_edit,
+    _budget_diff,
+    _build_diff,
+    _commit_workspace_edit,
+    _dict_result,
+    _read_workspace_text,
+    _refresh_read_state,
+    _validate_read_state,
+    _validate_single_edit_request,
+)
+from ksadk.toolsets.workspace_editing import (
+    _find_actual_string as _find_actual_string,
+)
+from ksadk.toolsets.workspace_editing import (
+    _match_previews as _match_previews,
+)
+from ksadk.toolsets.workspace_editing import (
+    _nearby_candidates as _nearby_candidates,
+)
+from ksadk.toolsets.workspace_editing import (
+    _normalize_quotes as _normalize_quotes,
+)
 from ksadk.toolsets.workspace_identity import identity_workspace_root
-from ksadk.toolsets.workspace_state import WorkspaceReadState, get_read_state, record_read_state
+from ksadk.toolsets.workspace_mutation import locked_workspace_paths, publish_workspace_bytes
+from ksadk.toolsets.workspace_read_budget import current_source_read_budget
+from ksadk.toolsets.workspace_search import search_payload as _search_payload
+from ksadk.toolsets.workspace_state import WorkspaceReadState, record_read_state
+from ksadk.toolsets.workspace_state import get_read_state as get_read_state
 
 _WORKSPACE_TOOL_POLICIES = {
     "workspace_status": ToolPolicy(risk_level="low"),
@@ -35,12 +63,6 @@ def _gateway():
     return default_tool_gateway(_WORKSPACE_TOOL_POLICIES)
 
 
-def _dict_result(value: Any, *, tool_name: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise TypeError(f"{tool_name} returned {type(value).__name__}, expected dict")
-    return dict(value)
-
-
 def workspace_root() -> Path:
     return identity_workspace_root(Path(resolve_local_session_dir()) / "workspace")
 
@@ -56,6 +78,15 @@ def resolve_workspace_path(relative_path: str) -> Path:
 
 def workspace_relative(path: Path) -> str:
     return path.resolve().relative_to(workspace_root().resolve()).as_posix()
+
+
+def _workspace_file_guard(function):
+    """Serialize the admitted file operation; approval remains outside this lock."""
+    @wraps(function)
+    def guarded(path, *args, **kwargs):
+        with locked_workspace_paths((resolve_workspace_path(path),)):
+            return function(path, *args, **kwargs)
+    return guarded
 
 
 def workspace_status() -> dict[str, Any]:
@@ -200,6 +231,7 @@ def read_workspace_file(
     )
 
 
+@_workspace_file_guard
 def _read_workspace_file_impl(
     path: str,
     start_line: int | None = None,
@@ -214,7 +246,11 @@ def _read_workspace_file_impl(
     if stat.st_size > 2 * 1024 * 1024:
         return {"ok": False, "error_message": "file is larger than 2MB"}
     try:
-        text = target.read_text(encoding="utf-8")
+        with target.open("rb") as source:
+            payload = source.read(2 * 1024 * 1024 + 1)
+        if len(payload) > 2 * 1024 * 1024:
+            return {"ok": False, "error_message": "file is larger than 2MB"}
+        text = payload.decode("utf-8")
     except UnicodeDecodeError:
         return {"ok": False, "error_message": "file is not utf-8 text"}
     lines = text.splitlines()
@@ -222,61 +258,200 @@ def _read_workspace_file_impl(
     start = max(1, int(start_line or 1))
     end = min(total_lines, int(end_line or total_lines)) if total_lines else 0
     if end and start > end:
-        return {"ok": False, "error_message": "start_line must be <= end_line"}
+        relative = workspace_relative(target)
+        return {
+            "ok": False,
+            "error_message": "start_line must be <= end_line",
+            "path": relative,
+            "requested_range": {"start": start, "end": end_line},
+            "total_lines": total_lines,
+            "suggested_action": (
+                f"Re-read the current file with read_workspace_file(path={relative!r}, "
+                f"start_line={max(1, min(start, total_lines))}) before editing."
+            ),
+        }
     selected = lines[start - 1 : end] if total_lines else []
     content = "\n".join(
         f"{line_no} | {line}" if include_line_numbers else line
         for line_no, line in enumerate(selected, start=start)
     )
     limit = max(1000, min(int(max_chars or 20000), 100000))
+    output_budget = default_tool_result_budget(
+        max_chars=limit, preview_chars=limit, persist_threshold_chars=limit
+    )
+    source_budget = current_source_read_budget()
+    if source_budget is not None:
+        try:
+            limit = source_budget.character_limit(content, limit)
+        except ValueError as error:
+            code = str(error)
+            if code not in {"source_read_budget_unavailable", "source_read_counter_invalid"}:
+                code = "source_read_counter_invalid"
+            if code == "source_read_budget_unavailable" and source_budget.artifact_only_fallback:
+                limit = 1
+            else:
+                return {"ok": False, "error_message": code, "path": workspace_relative(target)}
+        # An environment default must not enlarge the authenticated host's
+        # source allowance. Page generation and edit read-state use this same
+        # limit, before the result becomes a durable tool receipt.
+        output_budget = replace(
+            output_budget,
+            max_chars=min(output_budget.max_chars, limit),
+            preview_chars=min(output_budget.preview_chars, limit),
+            persist_threshold_chars=min(output_budget.persist_threshold_chars, limit),
+        )
     relative = workspace_relative(target)
     budgeted = budget_tool_output(
         tool_name="read_workspace_file",
         field_name="content",
         value=content,
-        metadata={"tool_use_id": f"read_{relative.replace('/', '_')}"},
-        budget=default_tool_result_budget(
-            max_chars=limit, preview_chars=limit, persist_threshold_chars=limit
-        ),
+        metadata={
+            "tool_use_id": (
+                f"read_{relative.replace('/', '_')}_{hashlib.sha256(content.encode()).hexdigest()}"
+            )
+        },
+        budget=output_budget,
     )
     partial = start != 1 or end != total_lines
-    record_read_state(
-        WorkspaceReadState(
-            path=relative,
-            mtime_ns=stat.st_mtime_ns,
-            size_bytes=stat.st_size,
-            start_line=start,
-            end_line=end,
-            total_lines=total_lines,
-            partial=partial or bool(budgeted.get("truncated")),
+    returned_end, returned_count = end, len(selected)
+    window = {}
+    if budgeted["truncated"]:
+        preview = budgeted["content"]
+        # File reads are continuous source pages. A character-bound prefix
+        # must not advertise the requested range as if all lines were visible.
+        complete = bool(preview) and content[len(preview) : len(preview) + 1] == "\n"
+        boundary = preview.rfind("\n")
+        returned_count = (
+            preview.count("\n") + 1
+            if complete
+            else preview[:boundary].count("\n") + 1 if boundary >= 0 else 0
         )
-    )
-    return {
+        visible = preview if complete or not returned_count else preview[:boundary]
+        returned_end = start + returned_count - 1 if returned_count else None
+        budgeted.update(content=visible, preview_chars=len(visible))
+        window = {
+            "source_read_range": {"start": start, "end": end},
+            "next_start_line": returned_end + 1 if returned_count else None,
+            "suggested_action": (
+                f"Continue with read_workspace_file(path={relative!r}, "
+                f"start_line={returned_end + 1}); the remaining lines were not returned."
+                if returned_count
+                else "A source line exceeds the output window. Use bound search or another "
+                "permitted inspection tool; the unread remainder cannot be skipped."
+            ),
+            **({"partial_line": start} if not returned_count else {}),
+        }
+    result = {
         "ok": True,
         "path": relative,
         "size": stat.st_size,
         "size_bytes": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
         "start_line": start,
-        "end_line": end,
-        "line_count": len(selected),
-        "read_range": {"start": start, "end": end},
+        "end_line": returned_end,
+        "line_count": returned_count,
+        "read_range": {"start": start, "end": returned_end} if returned_end is not None else None,
         "total_lines": total_lines,
         "suggested_action": "",
         "partial": partial or bool(budgeted.get("truncated")),
+        **({"source_output_budget": {
+            "version": "host-source-page/v2",
+            "counter_id": source_budget.counter_id,
+            "max_units": source_budget.max_units,
+            "max_result_units": source_budget.max_result_units,
+        }} if source_budget is not None else {}),
         **budgeted,
+        **window,
     }
+    if source_budget is not None and source_budget.retain_requested_source:
+        # Capture these exact already-read bytes, never a later path re-read.
+        # This carrier is audit data, not proof the model inspected the range.
+        result["requested_source"] = {
+            "path": relative, "read_range": {"start": start, "end": end}, "content": content,
+        }
+    if source_budget is not None and not source_budget.result_fits(result):
+        # Persist the original selected source once. Fit complete continuous
+        # lines using the complete JSON reply, before recording edit read-state.
+        if not content:
+            return {"ok": False, "path": relative,
+                    "error_message": "source_read_envelope_over_budget"}
+        source_lines = content.split("\n")
+        persisted = budget_tool_output(
+            tool_name="read_workspace_file", field_name="content", value=content,
+            metadata={"tool_use_id": (
+                f"read_{relative.replace('/', '_')}_{hashlib.sha256(content.encode()).hexdigest()}"
+            )}, budget=replace(output_budget, persist_threshold_chars=0),
+        )["persisted"]
 
+        def candidate(count):
+            visible = "\n".join(source_lines[:count])
+            last = start + count - 1 if count else None
+            page = {
+                **result, "content": visible, "preview_chars": len(visible),
+                "truncated": True, "persisted": persisted, "partial": True,
+                "end_line": last, "line_count": count,
+                "read_range": {"start": start, "end": last} if last is not None else None,
+                "source_read_range": {"start": start, "end": end},
+                "next_start_line": last + 1 if last is not None else None,
+                "suggested_action": (
+                    f"Continue with read_workspace_file(path={relative!r}, start_line={last + 1}); "
+                    "the remaining lines were not returned."
+                    if last is not None else
+                    "The source line or result metadata exceeds the output window. "
+                    "Use bound search or another permitted inspection tool; "
+                    "the unread remainder cannot be skipped."
+                ),
+                **({"partial_line": start} if not count else {}),
+            }
+            if not count and source_budget.artifact_only_fallback:
+                page["artifact_only"] = True
+            return page
 
-def _read_workspace_text(target: Path) -> tuple[str | None, dict[str, Any] | None]:
-    if not target.is_file():
-        return None, {"ok": False, "error_message": "workspace file not found"}
-    if target.stat().st_size > 2 * 1024 * 1024:
-        return None, {"ok": False, "error_message": "file is larger than 2MB"}
-    try:
-        return target.read_text(encoding="utf-8"), None
-    except UnicodeDecodeError:
-        return None, {"ok": False, "error_message": "file is not utf-8 text"}
+        low, high = 0, returned_count
+        if returned_count and source_budget.result_fits(candidate(1)):
+            low = 1
+        else:
+            high = 0
+            if not source_budget.result_fits(candidate(0)):
+                return {"ok": False, "path": relative,
+                        "error_message": "source_read_envelope_over_budget"}
+        while low < high:
+            middle = (low + high + 1) // 2
+            if source_budget.result_fits(candidate(middle)):
+                low = middle
+            else:
+                high = middle - 1
+        result = candidate(low)
+        returned_end = result["end_line"]
+    if source_budget is not None and content and not result["content"] and not result["line_count"]:
+        # A fitting envelope with no source is not a successful read. Do not
+        # record it as a read/edit precondition or let an empty page look like
+        # evidence that the requested range contained no relevant facts.
+        if not result.get("artifact_only"):
+            return {"ok": False, "path": relative,
+                    "error_message": "source_read_envelope_over_budget"}
+    if source_budget is not None and source_budget.artifact_only_fallback and content:
+        if not result["line_count"]:
+            result.update(artifact_only=True, content="", preview_chars=0)
+            if not source_budget.result_fits(result):
+                return {"ok": False, "path": relative,
+                        "error_message": "source_read_envelope_over_budget"}
+            # Saving an unread source does not satisfy the live edit precondition.
+            return result
+    record_read_state(
+        WorkspaceReadState(
+            path=relative,
+            mtime_ns=stat.st_mtime_ns,
+            size_bytes=stat.st_size,
+            start_line=start,
+            end_line=returned_end if returned_end is not None else start,
+            total_lines=total_lines,
+            partial=result["partial"],
+            canonical_path=str(target.resolve()),
+            content_sha256=hashlib.sha256(payload).hexdigest(),
+        )
+    )
+    return result
 
 
 def write_workspace_file(
@@ -285,7 +460,12 @@ def write_workspace_file(
     overwrite: bool = True,
     approval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Write a UTF-8 text file inside the AgentEngine workspace."""
+    """Write a UTF-8 text file inside the AgentEngine workspace.
+
+    Creating a new file needs no prior read. Replacing an existing file requires
+    a complete current read or a successful write/edit in this Session. A
+    successful write records the new revision for subsequent changes.
+    """
 
     return _dict_result(
         _gateway().invoke(
@@ -300,17 +480,70 @@ def write_workspace_file(
     )
 
 
-def _write_workspace_file_impl(path: str, content: str, overwrite: bool = True) -> dict[str, Any]:
+def _workspace_write_precondition(
+    path: str, *, overwrite: bool
+) -> tuple[Path, str, dict[str, Any] | None]:
     target = resolve_workspace_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and not overwrite:
-        return {"ok": False, "error_message": f"workspace file already exists: {path}"}
-    target.write_text(content or "", encoding="utf-8")
+    relative = workspace_relative(target)
+    if not target.exists():
+        return target, relative, None
+    if not overwrite:
+        return target, relative, {
+            "ok": False,
+            "path": relative,
+            "error_type": "file_exists",
+            "error_message": f"workspace file already exists: {path}",
+        }
+    current, error = _read_workspace_text(target)
+    if error is not None:
+        return target, relative, {**error, "path": relative}
+    state = get_read_state(relative)
+    if state is not None and state.partial:
+        return target, relative, {
+            "ok": False,
+            "path": relative,
+            "error_type": "file_not_fully_read",
+            "error_message": "existing file must be read completely before overwriting",
+            "suggested_action": (
+                f"Call read_workspace_file(path={relative!r}) without a line range, then retry."
+            ),
+        }
+    validation = _validate_read_state(target, relative, state=state, content=current)
+    if validation is not None:
+        if validation.get("error_type") == "file_not_read":
+            validation = {
+                **validation,
+                "error_message": "existing file must be read before overwriting",
+                "suggested_action": (
+                    f"Call read_workspace_file(path={relative!r}) before overwriting it."
+                ),
+            }
+        return target, relative, validation
+    return target, relative, None
+
+
+@_workspace_file_guard
+def _write_workspace_file_impl(path: str, content: str, overwrite: bool = True) -> dict[str, Any]:
+    create_only = not resolve_workspace_path(path).exists()
+    target, relative, error = _workspace_write_precondition(path, overwrite=overwrite)
+    if error is not None:
+        return error
+    written = content or ""
+    try:
+        publish_workspace_bytes(target, written.encode("utf-8"), create_only=create_only)
+    except FileExistsError:
+        return {"ok": False, "path": relative, "error_type": "file_exists",
+                "error_message": "workspace file was created before publication",
+                "suggested_action": "Read the new file before proposing an overwrite."}
+    stat = target.stat()
+    # The successfully written bytes are an observed revision, just as an
+    # edit's result is. A subsequent edit still validates the actual file.
+    _refresh_read_state(relative, stat, written, target=target)
     return {
         "ok": True,
-        "path": workspace_relative(target),
+        "path": relative,
         "absolute_path": str(target),
-        "size": target.stat().st_size,
+        "size": stat.st_size,
     }
 
 
@@ -319,7 +552,11 @@ def write_workspace_files(
     overwrite: bool = True,
     approval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Write multiple UTF-8 text files inside the AgentEngine workspace."""
+    """Write multiple UTF-8 text files inside the AgentEngine workspace.
+
+    Existing files must already have complete current revisions. Preconditions
+    for the admitted batch are checked before the first file is changed.
+    """
 
     return _dict_result(
         _gateway().invoke(
@@ -338,20 +575,26 @@ def _write_workspace_files_impl(
 ) -> dict[str, Any]:
     if not isinstance(files, list) or not files:
         return {"ok": False, "error_message": "files must be a non-empty list"}
-    written = []
+    prepared: list[tuple[str, str]] = []
     for item in files[:100]:
         if not isinstance(item, dict):
             return {"ok": False, "error_message": "each file item must be an object"}
         path = str(item.get("path") or "").strip()
         if not path:
             return {"ok": False, "error_message": "each file item requires path"}
-        result = _write_workspace_file_impl(
-            path, str(item.get("content") or ""), overwrite=overwrite
-        )
-        if not result.get("ok"):
-            return result
-        written.append({"path": result["path"], "size": result["size"]})
-    return {"ok": True, "written": written, "truncated": len(files) > len(written)}
+        prepared.append((path, str(item.get("content") or "")))
+    with locked_workspace_paths(resolve_workspace_path(path) for path, _ in prepared):
+        for path, _ in prepared:
+            _target, _relative, error = _workspace_write_precondition(path, overwrite=overwrite)
+            if error is not None:
+                return error
+        written = []
+        for path, content in prepared:
+            result = _write_workspace_file_impl(path, content, overwrite=overwrite)
+            if not result.get("ok"):
+                return result
+            written.append({"path": result["path"], "size": result["size"]})
+        return {"ok": True, "written": written, "truncated": len(files) > len(written)}
 
 
 def edit_workspace_file(
@@ -362,9 +605,9 @@ def edit_workspace_file(
     replace_all: bool = False,
     approval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Replace exact text after reading the file in a prior model step.
+    """Replace exact text after reading or successfully writing the file.
 
-    The read must complete before this call; do not batch a dependent read and edit.
+    The prior operation must complete; do not batch dependent reads/writes and edits.
     """
 
     return _dict_result(
@@ -382,6 +625,7 @@ def edit_workspace_file(
     )
 
 
+@_workspace_file_guard
 def _edit_workspace_file_impl(
     path: str,
     old_text: str,
@@ -394,7 +638,11 @@ def _edit_workspace_file_impl(
     request_error = _validate_single_edit_request(old_text, relative=relative)
     if request_error is not None:
         return request_error
-    read_error = _validate_read_state(target, relative)
+    observed = get_read_state(relative)
+    # Pin this edit to its admitted read even if another call refreshes the
+    # session's cache while matching or producing the diff.
+    observed = replace(observed) if observed is not None else None
+    read_error = _validate_read_state(target, relative, state=observed)
     if read_error is not None:
         return read_error
     text, error = _read_workspace_text(target)
@@ -402,6 +650,9 @@ def _edit_workspace_file_impl(
         return {**error, "path": path}
     if text is None:
         return {"ok": False, "path": path, "error_message": "workspace file read failed"}
+    read_error = _validate_read_state(target, relative, state=observed, content=text)
+    if read_error is not None:
+        return read_error
     edit_result = _apply_single_edit(
         text,
         old_text,
@@ -414,10 +665,10 @@ def _edit_workspace_file_impl(
         return edit_result
     updated = str(edit_result["updated"])
     diff = _build_diff(relative, text, updated)
-    target.write_text(updated, encoding="utf-8")
-    new_stat = target.stat()
-    _refresh_read_state(relative, new_stat, updated)
     diff_budget = _budget_diff("edit_workspace_file", diff, relative)
+    new_stat, error = _commit_workspace_edit(target, relative, updated, state=observed)
+    if error is not None:
+        return error
     return {
         "ok": True,
         "path": relative,
@@ -436,9 +687,9 @@ def multi_edit_workspace_file(
     replace_all: bool = False,
     approval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Apply atomic exact edits after reading the file in a prior model step.
+    """Apply atomic exact edits after reading or successfully writing the file.
 
-    The read must complete before this call; do not batch a dependent read and edit.
+    The prior operation must complete; do not batch dependent reads/writes and edits.
     """
 
     return _dict_result(
@@ -454,6 +705,7 @@ def multi_edit_workspace_file(
     )
 
 
+@_workspace_file_guard
 def _multi_edit_workspace_file_impl(
     path: str,
     edits: list[dict[str, Any]],
@@ -480,13 +732,18 @@ def _multi_edit_workspace_file_impl(
         request_error = _validate_single_edit_request(edit.get("old_text"), relative=relative)
         if request_error is not None:
             return {**request_error, "failed_edit_index": index, "edit_count": len(edits)}
-    read_error = _validate_read_state(target, relative)
+    observed = get_read_state(relative)
+    observed = replace(observed) if observed is not None else None
+    read_error = _validate_read_state(target, relative, state=observed)
     if read_error is not None:
         return read_error
     text, error = _read_workspace_text(target)
     if error is not None:
         return {**error, "path": path}
     original = text or ""
+    read_error = _validate_read_state(target, relative, state=observed, content=original)
+    if read_error is not None:
+        return read_error
     updated = original
     diagnostics: list[dict[str, Any]] = []
     total_replacements = 0
@@ -512,10 +769,10 @@ def _multi_edit_workspace_file_impl(
             }
         )
     diff = _build_diff(relative, original, updated)
-    target.write_text(updated, encoding="utf-8")
-    new_stat = target.stat()
-    _refresh_read_state(relative, new_stat, updated)
     diff_budget = _budget_diff("multi_edit_workspace_file", diff, relative)
+    new_stat, error = _commit_workspace_edit(target, relative, updated, state=observed)
+    if error is not None:
+        return error
     return {
         "ok": True,
         "path": relative,
@@ -657,11 +914,16 @@ def _search_workspace_files_impl(
     if not needle:
         return {"ok": False, "error_message": "query is required"}
     base = resolve_workspace_path(path)
-    if shutil.which("rg") and not context_lines:
+    if not base.exists():
+        return {"ok": False, "error_code": "workspace_path_not_found",
+                "error_message": f"workspace path not found: {path}"}
+    if shutil.which("rg"):
         rg_result = _search_with_rg(
             needle, base, is_regex, glob, case_sensitive, context_lines, max_results
         )
         if rg_result is not None:
+            if not rg_result["ok"]:
+                return rg_result
             return _search_payload(
                 query, path, rg_result["results"], rg_result["truncated"], context_lines, "rg"
             )
@@ -673,7 +935,11 @@ def _search_workspace_files_impl(
             if fnmatch.fnmatch(workspace_relative(item), glob) or fnmatch.fnmatch(item.name, glob)
         ]
     flags = 0 if case_sensitive else re.IGNORECASE
-    pattern = re.compile(needle if is_regex else re.escape(needle), flags)
+    try:
+        pattern = re.compile(needle if is_regex else re.escape(needle), flags)
+    except re.error as error:
+        return {"ok": False, "error_code": "invalid_search_pattern",
+                "error_message": str(error)}
     results: list[dict[str, Any]] = []
     limit = max(1, min(int(max_results or 100), 5000))
     context_limit = max(0, min(int(context_lines or 0), 20))
@@ -731,261 +997,12 @@ def _search_with_rg(
     context_lines: int,
     max_results: int,
 ) -> dict[str, Any] | None:
-    command = ["rg", "--line-number", "--color", "never", "--no-heading"]
-    if not is_regex:
-        command.append("--fixed-strings")
-    if not case_sensitive:
-        command.append("--ignore-case")
-    if glob:
-        command.extend(["--glob", glob])
-    if context_lines:
-        command.extend(["--context", str(max(0, min(int(context_lines), 20)))])
-    command.extend([needle, str(base)])
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
-    except Exception:
-        return None
-    if completed.returncode not in {0, 1}:
-        return None
-    results: list[dict[str, Any]] = []
-    limit = max(1, min(int(max_results or 100), 5000))
-    truncated = False
-    for raw_line in completed.stdout.splitlines():
-        separator = ":" if ":" in raw_line else "-"
-        parts = raw_line.split(separator, 2)
-        if len(parts) < 3 or not parts[1].isdigit():
-            continue
-        path = Path(parts[0])
-        try:
-            relative = workspace_relative(path)
-        except ValueError:
-            continue
-        if len(results) >= limit:
-            truncated = True
-            break
-        results.append(
-            {
-                "path": relative,
-                "line": int(parts[1]),
-                "text": parts[2],
-                "snippet": parts[2],
-                "context_before": [],
-                "context_after": [],
-            }
-        )
-    return {"ok": True, "query": needle, "results": results, "truncated": truncated}
+    from ksadk.toolsets.workspace_search import search_with_rg
 
-
-def _search_payload(
-    query: str,
-    path: str,
-    results: list[dict[str, Any]],
-    truncated: bool,
-    context_lines: int,
-    backend: str,
-) -> dict[str, Any]:
-    return {
-        "ok": True,
-        "query": query,
-        "searched_path": path,
-        "results": results,
-        "match_count": len(results),
-        "truncated": truncated,
-        "context_lines": max(0, min(int(context_lines or 0), 20)),
-        "search_backend": backend,
-    }
-
-
-def _validate_read_state(target: Path, relative: str) -> dict[str, Any] | None:
-    read_state = get_read_state(relative)
-    if read_state is None:
-        return {
-            "ok": False,
-            "path": relative,
-            "error_type": "file_not_read",
-            "error_message": "file must be read before editing",
-            "suggested_action": f"Call read_workspace_file(path={relative!r}) before editing.",
-        }
-    stat = target.stat() if target.exists() else None
-    if (
-        stat is None
-        or stat.st_mtime_ns != read_state.mtime_ns
-        or stat.st_size != read_state.size_bytes
-    ):
-        return {
-            "ok": False,
-            "path": relative,
-            "error_type": "file_modified_since_read",
-            "error_message": "workspace file changed since last read",
-            "suggested_action": (
-                f"Re-read the file with read_workspace_file(path={relative!r}) and retry."
-            ),
-        }
-    return None
-
-
-def _apply_single_edit(
-    text: str,
-    old_text: Any,
-    new_text: Any,
-    *,
-    expected_replacements: int = 1,
-    replace_all: bool = False,
-    relative: str,
-) -> dict[str, Any]:
-    request_error = _validate_single_edit_request(old_text, relative=relative)
-    if request_error is not None:
-        return request_error
-    old = str(old_text)
-    expected = max(1, int(expected_replacements or 1))
-    actual_old, used_quote_normalization = _find_actual_string(text, old)
-    matches = _match_previews(text, actual_old or old) if actual_old else []
-    occurrences = text.count(actual_old) if actual_old else 0
-    if occurrences == 0:
-        return {
-            "ok": False,
-            "path": relative,
-            "error_type": "snippet_not_found",
-            "error_message": "old_text was not found in the workspace file",
-            "occurrences": 0,
-            "nearby_candidates": _nearby_candidates(text, old),
-            "suggested_action": (
-                "Use one nearby candidate as old_text, or call read_workspace_file "
-                "with line numbers and retry."
-            ),
-        }
-    if actual_old is None:
-        return {
-            "ok": False,
-            "path": relative,
-            "error_type": "snippet_not_found",
-            "error_message": "old_text was not found in the workspace file",
-        }
-    if not replace_all and occurrences != expected:
-        return {
-            "ok": False,
-            "path": relative,
-            "error_type": "ambiguous_edit",
-            "error_message": f"old_text matched {occurrences} occurrences, expected {expected}",
-            "occurrences": occurrences,
-            "expected_replacements": expected,
-            "matches": matches,
-            "suggested_action": (
-                "Provide a larger unique old_text snippet, set expected_replacements, "
-                "or use replace_all=true."
-            ),
-        }
-    replacements = occurrences if replace_all else expected
-    return {
-        "ok": True,
-        "updated": text.replace(actual_old, str(new_text or ""), replacements),
-        "replacements": replacements,
-        "used_quote_normalization": used_quote_normalization,
-        "matches": matches,
-    }
-
-
-def _validate_single_edit_request(old_text: Any, *, relative: str) -> dict[str, Any] | None:
-    if not str(old_text or ""):
-        return {
-            "ok": False,
-            "path": relative,
-            "error_type": "missing_old_text",
-            "error_message": "old_text is required",
-        }
-    return None
-
-
-def _match_previews(text: str, needle: str, limit: int = 20) -> list[dict[str, Any]]:
-    if not needle:
-        return []
-    matches: list[dict[str, Any]] = []
-    for line_no, line in enumerate(text.splitlines(), start=1):
-        if needle in line:
-            matches.append({"line": line_no, "text": line.strip(), "snippet": line})
-            if len(matches) >= limit:
-                break
-    return matches
-
-
-def _nearby_candidates(text: str, old: str, limit: int = 5) -> list[dict[str, Any]]:
-    old_norm = _normalize_quotes(old).strip()
-    candidates: list[dict[str, Any]] = []
-    for line_no, line in enumerate(text.splitlines(), start=1):
-        ratio = difflib.SequenceMatcher(None, old_norm, _normalize_quotes(line).strip()).ratio()
-        if old_norm and (
-            old_norm[: max(1, min(4, len(old_norm)))] in _normalize_quotes(line) or ratio > 0.45
-        ):
-            candidates.append(
-                {"line": line_no, "text": line.strip(), "snippet": line, "score": round(ratio, 3)}
-            )
-    candidates.sort(key=lambda item: (-float(item["score"]), int(item["line"])))
-    return candidates[:limit]
-
-
-def _build_diff(relative: str, before: str, after: str) -> str:
-    return "".join(
-        difflib.unified_diff(
-            before.splitlines(keepends=True),
-            after.splitlines(keepends=True),
-            fromfile=f"{relative} before",
-            tofile=f"{relative} after",
-        )
+    return search_with_rg(
+        needle, base, is_regex, glob, case_sensitive, context_lines, max_results,
+        relative_path=workspace_relative,
     )
-
-
-def _budget_diff(tool_name: str, diff: str, relative: str) -> dict[str, Any]:
-    return _dict_result(
-        budget_tool_output(
-            tool_name=tool_name,
-            field_name="diff",
-            value=diff,
-            metadata={"tool_use_id": f"{tool_name}_{relative.replace('/', '_')}"},
-        ),
-        tool_name=tool_name,
-    )
-
-
-def _refresh_read_state(relative: str, stat: Any, text: str) -> None:
-    lines = text.splitlines()
-    record_read_state(
-        WorkspaceReadState(
-            path=relative,
-            mtime_ns=stat.st_mtime_ns,
-            size_bytes=stat.st_size,
-            start_line=1,
-            end_line=len(lines),
-            total_lines=len(lines),
-            partial=False,
-        )
-    )
-
-
-def _find_actual_string(text: str, old: str) -> tuple[str | None, bool]:
-    if old in text:
-        return old, False
-    normalized_old = _normalize_quotes(old)
-    smart_quote_map: dict[str, str | int | None] = {'"': "“", "'": "‘"}
-    for candidate in {normalized_old, old.translate(str.maketrans(smart_quote_map))}:
-        if candidate and candidate in text:
-            return candidate, True
-    normalized_text = _normalize_quotes(text)
-    index = normalized_text.find(normalized_old)
-    if index < 0:
-        return None, False
-    return text[index : index + len(old)], True
-
-
-def _normalize_quotes(value: str) -> str:
-    quote_map: dict[str, str | int | None] = {
-        "“": '"',
-        "”": '"',
-        "„": '"',
-        "‘": "'",
-        "’": "'",
-        "‚": "'",
-    }
-    return value.translate(str.maketrans(quote_map))
 
 
 def delete_workspace_file(path: str, approval: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -999,6 +1016,7 @@ def delete_workspace_file(path: str, approval: dict[str, Any] | None = None) -> 
     )
 
 
+@_workspace_file_guard
 def _delete_workspace_file_impl(path: str) -> dict[str, Any]:
     target = resolve_workspace_path(path)
     root = workspace_root().resolve()

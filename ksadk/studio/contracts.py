@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import hmac
+import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
@@ -10,6 +13,22 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ksadk.harness.spec import SubAgentBinding
+
+from .lifecycle_status import (
+    BuildStatus as BuildStatus,
+)
+from .lifecycle_status import (
+    OperationKind as OperationKind,
+)
+from .lifecycle_status import (
+    OperationStatus as OperationStatus,
+)
+from .lifecycle_status import (
+    RunStatus as RunStatus,
+)
+
+#: Anthropic Messages wire 的 API 版本头；探测与运行时必须保持一致。
+ANTHROPIC_VERSION = "2023-06-01"
 
 
 def _to_camel(value: str) -> str:
@@ -76,6 +95,10 @@ class ModelParameters(ContractModel):
     # 是否允许在 chat 请求中携带 response_format（json_object 结构化输出）。
     # 关闭后 compose 等结构化调用退回纯文本输出，兼容不支持该字段的网关。
     allow_json_response_format: bool = Field(default=True)
+    # Host disclosure opt-in. Some proxies label raw reasoning as a summary;
+    # enable only when the upstream guarantees a user-visible summary channel.
+    public_thinking_summary: bool = Field(default=False, strict=True,
+                                          exclude_if=lambda value: not value)
 
 
 class ModelSpec(ContractModel):
@@ -83,7 +106,7 @@ class ModelSpec(ContractModel):
     model: str = Field(min_length=1, max_length=256)
     endpoint_url: str | None = None
     base_url: str | None = None
-    wire_api: Literal["chat", "responses"] | None = None
+    wire_api: Literal["chat", "responses", "anthropic"] | None = None
     credential_ref: str = Field(min_length=1, max_length=512)
     parameters: ModelParameters = Field(default_factory=ModelParameters)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -282,9 +305,109 @@ class NativePluginBinding(ContractModel):
         return self
 
 
+class RemoteAgentBinding(ContractModel):
+    """Immutable, credential-free Studio binding to one A2A version."""
+
+    model_config = ConfigDict(frozen=True)
+
+    binding_id: str = Field(pattern=r"^a2a-binding-[0-9a-f]{32}$")
+    space_id: str
+    target_agent_id: str
+    expected_version_id: str
+    local_name: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+    )
+    exposure: Literal["native", "tool", "auto"] = "auto"
+    policy_ref: str = Field(
+        min_length=10,
+        max_length=256,
+        pattern=r"^policy://[A-Za-z0-9][A-Za-z0-9._/-]*$",
+    )
+    digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @field_validator("space_id", "target_agent_id", "expected_version_id")
+    @classmethod
+    def validate_resource_id(cls, value: str, info) -> str:
+        # Studio contracts also load during core discovery startup. Managed
+        # runtime/database extras are needed only when an A2A binding is used.
+        from ksadk.a2a.ids import require_a2a_resource_id
+
+        prefix = {
+            "space_id": "a2a-space-",
+            "target_agent_id": "a2a-agent-",
+            "expected_version_id": "a2a-version-",
+        }[info.field_name]
+        return require_a2a_resource_id(value, prefix, field_name=info.field_name)
+
+    @staticmethod
+    def _canonical(payload: dict[str, Any]) -> bytes:
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    @classmethod
+    def freeze(
+        cls,
+        *,
+        space_id: str,
+        target_agent_id: str,
+        expected_version_id: str,
+        local_name: str,
+        exposure: Literal["native", "tool", "auto"] = "auto",
+        policy_ref: str,
+        binding_id: str | None = None,
+    ) -> "RemoteAgentBinding":
+        identity = {
+            "localName": local_name,
+            "spaceId": space_id,
+            "targetAgentId": target_agent_id,
+        }
+        frozen_binding_id = binding_id or (
+            "a2a-binding-" + hashlib.sha256(cls._canonical(identity)).hexdigest()[:32]
+        )
+        payload = {
+            "bindingId": frozen_binding_id,
+            "spaceId": space_id,
+            "targetAgentId": target_agent_id,
+            "expectedVersionId": expected_version_id,
+            "localName": local_name,
+            "exposure": exposure,
+            "policyRef": policy_ref,
+        }
+        return cls(
+            **payload,
+            digest="sha256:" + hashlib.sha256(cls._canonical(payload)).hexdigest(),
+        )
+
+    @model_validator(mode="after")
+    def validate_digest(self) -> "RemoteAgentBinding":
+        payload = self.model_dump(
+            by_alias=True,
+            exclude={"digest"},
+            mode="json",
+        )
+        expected = "sha256:" + hashlib.sha256(self._canonical(payload)).hexdigest()
+        if not hmac.compare_digest(self.digest, expected):
+            raise ValueError("A2A_BINDING_DIGEST_MISMATCH")
+        return self
+
+
 class AgentBindings(ContractModel):
+    remote_agents: list[RemoteAgentBinding] = Field(default_factory=list)
     model_profile_id: str | None = None
     model_profile_ids: list[str] = Field(default_factory=list)
+    # Optional image-capable model for browser observations. This is a
+    # separate locked role, never a fallback for the main Agent model.
+    vision_model_profile_id: str | None = Field(default=None, min_length=1)
+    # ``strict`` preserves the model selected for a turn.  ``automatic``
+    # permits the additional bound profiles to be compiled as an ordered
+    # availability fallback chain.
+    model_failover_mode: Literal["strict", "automatic"] = "strict"
     model_parameters: ModelParameters | None = None
     policy_template: Literal["loose", "strict", "custom"] = "strict"
     tools: list[CapabilityBinding] = Field(default_factory=list)
@@ -304,6 +427,15 @@ class AgentBindings(ContractModel):
             and self.model_profile_id not in self.model_profile_ids
         ):
             raise ValueError("默认 modelProfileId 必须包含在 modelProfileIds 中")
+        names = [binding.local_name for binding in self.remote_agents]
+        if len(names) != len(set(names)):
+            raise ValueError("remoteAgents localName must be unique")
+        targets = [binding.target_agent_id for binding in self.remote_agents]
+        if len(targets) != len(set(targets)):
+            raise ValueError("A2A_EXPOSURE_CONFLICT")
+        ids = [binding.binding_id for binding in self.remote_agents]
+        if len(ids) != len(set(ids)):
+            raise ValueError("remoteAgents bindingId must be unique")
         plugin_refs = [binding.plugin_ref for binding in self.plugins if binding.enabled]
         if len(plugin_refs) != len(set(plugin_refs)):
             raise ValueError("启用的插件绑定不能重复 pluginRef")
@@ -321,13 +453,21 @@ class CapabilitiesSpec(ContractModel):
 
 class RetryPolicy(ContractModel):
     max_attempts: int = Field(default=2, ge=1, le=10)
+    provider_max_attempts: int = Field(default=4, ge=1, le=10)
     backoff_seconds: float = Field(default=1, ge=0, le=60)
 
 
 class ExecutionSpec(ContractModel):
     strategy: Literal["direct", "plan-act-observe"] = "direct"
-    max_steps: int = Field(default=100, ge=1, le=100)
-    timeout_seconds: int = Field(default=600, ge=1, le=3600)
+    # Compatibility metadata retained for existing AgentDraft payloads.  It is
+    # not a cross-runtime execution budget: Harness, Codex, ADK and LangGraph
+    # do not share one stable definition of an internal "step".  Runtime
+    # specific turn/timeout/tool/token budgets remain authoritative.
+    max_steps: int = Field(default=25, ge=1)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    # Harness approval waits are separate from model/tool timeouts. None keeps
+    # the existing explicit-user-decision behavior for older Builds.
+    approval_timeout_seconds: int | None = Field(default=None, ge=1, le=2_592_000)
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     sandbox: str | None = None
     approval_mode: str | None = None
@@ -335,6 +475,7 @@ class ExecutionSpec(ContractModel):
 
 class CompactionSpec(ContractModel):
     enabled: bool = True
+    prune_tool_results: bool = True
     threshold_ratio: float = Field(default=0.8, gt=0, le=1)
     # PCM：双阈值（方案 §8.2 / §9.1）。soft=主动整理，hard=强制压缩。
     soft_threshold_ratio: float = Field(default=0.50, gt=0, le=1)
@@ -403,6 +544,7 @@ class MemoryRecallSpec(ContractModel):
 class MemoryWriteSpec(ContractModel):
     mode: Literal["off", "explicit_only", "candidate"] = "candidate"
     flush_before_compaction: bool = True
+    flush_after_turn: bool = True
 
 
 MemoryScope = Literal["tenant", "workspace", "agent", "user"]
@@ -533,7 +675,68 @@ def _reject_clear_runtime_secrets(value: Any, *, path: str = "providerConfig") -
             _reject_clear_runtime_secrets(child, path=f"{path}[{index}]")
 
 
+class A2ADesignNode(ContractModel):
+    node_id: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+    kind: Literal["local", "remote"]
+    binding_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_binding(self):
+        if (self.kind == "remote") != (self.binding_id is not None):
+            raise ValueError("A2A_NODE_BINDING_REQUIRED")
+        return self
+
+
+class A2ADesignEdge(ContractModel):
+    source: str
+    target: str
+    kind: Literal["sequential", "handoff"]
+
+
+class A2AOrchestration(ContractModel):
+    entry_node_id: str
+    nodes: tuple[A2ADesignNode, ...] = Field(min_length=1, max_length=64)
+    edges: tuple[A2ADesignEdge, ...] = Field(default=(), max_length=63)
+
+    @model_validator(mode="after")
+    def validate_graph(self):
+        ids = {node.node_id for node in self.nodes}
+        if len(ids) != len(self.nodes) or self.entry_node_id not in ids:
+            raise ValueError("A2A_NODE_ID_INVALID")
+        incoming: dict[str, int] = {}
+        outgoing: dict[str, list[str]] = {key: [] for key in ids}
+        sequential_sources: set[str] = set()
+        for edge in self.edges:
+            if edge.source not in ids or edge.target not in ids:
+                raise ValueError("A2A_EDGE_NODE_MISSING")
+            incoming[edge.target] = incoming.get(edge.target, 0) + 1
+            if incoming[edge.target] > 1:
+                raise ValueError("A2A_MULTIPLE_INCOMING_UNSUPPORTED")
+            if edge.kind == "sequential":
+                if edge.source in sequential_sources:
+                    raise ValueError("A2A_PARALLEL_UNSUPPORTED")
+                sequential_sources.add(edge.source)
+            outgoing[edge.source].append(edge.target)
+        visited, visiting = set(), set()
+        def visit(node):
+            if node in visiting:
+                raise ValueError("A2A_LOOP_UNSUPPORTED")
+            if node in visited:
+                return
+            visiting.add(node)
+            for target in outgoing[node]:
+                visit(target)
+            visiting.remove(node)
+            visited.add(node)
+        for node in ids:
+            visit(node)
+        if self.entry_node_id in incoming:
+            raise ValueError("A2A_ENTRY_HAS_INCOMING")
+        return self
+
+
 class AgentSpec(ContractModel):
+    a2a_orchestration: A2AOrchestration | None = None
     description: str = Field(default="", max_length=1024)
     runtime: RuntimeRef | None = None
     instructions: Instructions = Field(default_factory=Instructions)
@@ -550,6 +753,10 @@ class AgentSpec(ContractModel):
 
     @model_validator(mode="after")
     def validate_sub_agents(self) -> "AgentSpec":
+        if self.execution.approval_timeout_seconds is not None and (
+            self.runtime is None or self.runtime.type != "harness"
+        ):
+            raise ValueError("approvalTimeoutSeconds 当前仅支持 Harness Runtime")
         if not self.sub_agents:
             return self
         if self.runtime is not None and self.runtime.type != "harness":
@@ -650,8 +857,9 @@ class AgentTemplateComposeRequest(ContractModel):
     mcp_resource_ids: list[str] = Field(default_factory=list)
     policy_template: Literal["loose", "strict", "custom"] = "strict"
     execution_strategy: Literal["direct", "plan-act-observe"] = "direct"
-    max_steps: int = Field(default=100, ge=1, le=100)
-    timeout_seconds: int = Field(default=600, ge=1, le=3600)
+    # Kept wire-compatible with ExecutionSpec; see its compatibility note.
+    max_steps: int = Field(default=25, ge=1)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
     auto_bind_tools: bool = True
     auto_bind_mcp: bool = True
 
@@ -698,6 +906,8 @@ class ResolvedModel(ContractModel):
     credential_ref: str
     parameters: ModelParameters
     wire_api: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    discovery: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResolvedCapabilities(ContractModel):
@@ -707,6 +917,8 @@ class ResolvedCapabilities(ContractModel):
 
 
 class ResolvedAgentSpec(ContractModel):
+    a2a_orchestration: dict[str, Any] | None = None
+    remote_agents: list[RemoteAgentBinding] = Field(default_factory=list)
     schema_version: Literal["agentkit.resolved/v1"] = "agentkit.resolved/v1"
     agent_id: str
     source_revision: int
@@ -714,6 +926,12 @@ class ResolvedAgentSpec(ContractModel):
     instructions: Instructions
     soul: SoulDocument | None = None
     model: ResolvedModel
+    vision_model: ResolvedModel | None = None
+    # ``model`` is the selected primary.  Additional bound Model Profiles are
+    # retained for user-initiated switching; they become a runtime failover
+    # chain only when ``model_failover_mode`` explicitly requests it.
+    fallback_models: list[ResolvedModel] = Field(default_factory=list, max_length=4)
+    model_failover_mode: Literal["strict", "automatic"] = "strict"
     capabilities: ResolvedCapabilities
     execution: ExecutionSpec
     context: ContextSpec
@@ -729,18 +947,6 @@ class ValidationResult(ContractModel):
     valid: bool
     level: Literal["schema", "build", "release"] = "build"
     diagnostics: list[Diagnostic] = Field(default_factory=list)
-
-
-class BuildStatus(str, Enum):
-    QUEUED = "QUEUED"
-    VALIDATING = "VALIDATING"
-    RESOLVING = "RESOLVING"
-    COMPILING = "COMPILING"
-    PACKAGING = "PACKAGING"
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-    INTERRUPTED = "INTERRUPTED"
 
 
 class FileEntry(ContractModel):
@@ -813,6 +1019,8 @@ AgentBundleManifest = BundleManifest
 
 
 class BuildRecord(ContractModel):
+    a2a_orchestration_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    a2a_binding_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     id: str
     agent_id: str
     source_revision: int
@@ -836,22 +1044,6 @@ class BuildRecord(ContractModel):
     completed_at: datetime | None = None
 
 
-class OperationKind(str, Enum):
-    BUILD = "BUILD"
-    RUN = "RUN"
-    EVALUATION = "EVALUATION"
-    DEPLOYMENT = "DEPLOYMENT"
-
-
-class OperationStatus(str, Enum):
-    QUEUED = "QUEUED"
-    RUNNING = "RUNNING"
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-    INTERRUPTED = "INTERRUPTED"
-
-
 class Operation(ContractModel):
     id: str
     kind: OperationKind
@@ -871,18 +1063,6 @@ class OperationEvent(ContractModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class RunStatus(str, Enum):
-    CREATED = "CREATED"
-    RUNNING = "RUNNING"
-    PAUSED = "PAUSED"
-    WAITING_INPUT = "WAITING_INPUT"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-    INTERRUPTED = "INTERRUPTED"
-    TIMED_OUT = "TIMED_OUT"
-
-
 class Usage(ContractModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
@@ -893,19 +1073,42 @@ class Usage(ContractModel):
     source: str | None = None
 
 
+class NativeRunOptions(ContractModel):
+    """Host-admitted selections required to rebuild the same Native activation."""
+
+    tool_approval_mode: Literal["ask", "risk", "full"] | None = None
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+
+
+class RunSubmissionRef(ContractModel):
+    """Transport correlation, validated against the admitted Agent and Session."""
+
+    model_config = ConfigDict(frozen=True)
+
+    client_invocation_id: str = Field(min_length=1, max_length=256)
+    agent_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+
+
 class RunRecord(ContractModel):
     id: str
     build_id: str
     agent_id: str
     session_id: str
     trace_id: str
+    submission_ref: RunSubmissionRef | None = None
     manifest_sha256: str = ""
     runtime_type: str = ""
     model: str = ""
     collaboration_mode: str = ""
     goal_objective: str = ""
+    presentation_profile: Literal["flat-v1", "agent-block-v1"] = "flat-v1"
     runtime_handle: dict[str, Any] = Field(default_factory=dict)
+    native_runtime_options: NativeRunOptions | None = None
     status: RunStatus = RunStatus.CREATED
+    # Native completion evidence is separate from scheduler termination.
+    # A completed run can still be unverified or only partially accepted.
+    verification_outcome: Literal["verified", "unverified", "partial", "blocked"] | None = None
     input: str
     output: str = ""
     usage: Usage = Field(default_factory=Usage)

@@ -11,9 +11,13 @@ wire 对象在 a2a-sdk 1.1.0 是 protobuf(``a2a_pb2``);文本用 ``Part(text=...
 
 from __future__ import annotations
 
+from ksadk.a2a.inbound_kernel import ManagedKernelRequestError
+
 import inspect
 import json
 import logging
+import os
+import time
 from typing import Any, Literal
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -23,18 +27,23 @@ from a2a.types import Part, Task, TaskState, TaskStatus
 from a2a.utils.errors import TaskNotCancelableError
 
 from ksadk.a2a.resume_store import A2AResumePayloadKind
+from ksadk.a2a.tool_activity import PublicToolActivityPolicy, PublicToolActivityProducer
 from ksadk.events.canonical import (
+    ApprovalRequest,
     ContinuationCreated,
     EventEnvelope,
     InteractionRequested,
     ItemCompleted,
+    ItemSnapshotReplaced,
     ItemUpdated,
     RunCanceled,
+    RunCompleted,
     RunFailed,
     RunInterrupted,
-    RuntimeEvent,
+    StructuredInputRequest,
 )
 from ksadk.events.content import TextContent
+from ksadk.events.identity import stable_item_id
 from ksadk.runtime import CancelResult, RunHandle
 
 logger = logging.getLogger(__name__)
@@ -61,15 +70,19 @@ def _thought_part(text: str) -> Part:
 
 
 class _ArtifactStreamEmitter:
-    """按连续类型分段输出 A2A artifact，并正确终止每个 artifact stream。"""
+    """Bound text update volume while retaining the final artifact chunk."""
 
-    def __init__(self, updater: TaskUpdater, task_id: str) -> None:
+    FLUSH_INTERVAL_SECONDS = 0.5
+    MAX_PENDING_CHARS = 512
+
+    def __init__(self, updater: TaskUpdater, task_id: str, *, clock=None) -> None:
         self._updater = updater
         self._task_id = task_id
-        self._active_kind: _ArtifactKind | None = None
-        self._segments: dict[_ArtifactKind, int] = {"text": 0, "thinking": 0}
-        self._emitted: dict[tuple[_ArtifactKind, int], int] = {}
-        self._pending: tuple[_ArtifactKind, str, bool, int] | None = None
+        self._clock = clock or time.monotonic
+        self._emitted: dict[tuple[_ArtifactKind, tuple[str, str]], int] = {}
+        self._pending: tuple[_ArtifactKind, str, bool, tuple[str, str], float] | None = None
+        self.source_updates = 0
+        self.wire_updates = 0
 
     async def push(
         self,
@@ -77,47 +90,57 @@ class _ArtifactStreamEmitter:
         text: str,
         *,
         replace_snapshot: bool = False,
+        identity: tuple[str, str],
     ) -> None:
-        if self._pending is not None:
-            switched = self._pending[0] != kind
-            await self._emit(self._pending, last_chunk=switched)
-        if self._active_kind != kind:
-            self._segments[kind] += 1
-            self._active_kind = kind
-        self._pending = (kind, text, replace_snapshot, self._segments[kind])
+        self.source_updates += 1
+        now = self._clock()
+        if self._pending is None:
+            self._pending = (kind, text, replace_snapshot, identity, now)
+            return
+        pending_kind, pending_text, pending_replace, pending_identity, started = self._pending
+        switched = (pending_kind, pending_identity) != (kind, identity)
+        first_visible = (pending_kind, pending_identity) not in self._emitted
+        if (
+            switched
+            or first_visible
+            or pending_replace
+            or replace_snapshot
+            or len(pending_text) + len(text) >= self.MAX_PENDING_CHARS
+            or now - started >= self.FLUSH_INTERVAL_SECONDS
+        ):
+            await self._flush_pending(last_chunk=switched)
+            self._pending = (kind, text, replace_snapshot, identity, now)
+        else:
+            self._pending = (kind, pending_text + text, False, identity, started)
 
     async def close(self) -> None:
-        if self._pending is None:
-            return
-        await self._emit(self._pending, last_chunk=True)
-        self._pending = None
+        await self._flush_pending(last_chunk=True)
+
+    async def _flush_pending(self, *, last_chunk: bool = False) -> None:
+        pending, self._pending = self._pending, None
+        if pending is not None:
+            kind, text, replace_snapshot, identity, _ = pending
+            await self._emit(kind, text, replace_snapshot, identity, last_chunk=last_chunk)
 
     async def _emit(
         self,
-        pending: tuple[_ArtifactKind, str, bool, int],
+        kind: _ArtifactKind,
+        text: str,
+        replace_snapshot: bool,
+        identity: tuple[str, str],
         *,
         last_chunk: bool,
     ) -> None:
-        kind, text, replace_snapshot, segment = pending
-        key = (kind, segment)
+        key = (kind, identity)
         self._emitted[key] = self._emitted.get(key, 0) + 1
         is_reasoning = kind == "thinking"
-        base_id = (
-            f"{self._task_id}-reasoning"
-            if is_reasoning
-            else f"{self._task_id}-response"
-        )
-        artifact_id = base_id if segment == 1 else f"{base_id}-{segment}"
+        artifact_id = stable_item_id("a2a-output", self._task_id, *identity, kind)
         part = (
             _thought_part(text)
             if is_reasoning
             else Part(
                 text=text,
-                metadata=(
-                    dict(_OUTPUT_SNAPSHOT_METADATA)
-                    if replace_snapshot
-                    else None
-                ),
+                metadata=(dict(_OUTPUT_SNAPSHOT_METADATA) if replace_snapshot else None),
             )
         )
         await self._updater.add_artifact(
@@ -127,6 +150,7 @@ class _ArtifactStreamEmitter:
             append=False if replace_snapshot else self._emitted[key] > 1,
             last_chunk=last_chunk,
         )
+        self.wire_updates += 1
 
 
 async def _enqueue_initial_task(context: RequestContext, event_queue: EventQueue) -> None:
@@ -173,8 +197,7 @@ def _require_resume_capability(task_adapter: Any) -> None:
         from ksadk.kernel.errors import UnsupportedControlError
 
         raise UnsupportedControlError(
-            "runtime capability matrix declares resume unsupported: "
-            f"{matrix.resume.reason}"
+            f"runtime capability matrix declares resume unsupported: {matrix.resume.reason}"
         )
 
 
@@ -189,13 +212,20 @@ class A2ARuntimeExecutor(AgentExecutor):
         self,
         task_adapter: Any,
         include_reasoning: bool = False,
+        public_tool_policy: PublicToolActivityPolicy | None = None,
     ) -> None:
         if task_adapter is None:
             raise TypeError("task_adapter is required")
         self.task_adapter = task_adapter
         self.include_reasoning = include_reasoning
+        self.public_tool_policy = public_tool_policy or PublicToolActivityPolicy()
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        select = getattr(self.task_adapter, "for_context", None)
+        if callable(select):
+            selected = select(context)
+            if selected is not self.task_adapter:
+                return await A2ARuntimeExecutor(selected, self.include_reasoning, self.public_tool_policy).execute(context, event_queue)
         current_task = getattr(context, "current_task", None)
         durable_context_id = str(
             getattr(current_task, "context_id", "") or context.context_id or "unknown-context"
@@ -213,6 +243,11 @@ class A2ARuntimeExecutor(AgentExecutor):
         from ksadk.kernel.ingress import kernel_route_active
 
         if kernel_route_active() and not is_resume:
+            # The A2A SDK requires the initial Task before any status update.
+            # Kernel execution reports progress through TaskUpdater just like
+            # the legacy adapter path, so it must establish the same wire
+            # lifecycle first or clients discard working/completed updates.
+            await _enqueue_initial_task(context, event_queue)
             await self._kernel_execute(context, updater)
             return
 
@@ -242,31 +277,34 @@ class A2ARuntimeExecutor(AgentExecutor):
                 await _enqueue_initial_task(context, event_queue)
             # start_work 不透传 metadata;直接 update_status 以带 ADK v2 扩展标记
             # (RemoteA2aAgent 读 task/status metadata 决定走 v2 全增量 handler)。
-            await updater.update_status(
-                TaskState.TASK_STATE_WORKING,
-                metadata=dict(ADK_V2_INTEGRATION_METADATA),
-            )
+            server_admitted = bool(getattr(self.task_adapter, "server_admitted", False))
+            if not server_admitted:
+                await updater.update_status(
+                    TaskState.TASK_STATE_WORKING,
+                    metadata=dict(ADK_V2_INTEGRATION_METADATA),
+                )
             if is_resume:
                 handle = await self.task_adapter.resume_task(
                     context.task_id or "",
                     context,
                     answer=interaction_response,
                 )
-                output = await self._run_runtime(context, updater, handle)
+                if server_admitted:
+                    await updater.update_status(TaskState.TASK_STATE_WORKING, metadata=dict(ADK_V2_INTEGRATION_METADATA))
+                await self._run_runtime(context, updater, handle)
             else:
                 handle = await self.task_adapter.start_task(
                     task_id=str(context.task_id or ""),
                     context=context,
                     input_data=context.get_user_input(),
                 )
-                output = await self._run_runtime(context, updater, handle)
-            # completed 携带全文消息:非流式消费端与 text.completed 投影(§ event_adapter
-            # message_to_event final)依赖它拿最终结果;流式消费端的重复由 adk_runner
-            # 在 handoff 分支对"增量累积"去重解决(不在此处删消息)。
-            completion_message = (
-                updater.new_agent_message(parts=[Part(text=output)]) if output else None
-            )
-            await updater.complete(message=completion_message)
+                if server_admitted:
+                    await updater.update_status(TaskState.TASK_STATE_WORKING, metadata=dict(ADK_V2_INTEGRATION_METADATA))
+                await self._run_runtime(context, updater, handle)
+            # Every output is already a durable, identity-bearing Task artifact.
+            # A fresh status Message would introduce a third output identity for
+            # the same answer. Complete the Task without copying artifact text.
+            await updater.complete()
             await self._forget_task(context, handle)
         except _InputRequired:
             # runner 请求输入:task 已停在 input-required(附 resume token),不 complete。
@@ -274,6 +312,10 @@ class A2ARuntimeExecutor(AgentExecutor):
         except _RunCanceled:
             logger.info("A2A task %s 已由 runtime 取消", context.task_id)
             await self._forget_task(context, handle)
+        except ManagedKernelRequestError:
+            # In particular, a lost admission reply must not erase an existing
+            # input-required task or declare an accepted remote execution failed.
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.error("A2A task execution failed (%s)", type(exc).__name__)
             await updater.failed(
@@ -290,8 +332,8 @@ class A2ARuntimeExecutor(AgentExecutor):
         from ksadk.kernel import ingress as _kernel_ingress
 
         task_id = str(context.task_id or "")
-        session_id = str(context.context_id or task_id)
         try:
+            session_id = await self._prepare_kernel_session(context, task_id=task_id)
             trusted = _kernel_ingress.trusted_context(
                 source_kind="a2a",
                 source_ref=task_id,
@@ -332,20 +374,73 @@ class A2ARuntimeExecutor(AgentExecutor):
                 elif kind == "completed":
                     output_text = value or output_text
             completion = (
-                updater.new_agent_message(parts=[Part(text=output_text)])
-                if output_text
-                else None
+                updater.new_agent_message(parts=[Part(text=output_text)]) if output_text else None
             )
             await updater.complete(message=completion)
         except Exception as exc:  # noqa: BLE001
             logger.error("A2A kernel ingress failed (%s)", type(exc).__name__)
             await updater.failed(
-                message=updater.new_agent_message(
-                    parts=[Part(text="A2A task execution failed")]
-                )
+                message=updater.new_agent_message(parts=[Part(text="A2A task execution failed")])
             )
 
+    async def _prepare_kernel_session(self, context: RequestContext, *, task_id: str) -> str:
+        """Resolve the durable A2A context and create its shared-log session.
+
+        The legacy RuntimeAdapter path calls ``prepare_context`` from
+        ``start_task``.  Kernel routing bypasses ``start_task``, so it must do
+        the same verified external-context mapping before constructing the
+        command.  The command admission and worker then write to this exact
+        session in the Kernel-bound service.
+        """
+
+        session_id = ""
+        prepare_context = getattr(self.task_adapter, "prepare_context", None)
+        if callable(prepare_context):
+            prepared = prepare_context(context)
+            if inspect.isawaitable(prepared):
+                prepared = await prepared
+            session_id = str(prepared or "")
+        if not session_id:
+            session_id = str(context.context_id or task_id)
+        if not session_id:
+            raise RuntimeError("A2A_SESSION_ID_REQUIRED")
+
+        from ksadk.kernel.bootstrap import get_agent_kernel_runtime
+        from ksadk.sessions import resolve_session_service
+
+        runtime = get_agent_kernel_runtime()
+        runtime_config = getattr(runtime, "config", None)
+        service = getattr(runtime_config, "session_service", None)
+        if service is None:
+            service = resolve_session_service()
+
+        agent_id = (
+            os.environ.get("KSADK_A2A_AGENT_ID", "").strip()
+            or str(getattr(runtime_config, "agent_instance_id", "") or "").strip()
+            or os.environ.get("AGENT_INSTANCE_ID", "").strip()
+        )
+        if not agent_id:
+            raise RuntimeError("A2A_AGENT_ID_REQUIRED")
+        trusted_tenant = getattr(self.task_adapter, "_trusted_tenant", None)
+        user_id = (
+            str(trusted_tenant(context) or "").strip()
+            if callable(trusted_tenant)
+            else str(getattr(getattr(context, "call_context", None), "tenant", "") or "").strip()
+        ) or "anonymous"
+
+        existing = await service.get_session_metadata(session_id)
+        if existing is None:
+            existing = await service.create_session(agent_id, user_id, session_id=session_id)
+        if str(getattr(existing, "agent_id", "") or "") != agent_id:
+            raise RuntimeError("A2A_SESSION_AGENT_CONFLICT")
+        return session_id
+
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        select = getattr(self.task_adapter, "for_context", None)
+        if callable(select):
+            selected = select(context)
+            if selected is not self.task_adapter:
+                return await A2ARuntimeExecutor(selected, self.include_reasoning, self.public_tool_policy).cancel(context, event_queue)
         # §7.4:cancel 统一由 adapter 提供。有 RuntimeAdapter → 尊重其 CancelResult,
         # 只有底层真取消(CANCELLED)才把协议 Task 置 canceled;其余状态如实抛
         # TaskNotCancelableError 拒绝,不伪造终态。无 adapter 时底层状态未知,
@@ -369,9 +464,18 @@ class A2ARuntimeExecutor(AgentExecutor):
             raise TaskNotCancelableError(
                 message=f"underlying runtime cancel did not apply: {result_value}"
             )
-        await updater.cancel(
-            message=updater.new_agent_message(parts=[Part(text="Request canceled")])
-        )
+        message = updater.new_agent_message(parts=[Part(text="Request canceled")])
+        await updater.cancel(message=message)
+        from ksadk.a2a.kernel_task_adapter import ManagedKernelA2ATaskAdapter
+        from ksadk.a2a.protocol_errors import _CONFIRMED_KERNEL_CANCEL
+
+        if (isinstance(self.task_adapter, ManagedKernelA2ATaskAdapter)
+                and result == CancelResult.INTERRUPTED_ACTIVE_TURN):
+            # This adapter returns only after observing a canonical cancelled fact.
+            # Preserve its acknowledgement if the upstream producer closed the queue.
+            status = TaskStatus(state=TaskState.TASK_STATE_CANCELED, message=message)
+            status.timestamp.GetCurrentTime()
+            context.call_context.state[_CONFIRMED_KERNEL_CANCEL] = (context.task_id, status)
         clear_resume_state = getattr(self.task_adapter, "clear_resume_state", None)
         if callable(clear_resume_state):
             result = clear_resume_state(context.task_id or "", context)
@@ -384,17 +488,29 @@ class A2ARuntimeExecutor(AgentExecutor):
         updater: TaskUpdater,
         handle: RunHandle,
     ) -> str:
-        output_text = ""
+        stream_started = time.perf_counter()
+        run_completed_at: float | None = None
+        output_items: dict[tuple[str, str], dict[str, str]] = {}
+        output_refs = None
         artifacts = _ArtifactStreamEmitter(updater, str(context.task_id))
+        tools = PublicToolActivityProducer(self.public_tool_policy)
         input_required = False
         input_prompt = "Input required"
         checkpoint_id: str | None = None
         call_id: str | None = None
+        input_schema: dict[str, Any] | None = None
+        interaction_metadata: dict[str, Any] | None = None
         payload_kind: A2AResumePayloadKind = "hitl_answer"
 
         async for event in self.task_adapter.stream_task(handle):
             if not isinstance(event, EventEnvelope):
                 raise TypeError("RuntimeAdapter.stream must yield RuntimeEvent")
+            if getattr(event, "item_kind", None) in {"tool_call", "tool_result"}:
+                await artifacts.close()
+            await tools.emit(event, updater)
+            if isinstance(event, RunCompleted):
+                output_refs = event.output_refs
+                run_completed_at = time.perf_counter()
             if isinstance(event, RunFailed):
                 raise RuntimeError(self._coerce_text(event.error.message))
             if isinstance(event, RunCanceled):
@@ -406,16 +522,26 @@ class A2ARuntimeExecutor(AgentExecutor):
                 raise _RunCanceled()
             if isinstance(event, InteractionRequested):
                 input_required = True
-                payload_kind = "approval_decision"
-                call_id = (
-                    str(event.request.call_id or event.interaction_id or "")
-                    or None
-                )
-                detail = event.request.detail
-                if isinstance(detail, dict):
-                    input_prompt = self._coerce_text(
-                        detail.get("prompt") or detail.get("message") or input_prompt
-                    )
+                if isinstance(event.request, ApprovalRequest):
+                    from ksadk.a2a.interaction_wire import approval_metadata
+
+                    interaction_metadata = approval_metadata(event.request)
+                    payload_kind = "approval_decision"
+                    call_id = str(event.request.call_id or event.interaction_id or "") or None
+                    detail = event.request.detail
+                    if isinstance(detail, dict):
+                        input_prompt = self._coerce_text(
+                            detail.get("prompt") or detail.get("message") or input_prompt
+                        )
+                elif isinstance(event.request, StructuredInputRequest):
+                    interaction_metadata = None
+                    payload_kind = "hitl_answer"
+                    call_id = str(event.interaction_id or "") or None
+                    input_schema = dict(event.request.schema_)
+                    input_prompt = self._coerce_text(event.request.prompt or input_prompt)
+                    native_run_id = str(event.source.native_run_id or "").strip()
+                    if native_run_id:
+                        checkpoint_id = native_run_id
                 continue
             if isinstance(event, ContinuationCreated):
                 checkpoint_id = event.continuation_id
@@ -434,44 +560,76 @@ class A2ARuntimeExecutor(AgentExecutor):
                     if not text:
                         continue
                     await artifacts.push(
-                        "thinking", text, replace_snapshot=(event.op == "replace")
+                        "thinking",
+                        text,
+                        replace_snapshot=(event.op == "replace"),
+                        identity=(event.scope_id, event.item_id),
                     )
                     continue
                 if event.item_kind == "message":
                     if not isinstance(event.update, TextContent):
                         continue
                     text = event.update.text
-                    if not text:
+                    if not text and event.op != "replace":
                         continue
-                    replace_snapshot = event.op == "replace"
-                    if replace_snapshot:
-                        output_text = text
-                    else:
-                        output_text += text
-                    await artifacts.push("text", text, replace_snapshot=replace_snapshot)
+                    key = (event.scope_id, event.item_id)
+                    parts = output_items.setdefault(key, {})
+                    part_id = event.update.part_id
+                    parts[part_id] = (
+                        text if event.op == "replace" else parts.get(part_id, "") + text
+                    )
+                    replace_snapshot = event.op == "replace" or next(reversed(parts)) != part_id
+                    await artifacts.push(
+                        "text",
+                        "".join(parts.values()) if replace_snapshot else text,
+                        replace_snapshot=replace_snapshot,
+                        identity=key,
+                    )
                     continue
                 continue
-            if isinstance(event, ItemCompleted):
+            if isinstance(event, (ItemCompleted, ItemSnapshotReplaced)):
                 if event.item_kind == "reasoning":
                     if not self.include_reasoning:
                         continue
                     text = self._snapshot_text(event)
                     if not text:
                         continue
-                    await artifacts.push("thinking", text, replace_snapshot=True)
+                    await artifacts.push(
+                        "thinking",
+                        text,
+                        replace_snapshot=True,
+                        identity=(event.scope_id, event.item_id),
+                    )
                     continue
                 if event.item_kind == "message":
-                    text = self._snapshot_text(event)
-                    if not text:
+                    key = (event.scope_id, event.item_id)
+                    parts = {
+                        part.part_id: part.text
+                        for part in event.snapshot.parts
+                        if isinstance(part, TextContent)
+                    }
+                    if not parts and key not in output_items:
                         continue
-                    output_text = text
-                    await artifacts.push("text", text, replace_snapshot=True)
+                    output_items[key] = parts
+                    await artifacts.push(
+                        "text", "".join(parts.values()), replace_snapshot=True, identity=key
+                    )
                     continue
                 continue
         if self._cancel_was_accepted(context, handle):
             await artifacts.close()
             raise _RunCanceled()
         await artifacts.close()
+        logger.info(
+            "A2A artifact timing task=%s source_updates=%d wire_updates=%d "
+            "elapsed_ms=%.1f post_run_terminal_ms=%.1f",
+            context.task_id,
+            artifacts.source_updates,
+            artifacts.wire_updates,
+            (time.perf_counter() - stream_started) * 1000,
+            ((time.perf_counter() - run_completed_at) * 1000)
+            if run_completed_at is not None else 0.0,
+        )
         if input_required:
             await self.task_adapter.persist_resume_state(
                 task_id=str(context.task_id or ""),
@@ -481,13 +639,27 @@ class A2ARuntimeExecutor(AgentExecutor):
                 call_id=call_id,
                 payload_kind=payload_kind,
             )
+            message_metadata = (
+                interaction_metadata
+                if interaction_metadata is not None
+                else ({"input_schema": input_schema} if input_schema is not None else None)
+            )
             await updater.update_status(
                 TaskState.TASK_STATE_INPUT_REQUIRED,
-                message=updater.new_agent_message(parts=[Part(text=input_prompt)]),
+                message=updater.new_agent_message(
+                    parts=[Part(text=input_prompt)], metadata=message_metadata
+                ),
                 metadata=dict(ADK_V2_INTEGRATION_METADATA),
             )
             raise _InputRequired()
-        return output_text
+        if output_refs:
+            return "".join(
+                output_items.get((ref.scope_id, ref.item_id), {}).get(ref.part_id, "")
+                if ref.part_id is not None
+                else "".join(output_items.get((ref.scope_id, ref.item_id), {}).values())
+                for ref in output_refs
+            )
+        return "".join(text for parts in output_items.values() for text in parts.values())
 
     def _cancel_was_accepted(self, context: RequestContext, handle: RunHandle) -> bool:
         was_cancel_accepted = getattr(self.task_adapter, "was_cancel_accepted", None)
@@ -504,7 +676,7 @@ class A2ARuntimeExecutor(AgentExecutor):
                 await result
 
     @staticmethod
-    def _snapshot_text(event: ItemCompleted) -> str:
+    def _snapshot_text(event: ItemCompleted | ItemSnapshotReplaced) -> str:
         """Extract text from the first TextContent part of an ItemCompleted snapshot."""
         if not event.snapshot.parts:
             return ""

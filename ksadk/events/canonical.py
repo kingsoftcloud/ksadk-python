@@ -263,6 +263,11 @@ class UsageReported(EventEnvelope):
     total_tokens: JsonInteger = Field(ge=0)
     cached_tokens: JsonInteger = Field(default=0, ge=0)
     reasoning_tokens: JsonInteger = Field(default=0, ge=0)
+    #: 计量语义（长任务方案 §19.2 usage_mode）：``delta`` 单次调用的增量，
+    #: 消费者累加；``cumulative`` provider 已给出的累计值，消费者覆盖；
+    #: ``snapshot`` 定期快照，消费者覆盖。默认 ``delta`` 使旧事件/消费者
+    #: 保持「逐次累加」语义，不回退既有行为。
+    mode: Literal["delta", "cumulative", "snapshot"] = Field(default="delta")
 
 
 RuntimeEvent: TypeAlias = Annotated[

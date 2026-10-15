@@ -116,3 +116,44 @@ def test_validate_codex_binary_checks_effective_version(monkeypatch):
     )
 
     assert output == "codex-cli 0.144.4"
+
+
+@pytest.mark.parametrize('installed,accepted', [('0.154.0', True), ('0.147.0', False)])
+def test_qualified_image_version_keeps_native_package_pin(monkeypatch, installed, accepted):
+    monkeypatch.setattr('ksadk.managed_runtime.installed_runtime_version', lambda _: installed)
+    monkeypatch.setattr('ksadk.managed_runtime.validate_runtime_binary', lambda _: 'codex-cli 0.154.0')
+    resolved = ResolvedRuntime(name='codex', version='0.154.0+r86.1', source='manifest')
+    if accepted:
+        assert validate_installed_runtime(resolved) == '0.154.0'
+        assert resolved.version == '0.154.0+r86.1'
+    else:
+        with pytest.raises(ManagedRuntimeError):
+            validate_installed_runtime(resolved)
+
+
+def test_qualified_image_version_checks_native_binary(monkeypatch):
+    fake = types.ModuleType('codex_cli_bin')
+    fake.bundled_codex_path = lambda: '/native/platform/codex'
+    monkeypatch.setitem(sys.modules, 'codex_cli_bin', fake)
+    monkeypatch.setattr('ksadk.managed_runtime.subprocess.run', lambda *a, **k:
+                        types.SimpleNamespace(stdout='codex-cli 0.154.0\n', stderr=''))
+    assert validate_runtime_binary(ResolvedRuntime(name='codex', version='0.154.0+r86.1', source='manifest')) == 'codex-cli 0.154.0'
+    with pytest.raises(ManagedRuntimeError):
+        validate_runtime_binary(ResolvedRuntime(name='codex', version='0.147.0+r86.1', source='manifest'))
+
+
+@pytest.mark.parametrize('value', ['0.154.0+', '0.154.0+bad/label', '0.154.0+r86+extra'])
+def test_invalid_qualified_image_version_is_rejected(value):
+    from ksadk.managed_runtime import native_package_version
+    with pytest.raises(ManagedRuntimeError, match='qualified runtime version'):
+        native_package_version(value)
+
+
+def test_qualified_image_does_not_accept_binary_version_substring(monkeypatch):
+    fake = types.ModuleType('codex_cli_bin')
+    fake.bundled_codex_path = lambda: '/native/platform/codex'
+    monkeypatch.setitem(sys.modules, 'codex_cli_bin', fake)
+    monkeypatch.setattr('ksadk.managed_runtime.subprocess.run', lambda *a, **k:
+                        types.SimpleNamespace(stdout='codex-cli 0.154.01\n', stderr=''))
+    with pytest.raises(ManagedRuntimeError):
+        validate_runtime_binary(ResolvedRuntime(name='codex', version='0.154.0+r86.1', source='manifest'))

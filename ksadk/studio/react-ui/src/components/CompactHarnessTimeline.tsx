@@ -1,12 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { ChatMessageList, StatusBanner } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { compactHarnessMessages } from "../compactHarnessMessages";
+import { extractLiveThinking, type LiveThinking as LiveThinkingView } from "../liveThinking";
 import { HarnessActivity, type Activity } from "./HarnessActivity";
+import { LiveThinking } from "./LiveThinking";
+import { TimelineTurn } from "./TimelineTurn";
 
 type Props = Omit<ComponentProps<typeof ChatMessageList>, "scrollRef" | "contextIndicator" | "onOpenAttachmentPreview"> & {
   sessionId: string | null;
   /** 当前运行在首条公开消息到达前也已有稳定 run id。 */
   activeRunId?: string;
+  /** 本轮思考 token（usage.reasoning_tokens 求和），由宿主在运行结束后结算传入。 */
+  reasoningTokens?: number | null;
   hasMoreMessages?: boolean;
   onLoadOlderSessionMessages?: (sessionId: string) => Promise<void>;
   onOpenSession?: (sessionId: string) => void;
@@ -45,13 +50,43 @@ function hasModelOutput(message: Props["messages"][number]): boolean {
     || Object.keys(message.tools || {}).length);
 }
 
+function needsPersistentView(message: Props["messages"][number]): boolean {
+  // Virtualization must not discard an approval or an interactive form draft.
+  return Boolean(message.a2ui && !message.a2ui.ended || message.aguiActivity
+    || message.aguiActivities?.length || Object.values(message.tools || {}).some(tool =>
+      tool.status === "paused" || tool.approvalStatus === "pending" || tool.status === "running"));
+}
+
 /** Shared controller/answer/approval renderer; host-owned expandable activity facts. */
-export function CompactHarnessTimeline({ messages, sessionId, activeRunId, hasMoreMessages = false, onLoadOlderSessionMessages, onOpenSession, className, revealMessage, ...props }: Props) {
+export function CompactHarnessTimeline({ messages, sessionId, activeRunId, reasoningTokens, hasMoreMessages = false, onLoadOlderSessionMessages, onOpenSession, className, revealMessage, ...props }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
+  const heights = useRef(new Map<string, number>());
+  const [following, setFollowing] = useState(true);
   const projected = useMemo(() => compactHarnessMessages(messages), [messages]);
+  // 实时思考只对直播流生效：历史/压缩后（非流式）仍走摘要口径，detailed
+  // reasoning 既不落盘也不在这里回放。运行结束后保留最后一次快照（收起
+  // 状态）直到切换会话或下一轮开始，便于展示本轮思考 token。
+  const liveThinking = useMemo(
+    () => extractLiveThinking(messages, { streaming: Boolean(props.isStreaming) }),
+    [messages, props.isStreaming],
+  );
+  const [pinnedThinking, setPinnedThinking] = useState<{ sessionId: string; view: LiveThinkingView } | null>(null);
+  useEffect(() => {
+    if (!liveThinking || !sessionId) return;
+    setPinnedThinking({ sessionId, view: liveThinking });
+  }, [liveThinking, sessionId]);
+  const shownThinking: LiveThinkingView | null = props.isStreaming
+    ? liveThinking
+    : pinnedThinking && pinnedThinking.sessionId === sessionId
+      ? { ...pinnedThinking.view, streaming: false }
+      : null;
+
   const displayedRuns = new Set<string>();
   const latestRunId = [...projected].reverse().find(message => message.role === "model");
+  // 思考块挂在最后一个 model turn 之前；若压缩结果里没有 model turn（例如
+  // 运行以交互卡片收尾），退化为独立的一行，避免思考与 token 消失。
+  const liveTurnIndex = projected.reduce((found, message, index) => message.role === "model" ? index : found, -1);
   const activeSession = useRef(sessionId);
   activeSession.current = sessionId;
   const [olderBusy, setOlderBusy] = useState(false);
@@ -71,12 +106,17 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, hasMo
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    const onScroll = () => { follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100; };
+    const onScroll = () => {
+      follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
+      setFollowing(follow.current);
+    };
     element.addEventListener("scroll", onScroll, { passive: true });
     return () => element.removeEventListener("scroll", onScroll);
   }, []);
   useLayoutEffect(() => {
     follow.current = true;
+    heights.current.clear();
+    setFollowing(true);
     prepend.current = null;
     olderRequest.current = null;
     setOlderBusy(false);
@@ -100,6 +140,7 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, hasMo
       .find(node => node.dataset.messageId === revealedId);
     if (!row) return;
     follow.current = false;
+    setFollowing(false);
     prepend.current = null;
     element.scrollTop += row.getBoundingClientRect().top - element.getBoundingClientRect().top - 24;
     row.focus({ preventScroll: true });
@@ -111,6 +152,7 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, hasMo
     const element = scrollRef.current;
     if (element) prepend.current = { firstId: projected[0]?.id, height: element.scrollHeight, top: element.scrollTop };
     follow.current = false;
+    setFollowing(false);
     setOlderBusy(true);
     setOlderError(false);
     try {
@@ -136,12 +178,17 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, hasMo
       const showActivity = message.role === "model"
         && (runId ? !displayedRuns.has(runId) : fallback.length > 0);
       if (showActivity && runId) displayedRuns.add(runId);
-      return <div className="harness-turn" key={message.id} tabIndex={-1}
-        data-message-id={message.id} data-search-target={revealedId === message.id || undefined}>
+      const liveTurn = Boolean(shownThinking) && index === liveTurnIndex;
+      return <TimelineTurn key={`${sessionId}:${message.id}`} id={message.id} root={scrollRef} heights={heights.current}
+        live={index >= projected.length - 4} pinned={needsPersistentView(message)
+          || revealedId === message.id || index === liveTurnIndex && Boolean(shownThinking)}
+        follow={follow} revealed={revealedId === message.id}>
       {showActivity && <HarnessActivity runId={runId}
         streaming={props.isStreaming && Boolean(latestRunId && activityRunId(latestRunId) === runId)} fallback={fallback} onOpenSession={onOpenSession} />}
+      {liveTurn && shownThinking && <LiveThinking key={shownThinking.runId} text={shownThinking.text} streaming={shownThinking.streaming}
+        reasoningTokens={reasoningTokens} />}
       <SharedMessage {...props} message={message} isStreaming={props.isStreaming && index === projected.length - 1} />
-    </div>; })}
+    </TimelineTurn>; })}
     {liveRunWithoutMessage && <div className="harness-turn harness-live-run" data-run-id={activeRunId}>
       <HarnessActivity
         runId={activeRunId}
@@ -156,9 +203,15 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, hasMo
         onOpenSession={onOpenSession}
       />
     </div>}
+    {shownThinking && liveTurnIndex < 0 && <div className="harness-turn">
+      <LiveThinking key={shownThinking.runId} text={shownThinking.text} streaming={shownThinking.streaming} reasoningTokens={reasoningTokens} />
+    </div>}
     {waitingForFirstToken && <div className="harness-thinking" role="status">
       <span className="text-shimmer">正在思考…</span>
     </div>}
     <StatusBanner />
-  </div>;
+  {!following && <button className="harness-return-bottom button secondary small" type="button" onClick={() => {
+    follow.current = true; setFollowing(true);
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }}>回到最新消息</button>}</div>;
 }

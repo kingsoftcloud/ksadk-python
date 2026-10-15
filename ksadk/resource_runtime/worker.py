@@ -11,9 +11,10 @@ from typing import ClassVar
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import ConfigDict, Field, SecretStr, model_validator
+from pydantic import ConfigDict, Field, SecretStr, field_validator, model_validator
 from requests.exceptions import RequestException
 
+from ksadk.common.cloud_headers import DEFAULT_TRAFFIC_SOURCE, resolve_traffic_source
 from ksadk.knowledge_base.client import KnowledgeBaseClient
 from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
 from ksadk.memory.models import MemorySearchRequest
@@ -70,10 +71,13 @@ class ExplicitWorkerBinding(PluginContractModel):
 class KnowledgeWorkerBinding(ExplicitWorkerBinding):
     resource_kind: ClassVar[str] = "knowledge-base"
 
-    def create_service(self) -> BoundKnowledgeService:
+    def create_service(
+        self, *, traffic_source: str = DEFAULT_TRAFFIC_SOURCE
+    ) -> BoundKnowledgeService:
         endpoint = urlsplit(self.endpoint)
         client = KnowledgeBaseClient(
             dataset_id=self.config.binding.resource.id,
+            traffic_source=traffic_source,
             region=self.config.binding.resource.region,
             endpoint=endpoint.netloc,
             scheme=endpoint.scheme,
@@ -87,10 +91,13 @@ class KnowledgeWorkerBinding(ExplicitWorkerBinding):
 class MemoryWorkerBinding(ExplicitWorkerBinding):
     resource_kind: ClassVar[str] = "memory-instance"
 
-    def create_provider(self, identity: InvocationIdentity) -> AicpMemoryProvider:
+    def create_provider(
+        self, identity: InvocationIdentity, *, traffic_source: str = DEFAULT_TRAFFIC_SOURCE
+    ) -> AicpMemoryProvider:
         endpoint = urlsplit(self.endpoint)
         backend = SdkLTMBackend(
             index="bound-resource",
+            traffic_source=traffic_source,
             memory_collection_id=self.config.binding.resource.id,
             namespace=self.config.binding.resource.id,
             agent_id=identity.agent_id,
@@ -135,6 +142,7 @@ class DiscoverySkillWorkerBinding(ExplicitWorkerBinding):
 
     def create_provider(
         self, scope: ResourceScope, *, execution_target=None,
+        traffic_source: str = DEFAULT_TRAFFIC_SOURCE,
     ) -> DiscoverySkillService:
         namespace = discovery_scope_key(scope, self.selection_run_ref)
         client = SkillServiceClient(
@@ -143,6 +151,7 @@ class DiscoverySkillWorkerBinding(ExplicitWorkerBinding):
             secret_key=self.secret_key.get_secret_value(),
             region=self.config.binding.resource.region,
             allow_env_fallback=False,
+            traffic_source=traffic_source,
             timeout=15,
         )
         return DiscoverySkillService(
@@ -221,6 +230,9 @@ class PinnedSkillWorkerBinding(PluginContractModel):
 
 class WorkerInitialization(PluginContractModel):
     model_config = ConfigDict(hide_input_in_errors=True)
+    # Resolve in the trusted parent and serialize on stdin; never inherit the
+    # parent's environment or mutate global process state in a shared host.
+    traffic_source: str = Field(default_factory=resolve_traffic_source)
     resource_snapshot: ResourceSnapshot
     bindings: tuple[
         KnowledgeWorkerBinding
@@ -230,6 +242,11 @@ class WorkerInitialization(PluginContractModel):
         ...,
     ]
     scopes: tuple[ResourceScope, ...]
+
+    @field_validator("traffic_source")
+    @classmethod
+    def validate_traffic_source(cls, value):
+        return resolve_traffic_source(value)
 
     @model_validator(mode="after")
     def single_activation(self) -> WorkerInitialization:
@@ -337,13 +354,19 @@ def main() -> int:
             binding.config.binding.id: (
                 binding.create_provider(
                     scopes[binding.config.binding.id],
+                    traffic_source=initialization.traffic_source,
                     execution_target=initialization.resource_snapshot.binding(
                         binding.config.binding.id
                     ).skill_execution,
                 )
                 if isinstance(binding, DiscoverySkillWorkerBinding)
-                else binding.create_provider(scopes[binding.config.binding.id].identity)
+                else binding.create_provider(
+                    scopes[binding.config.binding.id].identity,
+                    traffic_source=initialization.traffic_source,
+                )
                 if isinstance(binding, MemoryWorkerBinding)
+                else binding.create_service(traffic_source=initialization.traffic_source)
+                if isinstance(binding, KnowledgeWorkerBinding)
                 else binding.create_service()
             )
             for binding in initialization.bindings
@@ -362,6 +385,7 @@ def main() -> int:
                     binding.config.binding.id,
                     current_connection=binding.execution_connection,
                     api_key=binding.execution_api_key,
+                    traffic_source=initialization.traffic_source,
                     artifact_directory=root.resolve(),
                 )
                 skill_runtimes[binding.config.binding.id].preflight()

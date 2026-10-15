@@ -1,0 +1,976 @@
+"""Host-owned request planning and compaction sealing; stable public entry points.
+
+Projection, partition construction and immutable contracts live in focused
+modules. The caller still owns model I/O, durable intents and Run budgets."""
+
+from __future__ import annotations
+
+import hashlib as hashlib
+import json as json
+from typing import Callable as Callable
+from typing import Literal as Literal
+
+from pydantic import AliasChoices as AliasChoices
+from pydantic import BaseModel as BaseModel
+from pydantic import ConfigDict as ConfigDict
+from pydantic import Field as Field
+from pydantic import JsonValue as JsonValue
+from pydantic import model_serializer as model_serializer
+from pydantic import model_validator as model_validator
+
+from .completion import TaskContract as TaskContract
+from .context import CompactionEnvelope as CompactionEnvelope
+from .context import CompactionProjection as CompactionProjection
+from .context import CompactionRejected as CompactionRejected
+from .context import ContextBudget as ContextBudget
+from .context import ContextMessage as ContextMessage
+from .context import ExecutionContinuityState as ExecutionContinuityState
+from .context import _tool_groups as _tool_groups
+from .context import continuity_digest as continuity_digest
+from .context import validate_compaction as validate_compaction
+from .context_artifact_page import artifact_page_observation as artifact_page_observation
+from .context_artifact_page import complete_artifact_call_ids as complete_artifact_call_ids
+from .context_compaction_projection import seal_compaction_projection
+from .context_fresh_tools import fresh_tool_group_refs
+from .context_history import ContextRuntimeError as ContextRuntimeError
+from .context_history import _content_blocks as _content_blocks
+from .context_history import _goal_message_index
+from .context_history import _historical_message as _historical_message
+from .context_history import _json as _json
+from .context_history import _unambiguous_json_object as _unambiguous_json_object
+from .context_history import compact_historical_protocol as compact_historical_protocol
+from .context_history import summary_media_blocks as summary_media_blocks
+from .context_history import text_only_tool_message as text_only_tool_message
+from .context_partition import BatchPartition as BatchPartition
+from .context_partition import SummaryPartitionState as SummaryPartitionState
+from .context_partition import acknowledge as acknowledge
+from .context_partition import bind_pending as bind_pending
+from .context_partition import expected_remaining_refs as expected_remaining_refs
+from .context_partition import fragment_view as fragment_view
+from .context_partition import new_coverage as new_coverage
+from .context_partition import raw_batch_entries as raw_batch_entries
+from .context_partition import require_complete as require_complete
+from .context_partition import source_manifest as source_manifest
+from .context_partition import validate_coverage as validate_coverage
+from .context_pruning import project_fresh_workspace_reads as project_fresh_workspace_reads
+from .context_pruning import project_historical_tool_result as project_historical_tool_result
+from .context_pruning import project_workspace_read_result as project_workspace_read_result
+from .context_request_projection import ContextRequestProjection
+from .context_runtime_contracts import (
+    READER_SUMMARY_POLICY_VERSION as READER_SUMMARY_POLICY_VERSION,
+)
+from .context_runtime_contracts import (
+    CompactionHistory as CompactionHistory,
+)
+from .context_runtime_contracts import (
+    CompactionPolicy as CompactionPolicy,
+)
+from .context_runtime_contracts import (
+    CompactionProjectionOverflow as CompactionProjectionOverflow,
+)
+from .context_runtime_contracts import (
+    CompactionRequest as CompactionRequest,
+)
+from .context_runtime_contracts import (
+    CompactionResult as CompactionResult,
+)
+from .context_runtime_contracts import (
+    ContextPlan as ContextPlan,
+)
+from .context_runtime_contracts import (
+    Messages as Messages,
+)
+from .context_runtime_contracts import (
+    PreparedContext as PreparedContext,
+)
+from .context_runtime_contracts import (
+    _compacted_messages as _compacted_messages,
+)
+from .context_runtime_contracts import (
+    _complete_source_entry as _complete_source_entry,
+)
+from .context_runtime_contracts import (
+    _Contract as _Contract,
+)
+from .context_runtime_contracts import (
+    _full_reader_quote as _full_reader_quote,
+)
+from .context_runtime_contracts import (
+    _model_continuity as _model_continuity,
+)
+from .context_runtime_contracts import (
+    _refs as _refs,
+)
+from .context_runtime_contracts import (
+    _resume as _resume,
+)
+from .context_runtime_contracts import (
+    _summary as _summary,
+)
+from .context_runtime_contracts import (
+    _summary_continuation as _summary_continuation,
+)
+from .context_runtime_contracts import (
+    _summary_units as _summary_units,
+)
+from .context_runtime_contracts import (
+    source_context_digest as source_context_digest,
+)
+from .context_search import complete_search_call_ids as complete_search_call_ids
+from .context_search import complete_search_observation as complete_search_observation
+from .context_source_fragments import SourceTextPart as SourceTextPart
+from .context_source_fragments import source_part_view as source_part_view
+from .context_source_fragments import source_text_carrier as source_text_carrier
+from .context_summary_planning import ContextSummaryPlanning
+from .model import ModelProfile as ModelProfile
+from .model import ModelReplayMetadata as ModelReplayMetadata
+from .model_replay import replay_binding_failure as replay_binding_failure
+from .model_replay import replay_fields as replay_fields
+from .ports import ToolDefinition as ToolDefinition
+from .ports import digest as digest
+from .tool_observation import history_observation_message as history_observation_message
+from .tool_observation import model_observation_message as model_observation_message
+from .tool_observation import model_observation_messages as model_observation_messages
+from .turn_control import ModelTurnControl as ModelTurnControl
+from .user_document import user_document_indexes
+
+_MAX_SUMMARY_CHUNKS = 8
+
+
+class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
+    def __init__(
+        self,
+        *,
+        count_tokens: Callable[[str], int],
+        tokenizer_id: str,
+        policy: CompactionPolicy | None = None,
+        count_message_tokens: Callable[[dict[str, JsonValue]], int] | None = None,
+        tool_media_projection_version: Literal["source-profile-tool-media/v1"] | None = None,
+        summary_budget_unit: Literal["tokens", "estimated tokens", "UTF-8 bytes"] = "tokens",
+        summary_budget_mode: Literal["strict", "context_bounded_estimate"] = "strict",
+        summary_completion_policy: Literal["bounded-committed-summary/v1"] | None = None,
+        subagent_continuity_policy: Literal["accounted_child_runs/v1"] | None = None,
+        source_progress_policy: Literal["receipt-source-progress/v2"] | None = None,
+    ) -> None:
+        if (
+            not callable(count_tokens)
+            or not isinstance(tokenizer_id, str)
+            or not tokenizer_id.strip()
+        ):
+            raise ValueError("a host token counter and tokenizer_id are required")
+        if count_message_tokens is not None and not callable(count_message_tokens):
+            raise ValueError("message token counter must be callable")
+        if summary_budget_unit not in {"tokens", "estimated tokens", "UTF-8 bytes"}:
+            raise ValueError("unsupported summary budget unit")
+        if summary_budget_mode not in {"strict", "context_bounded_estimate"} or (
+            summary_budget_mode == "context_bounded_estimate"
+            and summary_budget_unit != "estimated tokens"
+        ):
+            raise ValueError("context-bounded summary admission requires an estimated counter")
+        if tool_media_projection_version not in {None, "source-profile-tool-media/v1"}:
+            raise ValueError("unsupported tool media projection version")
+        self.tool_media_projection_version = tool_media_projection_version
+        self.count_tokens = count_tokens
+        # Effective source projection versions the counter input, not only
+        # its arithmetic. Existing history and ContextDriver binding inherit it.
+        self.tokenizer_id = (
+            f"{tokenizer_id}|{tool_media_projection_version}"
+            if tool_media_projection_version
+            else tokenizer_id
+        )
+        # tokenizer_id versions BOTH counters, including image cost/framing for
+        # the pinned provider projection. The host owns that model-specific math.
+        self.count_message_tokens = count_message_tokens
+        self.summary_budget_unit = summary_budget_unit
+        self.summary_budget_mode = summary_budget_mode
+        if summary_completion_policy not in {None, "bounded-committed-summary/v1"}:
+            raise ValueError("unsupported summary completion policy")
+        self.summary_completion_policy = summary_completion_policy
+        if subagent_continuity_policy not in {None, "accounted_child_runs/v1"}:
+            raise ValueError("unsupported subagent continuity policy")
+        self.subagent_continuity_policy = subagent_continuity_policy
+        if source_progress_policy not in {None, "receipt-source-progress/v2"}:
+            raise ValueError("unsupported source progress policy")
+        self.source_progress_policy = source_progress_policy
+        self.policy = policy or CompactionPolicy()
+
+    def plan(
+        self,
+        *,
+        source_revision: int,
+        model_turn: int,
+        profile: ModelProfile,
+        instructions: str,
+        tools: tuple[ToolDefinition, ...],
+        context_tools: tuple[ToolDefinition, ...] | None = None,
+        messages: Messages,
+        continuity: ExecutionContinuityState,
+        contract: TaskContract,
+        history: CompactionHistory | None = None,
+        force_compaction: bool = False,
+        turn_control: ModelTurnControl | None = None,
+        allow_compaction: bool = True,
+    ) -> ContextPlan:
+        try:
+            return self._plan(
+                source_revision=source_revision,
+                model_turn=model_turn,
+                profile=profile,
+                instructions=instructions,
+                tools=tools,
+                context_tools=tools if context_tools is None else context_tools,
+                messages=messages,
+                continuity=continuity,
+                contract=contract,
+                history=history or CompactionHistory(),
+                force_compaction=force_compaction,
+                turn_control=turn_control,
+                allow_compaction=allow_compaction,
+            )
+        except ContextRuntimeError as exc:
+            return ContextPlan(action="blocked", reason=str(exc))
+        except (CompactionRejected, ValueError, KeyError, TypeError):
+            return ContextPlan(action="blocked", reason="context_protocol_invalid")
+
+    def _active(
+        self,
+        messages: Messages,
+        continuity: ExecutionContinuityState,
+        history: CompactionHistory,
+    ) -> tuple[tuple[str, ...], Messages, str]:
+        refs = _refs(messages)
+        if history.count:
+            if history.summary_completion_policy != self.summary_completion_policy:
+                raise ContextRuntimeError("context_summary_completion_policy_changed")
+            if history.tokenizer_id != self.tokenizer_id:
+                raise ContextRuntimeError("context_tokenizer_changed")
+            prefix = messages[: history.prefix_message_count]
+            if (
+                len(prefix) != history.prefix_message_count
+                or source_context_digest(prefix) != history.prefix_digest
+                or history.contract_digest != continuity.contract_digest
+            ):
+                raise ContextRuntimeError("context_history_changed")
+            if (
+                not history.summary_text.strip()
+                or not set(history.retained_message_refs).issubset(
+                    refs[: history.prefix_message_count]
+                )
+                or len(set(history.retained_message_refs)) != len(history.retained_message_refs)
+            ):
+                raise ContextRuntimeError("context_history_invalid")
+            indexes = [
+                i
+                for i, ref in enumerate(refs)
+                if i >= history.prefix_message_count or ref in history.retained_message_refs
+            ]
+        else:
+            indexes = list(range(len(messages)))
+        # A correction creates a new source receipt. Keep the old transcript
+        # and compaction prefix immutable, but do not present superseded data
+        # as the current goal's Context. Other history remains ordinary input.
+        indexes = [
+            i for i in indexes
+            if messages[i].get("kind") != "context_contribution"
+            or messages[i].get("goal_revision") == continuity.goal_revision
+        ]
+        indexes = [
+            i for i in indexes
+            if messages[i].get("kind") != "context_contribution"
+            or messages[i].get("context_operation_key") is None
+            or messages[i].get("context_operation_key") == continuity.context_source_operation_key
+        ]
+        active_refs = tuple(refs[i] for i in indexes)
+        active = tuple(messages[i] for i in indexes)
+        return active_refs, active, active_refs[_goal_message_index(active, continuity.goal)]
+
+    def _plan(
+        self,
+        *,
+        source_revision,
+        model_turn,
+        profile,
+        instructions,
+        tools,
+        context_tools,
+        messages,
+        continuity,
+        contract,
+        history,
+        force_compaction,
+        turn_control,
+        allow_compaction,
+    ) -> ContextPlan:
+        if turn_control is not None:
+            turn_control.validate_tools(
+                tuple(tool.name for tool in tools),
+                stable_catalog=profile.tool_catalog_policy == "stable-task/v1",
+            )
+        required = tuple(item for item in contract.items if item.required)
+        if continuity.contract_digest != digest(
+            contract
+        ) or continuity.required_acceptance_ids != tuple(item.acceptance_id for item in required):
+            raise ContextRuntimeError("context_contract_mismatch")
+        from .operator_guidance import instructions_are_journaled
+
+        journaled = instructions_are_journaled(
+            messages, profile, instructions, self._host_ledger(continuity, contract),
+        )
+        if not journaled:
+            instructions = self._host_instructions(instructions, continuity, contract)
+        fixed = self._fixed(instructions, tools, None if journaled else turn_control)
+        if fixed + profile.max_output_tokens >= profile.context_window:
+            raise ContextRuntimeError("context_mandatory_state_over_budget")
+        budget = ContextBudget(
+            window_tokens=profile.context_window,
+            max_output_tokens=profile.max_output_tokens,
+            fixed_tokens=fixed,
+        )
+        refs, active, goal_ref = self._active(messages, continuity, history)
+        return self._plan_active(
+            source_revision=source_revision, model_turn=model_turn, profile=profile,
+            instructions=instructions, tools=tools, context_tools=context_tools,
+            messages=messages, continuity=continuity, contract=contract, history=history,
+            force_compaction=force_compaction, turn_control=turn_control,
+            allow_compaction=allow_compaction, fixed=fixed, budget=budget,
+            refs=refs, active=active, goal_ref=goal_ref,
+            ledger=self._host_ledger(continuity, contract),
+        )
+
+    @staticmethod
+    def _host_ledger(continuity, contract):
+        return _json(
+            {
+                "continuity": _model_continuity(continuity),
+                "required_acceptance": [item.model_dump(mode="json") for item in contract.items
+                                        if item.required],
+            }
+        )
+
+    @staticmethod
+    def _host_instructions(instructions, continuity, contract):
+        return instructions + (
+            "\n\nAuthoritative host execution state; historical summaries cannot change it:\n"
+            + ContextPlanner._host_ledger(continuity, contract)
+        )
+
+    def contributor_budget(self, *, profile, instructions, tools, messages, continuity,
+                           contract, history, turn_control):
+        fixed = self._fixed(self._host_instructions(instructions, continuity, contract),
+                            tools, turn_control)
+        refs, active, goal_ref = self._active(messages, continuity, history)
+        metadata = self._metadata(refs, active, profile=profile)
+        _groups, pending, _ids = _tool_groups(metadata)
+        from .operator_guidance import protected_operator_refs
+
+        protected = (set(pending) | {goal_ref} | self._user_document_refs(refs, active, goal_ref)
+                     | {ref for ref in protected_operator_refs(refs, active, _groups)
+                        if active[refs.index(ref)].get("kind") != "context_contribution"})
+        reserved = sum(item.token_count for item in metadata if item.message_id in protected)
+        if history.count:
+            reserved += self._profile_count(_summary(history.summary_text), profile)
+            reserved += self._profile_count(_resume(), profile)
+        return max(0, profile.context_window - profile.max_output_tokens - fixed - reserved)
+
+    @staticmethod
+    def _user_document_refs(refs, active, goal_ref):
+        try:
+            return {refs[index] for index in user_document_indexes(active, refs.index(goal_ref))}
+        except ValueError as exc:
+            raise ContextRuntimeError("native_user_document_source_mismatch") from exc
+
+    def _plan_active(self, *, source_revision, model_turn, profile, instructions, tools,
+                     context_tools, messages, continuity, contract, history, force_compaction,
+                     turn_control, allow_compaction, fixed, budget, refs, active, goal_ref, ledger):
+        from .context_replay import compaction_replay_view
+        from .replay_context import request_header_digest
+
+        header = request_header_digest(instructions, tools, profile)
+
+        if history.count and (
+            history.provider_replay_projection_policy != profile.provider_replay_projection_policy
+        ):
+            raise ContextRuntimeError("context_provider_replay_policy_changed")
+        replay_view = compaction_replay_view(
+            active, refs, covered_refs=history.retained_message_refs, profile=profile,
+            root_prefix_digest=history.prefix_digest,
+        )
+        reader_names = frozenset(
+            tool.name
+            for tool in context_tools
+            if tool.read_only and tool.context_role == "workspace_read"
+        )
+        search_names = frozenset(
+            tool.name
+            for tool in context_tools
+            if tool.read_only and tool.context_role == "workspace_search"
+        )
+        artifact_reader_names = frozenset(
+            tool.name for tool in context_tools
+            if tool.read_only and tool.context_role == "artifact_read"
+        )
+        capture_reader_names = frozenset(
+            tool.name for tool in context_tools
+            if tool.name in reader_names and tool.result_archive_policy == "archived-model-view/v3"
+        ) | artifact_reader_names
+        metadata = self._metadata(refs, active, counted_messages=replay_view, profile=profile)
+        groups, pending_refs, pending_ids = _tool_groups(metadata)
+        fresh_group = fresh_tool_group_refs(messages)
+        if not fresh_group.issubset(refs):
+            # A prior summary may already cover the original trailing group.
+            fresh_group = frozenset()
+        if pending_ids != frozenset(continuity.pending_tool_call_ids):
+            raise ContextRuntimeError("context_pending_tool_mismatch")
+        summary_limit = min(self.policy.summary_max_tokens, profile.max_output_tokens)
+        reserved_summary = self.summary_reservation(profile)
+        from .operator_guidance import protected_operator_refs
+
+        mandatory = (
+            set(pending_refs) | {goal_ref} | protected_operator_refs(refs, active, groups)
+            | self._user_document_refs(refs, active, goal_ref)
+            | {ref for ref, raw in zip(refs, active)
+               if raw.get("kind") == "context_contribution"
+               and raw.get("goal_revision") == continuity.goal_revision}
+            | {ref for ref, raw in zip(refs, active)
+               if raw.get("kind") == "background_child_observation"
+               and raw.get("child_run_id") in continuity.pending_subagent_refs}
+        )
+        hook_refs = {raw.get("hook_operation_key"): ref for ref, raw in zip(refs, active)
+                     if raw.get("kind") == "hook_context"
+                     and raw.get("hook_goal_revision") == continuity.goal_revision}
+        guidance_refs = {raw.get("input_id"): ref for ref, raw in zip(refs, active)
+                         if raw.get("role") == "user" and raw.get("kind") == "user_guidance"
+                         and raw.get("input_goal_revision") == continuity.goal_revision}
+        if not set(continuity.pending_guidance_ids).issubset(guidance_refs):
+            raise ContextRuntimeError("context_pending_guidance_missing")
+        mandatory |= {guidance_refs[key] for key in continuity.pending_guidance_ids}
+        if not set(continuity.pending_hook_operation_keys).issubset(hook_refs):
+            raise ContextRuntimeError("context_pending_hook_missing")
+        mandatory |= {hook_refs[key] for key in continuity.pending_hook_operation_keys}
+        protected_readers = frozenset()
+        if groups and self.policy.read_working_set_count and not force_compaction:
+            latest = groups[-1]
+            definitions = {tool.name: tool for tool in context_tools}
+            calls = [
+                call
+                for ref, raw in zip(refs, active)
+                if ref in latest
+                for call in raw.get("tool_calls", ())
+            ]
+            group_cost = sum(m.token_count for m in metadata if m.message_id in latest)
+            if (
+                group_cost <= self.policy.read_working_set_max_tokens
+                and group_cost <= self.policy.read_working_set_total_max_tokens
+                and sum(m.token_count for m in metadata if m.message_id in latest | mandatory)
+                + reserved_summary
+                <= budget.input_capacity
+                and all(
+                    (definition := definitions.get(call["function"]["name"])) is not None
+                    and (definition.read_only or definition.context_role == "task_planning")
+                    for call in calls
+                )
+            ):
+                # Compaction should reduce earlier history before clipping a
+                # latest, bounded complete source batch that already fits.
+                # A provider-reported overflow deliberately disables this.
+                protected_readers = frozenset(
+                    call["id"] for call in calls if call["function"]["name"] in reader_names
+                )
+        read_view = self._read_view(replay_view, reader_names, protected_readers)
+        if read_view != active:
+            metadata = self._metadata(refs, active, counted_messages=read_view, profile=profile)
+        visible = (
+            _compacted_messages(history.summary_text, replay_view, continuity.goal)
+            if history.count
+            else replay_view
+        )
+        prepared = self._prepared(instructions, visible, fixed, turn_control,
+                                  profile=profile, goal=continuity.goal,
+                                  abandoned=history.abandoned_replay_digests,
+                                  replay_header_digest=header)
+        if (self.policy.enabled and self.policy.prune_tool_results and not force_compaction
+                and prepared.counted_input_tokens - budget.fixed_tokens
+                >= budget.input_capacity * self.policy.trigger_ratio):
+            pruned = self._prune_old_results(
+                prepared, refs=refs, active=replay_view, groups=groups, mandatory=mandatory,
+                metadata=metadata, continuity=continuity, history=history, tools=context_tools,
+                profile=profile, fixed=fixed, turn_control=turn_control,
+            )
+            if (pruned is not None and pruned.counted_input_tokens - budget.fixed_tokens
+                    < budget.input_capacity * self.policy.trigger_ratio):
+                return ContextPlan(action="ready", reason="historical_tool_results_within_budget",
+                                   prepared=pruned)
+        if not self.policy.enabled:
+            if (force_compaction or prepared.counted_input_tokens + profile.max_output_tokens
+                    > profile.context_window):
+                raise ContextRuntimeError("context_compaction_disabled")
+            return ContextPlan(
+                action="ready", reason="context_compaction_disabled", prepared=prepared
+            )
+        if not allow_compaction:
+            # A soft context target cannot spend a model call reserved for
+            # delivery. Keep the complete currently authorized projection;
+            # never seal a partial summary or drop evidence to make it fit.
+            if (force_compaction or prepared.counted_input_tokens + profile.max_output_tokens
+                    > profile.context_window):
+                raise ContextRuntimeError("context_finalization_budget_unavailable")
+            return ContextPlan(
+                action="ready", reason="context_finalization_reserved", prepared=prepared
+            )
+        fresh_search_ids = (
+            complete_search_call_ids(
+                [raw for ref, raw in zip(refs, active) if ref in groups[-1]],
+                tool_names=search_names,
+            )
+            if groups
+            else frozenset()
+        )
+        fresh_artifact_ids = (
+            complete_artifact_call_ids(
+                [raw for ref, raw in zip(refs, active) if ref in groups[-1]],
+                tool_names=artifact_reader_names,
+            ) if groups else frozenset()
+        )
+        if (
+            not force_compaction
+            and groups
+            and (fresh_group or refs[-1] in groups[-1])
+            and (
+                fresh_group
+                or fresh_search_ids
+                or fresh_artifact_ids
+                or any(
+                    call["function"]["name"] in reader_names
+                    for ref, raw in zip(refs, active)
+                    if ref in groups[-1]
+                    for call in raw.get("tool_calls", ())
+                )
+            )
+            and prepared.counted_input_tokens + profile.max_output_tokens <= profile.context_window
+        ):
+            # The soft compaction target must not hide a just-returned source
+            # batch that fits the locked complete request. Provider overflow
+            # still takes the existing reduction path.
+            return ContextPlan(
+                action="ready",
+                reason=(
+                    "fresh_search_complete_request_fits"
+                    if fresh_search_ids
+                    else "fresh_artifact_complete_request_fits"
+                    if fresh_artifact_ids
+                    else "fresh_reader_complete_request_fits"
+                    if any(
+                        call["function"]["name"] in reader_names
+                        for ref, raw in zip(refs, active) if ref in groups[-1]
+                        for call in raw.get("tool_calls", ())
+                    )
+                    else "fresh_tool_complete_request_fits"
+                ),
+                prepared=prepared,
+            )
+        if (
+            not force_compaction
+            and prepared.counted_input_tokens - budget.fixed_tokens
+            < budget.input_capacity * self.policy.trigger_ratio
+        ):
+            return ContextPlan(action="ready", reason="context_within_budget", prepared=prepared)
+        if not force_compaction and self.policy.fresh_read_max_chars is not None:
+            observed = self._read_view(visible, reader_names, protected_readers)
+            if observed != visible:
+                view = self._prepared(instructions, observed, fixed, turn_control,
+                                      profile=profile, goal=continuity.goal,
+                                      abandoned=history.abandoned_replay_digests,
+                                      replay_header_digest=header)
+                if view.counted_input_tokens + profile.max_output_tokens <= profile.context_window:
+                    return ContextPlan(
+                        action="ready",
+                        reason="fresh_reader_observations_within_budget",
+                        prepared=view,
+                    )
+                # Growing history must not progressively starve the newest
+                # source observation. Reduce old history through compaction
+                # rather than shrinking all fresh windows down to 128 chars.
+        # The host's summary ceiling and the provider's output-token cap are
+        # different units. Reasoning tokens can consume the provider cap before
+        # any visible summary appears; enforce the host ceiling only when the
+        # visible summary is sealed. Only the actual hard request window may
+        # reduce a complete Reader quote's provider output cap.
+        mandatory_cost = sum(m.token_count for m in metadata if m.message_id in mandatory)
+        if mandatory_cost + reserved_summary > budget.input_capacity:
+            raise ContextRuntimeError("context_mandatory_state_over_budget")
+        retained = self._retain(
+            metadata,
+            groups,
+            pending_refs,
+            mandatory,
+            budget,
+            reserved_summary,
+            active=active,
+            continuity=continuity,
+            history=history,
+            tools=context_tools,
+            force_compaction=force_compaction,
+            fresh_group=fresh_group,
+        )
+        dropped = tuple(raw for ref, raw in zip(refs, active) if ref not in retained)
+        if not dropped:
+            if force_compaction:
+                raise ContextRuntimeError("context_overflow_no_reducible_history")
+            if prepared.counted_input_tokens + profile.max_output_tokens > profile.context_window:
+                raise ContextRuntimeError("context_mandatory_state_over_budget")
+            return ContextPlan(
+                action="ready", reason="context_no_reducible_history", prepared=prepared
+            )
+        if (
+            self.policy.max_compactions is not None
+            and history.total_compactions >= self.policy.max_compactions
+        ):
+            raise ContextRuntimeError("context_compaction_limit")
+        observed_progress = history.count > 0 and (
+            continuity.observed_progress_revision > history.last_observed_progress_revision
+            or (
+                continuity.workspace_revision is not None
+                and continuity.workspace_revision != history.last_workspace_revision
+            )
+        )
+        if (
+            history.count
+            and not observed_progress
+            and history.stagnant_count >= self.policy.max_compactions_without_progress
+        ):
+            raise ContextRuntimeError("context_compaction_no_observed_progress")
+        if (
+            history.total_compactions
+            and model_turn - history.last_model_turn < self.policy.min_model_turns_between
+        ):
+            raise ContextRuntimeError("context_rapid_refill")
+        return self._request(
+            source_revision,
+            model_turn,
+            profile,
+            instructions,
+            messages,
+            continuity,
+            history,
+            metadata,
+            refs,
+            active,
+            retained,
+            dropped,
+            budget,
+            summary_limit,
+            ledger,
+            turn_control,
+            reader_names,
+            protected_readers,
+            search_names=search_names,
+            capture_reader_names=capture_reader_names,
+            artifact_reader_names=artifact_reader_names,
+            replay_header_digest=header,
+            fresh_group=fresh_group,
+        )
+
+
+class CompactionController:
+    def __init__(self, planner: ContextPlanner) -> None:
+        self.planner = planner
+
+    def continue_summary(
+        self,
+        request: CompactionRequest,
+        fragment: str,
+        *,
+        current_revision: int,
+        current_continuity: ExecutionContinuityState,
+        current_messages: Messages,
+        provider_replay: ModelReplayMetadata | None = None,
+    ) -> CompactionRequest:
+        self._validate_source(request, current_revision, current_continuity, current_messages)
+        if failure := replay_binding_failure(request.profile, provider_replay, required=True):
+            raise ContextRuntimeError(failure)
+        if request.summary_continuations >= request.profile.max_continuations:
+            raise ContextRuntimeError("compaction_summary_continuation_exhausted")
+        fragments = (*request.summary_fragments, fragment)
+        self._validate_summary(request, "".join(fragments))
+        messages = (
+            *request.summary_messages,
+            {"role": "assistant", "content": fragment, **replay_fields(provider_replay)},
+            _summary_continuation(),
+        )
+        counted = self.planner._fixed(request.summary_instructions, ()) + sum(
+            self.planner._count_message(message) for message in
+            self.planner._media_view(messages, request.profile, purpose="compaction")
+        )
+        output_limit = (
+            min(request.summary_output_tokens, request.profile.context_window - counted)
+            if request.full_reader_quote
+            else request.summary_output_tokens
+        )
+        if output_limit <= 0 or counted + output_limit > request.profile.context_window:
+            raise ContextRuntimeError("context_summary_continuation_over_budget")
+        return CompactionRequest.model_validate(
+            {
+                **request.model_dump(mode="json"),
+                "summary_messages": messages,
+                "summary_counted_input_tokens": counted,
+                "summary_output_tokens": output_limit,
+                "summary_fragments": fragments,
+                "summary_continuations": request.summary_continuations + 1,
+            }
+        )
+
+    def advance(
+        self,
+        request: CompactionRequest,
+        summary_text: str,
+        *,
+        current_revision: int,
+        current_continuity: ExecutionContinuityState,
+        current_messages: Messages,
+    ) -> CompactionRequest | CompactionResult:
+        self._validate_source(request, current_revision, current_continuity, current_messages)
+        summary_text = "".join((*request.summary_fragments, summary_text))
+        self._validate_summary(request, summary_text)
+        request = self._acknowledge_partition(request, current_messages)
+        if not request.remaining_history_entries:
+            return self.seal(
+                request,
+                summary_text,
+                current_revision=current_revision,
+                current_continuity=current_continuity,
+                current_messages=current_messages,
+            )
+        chunk_limit = _MAX_SUMMARY_CHUNKS
+        if request.summary_partition and request.summary_partition.partitions:
+            manifest, raw = source_manifest(
+                current_messages, request.old_messages, request.retained_message_refs,
+                capture_reader_names=request.source_capture_reader_names,
+                fresh_tool_observation_policy=request.fresh_tool_observation_policy,
+                fresh_tool_message_refs=request.fresh_tool_message_refs,
+                fresh_text_fragment_policy=request.fresh_text_fragment_policy,
+                fresh_text_excluded_tool_names=request.source_reader_names,
+            )
+            if any(
+                call["function"]["name"] in request.source_reader_names
+                for partition in request.summary_partition.partitions
+                for call in raw[partition.assistant_ref].get("tool_calls", ())
+            ) or (
+                request.fresh_text_fragment_policy is not None
+                and any(
+                    ref in manifest.get("source_captures", {})
+                    for partition in request.summary_partition.partitions
+                    for ref in manifest["batches"][partition.assistant_ref]["receipt_refs"]
+                )
+            ):
+                # A validated quote consumes an original ref or advances a
+                # captured text cursor. Both are finite; every request still
+                # consumes the unchanged Run model budget.
+                chunk_limit = max(chunk_limit, len(manifest["dropped"]) + sum(
+                    capture["total_chars"]
+                    for capture in manifest.get("source_captures", {}).values()
+                ))
+        if request.chunk_index < 1 or request.chunk_index >= chunk_limit:
+            raise ContextRuntimeError("compaction_chunk_limit")
+        partition_state = request.summary_partition
+        if partition_state is None:
+            projected, counted, remaining = self.planner._next_chunk(
+                request.remaining_history_entries,
+                summary_text,
+                request.summary_instructions,
+                request.profile,
+                dict(zip(_refs(current_messages), current_messages)),
+            )
+        else:
+            manifest, source_messages = source_manifest(
+                current_messages, request.old_messages, request.retained_message_refs,
+                capture_reader_names=request.source_capture_reader_names,
+                fresh_tool_observation_policy=request.fresh_tool_observation_policy,
+                fresh_tool_message_refs=request.fresh_tool_message_refs,
+                fresh_text_fragment_policy=request.fresh_text_fragment_policy,
+                fresh_text_excluded_tool_names=request.source_reader_names,
+            )
+            projected, counted, remaining, partition_state = self.planner._next_covered_chunk(
+                request.remaining_history_entries,
+                summary_text,
+                request.summary_instructions,
+                request.profile,
+                source_messages,
+                partition_state,
+                manifest,
+                request.chunk_index + 1,
+            )
+        full_reader_quote = _full_reader_quote(projected, request.remaining_history_entries)
+        output_cap = self.planner._summary_output_cap(
+            counted, request.profile, full_reader_quote=full_reader_quote
+        )
+        next_request = CompactionRequest.model_validate(
+            {
+                **request.model_dump(mode="json"),
+                "summary_messages": projected,
+                "summary_counted_input_tokens": counted,
+                "remaining_history_entries": remaining,
+                "chunk_index": request.chunk_index + 1,
+                "summary_partition": partition_state,
+                "full_reader_quote": full_reader_quote,
+                "summary_output_tokens": output_cap,
+                "summary_fragments": (),
+                "summary_continuations": 0,
+            }
+        )
+        if next_request.fresh_tool_observation_policy is not None:
+            # Verify queued source before its next dispatch, not only after
+            # the provider responds. Rehashed, shortened remaining entries
+            # must never become an authorized fresh observation request.
+            self._validate_source(
+                next_request, current_revision, current_continuity, current_messages
+            )
+        return next_request
+
+    def _is_partition_quote(self, message):
+        if message.get("kind") == "summary_batch_fragment":
+            return True
+        content = message.get("content")
+        text = content[0].get("text") if isinstance(content, list) and content else content
+        try:
+            body = json.loads(text)
+        except (ValueError, TypeError):
+            return False
+        # Only the host's outer quote envelope; never scan nested tool text.
+        return isinstance(body, dict) and body.get("fragment") is not None
+
+    def _base_summary_messages(self, request):
+        return (
+            request.summary_messages[: -2 * request.summary_continuations]
+            if request.summary_continuations
+            else request.summary_messages
+        )
+
+    def _acknowledge_partition(self, request, messages):
+        state = request.summary_partition
+        if state is None or state.pending is None:
+            return request
+        manifest, raw = source_manifest(
+            messages, request.old_messages, request.retained_message_refs,
+            capture_reader_names=request.source_capture_reader_names,
+            fresh_tool_observation_policy=request.fresh_tool_observation_policy,
+            fresh_tool_message_refs=request.fresh_tool_message_refs,
+            fresh_text_fragment_policy=request.fresh_text_fragment_policy,
+            fresh_text_excluded_tool_names=request.source_reader_names,
+        )
+        state = acknowledge(
+            state,
+            manifest,
+            raw,
+            self._base_summary_messages(request),
+            request.chunk_index,
+            profile=request.profile if self.planner.tool_media_projection_version else None,
+        )
+        return request.model_copy(update={"summary_partition": state})
+
+    def _validate_source(
+        self,
+        request: CompactionRequest,
+        current_revision: int,
+        current_continuity: ExecutionContinuityState,
+        current_messages: Messages,
+    ) -> None:
+        if current_continuity != request.continuity:
+            raise ContextRuntimeError("context_continuity_changed")
+        if (
+            type(current_revision) is not int
+            or current_revision < request.source_revision
+            or source_context_digest(current_messages) != request.source_context_digest
+        ):
+            raise ContextRuntimeError("context_source_changed")
+        if request.tool_media_projection_version != self.planner.tool_media_projection_version:
+            raise ContextRuntimeError("context_media_projection_changed")
+        if request.tokenizer_id != self.planner.tokenizer_id:
+            raise ContextRuntimeError("context_tokenizer_changed")
+        if (request.summary_budget_mode or "strict") != self.planner.summary_budget_mode:
+            raise ContextRuntimeError("context_summary_policy_changed")
+        if request.summary_completion_policy != self.planner.summary_completion_policy:
+            raise ContextRuntimeError("context_summary_completion_policy_changed")
+        if request.fresh_tool_observation_policy is not None and (
+            request.summary_partition is None
+            or request.summary_partition_version != "quoted-history-coverage/v1"
+        ):
+            raise ContextRuntimeError("compaction_partition_state_missing")
+        if (
+            request.source_reader_names
+            or request.full_reader_quote
+            or any(_complete_source_entry(e) for e in request.remaining_history_entries)
+        ) and request.reader_summary_policy_version != READER_SUMMARY_POLICY_VERSION:
+            raise ContextRuntimeError("context_reader_policy_changed")
+        if request.summary_partition is None:
+            if any(
+                self._is_partition_quote(message)
+                for message in self._base_summary_messages(request)
+            ):
+                raise ContextRuntimeError("compaction_partition_state_missing")
+        else:
+            manifest, raw = source_manifest(
+                current_messages, request.old_messages, request.retained_message_refs,
+                capture_reader_names=request.source_capture_reader_names,
+                fresh_tool_observation_policy=request.fresh_tool_observation_policy,
+                fresh_tool_message_refs=request.fresh_tool_message_refs,
+                fresh_text_fragment_policy=request.fresh_text_fragment_policy,
+                fresh_text_excluded_tool_names=request.source_reader_names,
+            )
+            state = request.summary_partition
+            validate_coverage(
+                state,
+                manifest,
+                messages=self._base_summary_messages(request) if state.pending else None,
+                chunk_index=request.chunk_index,
+                raw=raw,
+                profile=request.profile if self.planner.tool_media_projection_version else None,
+            )
+            if state.pending is None:
+                require_complete(state, manifest)
+
+    def _validate_summary(self, request: CompactionRequest, summary_text: str) -> None:
+        if not isinstance(summary_text, str) or not summary_text.strip():
+            raise ContextRuntimeError("context_summary_empty")
+        # Exact counters retain their strict summary-size contract. A declared
+        # host estimate is a reduction target, not provider output usage: the
+        # same provider-limited response can exceed that estimate slightly.
+        # Transient text is bounded here; continuation and sealing separately
+        # admit the complete projected request against the original window.
+        limit = (
+            request.budget.input_capacity
+            if request.summary_budget_mode == "context_bounded_estimate"
+            else request.summary_max_tokens
+        )
+        if self.planner._count(summary_text) > limit:
+            raise ContextRuntimeError("context_summary_budget_exceeded")
+
+    def seal(
+        self,
+        request: CompactionRequest,
+        summary_text: str,
+        *,
+        current_revision: int,
+        current_continuity: ExecutionContinuityState,
+        current_messages: Messages,
+    ) -> CompactionResult:
+        self._validate_source(request, current_revision, current_continuity, current_messages)
+        self._validate_summary(request, summary_text)
+        if request.remaining_history_entries:
+            raise ContextRuntimeError("compaction_chunks_incomplete")
+        request = self._acknowledge_partition(request, current_messages)
+        if request.summary_partition is not None:
+            manifest, _ = source_manifest(
+                current_messages, request.old_messages, request.retained_message_refs,
+                capture_reader_names=request.source_capture_reader_names,
+                fresh_tool_observation_policy=request.fresh_tool_observation_policy,
+                fresh_tool_message_refs=request.fresh_tool_message_refs,
+                fresh_text_fragment_policy=request.fresh_text_fragment_policy,
+                fresh_text_excluded_tool_names=request.source_reader_names,
+            )
+            require_complete(request.summary_partition, manifest)
+        return self._seal_projection(request, summary_text, current_continuity, current_messages)
+
+    def _seal_projection(self, request, summary_text, current_continuity, current_messages):
+        return seal_compaction_projection(
+            self.planner, request, summary_text, current_continuity, current_messages
+        )

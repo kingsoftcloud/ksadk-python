@@ -22,12 +22,24 @@
 
 ### 2.1 本地运行普通 Agent
 
+KsADK 管理的云资源请求统一携带 `X-Traffic-Source`，默认值为 `agentkit`。
+设置 `KSADK_TRAFFIC_SOURCE` 可覆盖来源，例如 `export KSADK_TRAFFIC_SOURCE=agentkit-studio`。
+未设置、空字符串或仅空格时使用默认值；其他值须为可打印 ASCII，控制字符会被拒绝。
+来源用于请求归因，不参与身份认证；现有 `X-Ksc-Source` 和鉴权头保持原有语义。
+
+覆盖知识库、记忆库、沙箱创建/重连及后续 SDK 操作、Skill Service、AgentEngine/KOP、
+A2A 内部控制面和云评测数据集客户端。知识库和记忆库通过金山云 SDK 的 `CustomHeaders`
+在签名前注入，E2B 通过连接参数 `headers` 注入。隔离资源 Worker 从父进程初始化消息的
+`trafficSource` 字段接收来源快照，不依赖继承父进程环境；修改配置后须重新创建客户端/激活 Worker。
+通用网页请求、用户自建 HTTP 客户端和第三方模型请求不受此配置影响。
+
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `OPENAI_API_KEY` | 条件必传 | 部分 OpenAI 兼容实现也支持 `MODEL_API_KEY` | 是 | 开发者 / 模型网关 Secret | 使用 OpenAI 兼容模型时需要。 |
 | `OPENAI_BASE_URL` | 条件必传 | `OPENAI_API_BASE` | 否 | 开发者 / 模型网关 | OpenAI 兼容接口 base url。 |
 | `OPENAI_MODEL_NAME` | 条件必传 | `MODEL_NAME` | 否 | 开发者 | 默认模型名。 |
 | `KSYUN_REGION` | 否 | 无 | 否 | 开发者 / 平台 | 本地 CLI 默认 `cn-beijing-6`。跨环境建议显式设置。 |
+| `KSADK_TRAFFIC_SOURCE` | 否 | 无 | 否 | 开发者 / 平台 | 云资源请求的 `X-Traffic-Source`，默认 `agentkit`。可通过全局配置的 `cloud` 分组保存，部署时自动转发。 |
 
 ### 2.2 CLI 构建、发布、部署到金山云
 
@@ -297,6 +309,7 @@
 | `KSADK_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 框架无关的 PostgreSQL checkpoint DSN。 |
 | `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | `KSADK_CHECKPOINT_BACKEND=postgres` 时的 LangGraph checkpointer PostgreSQL DSN。 |
 | `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | LangGraph checkpoint | 否 | `false` | 无 | 否 | Operator / 平台 | 否 | 为 `true` 时，托管 LangGraph runner 仅对导出 `ksadk_graph_factory(*, checkpointer)` 的图注入受控 PostgreSQL saver；失败不回退到内存 checkpoint。 |
+| `KSADK_LANGGRAPH_RECURSION_LIMIT` | LangGraph checkpoint | 否 | `50` | 无 | 否 | SDK / 平台 | 否 | 图自身 `with_config` 未设置 recursion_limit 时，托管 runner 在调用 config 中显式携带的兜底步数上限。必须显式携带：LangChain `astream_events` 会以库默认 25 填充 config，并在 Pregel 合并时覆盖图级设置，导致业务侧 `with_config` 在流式路径上失效。 |
 | `KSADK_AGENT_ID` | 平台身份 | 否 | 未设置 | `AGENTENGINE_AGENT_ID` 优先 | 否 | Operator / 平台 | 否 | 稳定 Agent 身份；仅作为未配置 `KSADK_SESSION_NAMESPACE` 时 checkpoint namespace 的 fallback。 |
 | `KSADK_AGENT_KERNEL` | Agent Kernel | 否 | `false` | `AGENT_KERNEL_ENABLED` | 否 | 本地调试 / Operator | 否 | 启用 Kernel ingress。本地灰度使用该变量；托管部署由 Operator 投射 `AGENT_KERNEL_ENABLED`。 |
 | `KSADK_TENANT_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 租户 id。 |
@@ -365,6 +378,7 @@
 | `AGENTENGINE_API_VERSION` | CLI / API client | 否 | 内置版本 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine API version。 |
 | `KSADK_A2A_ACCOUNT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime 归属账号 id（ar-* agent 的 account），v2 inbound 身份校验需要。 |
 | `KSADK_A2A_AGENT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 已注册 A2A Agent 的 id，注册后由 reconciler 注入；当前平台生成 `a2a-agent-*`，调用方应按不透明字符串传递。v2 完整 inbound JSON-RPC 装配需要此值，v1 discovery-only card 不依赖它。 |
+| `KSADK_A2A_API_KEY` | A2A Runtime | 否 | 未设置 | 无 | 是 | Secret | 否 | A2A product-key 网关的 API Key；调用方未显式传 `api_key` 时官方 A2A 客户端读取此值做请求鉴权。 |
 | `KSADK_A2A_AGENT_NAME` | A2A Runtime | 否 | fallback `AGENTENGINE_MANAGED_RUNTIME_NAME` → `KSADK_A2A_RUNTIME_ID` | 无 | 否 | 部署层 / 平台 | 否 | AgentCard 展示名称；普通 Code runtime 无 `AGENTENGINE_MANAGED_RUNTIME_NAME` 时由部署层用 `agents.name` 注入。 |
 | `KSADK_A2A_AGENT_VERSION` | A2A Runtime | 否 | `0.1.0` | 无 | 否 | 部署层 / 平台 | 否 | AgentCard 业务版本，区别于 runtime 镜像版本（`AGENTENGINE_MANAGED_RUNTIME_VERSION`）。 |
 | `KSADK_A2A_SPACE_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime Agent 当前选择的主 Space ID。`A2ASpaceClient.from_env()` 优先读取此值；ID 按不透明字符串处理，不依赖固定前缀。 |
@@ -372,8 +386,14 @@
 | `KSADK_A2A_CONTROL_PLANE_URL` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime internal A2A Action 基地址；不自动探测、不回退 `AGENTENGINE_SERVER_URL`。 |
 | `KSADK_A2A_ENABLE_PUBLIC_EGRESS` | A2A Runtime | 否 | 由 `Network.EnablePublicAccess` 最终值派生；未注入时 SDK 按 `false` fail-closed | 无 | 否 | 部署层 / 平台 | 否 | 只控制 `external_public`；CreateAgent 的 `Network.EnablePublicAccess` 缺省为 `true`。`external_vpc` 由独立 VPC policy 决定。 |
 | `KSADK_A2A_EVENT_OUTBOX_PATH` | A2A Runtime | 否 | `.agentengine/a2a_event_outbox.sqlite3` | 无 | 否 | 部署层 / 平台 | 否 | A2A Task event durable outbox 的 SQLite 路径；生产部署应放在 Runtime 可写持久卷，不保存 permit、JWT 或 credential。 |
+| `KSADK_A2A_INBOUND_ENABLED` | A2A Runtime | 否 | `true` | 无 | 否 | 部署层 | 否 | 仅接受 `true/false`；`false` 表示只调用远端，不提供入站服务。 |
+| `KSADK_A2A_PUBLIC_TOOL_POLICY_FILE` | A2A Runtime | 否 | 未设置 | 无 | 否 | 部署层 | 否 | 公共工具活动披露策略 JSON 文件路径；未设置时使用默认限制策略。 |
+| `KSADK_A2A_DATABASE_DSN` | A2A Runtime | 是 | 未设置 | 无 | 是 | Operator / AgentKernel Store Secret | 否 | A2A task/context/checkpoint/resume 共用 PostgreSQL DSN；managed 模式下与 `AGENT_KERNEL_STORE_DSN` 复用同一个 `agentKernel.storeSecretRef`，通过 Kubernetes `SecretKeyRef` 注入。SDK 自动把普通 PostgreSQL scheme 规范化为 `postgresql+asyncpg`。 |
+| `KSADK_A2A_GATEWAY_PUBLIC_KEY_FILE` | A2A Runtime | 是 | 未设置 | 无 | 否（公钥） | 部署层投影 | 否 | 用于验证 Gateway 转发断言的公钥文件路径。 |
+| `KSADK_A2A_AGENT_REGISTRATION_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 | 否 | 入站启用时必传的 `a2a-agent-*` 注册身份；只调用远端时可省略。 |
 | `KSADK_A2A_INTERNAL_BASE_URL` | A2A Runtime | 条件必传 | `http://localhost:8080` | 无 | 否 | 部署层 / 平台 | 否 | AgentCard `base_url` 用的内网 HTTP(S) origin；必须是绝对 origin（`scheme://host[:port]`），无 path/query/fragment、无尾 `/`。server 侧会重写为 gateway 地址。 |
 | `KSADK_A2A_RUNTIME_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 托管 Agent runtime 资源 id（`ar-*`，即 `agents.id`）。v1 discovery-only card 只要此值非空即挂载，部署期注入、注册前可用。 |
+| `KSADK_A2A_MANAGED_BOOTSTRAP_ENABLED` | A2A Runtime | 否 | `false` | 无 | 否 | Operator | 否 | 完整 managed A2A composition 的平台就绪标记。仅当 `agentKernel.managedA2a`、PostgreSQL Store Secret、Gateway 公钥和 workload identity 均可投影时由 Operator 设置为 `true`；用户不可配置。 |
 | `KSADK_A2A_TENANT_ID` | A2A Runtime | 否 | fallback `KSADK_A2A_ACCOUNT_ID` | 无 | 否 | 部署层 / 平台 | 否 | Runtime 租户 id；未注入时回退到 account id。 |
 | `KSADK_A2A_TOKEN_DIR` | A2A Runtime | 否 | `/var/run/secrets/agentengine/a2a` | 无 | 否 | 部署层 / token sidecar | 否 | audience JWT 目录，包含 `a2a-registry.jwt`、`a2a-task-sink.jwt`、`credential-broker.jwt`、`a2a-gateway.jwt`；文件必须为 regular、非 symlink、`0400`、最大 16 KiB。 |
 | `KSADK_A2A_ACCESS_KEY` | A2A Runtime / KOP | 条件必传 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A KOP 签名 access key；未设置时回退 `KSYUN_ACCESS_KEY`。 |
@@ -393,7 +413,7 @@
 | `KSADK_UI_PATH` | 本地 Web UI / Runtime bootstrap | 否 | `/` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 挂载路径，例如 `/research`。 |
 | `KSADK_UI_URL` | Runtime bootstrap | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 外部自定义 UI URL。 |
 | `KSADK_UI_BUNDLE_PATH` | Runtime bootstrap | 否 | 自动探测 `research-ui/dist` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 静态 bundle 相对项目路径。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.12` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.13` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
@@ -761,3 +781,49 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | `KSADK_TEAMS_RUNTIME_STATE_DIR` | 否 | Runtime 运维配置 | 默认 `/tmp/ksadk-teams`，存放每次执行隔离的工作区，不替代数据库中的执行权威状态。 |
 
 这些是 SDK 标准变量，没有兼容别名，不属于业务自定义变量。身份、凭据、冻结目标与共享数据库应使用同一部署的可信配置；工作区文件目录不能充当重建或接管执行身份的依据。
+
+### A2A Gateway 附加 CA
+
+`KSADK_A2A_GATEWAY_CA_FILE` 可选，指定用于 A2A 数据面 HTTPS 的 PEM CA 文件。它在标准公共信任根上增加指定 CA，独立于 `KSADK_A2A_CONTROL_PLANE_CA_FILE` 指定的控制面 CA；未设置时沿用标准公共信任根。文件不可读或内容无效时启动失败，不关闭 TLS 校验，也不自动降级为 HTTP。
+
+
+## 会话数据库预算与大历史读取
+
+下列预算限制存储操作和清理阶段，不限制整个 Agent 的执行时间。各值为正有限秒数，非法值回退默认值。
+
+| 配置 | 默认值 | 作用 |
+| --- | --- | --- |
+| `KSADK_DB_CONNECT_SECONDS` | 0.5 | connect 阶段预算 |
+| `KSADK_DB_READ_ACQUIRE_SECONDS` | 0.3 | read acquire 阶段预算 |
+| `KSADK_DB_READ_SQL_SECONDS` | 1 | read sql 阶段预算 |
+| `KSADK_DB_WRITE_ACQUIRE_SECONDS` | 0.5 | write acquire 阶段预算 |
+| `KSADK_DB_WRITE_SQL_SECONDS` | 3 | write sql 阶段预算 |
+| `KSADK_DB_WRITE_OPERATION_SECONDS` | 5 | write operation 阶段预算 |
+| `KSADK_DB_LOCK_SECONDS` | 0.5 | lock 阶段预算 |
+| `KSADK_DB_CLEANUP_SECONDS` | 1 | cleanup 阶段预算 |
+| `KSADK_DB_REPLAY_OPERATION_SECONDS` | 30 | replay operation 阶段预算 |
+| `KSADK_DB_REPLAY_SQL_SECONDS` | 3 | replay sql 阶段预算 |
+| `KSADK_HISTORY_INITIAL_EVENTS` | 256 | 初始投影窗口，范围 32–256 条 |
+| `KSADK_HISTORY_READ_CONCURRENCY` | 4 | 每进程 PG 历史传输并发，范围 1–32 |
+
+完整 replay 使用独立预算；普通分页不会隐式恢复全部会话。数据库恢复不会覆盖尚有未持久化事件的内存会话。
+## 18. Studio Native 与 Harness 运行控制
+
+以下变量由开发者或可信启动配置提供，均非业务自定义变量，也没有兼容别名。启动时的 Native 选择不会迁移已有会话：已有 Managed 会话继续使用其原执行引擎；Native 会话仍须遵守冻结 Build 和身份边界。
+
+| 变量 | 是否必传 | 默认值与含义 |
+| --- | --- | --- |
+| `KSADK_STUDIO_NATIVE_DEFAULT` | 否 | 普通 Studio 默认 `1`；显式 Agent 选择或注入兼容执行宿主时默认 `0`。仅接受精确的 `0/1`。`1` 为新会话选择 Native，`0` 使用 Managed 兼容模式。 |
+| `KSADK_STUDIO_NATIVE_AGENT_IDS` | 否 | 逗号分隔的精确 Agent ID；兼容模式下仅这些 Agent 选择 Native。未显式设置 DEFAULT 时，提供此变量会关闭普通 Native 默认选择。 |
+| `KSADK_STUDIO_NATIVE_DURABLE` | 否 | 普通 Native 默认 `1`，显式兼容选择默认 `0`。仅接受 `0/1`；`1` 使用 SQLite 账本，`0` 使用进程内账本，后者不能跨进程恢复。必须同时启用 Native。 |
+| `KSADK_STUDIO_TEAMS_DEFAULT` | 否 | 默认 `1`，HTTP 启动后发现 Teams 能力；`0/false/no/off` 关闭默认发现。 |
+| `KSADK_HARNESS_SPEC` | Harness RPC 场景必传 | `python -m ksadk.harness.rpc` 读取的 HarnessSpec JSON 文件路径。 |
+| `KSADK_MODEL_GATEWAY_METADATA_FILE` | 否 | 未设置；模型网关能力元数据文件，在实测探针前读取。文件只应包含能力元数据，不应包含密钥。 |
+| `KSADK_MODEL_WIRE_API` | 否 | 默认 `chat`；直接 SDK 模型请求的协议，可选 `chat/responses`。 |
+| `KSADK_MODEL_COMPAT_RULE` | 否 | 未设置；显式端点兼容规则，优先级为调用参数、此变量、按端点和模型推断。 |
+| `KSADK_MODEL_REQUEST_IDLE_TIMEOUT_SECONDS` | 否 | 单次模型请求的空闲秒数；未设置时取 `min(180, max(60, run超时秒数 // 10))`，最终限制在 `1..run超时秒数`。持续输出仍受完整运行超时约束。 |
+| `KSADK_REASONING_ONLY_ACTION_BUDGET_CHARS` | 否 | 默认 `8192`；工具可用时，仅输出推理而无动作的字符预算，限制在 `1024..65536`，无效值使用默认值。 |
+| `KSADK_DELEGATION_DECISION_MAX_OUTPUT_TOKENS` | 否 | 默认 `2048`；Managed Harness 委派决策轮的最大输出 token，非正整数或无效值使用默认值。 |
+| `KSADK_RUN_STALL_WARN_SECONDS` | 否 | 默认 `60`；Studio 连续无进展达到此秒数时记录警告，`<=0` 关闭停滞监测。 |
+| `KSADK_RUN_STALL_DUMP_SECONDS` | 否 | 默认 `120`；无进展达到此秒数后按此间隔捕获诊断。 |
+| `KSADK_RUN_STALL_MAX_DUMPS` | 否 | 默认 `5`；同一次持续停滞最多保留的诊断次数。 |

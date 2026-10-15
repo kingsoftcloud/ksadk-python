@@ -36,6 +36,18 @@ async def prepare_worker_identity(
             invocation_identity if isinstance(invocation_identity, Mapping) else None
         )
     if not isinstance(invocation_identity, Mapping):
+        existing = (
+            await session_service.get_session_metadata(command.session_id)
+            if session_service is not None else None
+        )
+        if existing is not None:
+            # Kernel ingress has authorized this exact session/instance. Tenant
+            # is its authority scope, not the owner of a persisted local session.
+            # Only the host-owned record supplies the storage user, never payload.
+            agent_id = str(defaults.get("agent_id") or command.agent_instance_id)
+            if existing.agent_id != agent_id or not existing.user_id:
+                raise ValueError("prepared session Agent differs from the Kernel Build")
+            return existing.user_id, None
         return effective_user_id, None
     if session_service is None:
         return identity_native_user_id(invocation_identity), invocation_identity

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -57,6 +58,18 @@ class AccountCloudAgentReference:
 
 
 class CloudDeploymentGateway(Protocol):
+    async def get_a2a_space(self, space_id: str) -> dict[str, Any]: ...
+
+    async def list_a2a_spaces(self, *, page: int, size: int) -> dict[str, Any]: ...
+
+    async def list_a2a_space_available_agents(self, space_id: str) -> dict[str, Any]: ...
+
+    async def get_a2a_agent(self, agent_id: str) -> dict[str, Any]: ...
+
+    async def list_a2a_agent_versions(
+        self, agent_id: str, *, page: int, size: int
+    ) -> dict[str, Any]: ...
+
     async def upload_bundle(
         self,
         *,
@@ -143,6 +156,31 @@ class CloudDeploymentGateway(Protocol):
 
 
 class UnavailableCloudGateway:
+    @staticmethod
+    def _a2a_unavailable() -> StudioError:
+        return StudioError(
+            "A2A_CATALOG_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能读取 A2A 目录",
+            status_code=501,
+        )
+
+    async def get_a2a_space(self, space_id: str) -> dict[str, Any]:
+        raise self._a2a_unavailable()
+
+    async def list_a2a_spaces(self, *, page: int, size: int) -> dict[str, Any]:
+        raise self._a2a_unavailable()
+
+    async def list_a2a_space_available_agents(self, space_id: str) -> dict[str, Any]:
+        raise self._a2a_unavailable()
+
+    async def get_a2a_agent(self, agent_id: str) -> dict[str, Any]:
+        raise self._a2a_unavailable()
+
+    async def list_a2a_agent_versions(
+        self, agent_id: str, *, page: int, size: int
+    ) -> dict[str, Any]:
+        raise self._a2a_unavailable()
+
     async def upload_bundle(self, **_kwargs) -> str:
         raise StudioError(
             "CLOUD_BUNDLE_DEPLOYMENT_UNAVAILABLE",
@@ -516,6 +554,39 @@ class DirectAgentEngineCloudDeploymentGateway:
         if not identity or not identity.user_uuid or not identity.user_name:
             return None
         return {"userName": identity.user_name, "userId": identity.user_uuid}
+
+    async def get_a2a_space(self, space_id: str) -> dict[str, Any]:
+        return await self.client._action_async("GetAToASpace", {"A2ASpaceId": space_id})
+
+    async def list_a2a_spaces(self, *, page: int, size: int) -> dict[str, Any]:
+        return await self.client._action_async(
+            "ListAToASpaces",
+            {"PageNumber": page, "PageSize": size},
+        )
+
+    async def list_a2a_space_available_agents(self, space_id: str) -> dict[str, Any]:
+        return await self.client._action_async(
+            "ListAToASpaceAvailableAgents",
+            {"A2ASpaceId": space_id},
+        )
+
+    async def get_a2a_agent(self, agent_id: str) -> dict[str, Any]:
+        return await self.client._action_async(
+            "GetAToAAgent",
+            {"A2AAgentId": agent_id},
+        )
+
+    async def list_a2a_agent_versions(
+        self, agent_id: str, *, page: int, size: int
+    ) -> dict[str, Any]:
+        return await self.client._action_async(
+            "ListAToAAgentVersions",
+            {
+                "A2AAgentId": agent_id,
+                "PageNumber": page,
+                "PageSize": size,
+            },
+        )
 
     async def upload_bundle(self, **kwargs) -> str:
         bundle = bytes(kwargs["bundle"])
@@ -1228,6 +1299,34 @@ class DirectAgentEngineCloudDeploymentGateway:
             content,
             **kwargs,
         )
+
+    async def shared_web_action(
+        self, deployment: DeploymentRecord | AccountCloudAgentReference,
+        action: str, payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Preserve the Server-owned UI contract, including opaque extensions."""
+        if action not in {"GetAgentUiBootstrap", "RunAgent", "CancelRun"}:
+            raise StudioError("CLOUD_ACTION_UNSUPPORTED", "不支持此云端动作", status_code=400)
+        try:
+            return await self.stream_client._action_async(
+                action, {**payload, "AgentId": self._chat_agent_id(deployment)}, preserve_case=True,
+            )
+        except AgentEngineAPIError as exc:
+            raise StudioError("CLOUD_ACTION_FAILED", exc.message, status_code=502) from exc
+
+    async def subscribe_deployment_session_events(
+        self, deployment: DeploymentRecord | AccountCloudAgentReference,
+        *, session_id: str, after_seq: int,
+    ) -> AsyncIterator[bytes]:
+        try:
+            return await asyncio.to_thread(
+                self.stream_client._open_chat_stream,
+                {"AgentId": self._chat_agent_id(deployment), "SessionId": session_id,
+                 "after_seq": after_seq},
+                action="SubscribeSessionEvents", method="GET",
+            )
+        except AgentEngineAPIError as exc:
+            raise StudioError("CLOUD_EVENTS_FAILED", exc.message, status_code=502) from exc
 
     async def stream_deployment_chat_message(
         self,
@@ -2236,6 +2335,25 @@ class CloudDeploymentService:
         if goal_objective is not None:
             kwargs["goal_objective"] = goal_objective
         return await sender(deployment, **kwargs)
+
+    async def shared_web_action(
+        self, deployment_id: str, action: str, payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        deployment = await self._chat_target(deployment_id)
+        sender = getattr(self.gateway, "shared_web_action", None)
+        if sender is None:
+            if action == "GetAgentUiBootstrap":
+                return None  # Old gateways keep their existing foreground contract.
+            raise StudioError("CLOUD_ACTION_UNAVAILABLE", "云端动作不可用", status_code=501)
+        return await sender(deployment, action, payload)
+
+    async def subscribe_cloud_session_events(
+        self, deployment_id: str, *, session_id: str, after_seq: int,
+    ) -> AsyncIterator[bytes]:
+        deployment = await self._chat_target(deployment_id)
+        return await self.gateway.subscribe_deployment_session_events(
+            deployment, session_id=session_id, after_seq=after_seq,
+        )
 
     async def stream_cloud_chat_message(
         self,

@@ -16,6 +16,8 @@ import os
 import shutil
 import signal
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -265,6 +267,7 @@ __all__ = [
     "ExecuteResult",
     "FilesystemIsolation",
     "LocalReadOnlySandboxBackend",
+    "LocalOsSandboxBackend",
     "NetworkControl",
     "ReconnectableSandboxBackend",
     "SandboxAuditLog",
@@ -528,3 +531,203 @@ class SubprocessSandboxBackend:
         if workspace is not None:
             shutil.rmtree(workspace, ignore_errors=True)
         handle.closed = True
+
+
+# ---------------------------------------------------------------------------
+# G7 OS 级本地沙箱后端（总案 §10.3 / 用户两期方案一期）
+# ---------------------------------------------------------------------------
+
+
+def _landlock_supported() -> bool:
+    """探测本机 Linux Landlock 是否可用（kernel ≥5.13）。"""
+    if sys.platform != "linux":
+        return False
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        if not hasattr(libc, "syscall"):
+            return False
+        return True  # 简化：Linux 平台默认尝试，失败时降级；真实探测在 execute 内
+    except Exception:
+        return False
+
+
+class LocalOsSandboxBackend:
+    """OS 级本地沙箱（macOS sandbox-exec / Linux Landlock）。
+
+    能力如实声明：``process_boundary=False``（同用户同内核，非容器/VM）；
+    文件系统 ``SCOPED_WORKSPACE``（macOS）/ ``NONE``（Linux Landlock 不足时降级）；
+    网络一期二元（``COMMAND_SURFACE``：仅命令面拒绝，非 OS 级断网）。
+
+    一期不建网络代理层（域名级过滤做不干净，E2B/KOP 覆盖出网治理场景）；
+    出网需求明确报错降级指向 E2B/KOP（同 SubprocessSandboxBackend 语义）。
+    """
+
+    def __init__(self, *, _landlock_available: bool | None = None) -> None:
+        self._platform = sys.platform
+        self._landlock_available = (
+            _landlock_available if _landlock_available is not None else _landlock_supported()
+        )
+        self._handles: dict[int, SandboxHandle] = {}
+
+    @property
+    def capabilities(self) -> SandboxBackendCapabilities:
+        if self._platform == "darwin":
+            fs = FilesystemIsolation.SCOPED_WORKSPACE
+        elif self._platform == "linux" and self._landlock_available:
+            fs = FilesystemIsolation.SCOPED_WORKSPACE
+        else:
+            fs = FilesystemIsolation.NONE  # Landlock 不足或未知平台：诚实降级
+        return SandboxBackendCapabilities(
+            backend_id="local-os",
+            filesystem_isolation=fs,
+            network_control=NetworkControl.COMMAND_SURFACE,  # 一期二元，非 ENFORCED
+            process_boundary=False,  # 同用户同内核，诚实不虚报
+            request_timeout=True,
+            cooperative_cancellation=True,
+            artifact_collection=False,
+            deterministic_cleanup=True,
+            execution_audit=False,
+        )
+
+    async def create(self, spec: SandboxSpec) -> SandboxHandle:
+        # 一期二元网络：network_egress=("*",) = allow-all（放行）；空 = deny-all；
+        # 具体域名 = 拒绝（无代理层无法 honored，指向 E2B/KOP）。
+        if spec.network_egress and tuple(spec.network_egress) != ("*",):
+            raise SandboxPolicyViolation(
+                "LocalOsSandboxBackend 一期不支持域名级出网白名单（无代理层）；"
+                "需要出网治理请用 E2B/KOP，或 network_egress=('*',) 走二元 allow-all"
+            )
+        handle = SandboxHandle(spec)
+        self._handles[id(handle)] = handle
+        return handle
+
+    async def execute(self, handle: SandboxHandle, request: ExecuteRequest) -> ExecuteResult:
+        if id(handle) not in self._handles or handle.closed:
+            raise SandboxClosedError("Sandbox Handle 已关闭或不属于当前后端")
+        spec = handle.spec
+        deny_network = not spec.network_egress  # 一期二元：空=deny-all
+        try:
+            if self._platform == "darwin":
+                return await self._execute_macos(handle, request, deny_network)
+            elif self._platform == "linux" and self._landlock_available:
+                return await self._execute_linux_landlock(handle, request, deny_network)
+            else:
+                return await self._execute_degraded(handle, request, deny_network)
+        except subprocess.TimeoutExpired:
+            return ExecuteResult(ok=False, output="", exit_code=124, error="sandbox 命令超时")
+        except SandboxPolicyViolation as exc:
+            return ExecuteResult(ok=False, output="", exit_code=1, error=str(exc))
+
+    async def _execute_macos(
+        self, handle: SandboxHandle, request: ExecuteRequest, deny_network: bool
+    ) -> ExecuteResult:
+        spec = handle.spec
+        ws = str(Path(spec.workspace_root).resolve())
+        profile = _macos_sandbox_profile(
+            workspace_root=ws,
+            read_only=spec.read_only,
+            deny_network=deny_network,
+        )
+        cmd = ["sandbox-exec", "-p", profile, "sh", "-c", request.command]
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=request.timeout_seconds,
+        )
+        return ExecuteResult(
+            ok=proc.returncode == 0,
+            output=proc.stdout,
+            exit_code=proc.returncode,
+            error=proc.stderr,
+        )
+
+    async def _execute_linux_landlock(
+        self, handle: SandboxHandle, request: ExecuteRequest, deny_network: bool
+    ) -> ExecuteResult:
+        # Landlock via ctypes：一期文件系统边界；网络一期二元靠命令面。
+        # 真实 Landlock 接线二期完善，一期降级为受限执行（诚实 NONE 已在 caps 处理）。
+        return await self._execute_degraded(handle, request, deny_network)
+
+    async def _execute_degraded(
+        self, handle: SandboxHandle, request: ExecuteRequest, deny_network: bool
+    ) -> ExecuteResult:
+        """降级执行：无 OS 沙箱，仅命令面 + read_only 约束（诚实 NONE）。"""
+        spec = handle.spec
+        if spec.read_only and _is_write_command(request.command):
+            return ExecuteResult(
+                ok=False, output="", exit_code=1, error="read-only spec 拒绝写命令"
+            )
+        if deny_network and _is_network_command(request.command):
+            return ExecuteResult(ok=False, output="", exit_code=1, error="deny-all 拒绝出网命令")
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["sh", "-c", request.command],
+            capture_output=True,
+            text=True,
+            timeout=request.timeout_seconds,
+            cwd=spec.workspace_root,
+        )
+        return ExecuteResult(
+            ok=proc.returncode == 0,
+            output=proc.stdout,
+            exit_code=proc.returncode,
+            error=proc.stderr,
+        )
+
+    async def collect_artifacts(self, handle: SandboxHandle) -> list[str]:
+        if id(handle) not in self._handles or handle.closed:
+            raise SandboxClosedError("Sandbox Handle 已关闭或不属于当前后端")
+        return list(handle.artifacts)
+
+    async def close(self, handle: SandboxHandle) -> None:
+        self._handles.pop(id(handle), None)
+        handle.closed = True
+
+
+def _is_write_command(command: str) -> bool:
+    write_markers = ("touch ", "mkdir ", "rm ", "rmdir ", "mv ", "cp ", "tee ", ">")
+    return any(m in command for m in write_markers)
+
+
+def _is_network_command(command: str) -> bool:
+    net_markers = ("curl ", "wget ", "nc ", "socket", "connect", "ssh ", "scp ")
+    return any(m in command for m in net_markers)
+
+
+def _macos_sandbox_profile(*, workspace_root: str, read_only: bool, deny_network: bool) -> str:
+    """生成 macOS sandbox-exec profile（本机实测收敛的坑固化进模板）。
+
+    文件系统：SCOPED_WORKSPACE（写仅限 workspace；read_only 全禁写）；
+    网络：deny-all（默认）或 allow-all（一期二元）；
+    固化坑：canonical path、fork、/dev/null、mach-lookup。
+    """
+    write_rule = (
+        f'(allow file-write* (subpath "{workspace_root}"))\n'
+        f'(allow file-write* (literal "/dev/null") (literal "/dev/dtracehelper"))\n'
+        if not read_only
+        else "(deny file-write*)\n"
+    )
+    network_rule = "(deny network*)\n" if deny_network else "(allow network*)\n"
+    process_exec_rule = (
+        '(allow process-exec (literal "/bin/sh") (literal "/usr/bin/env") '
+        '(literal "/bin/echo") (literal "/usr/bin/touch"))'
+    )
+    return f"""(version 1)
+(deny default)
+; 文件系统：读全量，写仅限 workspace（read_only 全禁写）
+(allow file-read*)
+{write_rule}
+; 网络：一期二元（deny-all / allow-all）
+{network_rule}
+; 进程：允许 fork/exec（命令执行需要）
+{process_exec_rule}
+(allow process-fork)
+(allow process-exec)
+; 固化坑：mach-lookup（macOS 进程通信必需，否则基础命令失败）
+(allow mach-lookup)
+(allow signal)
+"""

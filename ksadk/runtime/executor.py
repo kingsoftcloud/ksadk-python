@@ -11,9 +11,10 @@ import hashlib
 import inspect
 import json
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from ksadk.kernel.contracts import RuntimeCapabilityMatrix, SteerPayload
 from ksadk.runtime.adapter import (
     CancelResult,
     CheckpointDescriptor,
@@ -75,6 +76,7 @@ class RuntimeExecutor:
     ) -> None:
         self._registry = registry
         self._kernel_store = kernel_store
+        self._managed_a2a_bootstrap = None
         self._runs: dict[_HandleKey, _OwnedRun] = {}
         self._capability_adapters: dict[int, tuple[RuntimeLaunchContext, RuntimeAdapter]] = {}
 
@@ -86,7 +88,28 @@ class RuntimeExecutor:
         从而让普通执行、worker 与恢复走同一套 runtime-type 注册表。
         """
 
-        return self._registry.create(context)
+        if self._managed_a2a_bootstrap is not None:
+            declared = context.services.managed_a2a_bootstrap
+            if declared is not None and declared is not self._managed_a2a_bootstrap:
+                raise ValueError("A2A_BOOTSTRAP_IDENTITY_CONFLICT")
+            context = replace(context, services=replace(context.services,
+                managed_a2a_bootstrap=self._managed_a2a_bootstrap))
+        adapter = self._registry.create(context)
+        self._configure_managed_adapter(adapter)
+        return adapter
+
+    def configure_managed_a2a(self, bootstrap) -> None:
+        if self._runs:
+            raise RuntimeError("cannot configure managed A2A during active execution")
+        self._managed_a2a_bootstrap = bootstrap
+        for _, adapter in self._capability_adapters.values():
+            self._configure_managed_adapter(adapter)
+
+    def _configure_managed_adapter(self, adapter) -> None:
+        if self._managed_a2a_bootstrap is not None:
+            configure = getattr(adapter, "configure_managed_a2a", None)
+            if callable(configure):
+                configure(self._managed_a2a_bootstrap)
 
     async def resolve_run(self, run_id: str) -> DurableRun:
         """以 durable Store 为真相解析 Run；cache 只是 live handle 提示。"""
@@ -129,7 +152,7 @@ class RuntimeExecutor:
         agent initialization twice.
         """
 
-        adapter = self._registry.create(context)
+        adapter = self.create_adapter(context)
         await adapter.preflight()
         return RuntimeStartPreparation(context=context, adapter=adapter)
 
@@ -176,9 +199,48 @@ class RuntimeExecutor:
         owned = self._resolve(handle)
         return await owned.adapter.pause(owned.handle)
 
+    async def steer(self, handle: RunHandle, payload: SteerPayload) -> object | None:
+        """Deliver a live user correction to the adapter that owns this handle."""
+        if not isinstance(payload, SteerPayload) or payload.run_id not in {None, handle.run_id}:
+            raise ValueError("steering must target this attached run")
+        owned = self._resolve(handle)
+        return await owned.adapter.steer(owned.handle, payload)
+
+    async def guide(self, handle: RunHandle, payload: SteerPayload) -> object | None:
+        if not isinstance(payload, SteerPayload) or payload.run_id not in {None, handle.run_id}:
+            raise ValueError("guidance must target this attached run")
+        owned = self._resolve(handle)
+        return await owned.adapter.guide(owned.handle, payload)
+
+    async def child_tasks(self, handle: RunHandle) -> tuple[dict, ...]:
+        owned = self._resolve(handle)
+        return await owned.adapter.child_tasks(owned.handle)
+
+    async def child_execution_view(self, handle: RunHandle, child_run_id: str) -> dict:
+        owned = self._resolve(handle)
+        return await owned.adapter.child_execution_view(owned.handle, child_run_id)
+
+    async def cancel_child(self, handle: RunHandle, *, child_run_id: str, command_id: str):
+        owned = self._resolve(handle)
+        return await owned.adapter.cancel_child(owned.handle, child_run_id=child_run_id,
+                                               command_id=command_id)
+
+    async def promote_child(self, handle: RunHandle, *, child_run_id: str, command_id: str):
+        owned = self._resolve(handle)
+        return await owned.adapter.promote_child(owned.handle, child_run_id=child_run_id,
+                                                command_id=command_id)
+
     async def submit(self, handle: RunHandle, payload: ResumePayload) -> None:
         owned = self._resolve(handle)
         await owned.adapter.submit(owned.handle, payload)
+
+    async def send_child_input(self, handle: RunHandle, *, child_run_id: str, text: str,
+                               command_id: str, expected_goal_revision: int):
+        owned = self._resolve(handle)
+        return await owned.adapter.send_child_input(
+            owned.handle, child_run_id=child_run_id, text=text, command_id=command_id,
+            expected_goal_revision=expected_goal_revision,
+        )
 
     async def resume(
         self,
@@ -261,7 +323,7 @@ class RuntimeExecutor:
             preparation.consumed = True
             adapter = preparation.adapter
         else:
-            adapter = self._registry.create(context)
+            adapter = self.create_adapter(context)
         restored = await adapter.attach(handle)
         if restored != handle:
             with suppress(Exception):
@@ -291,11 +353,39 @@ class RuntimeExecutor:
         handle = RunHandle.model_validate(handle_dump)
         if handle_digest(handle) != digest:
             raise ValueError(f"handle digest mismatch for run {run.run_id!r}")
-        return await self.attach(context, handle)
+        if self.is_attached(handle):
+            return handle
+        adapter = self.create_adapter(context)
+        prepare_record = getattr(adapter, "prepare_attach_record", None)
+        if callable(prepare_record):
+            # Some native runtimes need the scoped private checkpoint before
+            # attach can resolve a thread. Validate it before any native I/O.
+            await prepare_record(handle, run)
+        restored = await self.attach(
+            context, handle,
+            preparation=RuntimeStartPreparation(context=context, adapter=adapter),
+        )
+        adapter = self.adapter_for_handle(restored)
+        restore_record = getattr(adapter, "restore_run_record", None)
+        if callable(restore_record):
+            try:
+                await restore_record(restored, run)
+            except Exception:
+                await self.close(restored)
+                raise
+        return restored
 
     def is_attached(self, handle: RunHandle) -> bool:
         owned = self._runs.get(_handle_key(handle))
         return owned is not None and owned.handle == handle
+
+    def attached_capabilities(self, handle: RunHandle) -> RuntimeCapabilityMatrix:
+        """Read the actual attached adapter, without constructing a probe runtime."""
+        return self._resolve(handle).adapter.capabilities()
+
+    def adapter_for_handle(self, handle: RunHandle) -> RuntimeAdapter:
+        """Return the exact attached owner for subsequent control delivery."""
+        return self._resolve(handle).adapter
 
     def find_handle(
         self,
@@ -337,7 +427,7 @@ class RuntimeExecutor:
         key = id(context)
         cached = self._capability_adapters.get(key)
         if cached is None or cached[0] is not context:
-            adapter = self._registry.create(context)
+            adapter = self.create_adapter(context)
             self._capability_adapters[key] = (context, adapter)
             return adapter
         return cached[1]
@@ -374,7 +464,7 @@ class RuntimeExecutor:
         preparation: RuntimeStartPreparation | None,
     ) -> RuntimeAdapter:
         if preparation is None:
-            return self._registry.create(context)
+            return self.create_adapter(context)
         if preparation.consumed:
             raise RuntimeError("runtime start preparation was already consumed")
         if preparation.context != context:

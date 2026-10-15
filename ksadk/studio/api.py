@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
+import httpx
 from fastapi import FastAPI, File, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -32,13 +33,17 @@ from ksadk.conversations.contracts import (
     validate_conversation_input,
 )
 from ksadk.conversations.projector import project_conversation_item
+from ksadk.conversations.runtime_payloads import extract_responses_resume_input
 from ksadk.events.canonical import parse_runtime_event_lenient
 from ksadk.scheduler.contracts import ScheduledTask
+from ksadk.studio.api_a2a_routes import register_a2a_routes
 from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
     AgentScheduleRequest,
     AuthoringCommitRequest,
     BuildRequest,
+    CancelChildRequest,
+    ChildInputRequest,
     CloudAgentVersionRollbackRequest,
     CloudChatInteractionSubmitRequest,
     CloudChatMessageRequest,
@@ -50,11 +55,13 @@ from ksadk.studio.api_contracts import (
     InteractionSubmitRequest,
     LinkedDirectoryRequest,
     ProjectInspectRequest,
+    PromoteChildRequest,
     PromptCompileRequest,
     QuickAuthoringRequest,
     RollbackRequest,
     RunRequest,
     SessionExchangeRequest,
+    SteerRunRequest,
     StudioEvaluationCreate,
     ValidationRequest,
     WorkspaceOpenRequest,
@@ -117,6 +124,7 @@ from ksadk.studio.workspace_registry import (
     WorkspaceRegistry,
     WorkspaceRuntimeManager,
 )
+from ksadk.version import __version__ as _sdk_version
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +256,21 @@ def _cache_control_for(path: str, response: Any) -> str:
     if _HASHED_ASSET_RE.search(path) and 200 <= response.status_code < 300:
         return "public, max-age=31536000, immutable"
     return response.headers.get("Cache-Control", "no-cache")
+
+
+_PYPI_LATEST_URL = "https://pypi.org/pypi/ksadk/json"
+
+
+def _version_key(value: str) -> tuple[int, ...]:
+    parts = [int(piece) for piece in value.split(".") if piece.isdigit()]
+    return tuple(parts) or (0,)
+
+
+async def _fetch_latest_ksadk_version() -> str:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(6.0)) as client:
+        response = await client.get(_PYPI_LATEST_URL)
+        response.raise_for_status()
+        return str(response.json()["info"]["version"])
 
 
 def create_studio_app(
@@ -396,14 +419,18 @@ def create_studio_app(
         collaboration_mode: str | None = None,
         goal_objective: str | None = None,
         runtime_input: Any = None,
+        presentation_profile: Literal["flat-v1", "agent-block-v1"] = "flat-v1",
         idempotency_key: str,
     ) -> StreamingResponse:
         """Create an observer-only SSE response for one durable Studio run."""
 
         queue: asyncio.Queue = asyncio.Queue()
+        from ksadk.studio.presentation import StudioConversationProjection
+
+        presentation = StudioConversationProjection(session_id, presentation_profile)
 
         def observe(event):
-            queue.put_nowait(event)
+            queue.put_nowait(presentation.apply(event))
 
         # The Operation owns the runtime task. The SSE response is only one
         # observer, so refreshing or switching chats cannot cancel the Run.
@@ -420,6 +447,10 @@ def create_studio_app(
             runtime_input=runtime_input,
             idempotency_key=idempotency_key,
             on_event=observe,
+            **(
+                {"presentation_profile": presentation_profile}
+                if presentation_profile != "flat-v1" else {}
+            ),
         )
 
         async def render():
@@ -767,6 +798,31 @@ def create_studio_app(
             or metadata.get("invocationId")
             or f"resp_{secrets.token_hex(12)}"
         )
+        resume_input = extract_responses_resume_input(payload.get("input"))
+        if resume_input is not None:
+            previous_response_id = str(payload.get("previous_response_id") or "").strip()
+            if not previous_response_id:
+                raise StudioError(
+                    "PREVIOUS_RESPONSE_REQUIRED",
+                    "恢复审批时必须提供 previous_response_id",
+                    status_code=422,
+                    field="previous_response_id",
+                )
+            if bool(payload.get("stream")):
+                return StreamingResponse(
+                    shared_web.stream_response_resume(
+                        previous_response_id=previous_response_id,
+                        response_id=response_id,
+                        resume_input=resume_input,
+                    ),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+                )
+            return await shared_web.invoke_response_resume(
+                previous_response_id=previous_response_id,
+                response_id=response_id,
+                resume_input=resume_input,
+            )
         bridge_payload: dict[str, Any] = {
             "AgentId": shared_web.resolve_agent_id(agent_id),
             "SessionId": session_id or f"ses_{secrets.token_hex(12)}",
@@ -779,10 +835,9 @@ def create_studio_app(
             "ReasoningEffort": reasoning_effort,
             "ModelExplicit": bool(str(payload.get("model") or "").strip()),
         }
-        bridge_payload["Model"] = shared_web.select_model(
-            bridge_payload["AgentId"],
-            bridge_payload["Model"],
-        )
+        # The shared bridge validates the model after ensuring the current
+        # immutable Build.  Do not validate here: provider-backed catalogs are
+        # discovered during a cold Build and may legitimately be empty now.
         if bool(payload.get("stream")):
             return StreamingResponse(
                 shared_web.stream_run(bridge_payload),
@@ -864,6 +919,10 @@ def create_studio_app(
                     data = await cloud_web.submit_interaction(
                         cloud_target, str(payload.get("SessionId") or ""), payload
                     )
+                elif action == "CancelRun" or (
+                    action == "RunAgent" and payload.get("Background") is True
+                ):
+                    data = await cloud_web.cloud.shared_web_action(cloud_target, action, payload)
                 elif action == "RunAgent":
                     # Open the upstream connection before StreamingResponse
                     # commits status 200, so admission failures remain a
@@ -925,6 +984,12 @@ def create_studio_app(
                 )
             elif action == "GetSession":
                 data = await shared_web.get_session(str(payload.get("SessionId") or ""))
+            elif action == "GetRunReceipt":
+                data = shared_web.run_receipt(
+                    shared_web.resolve_agent_id(requested_agent_id or None),
+                    str(payload.get("SessionId") or ""),
+                    str(payload.get("InvocationId") or ""),
+                )
             elif action == "CompactSession":
                 data = await shared_web.compact_session(
                     shared_web.resolve_agent_id(requested_agent_id or None),
@@ -956,6 +1021,21 @@ def create_studio_app(
                 )
             elif action == "CancelRun":
                 data = await shared_web.cancel_run(str(payload.get("InvocationId") or ""))
+            elif action == "SteerRun":
+                instruction = payload.get("Text")
+                if (
+                    not isinstance(instruction, str)
+                    or not instruction.strip()
+                    or len(instruction) > 32768
+                ):
+                    raise StudioError(
+                        "RUN_STEER_INVALID", "插话内容必须是非空文本", status_code=422
+                    )
+                data = await shared_web.steer_run(
+                    str(payload.get("InvocationId") or ""),
+                    instruction,
+                    delivery=payload.get("Delivery", "replace"),
+                )
             elif action == "SubmitInteraction":
                 run_id = str(payload.get("RunId") or "")
                 studio._require_direct_run(run_id)
@@ -1017,6 +1097,34 @@ def create_studio_app(
                     "Data": {"errorCode": exc.code},
                 },
             )
+
+    @app.get("/agentengine/api/v1/SubscribeSessionEvents")
+    async def shared_chat_subscribe_session_events(
+        request: Request,
+        session_id: str = Query(alias="SessionId"),
+        after_seq: int = Query(default=0, ge=0),
+        agent_id: str | None = Query(default=None, alias="AgentId"),
+    ):
+        requested_agent_id = str(
+            agent_id or request.cookies.get("agentkit_studio_chat_agent") or ""
+        )
+        if not is_cloud_agent_id(requested_agent_id):
+            raise StudioError("CLOUD_AGENT_REQUIRED", "需要云端 Agent", status_code=400)
+        stream = await cloud_web.cloud.subscribe_cloud_session_events(
+            cloud_chat_target(requested_agent_id), session_id=session_id, after_seq=after_seq,
+        )
+        async def forward():
+            try:
+                async for chunk in stream:
+                    yield chunk
+            finally:
+                close = getattr(stream, "aclose", None)
+                if close is not None:
+                    await close()
+        return StreamingResponse(
+            forward(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/agentengine/api/v1/SubscribeRunEvents")
     async def shared_chat_subscribe_run_events(
@@ -1093,6 +1201,7 @@ def create_studio_app(
         return {
             "serverVersion": "1.0.0",
             "apiVersion": "v1",
+            "sdkVersion": _sdk_version,
             "sessionTokenRequired": security_enabled,
             "csrfToken": csrf_secret,
             "workspace": {
@@ -1124,6 +1233,23 @@ def create_studio_app(
     @app.put("/api/v1/system/settings")
     async def update_settings(payload: dict[str, Any]):
         return await studio.apply_settings(payload)
+
+    @app.get("/api/v1/system/update-check")
+    async def update_check():
+        try:
+            latest = await _fetch_latest_ksadk_version()
+        except Exception as exc:  # noqa: BLE001 - 检查更新失败只降级展示，不进错误链路
+            return {
+                "currentVersion": _sdk_version,
+                "latestVersion": None,
+                "hasUpdate": False,
+                "error": type(exc).__name__,
+            }
+        return {
+            "currentVersion": _sdk_version,
+            "latestVersion": latest,
+            "hasUpdate": _version_key(latest) > _version_key(_sdk_version),
+        }
 
     @app.get("/api/v1/schedules")
     async def list_schedules():
@@ -1610,6 +1736,19 @@ def create_studio_app(
         display_input = "\n".join(text_parts).strip()
         if not display_input:
             display_input = "请处理本轮附件：" + "、".join(attachment_names)
+        from ksadk.a2a.presentation import negotiate_presentation_profile
+
+        requested_profile = conversation_input.extensions.get("ksadk.presentation", {}).get(
+            "profile"
+        )
+        presentation_profile = negotiate_presentation_profile(
+            producer_declares_capability=any(
+                capability.name == "agent.block" and capability.mode in {"native", "translated"}
+                for capability in surface.outputs
+            ),
+            requested_profile=requested_profile,
+            renderer_supports_agent_block=requested_profile == "agent-block-v1",
+        )
         return _stream_studio_run(
             build_id,
             user_input=display_input,
@@ -1620,6 +1759,7 @@ def create_studio_app(
             approval_mode=conversation_input.approval_mode,
             collaboration_mode=conversation_input.collaboration_mode,
             goal_objective=conversation_input.goal_objective,
+            presentation_profile=presentation_profile,
             runtime_input=runtime_parts if attachment_names else None,
             idempotency_key=key,
         )
@@ -1777,12 +1917,7 @@ def create_studio_app(
 
     @app.post("/api/v1/agents/{agent_id}/runtime:prewarm", status_code=202)
     async def prewarm_agent_runtime(agent_id: str, payload: dict[str, Any]):
-        """后台预热当前 Build 的 Provider 激活（MCP/图编译），不执行任何 turn。
-
-        首 token 延迟的主因是首轮 open_activation 时的 MCP spawn/health/list
-        （实测 ~12s）。前端在进入会话时 fire-and-forget 调用本端点，把这段
-        开销移到用户输入之前；失败静默（首轮照旧现场预热）。
-        """
+        """后台准备不可变 Build 的 Host，不提前绑定下一轮 Session 配置。"""
         session_id = str(payload.get("sessionId") or "")
         if not session_id:
             raise StudioError(
@@ -1796,22 +1931,9 @@ def create_studio_app(
                 status_code=404,
             ) from exc
 
-        async def warm() -> None:
-            try:
-                spec = studio.resolve_run_spec(build.id)
-                runtime = studio.run_service.plugin_runtime
-                if runtime is None:
-                    return
-                kernel_adapter = getattr(runtime, "kernel_adapter", None)
-                if kernel_adapter is None:
-                    return
-                # 打开并保留激活（以 session 为 key）；下一轮 RunAgent 直接复用，
-                # 不再现场 spawn/health/list MCP。
-                await kernel_adapter(spec, session_id=session_id)
-            except Exception as error:
-                logger.info("runtime prewarm for %s skipped: %s", agent_id, error)
+        from ksadk.studio.runtime_prewarm import prewarm_runtime_build
 
-        task = asyncio.create_task(warm())
+        task = asyncio.create_task(prewarm_runtime_build(studio, build.id))
         app.state.runtime_prewarms = getattr(app.state, "runtime_prewarms", set())
         app.state.runtime_prewarms.add(task)
         task.add_done_callback(app.state.runtime_prewarms.discard)
@@ -1996,6 +2118,14 @@ def create_studio_app(
         runtime._require_direct_run(run_id)
         return await runtime.run_service.pause_run(run_id)
 
+    @app.post("/api/v1/runs/{run_id}:steer", status_code=202)
+    async def steer_run(run_id: str, payload: SteerRunRequest):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.steer_run(run_id, payload.text, delivery=payload.delivery)
+
     @app.post("/api/v1/runs/{run_id}:resume", status_code=202)
     async def resume_run(run_id: str):
         runtime = studio.runtime_for_run(run_id)
@@ -2003,6 +2133,58 @@ def create_studio_app(
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
         runtime._require_direct_run(run_id)
         return await runtime.run_service.resume_run(run_id)
+
+    @app.get("/api/v1/runs/{run_id}/public-output/{artifact_id}")
+    async def public_tool_output(run_id: str, artifact_id: str):
+        from ksadk.studio.public_output_store import PublicOutputStore
+
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        data = PublicOutputStore(runtime.workspace).read(run_id, artifact_id)
+        return Response(content=data["text"], media_type="text/plain; charset=utf-8", headers={
+            "Content-Disposition": 'attachment; filename="tool-output.txt"',
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store",
+            "X-Ksadk-Output-Truncated": str(data["truncated"]).lower(),
+        })
+
+    @app.get("/api/v1/runs/{run_id}/children")
+    async def child_tasks(run_id: str):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.child_tasks(run_id)
+
+    @app.post("/api/v1/runs/{run_id}/children/{child_run_id}:cancel", status_code=202)
+    async def cancel_child(run_id: str, child_run_id: str, payload: CancelChildRequest):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.cancel_child(run_id, child_run_id,
+                                                     command_id=payload.command_id)
+
+    @app.post("/api/v1/runs/{run_id}/children/{child_run_id}:promote", status_code=202)
+    async def promote_child(run_id: str, child_run_id: str, payload: PromoteChildRequest):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.promote_child(run_id, child_run_id,
+                                                     command_id=payload.command_id)
+
+    @app.post("/api/v1/runs/{run_id}/children/{child_run_id}:send", status_code=202)
+    async def send_child_input(run_id: str, child_run_id: str, payload: ChildInputRequest):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.send_child_input(
+            run_id, child_run_id, text=payload.text, command_id=payload.command_id,
+            expected_goal_revision=payload.expected_goal_revision,
+        )
 
     @app.post("/api/v1/runs/{run_id}/interactions/{interaction_id}:submit")
     async def submit_run_interaction(
@@ -2232,13 +2414,18 @@ def create_studio_app(
         run_id: str,
         request: Request,
         after: int = Query(default=0, ge=0),
+        presentation_profile: Literal["flat-v1", "agent-block-v1"] | None = Query(
+            default=None, alias="presentationProfile"
+        ),
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
-        events = await runtime.run_service.events(run_id, after=cursor)
+        events = await runtime.run_service.events(
+            run_id, after=cursor, presentation_profile=presentation_profile
+        )
         return _sse(events)
 
     @app.get("/api/v1/traces/overview")
@@ -2733,6 +2920,7 @@ def create_studio_app(
         studio,
         runtime_model_catalog=runtime_model_catalog,
     )
+    register_a2a_routes(app, studio)
     register_memory_routes(app, studio)
     register_resource_connection_routes(app, studio)
     register_plugin_routes(app, studio)

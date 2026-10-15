@@ -41,7 +41,7 @@ function Fixture() {
     onDeleteFeedback: noop, onSubmitFeedback: noop, onRespondToApproval: noop,
     revealMessage: reveal, className: 'studio-chat-timeline' };
   return <main className="ksadk-web studio-chat-shell" data-integrated-header="true" style={{ height: '100vh', display: 'block', maxWidth: 1000, margin: 'auto' }}>
-    <section className="chat-conversation" style={{ height: '100%' }}>
+    <section className="chat-conversation" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
     <ConversationFind search={search} onClose={noop} onReveal={id => setReveal(value => ({ id, request: (value?.request || 0) + 1 }))} />
     {compact ? <CompactHarnessTimeline {...props} sessionId="fixture-session" />
       : <ChatMessageList {...props} contextIndicator={null} scrollRef={scrollRef} onOpenAttachmentPreview={noop} />}

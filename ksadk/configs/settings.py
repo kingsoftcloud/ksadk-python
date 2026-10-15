@@ -387,6 +387,12 @@ class KingsoftCloudConfig:
     """
 
     @property
+    def traffic_source(self) -> str:
+        from ksadk.common.cloud_headers import resolve_traffic_source
+
+        return resolve_traffic_source()
+
+    @property
     def access_key_id(self) -> Optional[str]:
         return os.getenv("KS_ACCESS_KEY_ID")
 

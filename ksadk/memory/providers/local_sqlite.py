@@ -16,15 +16,17 @@ import re
 import sqlite3
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from ksadk.memory.models import (
     CoreMemoryRequest,
     MemoryArtifactRef,
     MemoryCapabilities,
+    MemoryConflictError,
     MemoryDeleteRequest,
     MemoryDeleteResult,
     MemoryRecord,
@@ -124,6 +126,26 @@ CREATE TABLE IF NOT EXISTS memory_records (
 CREATE INDEX IF NOT EXISTS idx_scope ON memory_records(tenant_id, workspace_id,
     scope, scope_id, status);
 CREATE INDEX IF NOT EXISTS idx_content_hash ON memory_records(content_hash);
+CREATE TABLE IF NOT EXISTS memory_operation_receipts (
+    operation_key TEXT PRIMARY KEY,
+    request_digest TEXT NOT NULL,
+    result TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_candidate_sources (
+    namespace TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    source_digest TEXT NOT NULL,
+    PRIMARY KEY(namespace, source_event_id)
+);
+CREATE TABLE IF NOT EXISTS memory_candidate_observations (
+    namespace TEXT NOT NULL,
+    candidate_key TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    slot_key TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(namespace, candidate_key, source_event_id)
+);
 """
 
 #: 长任务方案 §7.2 扩展列（additive；老库经 ALTER TABLE 补列）。
@@ -216,14 +238,29 @@ class SqliteMemoryProvider:
         records = _dedupe_active_versions(records)
         now = _now_iso()
         records = [r for r in records if r.is_active_now(now_iso=now)]
-        records = _box_by_tokens(records, request.max_tokens)
+        if request.filters.get("keyword_relevance") is True:
+            # Native opts into the existing coverage scorer. Filter and rank
+            # candidates BEFORE token boxing and top-k; fact confidence is not
+            # retrieval relevance. Existing SDK search retains its semantics.
+            from ksadk.memory.retrieval import keyword_coverage
+
+            records = [record for record in records
+                       if keyword_coverage(request.query, record.content) >= request.min_score]
+            records.sort(key=lambda record: -keyword_coverage(request.query, record.content))
+        host_budget = (request.filters.get("keyword_relevance") is True
+                       and request.filters.get("defer_token_budget") is True)
+        # A Native host counts the full provenance envelope with its bound
+        # tokenizer. Return bounded top-k candidates to that owner; boxing raw
+        # text here would discard later records before the host can select them.
+        if not host_budget:
+            records = _box_by_tokens(records, request.max_tokens)
         return MemorySearchResult(
             status="ok",
             records=records[: request.top_k] if request.top_k else records,
             error_code=None,
             provider="sqlite",
             latency_ms=int((time.monotonic() - start) * 1000),
-            accounting_accuracy="estimated",
+            accounting_accuracy="opaque" if host_budget else "estimated",
             truncated_by_budget=len(records) >= request.top_k,
         )
 
@@ -235,82 +272,94 @@ class SqliteMemoryProvider:
         return _row_to_record(row) if row is not None else None
 
     def upsert(self, record: MemoryRecord, *, expected_version: int | None) -> MemoryRecord:
-        with self._lock:
-            existing = self._conn.execute(
-                "SELECT version, status FROM memory_records WHERE memory_id = ?",
-                (record.memory_id,),
-            ).fetchone()
-            now = _now_iso()
-            if existing is not None:
-                if expected_version is not None and int(existing["version"]) != int(
-                    expected_version
-                ):
-                    self.last_error = (
-                        f"version_conflict:expected={expected_version},actual={existing['version']}"
-                    )
-                    raise VersionConflict(self.last_error)
-                version = int(existing["version"]) + 1
-                created = record.created_at or now
-            else:
-                version = record.version or 1
-                created = record.created_at or now
-            self._conn.execute(
-                """INSERT INTO memory_records (
-                    memory_id, tenant_id, workspace_id, scope, scope_id, memory_type,
-                    content, summary, status, confidence, importance, valid_from, valid_to,
-                    expires_at, source_session_id, source_event_ids, source_seq_range,
-                    content_hash, version, metadata, created_at, updated_at,
-                    source_artifact_refs, source_artifacts, sensitivity, write_policy, supersedes
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(memory_id) DO UPDATE SET
-                    content=excluded.content, summary=excluded.summary, status=excluded.status,
-                    confidence=excluded.confidence, importance=excluded.importance,
-                    valid_from=excluded.valid_from, valid_to=excluded.valid_to,
-                    expires_at=excluded.expires_at, source_event_ids=excluded.source_event_ids,
-                    source_seq_range=excluded.source_seq_range, content_hash=excluded.content_hash,
-                    version=excluded.version, metadata=excluded.metadata,
-                        updated_at=excluded.updated_at,
-                        source_artifact_refs=excluded.source_artifact_refs,
-                        source_artifacts=excluded.source_artifacts,
-                        sensitivity=excluded.sensitivity, write_policy=excluded.write_policy,
-                        supersedes=excluded.supersedes
-                """,
-                (
-                    record.memory_id,
-                    record.tenant_id or self._tenant_id,
-                    record.workspace_id or self._workspace_id,
-                    record.scope,
-                    record.scope_id,
-                    record.memory_type,
-                    record.content,
-                    record.summary,
-                    record.status,
-                    record.confidence,
-                    record.importance,
-                    record.valid_from,
-                    record.valid_to,
-                    record.expires_at,
-                    record.source_session_id,
-                    json.dumps(record.source_event_ids, ensure_ascii=False),
-                    json.dumps(list(record.source_seq_range) if record.source_seq_range else []),
-                    record.content_hash or content_hash(record.content),
-                    version,
-                    json.dumps(record.metadata, ensure_ascii=False),
-                    created,
-                    now,
-                    json.dumps(list(record.source_artifact_refs)),
-                    json.dumps([asdict(item) for item in record.source_artifacts]),
-                    record.sensitivity,
-                    record.write_policy,
-                    json.dumps(list(record.supersedes)),
-                ),
-            )
-            self._conn.commit()
+        with self._lock, self._conn:
+            # The CAS read and write share one SQLite writer transaction, even
+            # when another host has a separate connection to this database.
+            self._conn.execute("BEGIN IMMEDIATE")
+            return self._upsert_locked(record, expected_version=expected_version)
+
+    def _upsert_locked(self, record: MemoryRecord, *, expected_version: int | None) -> MemoryRecord:
+        existing = self._conn.execute(
+            "SELECT * FROM memory_records WHERE memory_id = ?",
+            (record.memory_id,),
+        ).fetchone()
+        now = _now_iso()
+        if existing is None and expected_version is not None:
+            raise VersionConflict("version_conflict:record_absent")
+        if existing is not None and (
+            existing["tenant_id"], existing["workspace_id"], existing["scope"], existing["scope_id"]
+        ) != (record.tenant_id or self._tenant_id, record.workspace_id or self._workspace_id,
+              record.scope, record.scope_id):
+            raise VersionConflict("version_conflict:record_identity_changed")
+        if existing is not None:
+            if expected_version is not None and int(existing["version"]) != int(
+                expected_version
+            ):
+                self.last_error = (
+                    f"version_conflict:expected={expected_version},actual={existing['version']}"
+                )
+                raise VersionConflict(self.last_error)
+            version = int(existing["version"]) + 1
+            created = existing["created_at"]
+        else:
+            version = record.version or 1
+            created = record.created_at or now
+        self._conn.execute(
+            """INSERT INTO memory_records (
+                memory_id, tenant_id, workspace_id, scope, scope_id, memory_type,
+                content, summary, status, confidence, importance, valid_from, valid_to,
+                expires_at, source_session_id, source_event_ids, source_seq_range,
+                content_hash, version, metadata, created_at, updated_at,
+                source_artifact_refs, source_artifacts, sensitivity, write_policy, supersedes
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(memory_id) DO UPDATE SET
+                content=excluded.content, summary=excluded.summary, status=excluded.status,
+                confidence=excluded.confidence, importance=excluded.importance,
+                valid_from=excluded.valid_from, valid_to=excluded.valid_to,
+                expires_at=excluded.expires_at, source_event_ids=excluded.source_event_ids,
+                source_seq_range=excluded.source_seq_range, content_hash=excluded.content_hash,
+                version=excluded.version, metadata=excluded.metadata,
+                    updated_at=excluded.updated_at,
+                    source_artifact_refs=excluded.source_artifact_refs,
+                    source_artifacts=excluded.source_artifacts,
+                    sensitivity=excluded.sensitivity, write_policy=excluded.write_policy,
+                    supersedes=excluded.supersedes
+            """,
+            (
+                record.memory_id,
+                record.tenant_id or self._tenant_id,
+                record.workspace_id or self._workspace_id,
+                record.scope,
+                record.scope_id,
+                record.memory_type,
+                record.content,
+                record.summary,
+                record.status,
+                record.confidence,
+                record.importance,
+                record.valid_from,
+                record.valid_to,
+                record.expires_at,
+                record.source_session_id,
+                json.dumps(record.source_event_ids, ensure_ascii=False),
+                json.dumps(list(record.source_seq_range) if record.source_seq_range else []),
+                record.content_hash or content_hash(record.content),
+                version,
+                json.dumps(record.metadata, ensure_ascii=False),
+                created,
+                now,
+                json.dumps(list(record.source_artifact_refs)),
+                json.dumps([asdict(item) for item in record.source_artifacts]),
+                record.sensitivity,
+                record.write_policy,
+                json.dumps(list(record.supersedes)),
+            ),
+        )
         return MemoryRecord(
             **{
                 **record.__dict__,
                 "version": version,
-                "created_at": record.created_at or created,
+                "created_at": created,
                 "updated_at": now,
             }
         )
@@ -338,6 +387,110 @@ class SqliteMemoryProvider:
             self._conn.commit()
         return MemoryDeleteResult(status="ok", deleted=True)
 
+    def mutation_receipt(self, operation_key: str, request_digest: str) -> dict | None:
+        """Query a sealed receipt; never execute a missing mutation during recovery."""
+        with self._lock:
+            return self._mutation_receipt_locked(operation_key, request_digest)
+
+    def _mutation_receipt_locked(self, operation_key, request_digest):
+        row = self._conn.execute(
+            "SELECT request_digest, result FROM memory_operation_receipts WHERE operation_key=?",
+            (operation_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["request_digest"] != request_digest:
+            raise VersionConflict("operation_conflict:arguments_changed")
+        return json.loads(row["result"])
+
+    def apply_mutation(
+        self, record: MemoryRecord, *, action: str, expected_version: int | None,
+        operation_key: str, request_digest: str,
+        consumed_user_candidates: tuple = (),
+    ) -> dict:
+        """Persist the fact and its minimal receipt in one local transaction.
+
+        Authorization/MemoryPolicy belong to the host capability. The receipt
+        carries no fact body, so forgetting does not retain it in this ledger.
+        This proves local SQLite idempotency, not cloud or RunStore atomicity.
+        """
+        if action not in {"remember", "correct", "forget"}:
+            raise ValueError("invalid_memory_action")
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            previous = self._mutation_receipt_locked(operation_key, request_digest)
+            if previous is not None:
+                return previous
+            original = None
+            if action == "remember":
+                if record.memory_id or expected_version is not None:
+                    raise VersionConflict("memory_create_requires_new_identity")
+                record = replace(record, memory_id="memory_" + uuid4().hex, version=1)
+            else:
+                if not record.memory_id or expected_version is None:
+                    raise VersionConflict("memory_mutation_requires_version")
+                row = self._conn.execute(
+                    "SELECT * FROM memory_records WHERE memory_id=?", (record.memory_id,)
+                ).fetchone()
+                if row is None or row["status"] != "active":
+                    raise VersionConflict("version_conflict:record_inactive_or_absent")
+                original = _row_to_record(row)
+                if original.write_policy == "locked":
+                    raise VersionConflict("memory_record_locked")
+                if (original.tenant_id, original.scope, original.scope_id) != (
+                    record.tenant_id, record.scope, record.scope_id
+                ) or (original.scope != "org" and original.workspace_id != record.workspace_id):
+                    raise VersionConflict("version_conflict:record_identity_changed")
+                record = replace(
+                    record, memory_type=original.memory_type,
+                    workspace_id=original.workspace_id,
+                    source_session_id=original.source_session_id,
+                    source_event_ids=list(dict.fromkeys(
+                        [*original.source_event_ids, *record.source_event_ids]
+                    )),
+                )
+                if action == "forget":
+                    from .local_candidates import discard_slot_observations
+
+                    discard_slot_observations(self._conn, original)
+            if consumed_user_candidates:
+                from .local_candidates import consume_explicit_write_horizon
+
+                consume_explicit_write_horizon(
+                    self._conn, record, original, consumed_user_candidates,
+                )
+            if action == "forget":
+                record = replace(record, status="deleted", content="", summary="",
+                                     content_hash=content_hash(""), metadata={},
+                                     source_artifact_refs=(), source_artifacts=())
+            saved = self._upsert_locked(
+                replace(record, content_hash=content_hash(record.content)),
+                expected_version=expected_version,
+            )
+            result = {"committed": True, "action": action, "memory_id": saved.memory_id,
+                      "version": saved.version, "status": saved.status,
+                      "content_hash": saved.content_hash,
+                      "source_event_ids": saved.source_event_ids}
+            self._conn.execute("INSERT INTO memory_operation_receipts VALUES (?,?,?)",
+                               (operation_key, request_digest,
+                                json.dumps(result, ensure_ascii=False)))
+            return result
+
+    def apply_candidate(
+        self, candidate, *, operation_key: str, request_digest: str,
+        source_session_id: str, source_digest: str, tenant_id: str, workspace_id: str,
+    ) -> dict:
+        """Consume one host-derived original-user candidate with a durable receipt."""
+        from .local_candidates import consume
+
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            return consume(
+                self, candidate, operation_key=operation_key, request_digest=request_digest,
+                source_session_id=source_session_id, source_digest=source_digest,
+                tenant_id=tenant_id, workspace_id=workspace_id,
+            )
+
     def list_core(self, request: CoreMemoryRequest) -> list[MemoryRecord]:
         # Core memory：按 importance 降序取 active profile/fact，受 max_blocks/max_tokens 约束。
         scopes = request.scopes
@@ -360,6 +513,10 @@ class SqliteMemoryProvider:
     def _query(self, request: MemorySearchRequest) -> list[sqlite3.Row]:
         where_parts: list[str] = []
         params: list[Any] = []
+        tenant = request.filters.get("tenant_id")
+        if tenant:
+            where_parts.append("tenant_id=?")
+            params.append(tenant)
         if request.scopes:
             w, p = _scope_where(request.scopes)
             where_parts.append(w)
@@ -378,7 +535,15 @@ class SqliteMemoryProvider:
             params.append(slot_key)
         # keyword 检索：ASCII 词项保持 AND；CJK 词项作为可选增强（不阻塞 ASCII 匹配）。
         ascii_terms, cjk_terms = _keyword_query_terms(str(request.query or ""))
-        if ascii_terms:
+        relevance = request.filters.get("keyword_relevance") is True
+        terms = [*ascii_terms, *cjk_terms]
+        if relevance and terms:
+            where_parts.append("(" + " OR ".join(
+                "(LOWER(content) LIKE ? OR LOWER(summary) LIKE ?)" for _ in terms
+            ) + ")")
+            for term in terms:
+                params.extend([f"%{term}%", f"%{term}%"])
+        elif ascii_terms:
             # ASCII AND 匹配
             for token in ascii_terms:
                 where_parts.append("(LOWER(content) LIKE ? OR LOWER(summary) LIKE ?)")
@@ -392,10 +557,19 @@ class SqliteMemoryProvider:
                 cjk_like_parts.append("(content LIKE ? OR summary LIKE ?)")
                 params.extend([f"%{token}%", f"%{token}%"])
             where_parts.append("(" + " OR ".join(cjk_like_parts) + ")")
+        order = "importance DESC, updated_at DESC"
+        if relevance and terms:
+            # Bound the candidate read as before, with the best lexical matches
+            # ahead of importance so unrelated high-importance rows cannot
+            # consume the entire candidate window.
+            order = "(" + " + ".join(
+                "CASE WHEN LOWER(content) LIKE ? THEN 1 ELSE 0 END" for _ in terms
+            ) + ") DESC, " + order
+            params.extend(f"%{term}%" for term in terms)
         sql = (
             "SELECT * FROM memory_records WHERE "
             + " AND ".join(where_parts)
-            + " ORDER BY importance DESC, updated_at DESC LIMIT ?"
+            + " ORDER BY " + order + " LIMIT ?"
         )
         params.append(max(request.top_k, 32))
         return self._conn.execute(sql, tuple(params)).fetchall()
@@ -450,7 +624,7 @@ class SqliteMemoryProvider:
             self._conn.close()
 
 
-class VersionConflict(RuntimeError):
+class VersionConflict(MemoryConflictError):
     """``upsert`` 的 ``expected_version`` 乐观锁冲突。"""
 
 

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -81,8 +82,10 @@ class RecoveryCoordinator:
         executor: "RuntimeExecutor | None" = None,
         launch_context: "RuntimeLaunchContext | None" = None,
         adapter_factory: Callable[[], object] | None = None,
+        session_service=None,
         clock: Callable[[], float] = time.time,
         execution_sink: Callable[..., None] | None = None,
+        recovery_stream_sink: Callable[..., object] | None = None,
     ) -> None:
         self._store = store
         self._session_events = session_events
@@ -90,10 +93,12 @@ class RecoveryCoordinator:
         self._executor = executor
         self._launch_context = launch_context
         self._adapter_factory = adapter_factory
+        self._session_service = session_service
         self._clock = clock
         # Task 6：takeover 重建的 ActiveExecution 只在 lease 获取 +
         # provider 支持的 attach/resume 成功后回调注册（worker.adopt_execution）。
         self._execution_sink = execution_sink
+        self._recovery_stream_sink = recovery_stream_sink
 
     async def recover(
         self,
@@ -102,6 +107,19 @@ class RecoveryCoordinator:
         *,
         run_id: str | None = None,
         session_id: str | None = None,
+    ) -> RecoveryReport:
+        from ksadk.sessions import bind_session_service
+
+        binding = (bind_session_service(self._session_service)
+                   if self._session_service is not None else nullcontext())
+        with binding:
+            return await self._recover_bound(
+                agent_instance_id, activation, run_id=run_id, session_id=session_id
+            )
+
+    async def _recover_bound(
+        self, agent_instance_id: str, activation: ActivationLease, *,
+        run_id: str | None = None, session_id: str | None = None,
     ) -> RecoveryReport:
         fence = activation.fencing_token
         guard: WriteContext = ActivationWriteGuard(
@@ -150,17 +168,27 @@ class RecoveryCoordinator:
                     # would create a different direct runtime and bypass the
                     # provider's checkpoint, capabilities and resources.
                     adapter = self._adapter_factory()
+                    prepare_record = getattr(adapter, "prepare_attach_record", None)
+                    if callable(prepare_record):
+                        await prepare_record(persisted_handle, run)
                     handle = await adapter.durable_restore(persisted_handle)
                     if handle != persisted_handle:
                         raise ValueError(
                             "adapter durable_restore must preserve persisted handle identity"
                         )
+                    restore_record = getattr(adapter, "restore_run_record", None)
+                    if callable(restore_record):
+                        try:
+                            await restore_record(handle, run)
+                        except Exception:
+                            await adapter.close(handle)
+                            raise
                     stream_owner = adapter
                 else:
                     assert self._executor is not None
                     assert self._launch_context is not None
                     handle = await self._executor.attach_record(run, self._launch_context)
-                    adapter = getattr(self._executor, "adapter", None)
+                    adapter = self._executor.adapter_for_handle(handle)
                     stream_owner = self._executor
 
                 def stream():  # type: ignore[no-untyped-def]
@@ -174,6 +202,36 @@ class RecoveryCoordinator:
                     reason=f"attach_failed:{type(error).__name__}",
                     guard=guard,
                 )
+            scoped_stream_requirement = getattr(adapter, "requires_recovery_stream", None)
+            requires_stream = (
+                scoped_stream_requirement(handle)
+                if callable(scoped_stream_requirement)
+                else getattr(adapter, "recovery_requires_stream", False)
+            )
+            if requires_stream:
+                try:
+                    if self._recovery_stream_sink is None:
+                        raise RuntimeError("runtime recovery requires a worker stream owner")
+                    self._recovery_stream_sink(run=run, adapter=adapter, handle=handle, guard=guard)
+                except Exception as error:
+                    await adapter.close(handle)
+                    return await self._decide(
+                        agent_instance_id,
+                        activation,
+                        run,
+                        outcome="failed",
+                        reason=f"recovery_stream_failed:{type(error).__name__}",
+                        guard=guard,
+                    )
+                return await self._decide(
+                    agent_instance_id,
+                    activation,
+                    run,
+                    outcome="attached",
+                    reason="durable_stream_restarted",
+                    guard=guard,
+                )
+
             # attach 成功即把 live execution 交还 worker（lease 已在调用方获取，
             # attach 已证明 runtime 支持接管），stream 消费失败时仍保留。
             self._register_execution(
@@ -377,14 +435,22 @@ class RecoveryCoordinator:
     ) -> None:
         """消费剩余事件流（run_id 统一 durable id），自然结束收口 COMPLETED。"""
 
+        from ksadk.kernel.recovery_projection import RecoveryEventReconciler
+
         runtime_store = RuntimeEventStore(self._session_events, session_id=run.session_id)
+        reconciler = RecoveryEventReconciler(
+            await runtime_store.list(run.session_id, run_id=run.run_id)
+        )
         async for event in stream_factory():
             if event.run_id != run.run_id:
                 update: dict = {"run_id": run.run_id}
                 if getattr(event, "scope_id", None) == f"run:{event.run_id}":
                     update["scope_id"] = f"run:{run.run_id}"
                 event = event.model_copy(update=update)
-            await runtime_store.append(event, guard=guard)  # type: ignore[arg-type]
+            for candidate in reconciler.accept(event):
+                await runtime_store.append(candidate, guard=guard)  # type: ignore[arg-type]
+        for candidate in reconciler.flush():
+            await runtime_store.append(candidate, guard=guard)  # type: ignore[arg-type]
         await self._store.save_run_transition(
             run.model_copy(update={"state": RunState.COMPLETED}),
             expected_fence=guard.fencing_token,  # type: ignore[attr-defined]
@@ -429,6 +495,17 @@ class RecoveryCoordinator:
         reason: str = "runtime_not_durably_attachable",
     ) -> RecoveryReport:
         fence = activation.fencing_token
+        tenant = str(run.metadata.get("tenant_id") or "")
+        if tenant:
+            for interaction in await self._store.list_pending_interactions(tenant, run.session_id):
+                if (
+                    interaction.run_id == run.run_id
+                    and interaction.agent_instance_id == agent_instance_id
+                    and interaction.provider_id == "managed-a2a"
+                ):
+                    await self._store.cancel(
+                        interaction.interaction_id, interaction.revision, guard=guard
+                    )
         runtime_store = RuntimeEventStore(self._session_events, session_id=run.session_id)
         findings = await scan_open_runs(runtime_store, run.session_id)
         finding = next((item for item in findings if item.run_id == run.run_id), None)
@@ -442,7 +519,16 @@ class RecoveryCoordinator:
                 timestamp=self._clock(),
                 reason=reason,
             )
-            pipeline = CanonicalEventPipeline(runtime_store, session_id=run.session_id)
+            # Settlement closes items created by the previous owner. Validate
+            # against that run's persisted facts, not an empty projection.
+            from ksadk.events.reducer import StreamReducer
+
+            reducer = StreamReducer()
+            for persisted in await runtime_store.list(run.session_id, run_id=run.run_id):
+                reducer.apply(persisted)
+            pipeline = CanonicalEventPipeline(
+                runtime_store, session_id=run.session_id, reducer=reducer
+            )
             for event in events:
                 persisted = await pipeline.emit(event, write_context=guard)
                 written.append(persisted)

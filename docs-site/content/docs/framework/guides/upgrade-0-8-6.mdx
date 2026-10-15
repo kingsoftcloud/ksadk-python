@@ -1,0 +1,102 @@
+---
+title: "升级到 0.8.6"
+description: Python 3.12、Native Studio、历史读取与配套 Web 的升级和回退方法。
+---
+
+本版集中交付 0.8.5 以来的 Native Harness、A2A/Kernel 恢复、工具回执、历史读取和
+Studio/Web 修复。完整清单见 [CHANGELOG](https://github.com/kingsoftcloud/ksadk-python/blob/main/CHANGELOG.md)。
+
+## 安装与回退
+
+**最低 Python 版本为 3.12**。建议在独立环境安装，保留旧环境和原运行镜像，完成业务
+验证后再切换；SDK 升级不会自动重建已有 Agent 或更新云端部署。
+
+```bash
+uv venv --python 3.12 .venv-086
+uv pip install --python .venv-086/bin/python "ksadk==0.8.6"
+.venv-086/bin/agentengine --help
+```
+
+Windows 使用 `.venv-086\Scripts\python.exe` 与 `.venv-086\Scripts\agentengine.exe`。
+需要 Codex、DeepAgents、Skill Sandbox 等附加能力时选择对应 extra；需要全部开发依赖
+才安装 `ksadk[all]`。`agentengine-sdk-python==0.8.6` 是依赖同版本 `ksadk` 的别名包。
+
+本地验证 wheel 可以替换上面的安装目标：
+
+```bash
+uv pip install --python .venv-086/bin/python ./ksadk-0.8.6-py3-none-any.whl
+```
+
+wheel 包含 Python 源码以及已编译的 Web/Studio 页面；它不会把测试目录、前端源码、
+`node_modules` 或 Python 依赖一并打入。**嵌入离线页面不等于全部依赖离线可用**：
+无网络安装需要提前准备依赖 wheelhouse；模型、云资源、Node/Codex/DSH 工具链和插件
+仍受各自的网络、凭据和缓存条件约束。
+
+回退时停止新进程，切回保留的旧环境/镜像。首次打开重要 Studio 工作区前先在副本中
+验证，并备份本地会话数据；不要让新旧进程同时写入同一工作区。安装旧 wheel 不会
+自动撤销新版本已写入的会话、插件配置或外部副作用。
+
+## Studio 的 Native 默认行为
+
+普通本地 Studio 默认使用 Native Harness 与 SQLite 持久化执行账本。Native 负责
+模型/工具循环、上下文规划、任务验证、子 Agent 和运行恢复；Provider 仍持有各框架
+原生执行语义。显式 Agent 选择或自定义宿主保留其兼容配置。
+
+| 启动配置 | 行为 |
+| --- | --- |
+| 普通 Studio，不指定 Native 配置 | 默认 Native，使用持久化账本 |
+| `KSADK_STUDIO_NATIVE_DEFAULT=0` | 关闭默认 Native；未另选 Native Agent 时使用 Managed 兼容路径 |
+| `KSADK_STUDIO_NATIVE_AGENT_IDS` | 精确选择本地 Agent；未设置 DEFAULT 时关闭普通默认选择 |
+| `KSADK_STUDIO_NATIVE_DURABLE=0` | Native 使用进程内存，不能作为跨进程恢复证据 |
+
+这些是启动时的宿主配置，不是模型可修改的参数。Native 云端启用、共享存储、模型接管、
+浏览器重新观察、Hook 与子 Agent 恢复仍需显式宿主声明、授权及目标环境验证。安装新包
+不会给已有云端 Agent 自动切换内核，也不代表任意插件已获得执行权限。
+
+若要让所有本地 Agent 使用兼容路径，同时清空 `KSADK_STUDIO_NATIVE_AGENT_IDS`；
+`DEFAULT=0` 不会取消已有的精确 Native Agent 选择。
+
+工具 hard deny 始终生效。`unknown` 表示副作用结果尚未确认；应先查询和显式对账，
+不要通过重发同一业务操作来猜测结果。durable claim 防止并发重复执行，不保证外部
+副作用与数据库提交之间的 exactly-once。
+
+## 历史读取与数据库预算
+
+Web 0.3.13 保留实时轮次、本地草稿及原始提问顺序，并通过能力协商选择历史分页。
+新 Runtime 可以声明来源、epoch 和 snapshot 边界；旧 Runtime 沿用其游标协议。
+读取失败保留已经显示的历史，超时不再被当作空会话或运行完成。
+
+数据库预算在进程启动时读取，单位为秒：
+
+| 配置 | 默认值 | 用途 |
+| --- | --- | --- |
+| `KSADK_DB_CONNECT_SECONDS` | 0.5 | 建立连接 |
+| `KSADK_DB_READ_ACQUIRE_SECONDS` | 0.3 | 普通读取获取连接 |
+| `KSADK_DB_READ_SQL_SECONDS` | 1 | 普通读取的每条 SQL |
+| `KSADK_DB_WRITE_ACQUIRE_SECONDS` | 0.5 | 写入获取连接 |
+| `KSADK_DB_WRITE_SQL_SECONDS` | 3 | 写入的每条 SQL |
+| `KSADK_DB_WRITE_OPERATION_SECONDS` | 5 | 完整写操作及提交核验 |
+| `KSADK_DB_REPLAY_SQL_SECONDS` | 3 | 完整 replay 的每次读取 |
+| `KSADK_DB_REPLAY_OPERATION_SECONDS` | 30 | 完整 replay |
+| `KSADK_DB_LOCK_SECONDS` | 0.5 | 等待数据库锁 |
+| `KSADK_DB_CLEANUP_SECONDS` | 1 | 取消、回滚及连接归还的共同清理预算 |
+
+`KSADK_HISTORY_INITIAL_EVENTS` 默认 256，范围 32–256；
+`KSADK_HISTORY_READ_CONCURRENCY` 默认每进程 4，范围 1–32。
+按实际远程数据库延迟调整；这些参数不限制 Agent 整轮运行时长，延长 replay 预算也
+不会延长普通历史 HTTP 请求。未知提交会阻断不安全的缓存降级，恢复前应先确认持久化
+事实，避免错误回放或重复副作用。
+
+LangGraph 的递归上限依次采用图的显式 `recursion_limit`、
+`KSADK_LANGGRAPH_RECURSION_LIMIT`、默认 50。递归或流错误产生脱敏的失败终态，
+保留调用身份供诊断，不在公开响应中暴露异常细节。
+
+## 配套 Web 与部署边界
+
+配套包为 `@kingsoftcloud/ksadk-web@0.3.13`。Python 制品在构建时固定并嵌入页面；
+宿主直接使用 React 组件时也应精确固定版本。生产 Hosted UI 仍需由其宿主独立构建和
+部署，发布 Python/npm 不会更新已有镜像或桌面安装包。
+
+本地 Native、浏览器样例和安装 smoke 只能证明对应的本地场景。真实模型、MCP/Skill/
+Sandbox 服务、云端鉴权、多副本恢复及旧 Agent 联调，必须以目标环境的测试结果为准。
+

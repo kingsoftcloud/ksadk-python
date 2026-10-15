@@ -34,6 +34,11 @@ class _GraphState(TypedDict, total=False):
     child_approval: dict[str, Any]
     child_approval_decision: dict[str, Any]
     event_seq: int
+    # Keep a successful fallback only for a bounded cooldown.  Permanent
+    # stickiness can silently replace the user-selected model for a long run
+    # and strand every later turn on a rate-limited fallback.
+    active_model_ref: str
+    active_model_turns: int
 
 
 @dataclass
@@ -67,6 +72,10 @@ class _EngineRun:
     policy_tool_names: set[str] = field(default_factory=set)
     exclusive_tools: bool = False
     approval_required: set[str] = field(default_factory=set)
+    # A Studio ``approve_session`` decision authorizes the remaining tool
+    # calls in this run.  Keep the grant on the run object so graph checkpoint
+    # replays do not immediately ask for the next write again.
+    session_approval_granted: bool = False
     execution_policy: Any = None
     execution_policy_resolver: Any = None
     execution_policy_request: StartRequest | None = None

@@ -5,16 +5,20 @@ ADKRunner - Google ADK 框架运行时
 支持通过环境变量配置记忆体 (ShortTermMemory / LongTermMemory)。
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import inspect
+import json
 import logging
 import os
+from contextlib import aclosing
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Mapping, Optional, cast
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Dict, Mapping, Optional, cast
 
 from opentelemetry import trace
 
@@ -27,23 +31,12 @@ from ksadk.runners.usage_accumulator import accumulate_usage
 from ksadk.runners.utils import load_agent_module
 from ksadk.sessions.continuity import ADKSessionAdapter
 
+if TYPE_CHECKING:
+    from ksadk.events.canonical import RuntimeEvent
+
 logger = logging.getLogger(__name__)
 
 tracer = trace.get_tracer(__name__)
-
-
-def _part_metadata_flag(part: Any, key: str) -> bool:
-    """读取 A2A→GenAI Part 保留下来的扩展 metadata 标记。"""
-    metadata = getattr(part, "part_metadata", None)
-    if isinstance(metadata, Mapping):
-        return bool(metadata.get(key))
-    getter = getattr(metadata, "get", None)
-    if callable(getter):
-        try:
-            return bool(getter(key))
-        except (KeyError, TypeError, ValueError):
-            return False
-    return False
 
 
 class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
@@ -333,35 +326,45 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
                 await result
 
     async def attach_runtime_handle(self, handle: Any) -> bool:
-        """Validate that a persisted ADK invocation can be resumed here.
-
-        Invocation existence is resolved by ADK when ``run_async`` receives the
-        invocation id.  This seam proves the deployment-side prerequisites
-        before Runtime v2 accepts a handle restored from session metadata.
-        """
+        """Validate the admitted run binding and its persisted native invocation."""
+        from ksadk.sessions import resolve_session_service
+        from ksadk.sessions.continuity import ConversationSessionCore
 
         if str(getattr(handle, "runtime_type", "") or "").strip().lower() != "adk":
             return False
         native_ref = getattr(handle, "native_ref", None)
         if not isinstance(native_ref, Mapping):
             return False
-        framework_ref = native_ref.get("framework_ref")
-        adk_ref = framework_ref.get("adk") if isinstance(framework_ref, Mapping) else None
-        invocation_id = str(
-            native_ref.get("invocation_id")
-            or (adk_ref.get("invocation_id") if isinstance(adk_ref, Mapping) else "")
-            or ""
-        ).strip()
-        if not invocation_id:
-            return False
-
         await self.prepare_runtime_capabilities()
         capability = self.describe_checkpoint_capability()
-        return bool(
-            capability.get("Supported")
-            and capability.get("Durable")
-            and capability.get("SharedAcrossPods")
-        )
+        if not all(capability.get(key) for key in ("Supported", "Durable", "SharedAcrossPods")):
+            return False
+        core = ConversationSessionCore(resolve_session_service())
+        binding = await core.get_binding_by_session_id(handle.session_id, "adk")
+        internal_id = str(binding.get("internal_session_id") or "")
+        native_user = str(binding.get("native_user_id") or "")
+        if not internal_id or not native_user:
+            return False
+        invocation_map = dict(binding.get("invocation_map") or {})
+        if handle.run_id not in invocation_map and internal_id != handle.session_id:
+            # Existing collectors key their invocation map by the native
+            # session. Follow only the durable external-to-native binding.
+            native_binding = await core.get_binding_by_session_id(internal_id, "adk")
+            invocation_map = dict(native_binding.get("invocation_map") or {})
+        invocation_id = str(invocation_map.get(handle.run_id) or "")
+        if not invocation_id:
+            return False
+        framework_ref = native_ref.get("framework_ref")
+        adk_ref = framework_ref.get("adk") if isinstance(framework_ref, Mapping) else None
+        hints = [native_ref.get("invocation_id")]
+        if isinstance(adk_ref, Mapping):
+            hints.append(adk_ref.get("invocation_id"))
+        if any(value is not None and str(value) != invocation_id for value in hints):
+            return False
+        session = await self._get_adk_session(user_id=native_user, session_id=internal_id)
+        if session is None:
+            return False
+        return any(event.invocation_id == invocation_id for event in session.events)
 
     def describe_checkpoint_capability(self) -> dict[str, Any]:
         resumable = getattr(self, "_resumable", False)
@@ -1599,8 +1602,10 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
 
         1. **tool-confirmation**(``actions.requested_tool_confirmations``):工具执行前
            yes/no 审批,1.34+ 均有。→ ``kind="tool"``。
-        2. **workflow HITL**(v2.0+):``event.interrupted=True`` + ``RequestInput`` 信号
-           (message/payload/response_schema)。→ ``kind="input"``。
+        2. **workflow HITL**(v2.0+):优先识别 ADK 2.5 的
+           ``adk_request_input`` 长运行 function call；同时兼容早期版本的
+           ``event.interrupted=True`` + ``requested_input`` 字段。
+           → ``kind="input"``。
 
         命中任一即返回 ``[{"approval_request_id","tool_name","args","kind","message"}, ...]``,
         否则返回 ``[]``。不引入对 v2.0 API 的硬依赖——字段缺失时跳过,不报错。
@@ -1608,27 +1613,86 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
         signals: list[dict[str, Any]] = []
         actions = getattr(event, "actions", None)
 
+        # ADK 2.5 将 RequestInput 表示为名为 ``adk_request_input`` 的长运行
+        # function call。该 event 的 ``interrupted`` 可能是 False/None，且不会
+        # 填充 requested_input，因此必须直接识别 function call。
+        explicit_request_input = False
+        try:
+            function_calls = (
+                event.get_function_calls()
+                if callable(getattr(event, "get_function_calls", None))
+                else ()
+            )
+        except Exception:
+            function_calls = ()
+        for function_call in function_calls or ():
+            if str(getattr(function_call, "name", "") or "") != "adk_request_input":
+                continue
+            call_args = getattr(function_call, "args", None)
+            args = dict(call_args) if isinstance(call_args, Mapping) else {}
+            interrupt_id = str(
+                getattr(function_call, "id", "")
+                or args.get("interruptId")
+                or args.get("interrupt_id")
+                or ""
+            )
+            if not interrupt_id:
+                continue
+            explicit_request_input = True
+            payload = args.get("payload")
+            response_schema = args.get("response_schema")
+            signal = {
+                "approval_request_id": interrupt_id,
+                "call_id": interrupt_id,
+                "tool_name": "RequestInput",
+                "args": dict(payload) if isinstance(payload, Mapping) else {},
+                "payload": payload,
+                "kind": "input",
+                "message": str(args.get("message") or args.get("prompt") or ""),
+            }
+            if isinstance(response_schema, Mapping):
+                signal["response_schema"] = dict(response_schema)
+            signals.append(signal)
+
         # 1) tool-confirmation:requested_tool_confirmations(1.34+,经 getattr 容错)
         if actions is not None:
             confirmations = getattr(actions, "requested_tool_confirmations", None)
             if confirmations:
-                for conf in confirmations:
+                entries = (
+                    confirmations.items()
+                    if isinstance(confirmations, Mapping)
+                    else ((None, conf) for conf in confirmations)
+                )
+                for native_call_id, conf in entries:
                     if conf is None:
                         continue
                     conf_id = str(
-                        getattr(conf, "id", "") or getattr(conf, "approval_request_id", "") or ""
+                        native_call_id
+                        or getattr(conf, "id", "")
+                        or getattr(conf, "approval_request_id", "")
+                        or ""
                     )
                     if not conf_id:
                         continue
+                    args = getattr(conf, "args", None)
+                    payload = getattr(conf, "payload", None)
                     signals.append(
                         {
                             "approval_request_id": conf_id,
+                            "call_id": conf_id,
                             "tool_name": str(
                                 getattr(conf, "tool_name", "")
                                 or getattr(conf, "name", "")
                                 or "tool"
                             ),
-                            "args": dict(getattr(conf, "args", None) or {}),
+                            "args": (
+                                dict(args)
+                                if isinstance(args, Mapping)
+                                else dict(payload)
+                                if isinstance(payload, Mapping)
+                                else {}
+                            ),
+                            "payload": payload,
                             "kind": "tool",
                             "message": str(
                                 getattr(conf, "message", "") or getattr(conf, "hint", "") or ""
@@ -1641,7 +1705,11 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
         try:
             from ksadk.compat.adk_compat import adk_version_at_least
 
-            if adk_version_at_least("2.0.0") and getattr(event, "interrupted", False):
+            if (
+                not explicit_request_input
+                and adk_version_at_least("2.0.0")
+                and getattr(event, "interrupted", False)
+            ):
                 # RequestInput 信号可能挂在 actions 或 event 上(字段名跨小版本未冻结,
                 # 用 getattr 容错,缺失即视为纯 interrupt 无 payload)。
                 req_input = None
@@ -1848,9 +1916,40 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             )
         else:
             new_message = None
+            if str(input_data.get("resume_payload_kind") or "") == "hitl_answer":
+                resume_call_id = str(input_data.get("resume_call_id") or "").strip()
+                if not resume_call_id:
+                    raise ValueError("ADK RequestInput resume requires resume_call_id")
+                resume_value = input_data.get("input")
+                # ADK 2.5+ unwraps a singleton ``result`` response and JSON
+                # decodes string values.  Serializing every typed answer once
+                # preserves strings such as ``"false"`` as strings while also
+                # preserving objects, arrays, false, zero and null exactly.
+                response = {
+                    "result": json.dumps(
+                        resume_value,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                }
+                new_message = types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            function_response=types.FunctionResponse(
+                                id=resume_call_id,
+                                name="adk_request_input",
+                                response=response,
+                            )
+                        )
+                    ],
+                )
 
         ksadk_invocation_id = str(input_data.get("invocation_id") or input_data.get("run_id") or "")
 
+        canonical_session_id = str(input_data.get("session_id") or session_id)
         checkpoint_run_id = (
             str(input_data.get("run_id") or "").strip()
             if is_resume and str(input_data.get("run_id") or "").strip()
@@ -1872,30 +1971,35 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
                 )
             adk_invocation_id = await self._resolve_resume_invocation_id(
                 input_data=input_data,
-                session_id=session_id,
+                session_id=canonical_session_id,
                 ksadk_invocation_id=ksadk_invocation_id,
             )
             logger.info("Resuming ADK run with adk_invocation_id: %s", adk_invocation_id)
             run_kwargs["invocation_id"] = adk_invocation_id
+            if new_message is not None:
+                run_kwargs["new_message"] = new_message
         else:
             run_kwargs["new_message"] = new_message
             run_kwargs["state_delta"] = self._build_state_delta(input_data) or None
 
         if self._runner is None:
             raise RuntimeError("ADK runner is not initialized")
+        from ksadk.runners._adk_a2a_stream import preserve_a2a_stream_identity
+
+        preserve_a2a_stream_identity(self._agent)
         events_async = self._runner.run_async(**run_kwargs)
 
         if ksadk_invocation_id and self._resumable:
             wrapped_async = self._collect_adk_invocation_id(
                 events_async,
                 ksadk_invocation_id=ksadk_invocation_id,
-                session_id=session_id,
+                session_id=canonical_session_id,
                 checkpoint_run_id=checkpoint_run_id,
             )
         else:
             wrapped_async = self._collect_adk_invocation_id_if_present(
                 events_async,
-                session_id=session_id,
+                session_id=canonical_session_id,
                 ksadk_invocation_id=ksadk_invocation_id,
             )
         return cast(AsyncIterator[Any], wrapped_async)
@@ -2003,12 +2107,26 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
                 result.setdefault("metadata", {})["last_usage"] = last_usage
             return result
 
-    async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+    async def stream_canonical_events(
+        self, input_data: Dict[str, Any]
+    ) -> AsyncGenerator[RuntimeEvent, None]:
         """流式调用 ADK Agent
 
-        使用 StreamingMode.SSE 启用真正的流式 token 输出
+        使用 StreamingMode.SSE 输出 identity-aware RuntimeEvent v2。
         """
         from ksadk.compat.adk_compat import RunConfig, StreamingMode
+        from ksadk.events.run_authority import current_run_event_authority
+        from ksadk.runners._adk_canonical_stream import canonical_events
+
+        run_id = str(input_data.get("run_id") or input_data.get("invocation_id") or "")
+        authority = current_run_event_authority()
+        if authority is not None:
+            authority.require_session(input_data.get("session_id") or authority.session_id)
+            # The ADK invocation/checkpoint ID remains native in input_data.
+            # Canonical root and managed children share the durable Kernel run.
+            run_id = authority.run_id
+        if not run_id:
+            raise ValueError("ADK canonical stream requires run_id or invocation_id")
 
         # 判断是否为恢复调用 — 提前判断以避免将 resume_input dict 当作 string 处理
         is_resume = bool(input_data.get("checkpoint_resume"))
@@ -2056,250 +2174,37 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
                 is_resume=is_resume,
                 run_config=run_config,
             )
+            if getattr(self, "_managed_a2a_bootstrap", None) is not None:
+                from ksadk.a2a.adk_runtime import managed_native_events
 
-            accumulated_text = ""
-            usage: dict[str, Any] = {}
-            last_usage: dict[str, Any] = {}
-            # handoff/sub-agent(如 RemoteA2aAgent)回复事件 partial=None,不进上面
-            # partial 分支;且远端 agent 经 A2A 流式返回时,ADK 会产出多个"累积快照"
-            # 事件(后一个含前一个内容)。按 author 记录已输出快照,只补发增量去重。
-            sub_agent_snapshots: dict[str, str] = {}
-            sub_agent_thought_snapshots: dict[str, str] = {}
-            sub_agent_last_output_kind: dict[str, str] = {}
-            top_agent_name = getattr(self._agent, "name", None)
+                wrapped_async = managed_native_events(self, wrapped_async)
+            async with (
+                aclosing(wrapped_async),
+                aclosing(
+                    canonical_events(
+                        self,
+                        wrapped_async,
+                        run_id=run_id,
+                        session_id=session_id,
+                        span=span,
+                    )
+                ) as events,
+            ):
+                async for event in events:
+                    yield event
 
-            async for event in wrapped_async:
-                event_usage = self._extract_event_usage(event)
-                if event_usage:
-                    usage = accumulate_usage(usage, event_usage)
-                    last_usage = event_usage  # 保留最后一个非空
-                # Only yield text delta if event is partial to avoid duplication of final summary
-                if hasattr(event, "content") and event.content and getattr(event, "partial", False):
-                    if hasattr(event.content, "parts"):
-                        author = getattr(event, "author", None)
-                        is_sub_agent = bool(author and top_agent_name and author != top_agent_name)
-                        author_key = str(author)
-                        for part in event.content.parts:
-                            if hasattr(part, "text") and part.text:
-                                is_thought = getattr(part, "thought", False)
-                                replace_snapshot = bool(
-                                    is_sub_agent
-                                    and _part_metadata_flag(part, "ksadk_output_snapshot")
-                                )
-                                output_delta = part.text
-                                # 思考内容只作为 thinking delta 流出,不计入最终输出,
-                                # 否则最终回复会把思考过程再重复一遍(与 invoke() 语义对齐)。
-                                if is_thought and is_sub_agent:
-                                    if sub_agent_last_output_kind.get(author_key) == "text":
-                                        # 正文之后的 thought 是一个新的 reasoning segment。
-                                        sub_agent_thought_snapshots[author_key] = ""
-                                    previous_thought = sub_agent_thought_snapshots.get(
-                                        author_key, ""
-                                    )
-                                    if part.text.startswith(previous_thought):
-                                        output_delta = part.text[len(previous_thought) :]
-                                        sub_agent_thought_snapshots[author_key] = part.text
-                                    else:
-                                        sub_agent_thought_snapshots[author_key] = (
-                                            previous_thought + part.text
-                                        )
-                                elif not is_thought:
-                                    accumulated_text = (
-                                        part.text
-                                        if replace_snapshot
-                                        else accumulated_text + part.text
-                                    )
-                                    # sub-agent(RemoteA2aAgent)增量也累积进快照,供后续
-                                    # completed 全文消息(同一份结果)在 handoff 分支去重。
-                                    if is_sub_agent:
-                                        sub_agent_snapshots[author_key] = (
-                                            part.text
-                                            if replace_snapshot
-                                            else sub_agent_snapshots.get(author_key, "") + part.text
-                                        )
-                                # 标记思考内容，前端可以选择是否展示
-                                if output_delta:
-                                    output_chunk: dict[str, Any] = {
-                                        "delta": output_delta,
-                                        "type": "thinking" if is_thought else "text",
-                                    }
-                                    if replace_snapshot and not is_thought:
-                                        output_chunk["replace"] = True
-                                    yield output_chunk
-                                if is_sub_agent:
-                                    sub_agent_last_output_kind[author_key] = (
-                                        "thinking" if is_thought else "text"
-                                    )
-                # handoff/sub-agent 回复:partial 为 None/False,上面分支跳过,这里补上。
-                elif hasattr(event, "content") and event.content:
-                    author = getattr(event, "author", None)
-                    if (
-                        author
-                        and top_agent_name
-                        and author != top_agent_name
-                        and hasattr(event.content, "parts")
-                    ):
-                        author_key = str(author)
-                        for part in event.content.parts:
-                            if (
-                                hasattr(part, "text")
-                                and part.text
-                                and getattr(part, "thought", False)
-                            ):
-                                # A2A's terminal artifact is converted by ADK to
-                                # partial=False.  Once that sub-agent has already
-                                # emitted response text, a trailing thought here is
-                                # a terminal snapshot/replacement (not a new
-                                # interleaved reasoning step).  Showing it makes
-                                # the UI appear to end at "thinking" and hides the
-                                # just-emitted final response.
-                                if sub_agent_last_output_kind.get(author_key) == "text":
-                                    continue
-                                # RemoteA2aAgent 将 last_chunk=True 映射成
-                                # partial=False；这可能是一个此前 partial thought
-                                # 的终态快照。只补发新增内容，避免正文之后再显示一遍
-                                # 相同的思考块；若此前没有 partial thought，仍完整透传。
-                                previous_thought = sub_agent_thought_snapshots.get(author_key, "")
-                                if part.text.startswith(previous_thought):
-                                    thought_delta = part.text[len(previous_thought) :]
-                                    sub_agent_thought_snapshots[author_key] = part.text
-                                elif previous_thought.startswith(part.text):
-                                    thought_delta = ""
-                                else:
-                                    thought_delta = part.text
-                                    sub_agent_thought_snapshots[author_key] = (
-                                        previous_thought + part.text
-                                    )
-                                if thought_delta:
-                                    yield {"delta": thought_delta, "type": "thinking"}
-                        snapshot = ""
-                        replace_snapshot = False
-                        for part in event.content.parts:
-                            if (
-                                hasattr(part, "text")
-                                and part.text
-                                and not getattr(part, "thought", False)
-                            ):
-                                snapshot += part.text
-                                replace_snapshot = replace_snapshot or _part_metadata_flag(
-                                    part,
-                                    "ksadk_output_snapshot",
-                                )
-                        if snapshot:
-                            prev = sub_agent_snapshots.get(author_key, "")
-                            if replace_snapshot:
-                                delta = snapshot
-                                sub_agent_snapshots[author_key] = snapshot
-                                accumulated_text = snapshot
-                            elif snapshot.startswith(prev):
-                                # 累计快照(如 completed 全文):只补发超出已累积的部分;
-                                # 若增量已发全,delta 为空,避免 completed 再渲染一遍。
-                                delta = snapshot[len(prev) :]
-                                sub_agent_snapshots[author_key] = snapshot
-                            else:
-                                # final 增量(小块):追加进累积,不覆盖。
-                                delta = snapshot
-                                sub_agent_snapshots[author_key] = prev + snapshot
-                            if delta:
-                                if not replace_snapshot:
-                                    accumulated_text += delta
-                                output_chunk = {"delta": delta, "type": "text"}
-                                if replace_snapshot:
-                                    output_chunk["replace"] = True
-                                yield output_chunk
+    async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+        """Project canonical ADK events to the existing legacy chunk stream."""
+        import uuid
 
-                # 处理工具调用事件 — ADK 通过 event.content.parts[].function_call
-                # 发出工具调用（即 event.get_function_calls()），而非
-                # event.actions.tool_calls。此处需同时检测两种路径：
-                # (a) get_function_calls() — ADK 标准 Event 模型
-                # (b) actions.tool_calls — 某些旧版或自定义 runner 可能使用
-                emitted_tool_call_ids: set[str] = set()
-                if hasattr(event, "get_function_calls") and event.get_function_calls():
-                    for fc in event.get_function_calls():
-                        fc_id = getattr(fc, "id", "") or getattr(fc, "name", "unknown")
-                        if fc_id in emitted_tool_call_ids:
-                            continue
-                        emitted_tool_call_ids.add(fc_id)
-                        # fc.args 可能是 dict 或 None；确保可序列化
-                        fc_args = getattr(fc, "args", None) or {}
-                        if not isinstance(fc_args, dict):
-                            try:
-                                import json as _json
+        from ksadk.runners._adk_canonical_stream import legacy_chunks
 
-                                fc_args = _json.loads(fc_args) if isinstance(fc_args, str) else {}
-                            except Exception:
-                                fc_args = {}
-                        yield {
-                            "type": "tool_call",
-                            "tool_call_id": str(fc_id),
-                            "tool_name": getattr(fc, "name", "unknown"),
-                            "tool_args": fc_args,
-                        }
-                if hasattr(event, "actions") and event.actions:
-                    tool_calls = getattr(event.actions, "tool_calls", None)
-                    if tool_calls:
-                        for tool_call in tool_calls:
-                            tc_name = getattr(tool_call, "name", "unknown")
-                            tc_id = getattr(tool_call, "id", "") or tc_name
-                            if tc_id in emitted_tool_call_ids:
-                                continue
-                            emitted_tool_call_ids.add(tc_id)
-                            yield {
-                                "type": "tool_call",
-                                "tool_call_id": str(tc_id),
-                                "tool_name": tc_name,
-                                "tool_args": getattr(tool_call, "input", {}),
-                            }
-
-                # ADK 原生审批 surface(tool-confirmation + v2.0 workflow HITL):
-                # 翻译成统一 interrupt chunk,经 runtime:4645 既有 approval_request 通道
-                # 消费 → 审批卡。能力探测兼容 1.34.x→2.x,缺字段则跳过。
-                emitted_approval_ids: set[str] = set()
-                for signal in self._extract_approval_signals(event):
-                    aid = signal.get("approval_request_id", "")
-                    if not aid or aid in emitted_approval_ids:
-                        continue
-                    emitted_approval_ids.add(aid)
-                    yield {
-                        "type": "interrupt",
-                        "interrupt_info": signal,
-                        "session_id": session_id,
-                    }
-
-                # 处理工具返回结果 — ADK 通过 event.content.parts[].function_response
-                # 发出工具执行结果。当工具执行完毕后 ADK 会产生一个包含
-                # function_response 的事件，此处将其转为 tool_result 语义事件，
-                # 让前端可以感知"某个工具已完成执行"并展示结果。
-                if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
-                    for part in event.content.parts:
-                        fr = getattr(part, "function_response", None)
-                        if fr is not None:
-                            fr_name = getattr(fr, "name", "unknown")
-                            fr_id = getattr(fr, "id", "") or fr_name
-                            fr_output = getattr(fr, "response", None) or {}
-                            if not isinstance(fr_output, dict):
-                                try:
-                                    import json as _json2
-
-                                    if isinstance(fr_output, str):
-                                        fr_output = _json2.loads(fr_output)
-                                    else:
-                                        fr_output = {"raw": str(fr_output)}
-                                except Exception:
-                                    fr_output = {"raw": str(fr_output)}
-                            yield {
-                                "type": "tool_result",
-                                "tool_call_id": str(fr_id),
-                                "tool_name": fr_name,
-                                "tool_output": fr_output,
-                            }
-
-            # Set output.value for Langfuse top-level output display
-            span.set_attribute("output.value", accumulated_text[:5000] if accumulated_text else "")
-            span.set_attribute("agent.output", accumulated_text[:500])
-            final_chunk: dict[str, Any] = {"output": accumulated_text, "type": "final"}
-            if usage:
-                final_chunk["usage"] = usage
-                # last_usage = 最后一次 LLM 调用快照(input_tokens = 当前上下文窗口占用)
-                final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-            yield final_chunk
+        canonical_input = dict(input_data)
+        canonical_input.setdefault(
+            "run_id",
+            canonical_input.get("invocation_id") or str(uuid.uuid4()),
+        )
+        async with aclosing(self.stream_canonical_events(canonical_input)) as events:
+            async with aclosing(legacy_chunks(events)) as chunks:
+                async for chunk in chunks:
+                    yield chunk

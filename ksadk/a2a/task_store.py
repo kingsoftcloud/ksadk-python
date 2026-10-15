@@ -19,6 +19,8 @@ from a2a.server import models as _sdk_models
 from a2a.server.context import ServerCallContext
 from a2a.server.routes.common import DefaultServerCallContextBuilder
 from a2a.server.tasks import DatabaseTaskStore
+from a2a.types import Task, TaskState, TaskStatus
+from sqlalchemy import update
 from sqlalchemy.exc import SAWarning
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from starlette.requests import Request
@@ -73,6 +75,41 @@ class _KsADKDatabaseTaskStore(DatabaseTaskStore):
             owner_resolver=owner_resolver,
         )
         self.task_model = _task_model(table_name)
+
+
+    async def save_confirmed_cancellation(
+        self, task: Task, status: TaskStatus, context: ServerCallContext,
+    ) -> Task | None:
+        """Repair a lost cancel event without replacing a concurrently committed terminal."""
+        if status.state != TaskState.TASK_STATE_CANCELED:
+            raise ValueError("Only confirmed cancellation can use this repair")
+        return await self.save_confirmed_terminal(task, status, context)
+
+    async def save_confirmed_terminal(
+        self, task: Task, status: TaskStatus, context: ServerCallContext,
+    ) -> Task | None:
+        """Apply an authoritative terminal status without replacing a newer terminal."""
+        if status.state not in {TaskState.TASK_STATE_FAILED, TaskState.TASK_STATE_CANCELED,
+                                TaskState.TASK_STATE_COMPLETED}:
+            raise ValueError("Only confirmed terminal states can use this repair")
+        await self._ensure_initialized()
+        owner = self.owner_resolver(context)
+        canceled = Task()
+        canceled.CopyFrom(task)
+        canceled.status.CopyFrom(status)
+        record = self._to_orm(canceled, owner)
+        # Guard inside UPDATE, rather than a separate read/check/write. Update only
+        # status fields so concurrent artifacts/history cannot be replaced by a cache.
+        active = ["TASK_STATE_SUBMITTED", "TASK_STATE_WORKING",
+                  "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED"]
+        async with self.async_session_maker.begin() as session:
+            await session.execute(update(self.task_model).where(
+                self.task_model.id == task.id,
+                self.task_model.owner == owner,
+                self.task_model.protocol_version == "1.0",
+                self.task_model.status["state"].as_string().in_(active),
+            ).values(status=record.status, last_updated=record.last_updated))
+        return await self.get(task.id, context)
 
 
 def _first(state: dict[str, Any], *keys: str) -> Optional[str]:

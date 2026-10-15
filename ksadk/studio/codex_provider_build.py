@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from pydantic import Field
 
@@ -218,6 +220,10 @@ class CodexProviderBuildManager:
             and record.provider_bundle.bundle_digest == bundle.bundle_digest
             and record.provider_bundle.registration_digest == registration_digest
         ]
+        if not matches:
+            repaired = self._repair_registration(bundle, marker, registration_digest)
+            if repaired is not None:
+                matches = [repaired]
         if len(matches) != 1:
             raise StudioError(
                 "CODEX_PROVIDER_BUILD_MISMATCH",
@@ -229,3 +235,62 @@ class CodexProviderBuildManager:
         # Retain native bootstrap, credentials, exact build HOME and workspace
         # from the existing resolver. No cloud schema or second launch policy.
         return self.studio.codex_runs.resolve(record.id).launch_context
+
+    def _repair_registration(self, bundle, marker: str, registration_digest: str):
+        """Re-register a rebuilt Provider Bundle after any upgrade.
+
+        A Studio upgrade may change the plugin composition (new channel
+        plugin, updated DSH toolchain), so ``ensure_current_build`` rebuilds
+        the Agent Bundle with a fresh digest. The rebuilt bundle may carry a
+        *different* manifest marker (plugin composition changed) but the same
+        provider registration (the user's consent to the Codex Provider is
+        unchanged). Without auto-repair every conversation fails until the
+        Agent is manually rebuilt.
+
+        Repair is allowed when the consent anchor is unchanged: a prior record
+        exists under the same provider registration digest. The repair
+        registers the rebuilt bundle under that unchanged consent, regardless
+        of whether the manifest changed. If the provider registration itself
+        changed (different consent), the caller keeps failing into the
+        explicit re-authorization flow.
+        """
+        records = self.studio.codex_builds.list()
+        prior = [
+            record
+            for record in records
+            if record.provider_bundle is not None
+            and record.provider_bundle.registration_digest == registration_digest
+        ]
+        if not prior:
+            return None
+        build_id = self._build_id_for_bundle(bundle)
+        if build_id is None:
+            return None
+        # Use the most recent prior record (same provider registration, any
+        # manifest/fingerprint) to seed the new reference. The consent anchor
+        # is the provider registration digest, not the manifest — installing a
+        # new plugin changes the manifest but not the provider consent.
+        old = prior[0]
+        reference = CodexProviderBuildReference(
+            provider_ref=CODEX_PROVIDER_REF,
+            registration_digest=registration_digest,
+            bundle_build_id=build_id,
+            bundle_digest=bundle.bundle_digest,
+        )
+        repaired = old.model_copy(
+            update={
+                "id": f"build_{uuid4().hex}",
+                "provider_bundle": reference,
+                "created_at": datetime.now(tz=timezone.utc),
+            }
+        )
+        return self.studio.codex_builds.save(repaired)
+        return None
+
+    def _build_id_for_bundle(self, bundle) -> str | None:
+        """Resolve the Build id that produced this bundle root."""
+
+        for build in self.studio.builds.list():
+            if build.bundle_digest == bundle.bundle_digest:
+                return build.id
+        return None

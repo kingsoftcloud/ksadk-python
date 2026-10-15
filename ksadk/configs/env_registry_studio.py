@@ -37,9 +37,31 @@ STUDIO_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_STUDIO_TEAMS_DEFAULT",
         "studio",
-        "Default-enable the Teams plugin after HTTP startup (1=on, 0=off).",
+        "Default-enable Teams after HTTP startup; 0/false/no/off disables discovery.",
         "1",
-        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_NATIVE_DEFAULT", "studio",
+        "Local Studio Harness engine policy: 1 selects Native by default; 0 selects "
+        "the optional Managed compatibility host. Only exact 0/1 values are accepted.",
+        "1 for ordinary Studio; 0 with explicit Agent selection or injected legacy host",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_NATIVE_AGENT_IDS", "studio",
+        "Comma-separated exact local Agent IDs selecting Native in compatibility mode; "
+        "presence disables the ordinary Native default when DEFAULT is unset.",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_NATIVE_DURABLE", "studio",
+        "Local Native ledger storage: 1 selects SQLite; 0 selects process memory. "
+        "Only exact 0/1 values are accepted; durability requires Native to be selected.",
+        "1 with the ordinary Native default; 0 with explicit compatibility selection",
+    ),
+    EnvVarSpec(
+        "KSADK_REASONING_ONLY_ACTION_BUDGET_CHARS", "studio",
+        "Maximum streamed reasoning characters before action in a tool-capable "
+        "Studio provider turn; clamped to 1024..65536, invalid values use the default.",
+        "8192",
     ),
     EnvVarSpec(
         "KSADK_STUDIO_NO_SECURITY",

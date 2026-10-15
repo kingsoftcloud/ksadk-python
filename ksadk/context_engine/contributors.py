@@ -14,12 +14,46 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
+from ksadk.context_engine.instruction_authority import validate_instruction_authority
 from ksadk.context_engine.models import ContextItem, ContextTrustLevel
 
 logger = logging.getLogger(__name__)
+
+# Keep an uncooperative producer owned until it settles. Its late value is
+# drained, never admitted into a collection that has already timed out.
+_PENDING_CONTRIBUTOR_TASKS: set[asyncio.Task] = set()
+
+
+def _drain_contributor(task: asyncio.Task) -> None:
+    _PENDING_CONTRIBUTOR_TASKS.discard(task)
+    with suppress(asyncio.CancelledError, Exception):
+        task.exception()
+
+
+async def _read_contribution(
+    callback: Callable[[ContextContributionRequest], Awaitable[list[ContextItem]]],
+    request: ContextContributionRequest,
+    *,
+    deadline: float,
+) -> list[ContextItem]:
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(callback(request))
+    _PENDING_CONTRIBUTOR_TASKS.add(task)
+    task.add_done_callback(_drain_contributor)
+    try:
+        done, _ = await asyncio.wait((task,), timeout=max(0, deadline - loop.time()))
+        if not done or loop.time() >= deadline:
+            raise asyncio.TimeoutError
+        return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
 
 ContributorFailureMode = Literal["skip", "warn", "fail"]
 ContributorCacheability = Literal["stable", "turn", "none"]
@@ -278,8 +312,10 @@ class ContributionResult:
 
 
 def _admit_contribution_items(
-    contributor: ContextContributor,
     items: object,
+    *,
+    capabilities: ContributorCapabilities,
+    contributor_id: str,
 ) -> tuple[list[ContextItem], str | None]:
     """Validate one Contributor result and enforce its declared token ceiling.
 
@@ -292,8 +328,10 @@ def _admit_contribution_items(
 
     if not isinstance(items, list) or not all(isinstance(item, ContextItem) for item in items):
         raise TypeError("ContextContributor must return a list of ContextItem values")
+    # Admission owns a detached snapshot, including nested content/metadata.
+    # A producer retaining its objects cannot rewrite the granted plan later.
+    items = deepcopy(items)
 
-    capabilities = contributor.capabilities
     if capabilities.max_tokens < 0:
         raise ValueError("ContextContributor max_tokens cannot be negative")
     if capabilities.timeout_ms <= 0:
@@ -314,6 +352,9 @@ def _admit_contribution_items(
             raise ValueError(
                 "ContextContributor cannot elevate item trust above its registered level"
             )
+        validate_instruction_authority(
+            kind=item.kind, trust_level=item.trust_level, metadata=item.metadata
+        )
         if item.estimated_tokens < 0:
             raise ValueError("ContextContributor estimated_tokens cannot be negative")
         if used_tokens + item.estimated_tokens > capabilities.max_tokens:
@@ -325,7 +366,7 @@ def _admit_contribution_items(
     warning = None
     if omitted:
         warning = (
-            f"{contributor.id()}: omitted {omitted} context item(s) that exceeded "
+            f"{contributor_id}: omitted {omitted} context item(s) that exceeded "
             f"the {capabilities.max_tokens}-token contributor budget"
         )
     return admitted, warning
@@ -345,32 +386,54 @@ async def run_contributors(
     - 返回的 ContextItem 总 token 受各自 ``max_tokens`` 约束（Planner 再做全局预算）。
     """
 
-    async def _run_one(c: ContextContributor) -> tuple[str, list[ContextItem], str, str | None]:
-        timeout = max(c.capabilities.timeout_ms, 1) / 1000.0
-        try:
-            raw_items = await asyncio.wait_for(c.contribute(request), timeout=timeout)
-            items, budget_warning = _admit_contribution_items(c, raw_items)
-        except asyncio.TimeoutError:
-            return c.id(), [], "timeout", f"{c.id()}: timeout"
-        except Exception as exc:  # noqa: BLE001
-            if c.capabilities.failure_mode == "fail":
-                raise
-            warning = f"{c.id()}: {exc}" if c.capabilities.failure_mode == "warn" else None
-            return c.id(), [], "error", warning
-        return c.id(), items, "ok", budget_warning
+    # Freeze every registration before dispatching any producer. Reading its
+    # mutable owner again after await would let it replace the original grant.
+    request_snapshot = deepcopy(request)
+    registered = tuple(
+        (c.contribute, c.capabilities, c.id(), deepcopy(request_snapshot)) for c in contributors
+    )
 
-    results = await asyncio.gather(*[_run_one(c) for c in contributors], return_exceptions=True)
+    async def _run_one(
+        callback: Callable[[ContextContributionRequest], Awaitable[list[ContextItem]]],
+        capabilities: ContributorCapabilities,
+        contributor_id: str,
+        scoped_request: ContextContributionRequest,
+    ) -> tuple[str, list[ContextItem], str, str | None]:
+        timeout = max(capabilities.timeout_ms, 1) / 1000.0
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            raw_items = await _read_contribution(callback, scoped_request, deadline=deadline)
+            items, budget_warning = _admit_contribution_items(
+                raw_items, capabilities=capabilities, contributor_id=contributor_id
+            )
+            if loop.time() >= deadline:
+                raise asyncio.TimeoutError
+        except asyncio.TimeoutError:
+            return contributor_id, [], "timeout", f"{contributor_id}: timeout"
+        except Exception as exc:  # noqa: BLE001
+            if capabilities.failure_mode == "fail":
+                raise
+            warning = (
+                f"{contributor_id}: contributor_failed ({type(exc).__name__})"
+                if capabilities.failure_mode == "warn" else None
+            )
+            return contributor_id, [], "error", warning
+        return contributor_id, items, "ok", budget_warning
+
+    results = await asyncio.gather(*[_run_one(*binding) for binding in registered],
+                                   return_exceptions=True)
     all_items: list[ContextItem] = []
     status: dict[str, str] = {}
     warnings: list[str] = []
-    for contributor, r in zip(contributors, results):
+    for (_, capabilities, contributor_id, _), r in zip(registered, results):
         if isinstance(r, BaseException):
             if isinstance(r, asyncio.CancelledError):
                 raise r
-            if contributor.capabilities.failure_mode == "fail":
+            if capabilities.failure_mode == "fail":
                 raise r
-            warnings.append(f"{contributor.id()}: {r}")
-            status[contributor.id()] = "error"
+            warnings.append(f"{contributor_id}: contributor_failed ({type(r).__name__})")
+            status[contributor_id] = "error"
             continue
         cid, items, st, warn = r
         status[cid] = st

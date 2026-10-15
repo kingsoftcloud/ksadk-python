@@ -43,10 +43,17 @@ class LangGraphInteractionProvider:
         thread_id = str(native_target.get("thread_id") or context.handle.session_id)
         context.handle.native_ref.setdefault("thread_id", thread_id)
         payload_kind = "approval_decision" if record.kind == "approval" else "hitl_answer"
+        data = submission.response
+        if record.kind == "approval" and (data is None or data == {}):
+            if submission.action not in {"approve", "reject"}:
+                raise ValueError("langgraph approval requires approve or reject")
+            # Server-admitted approvals carry their decision in action. Preserve
+            # explicit native response bodies used by existing integrations.
+            data = {"decisions": [{"type": submission.action}]}
         payload = ResumePayload(
             kind=payload_kind,
             call_id=str(native_target.get("call_id") or record.interaction_id),
-            data=submission.response,
+            data=data,
             session_context=context.session_context,
         )
         return await context.adapter.resume(

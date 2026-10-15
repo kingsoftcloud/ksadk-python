@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.8.5"
+version = "0.8.6"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [
     {name = "KsADK Team", email = "xiayu@kingsoft.com"}
@@ -17,8 +17,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -83,12 +81,9 @@ dependencies = [
     # Studio 是基础产品入口；即使只使用 Codex/DSH Provider，启动时也会
     # 枚举已有 ADK Agent。因此 google-adk 不能再只存在于可选 extra。
     "google-adk>=1.34.0,<3.0.0",
-    # LangChain
-    "langchain>=1.3.14,<2.0.0",
-    "langchain-core>=1.5.0,<2.0.0",
-    # LangGraph - 使用兼容的版本范围
+    # 非 Studio 默认 registry 仍提供 ManagedHarnessRuntimeAdapter，依赖 LangGraph。
+    # Studio Native 不导入此框架；兼容入口的本地持久化仍需 SQLite saver。
     "langgraph>=1.2.0,<1.3.0",
-    # KsADK Harness 的本地 checkpoint saver（LangGraph 已拆分为独立发行包）
     "langgraph-checkpoint-sqlite>=2.0.0",
     # ========= 可观测性 (默认安装) =========
     # goal-00: 由 ==1.37.0 放宽到 [1.39, 1.41.1],取 adk 1.34.x(otel<=1.41.1)与
@@ -172,6 +167,7 @@ agui = [
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-xdist>=3.0.0",
     "fastmcp>=2.0.0",
     "build>=1.0.0",
     "twine>=5.0.0",
@@ -210,16 +206,17 @@ ksadk_runtime_common = ["schemas/*.json"]
 
 [tool.black]
 line-length = 100
-target-version = ['py310']
+target-version = ['py312']
 
 [tool.ruff]
 line-length = 100
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 

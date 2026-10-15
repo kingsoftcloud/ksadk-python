@@ -43,6 +43,35 @@ describe("resolveMemoryRecallPresentation", () => {
 });
 
 describe("ChatRunPanel session scope", () => {
+  it("shows a finished Native run without acceptance evidence as unverified", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [{
+          id: "native-unverified",
+          agentId: "agent-1",
+          sessionId: "session-native",
+          traceId: "trace-native",
+          model: "model-1",
+          status: "COMPLETED",
+          verificationOutcome: "unverified",
+        }],
+      }),
+      text: async () => "",
+    } as Response);
+
+    render(
+      <ChatRunPanel
+        agentId="agent-1"
+        sessionId="session-native"
+        onOpenTrace={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(await screen.findByText("已结束 · 未验收")).toBeInTheDocument();
+  });
+
   it("does not show another session's latest run for a new empty session", async () => {
     vi.mocked(apiFetch).mockResolvedValue({
       ok: true,

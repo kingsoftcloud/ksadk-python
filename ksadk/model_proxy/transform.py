@@ -7,6 +7,7 @@ codex_responses_sse.rs,用 Python 重写。本模块只做纯函数/纯状态机
 
 import json
 import time
+from dataclasses import dataclass
 
 
 class UnsupportedToolsError(ValueError):
@@ -246,7 +247,30 @@ _EFFORT_ALLOWED_SETS = {
 _ALLOWED_RANK = {**_EFFORT_RANK, "max": 5}
 
 
-def remap_reasoning_effort(model, effort):
+@dataclass(frozen=True)
+class ReasoningEffortPolicy:
+    """Immutable inputs to the versioned effort projection algorithm."""
+
+    version: str
+    ranks: tuple[tuple[str, int], ...]
+    allowed_ranks: tuple[tuple[str, int], ...]
+    allowed_sets: tuple[tuple[str, tuple[str, ...]], ...]
+    caps: tuple[tuple[str, str], ...]
+
+
+def reasoning_effort_policy() -> ReasoningEffortPolicy:
+    return ReasoningEffortPolicy(
+        version="model-effort-map/v1",
+        ranks=tuple(_EFFORT_RANK.items()),
+        allowed_ranks=tuple(_ALLOWED_RANK.items()),
+        allowed_sets=tuple(
+            (prefix, tuple(values)) for prefix, values in _EFFORT_ALLOWED_SETS.items()
+        ),
+        caps=tuple(_EFFORT_CAP_PREFIXES),
+    )
+
+
+def remap_reasoning_effort(model, effort, *, policy: ReasoningEffortPolicy | None = None):
     """把 reasoning_effort 向上取整到该模型的合法值集合(值域裁剪)。
 
     规则:档位 >= 入参的最近合法档;无更高档则取集合最高档;未知档位取集合最低档。
@@ -257,33 +281,37 @@ def remap_reasoning_effort(model, effort):
     """
     if not isinstance(model, str) or not isinstance(effort, str):
         return effort
+    policy = policy or reasoning_effort_policy()
+    allowed_ranks = dict(policy.allowed_ranks)
     allowed = None
-    for prefix, vals in _EFFORT_ALLOWED_SETS.items():
+    for prefix, vals in policy.allowed_sets:
         if model.startswith(prefix):
             allowed = vals
             break
     if not allowed or effort in allowed:
         return effort
-    r = _ALLOWED_RANK.get(effort)
+    r = allowed_ranks.get(effort)
     if r is None:
         return allowed[0]
-    higher = [v for v in allowed if _ALLOWED_RANK[v] >= r]
+    higher = [v for v in allowed if allowed_ranks[v] >= r]
     return higher[0] if higher else allowed[-1]
 
 
-def clamp_reasoning_effort(model, effort):
+def clamp_reasoning_effort(model, effort, *, policy: ReasoningEffortPolicy | None = None):
     """把 reasoning_effort 适配到上游模型:先做值域裁剪,再做上限钳制。
 
     值域裁剪(remap_reasoning_effort)处理非单调值域(如 glm-5.3-flash 只认
     low/high/max);上限钳制处理单调超 cap(如 qwen3.7 xhigh→high)。
     未知档位/未知模型族原样返回(不做发明式映射)。
     """
-    effort = remap_reasoning_effort(model, effort)
-    if not isinstance(effort, str) or effort not in _EFFORT_RANK:
+    policy = policy or reasoning_effort_policy()
+    effort = remap_reasoning_effort(model, effort, policy=policy)
+    ranks = dict(policy.ranks)
+    if not isinstance(effort, str) or effort not in ranks:
         return effort
-    for prefix, cap in _EFFORT_CAP_PREFIXES:
+    for prefix, cap in policy.caps:
         if isinstance(model, str) and model.startswith(prefix):
-            if _EFFORT_RANK[effort] > _EFFORT_RANK[cap]:
+            if ranks[effort] > ranks[cap]:
                 return cap
             return effort
     return effort

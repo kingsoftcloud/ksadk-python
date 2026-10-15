@@ -21,6 +21,7 @@ from a2a.types import AgentCard
 from google.protobuf.json_format import ParseDict, ParseError
 
 from ksadk.a2a.ids import require_a2a_resource_id
+from ksadk.common.cloud_headers import build_cloud_headers
 from ksadk.common.kop_client import KOPClient, KOPError
 
 ENV_A2A_CONTROL_PLANE_URL = "KSADK_A2A_CONTROL_PLANE_URL"
@@ -44,9 +45,13 @@ A2A_OPERATIONS = frozenset(get_args(A2AOperation))
 A2AInternalAction = Literal[
     "ListA2ASpaceAgents",
     "PrepareA2ACall",
+    "SubmitA2AInboundMessage",
+    "CancelA2AInboundTask",
     "PrepareA2ATaskOperation",
     "BindA2ARemoteTask",
     "AppendA2ATaskEvents",
+    "AppendA2AProductKernelFacts",
+    "ListA2AProductKernelTasks",
     "ResolveA2ACredential",
 ]
 A2A_INTERNAL_ACTIONS = frozenset(get_args(A2AInternalAction))
@@ -107,18 +112,42 @@ class FileWorkloadTokenProvider(WorkloadTokenProvider):
             raise ValueError(f"invalid workload token audience: {audience!r}")
         path = self._token_dir / f"{audience}.jwt"
         if path.is_symlink():
-            raise RuntimeError(
-                f"workload token for audience {audience!r} must not be a symlink: {path}"
-            )
+            # AtomicWriter rotates ..data atomically. Only accept its exact key
+            # layout, and open the resolved generation without following links.
+            if os.readlink(path) != f"..data/{path.name}":
+                raise RuntimeError(f"invalid workload token symlink for {audience!r}")
+            try:
+                volume = self._token_dir.resolve(strict=True)
+                relative = path.resolve(strict=True).relative_to(volume)
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                directory = os.open(volume, flags | os.O_DIRECTORY)
+                try:
+                    for component in relative.parts[:-1]:
+                        child = os.open(component, flags | os.O_DIRECTORY, dir_fd=directory)
+                        os.close(directory)
+                        directory = child
+                    descriptor = os.open(relative.name, flags | os.O_NONBLOCK, dir_fd=directory)
+                finally:
+                    os.close(directory)
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise RuntimeError(f"unsafe workload token projection for {audience!r}") from exc
+        else:
+            descriptor = self._open_regular_token(path, audience)
+        return self._read_token(descriptor, path, audience)
+
+    @staticmethod
+    def _open_regular_token(path: Path, audience: str) -> int:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
-            descriptor = os.open(path, flags)
+            return os.open(path, flags | os.O_NONBLOCK)
         except OSError as exc:
             if exc.errno == errno.ELOOP:
                 raise RuntimeError(
                     f"workload token for audience {audience!r} must not be a symlink: {path}"
                 ) from exc
             raise RuntimeError(f"missing workload token for audience {audience!r}: {path}") from exc
+
+    def _read_token(self, descriptor: int, path: Path, audience: str) -> str:
         try:
             token_stat = os.fstat(descriptor)
             if not stat.S_ISREG(token_stat.st_mode):
@@ -129,9 +158,11 @@ class FileWorkloadTokenProvider(WorkloadTokenProvider):
                 raise RuntimeError(
                     f"workload token for audience {audience!r} exceeds 16 KiB: {path}"
                 )
-            if stat.S_IMODE(token_stat.st_mode) != 0o400:
+            # Kubernetes adds group-read for a configured pod fsGroup. Keep
+            # credentials read-only and never permit access by other users.
+            if stat.S_IMODE(token_stat.st_mode) not in {0o400, 0o440}:
                 raise RuntimeError(
-                    f"workload token for audience {audience!r} must have mode 0400: {path}"
+                    f"workload token for audience {audience!r} must have mode 0400 or 0440: {path}"
                 )
             with os.fdopen(descriptor, "rb", closefd=False) as token_file:
                 raw_token = token_file.read(MAX_WORKLOAD_TOKEN_BYTES + 1)
@@ -187,13 +218,34 @@ class A2ARouteInterface:
 class A2ARoute:
     kind: str
     interface: A2ARouteInterface
+    streaming: bool = False
 
 
 @dataclass(frozen=True)
 class A2ATarget:
+    """Control-plane-owned target facts resolved for one authorized operation."""
+
     agent_id: str
     version_id: str
     card_sha256: str
+
+    def assert_matches(self, *, target_agent_id: str, expected_version_id: str) -> None:
+        """Reject target substitution or version drift before transport opens."""
+
+        require_a2a_resource_id(
+            target_agent_id,
+            "a2a-agent-",
+            field_name="target_agent_id",
+        )
+        require_a2a_resource_id(
+            expected_version_id,
+            "a2a-version-",
+            field_name="expected_version_id",
+        )
+        if self.agent_id != target_agent_id:
+            raise ValueError("A2A_TARGET_MISMATCH")
+        if self.version_id != expected_version_id:
+            raise ValueError("A2A_VERSION_DRIFT")
 
 
 @dataclass(frozen=True)
@@ -244,6 +296,8 @@ class SpaceAgentPage:
 class A2AControlPlane(ABC):
     """Control-plane seam required by the product A2ASpaceClient."""
 
+    task_event_format = "legacy"
+
     @abstractmethod
     async def list_space_agents(
         self,
@@ -280,6 +334,7 @@ class A2AControlPlane(ABC):
         message_id: str | None = None,
         message_sha256: str | None = None,
         idempotency_token: str | None = None,
+        agent_id: str | None = None,
     ) -> PreparedA2AOperation:
         raise NotImplementedError
 
@@ -321,6 +376,8 @@ class A2AControlPlane(ABC):
 class InternalA2AControlPlaneClient(A2AControlPlane):
     """Workload-authenticated client for Runtime internal A2A Actions."""
 
+    task_event_format = "canonical_v2"
+
     def __init__(
         self,
         base_url: str,
@@ -328,11 +385,11 @@ class InternalA2AControlPlaneClient(A2AControlPlane):
         token_provider: WorkloadTokenProvider | None = None,
         httpx_client: httpx.AsyncClient | None = None,
         timeout: float = 15.0,
+        verify: Any = True,
     ) -> None:
         if not base_url:
-            raise ValueError(
-                f"InternalA2AControlPlaneClient requires {ENV_A2A_CONTROL_PLANE_URL}"
-            )
+            raise ValueError(f"InternalA2AControlPlaneClient requires {ENV_A2A_CONTROL_PLANE_URL}")
+        self._verify = verify
         self._base_url = base_url.rstrip("/")
         self._token_provider = token_provider or FileWorkloadTokenProvider()
         self._client = httpx_client
@@ -346,14 +403,14 @@ class InternalA2AControlPlaneClient(A2AControlPlane):
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         token = self._token_provider.get_token(audience)
-        client = self._client or httpx.AsyncClient(timeout=self._timeout)
+        client = self._client or httpx.AsyncClient(timeout=self._timeout, verify=self._verify, trust_env=False)
         owns_client = self._client is None
         try:
             try:
                 response = await client.post(
                     f"{self._base_url}{build_a2a_internal_action_path(action)}",
                     json=payload,
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers=build_cloud_headers({"Authorization": f"Bearer {token}"}),
                 )
             except httpx.HTTPError as exc:
                 raise A2AControlPlaneError(
@@ -411,6 +468,41 @@ class InternalA2AControlPlaneClient(A2AControlPlane):
         finally:
             if owns_client:
                 await client.aclose()
+
+    async def submit_inbound_message(
+        self, *, platform_task_id: str, target_version_id: str,
+        remote_task_id: str, remote_context_id: str, message: dict[str, Any],
+        continuation: dict[str, Any] | None = None,
+    ):
+        from ksadk.a2a.inbound_kernel import InboundKernelSubmission
+
+        data = await self._post(
+            "SubmitA2AInboundMessage", audience=AUDIENCE_REGISTRY,
+            payload={"A2ATaskId": platform_task_id, "TargetVersionId": target_version_id,
+                     "RemoteTaskId": remote_task_id, "RemoteContextId": remote_context_id,
+                     "Message": message, **({"Continuation": continuation} if continuation is not None else {})},
+        )
+        try:
+            return InboundKernelSubmission.from_wire(data)
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise A2AControlPlaneError(
+                code=502, message="invalid Server Kernel admission response",
+                error_code="A2A_CONTROL_PLANE_INVALID_RESPONSE",
+                action="SubmitA2AInboundMessage",
+            ) from exc
+
+    async def cancel_inbound_task(self, *, platform_task_id: str, target_version_id: str,
+                                  remote_task_id: str, remote_context_id: str, run_id: str):
+        from ksadk.a2a.inbound_kernel import InboundKernelSubmission
+        data = await self._post("CancelA2AInboundTask", audience=AUDIENCE_REGISTRY, payload={
+            "A2ATaskId": platform_task_id, "TargetVersionId": target_version_id,
+            "RemoteTaskId": remote_task_id, "RemoteContextId": remote_context_id, "RunId": run_id,
+        })
+        try:
+            return InboundKernelSubmission.from_wire(data)
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise A2AControlPlaneError(code=502, message="invalid Server Kernel cancellation response",
+                error_code="A2A_CONTROL_PLANE_INVALID_RESPONSE", action="CancelA2AInboundTask") from exc
 
     @staticmethod
     def _raise_action_error(
@@ -497,6 +589,7 @@ class InternalA2AControlPlaneClient(A2AControlPlane):
         message_id: str | None = None,
         message_sha256: str | None = None,
         idempotency_token: str | None = None,
+        agent_id: str | None = None,
     ) -> PreparedA2AOperation:
         _validate_task_operation_request(
             operation=operation,
@@ -549,6 +642,23 @@ class InternalA2AControlPlaneClient(A2AControlPlane):
             "AppendA2ATaskEvents",
             audience=AUDIENCE_TASK_SINK,
             payload={"A2ATaskId": platform_task_id, "Events": events},
+        )
+
+    async def list_product_kernel_tasks(self, *, after_task_id: str = "", limit: int = 25):
+        return await self._post(
+            "ListA2AProductKernelTasks", audience=AUDIENCE_TASK_SINK,
+            payload={"AfterTaskId": after_task_id, "Limit": limit},
+        )
+
+    async def append_product_kernel_facts(
+        self, *, platform_task_id: str, target_version_id: str,
+        remote_task_id: str, remote_context_id: str, events: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return await self._post(
+            "AppendA2AProductKernelFacts", audience=AUDIENCE_TASK_SINK,
+            payload={"A2ATaskId": platform_task_id, "TargetVersionId": target_version_id,
+                     "RemoteTaskId": remote_task_id, "RemoteContextId": remote_context_id,
+                     "Events": events},
         )
 
     async def resolve_credential(
@@ -653,9 +763,7 @@ class A2AAgentCardClient(A2AControlPlane):
             a2a_agent_id = str(item.get("A2AAgentId") or "").strip()
             if not a2a_agent_id:
                 continue
-            # server 用纯 uuid,ksadk 内部要求 a2a-agent- 前缀;补前缀适配契约。
-            if not a2a_agent_id.startswith("a2a-agent-"):
-                a2a_agent_id = f"a2a-agent-{a2a_agent_id}"
+            # Registry identity is opaque; do not invent a different lookup key.
             invocation_status = str(item.get("InvocationStatus") or "")
             if invocation_status and invocation_status != "available":
                 continue
@@ -886,11 +994,13 @@ def _agent_card_from_wire(payload: Any) -> AgentCard:
     # 兼容 0.3 card：顶层 url/preferredTransport 折叠进 supportedInterfaces[0]。
     if not payload.get("supportedInterfaces") and payload.get("url"):
         payload = dict(payload)
-        payload["supportedInterfaces"] = [{
-            "url": payload["url"],
-            "protocolBinding": payload.get("preferredTransport", "JSONRPC"),
-            "protocolVersion": payload.get("protocolVersion", "0.3"),
-        }]
+        payload["supportedInterfaces"] = [
+            {
+                "url": payload["url"],
+                "protocolBinding": payload.get("preferredTransport", "JSONRPC"),
+                "protocolVersion": payload.get("protocolVersion", "0.3"),
+            }
+        ]
     try:
         return ParseDict(payload, AgentCard(), ignore_unknown_fields=True)
     except (ParseError, TypeError, ValueError) as exc:
@@ -947,6 +1057,14 @@ def _prepared_operation_from_wire(data: dict[str, Any]) -> PreparedA2AOperation:
     target: dict[str, Any] = raw_target if isinstance(raw_target, dict) else {}
     raw_route = data.get("Route")
     route: dict[str, Any] = raw_route if isinstance(raw_route, dict) else {}
+    capabilities = route.get("Capabilities", {})
+    if not isinstance(capabilities, dict) or type(capabilities.get("Streaming", False)) is not bool:
+        raise A2AControlPlaneError(
+            code=502,
+            message="prepared route streaming capability must be a boolean",
+            error_code="A2A_CONTROL_PLANE_INVALID_RESPONSE",
+            field="Route.Capabilities.Streaming",
+        )
     raw_interface = route.get("Interface")
     interface: dict[str, Any] = raw_interface if isinstance(raw_interface, dict) else {}
     raw_remote_task = data.get("RemoteTask")
@@ -1007,6 +1125,7 @@ def _prepared_operation_from_wire(data: dict[str, Any]) -> PreparedA2AOperation:
         ),
         route=A2ARoute(
             kind=route_kind,
+            streaming=capabilities.get("Streaming", False),
             interface=A2ARouteInterface(
                 url=_required_str(interface.get("Url"), field_name="Route.Interface.Url"),
                 protocol_binding=protocol_binding,

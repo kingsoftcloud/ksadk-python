@@ -211,7 +211,11 @@ def studio(
             security_enabled=os.environ.get("KSADK_STUDIO_NO_SECURITY") != "1",
         )
         base_url = f"http://127.0.0.1:{port}/"
-        launch_url = f"{base_url}#session={session_token}"
+        # The Core UI is the normal Studio host when profile plugins are
+        # enabled. Do not rely on a fragment surviving the root 307 redirect:
+        # browser implementations may drop it, leaving the page unauthenticated
+        # after every local server restart.
+        launch_url = f"{base_url}studio-core/#session={session_token}"
 
         print_title("启动 AgentKit Local Studio")
         print_kv("工作区", str(root))

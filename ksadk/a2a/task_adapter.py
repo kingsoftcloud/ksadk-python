@@ -16,6 +16,7 @@ cancel 一律走 G0.3 冻结的 ``RuntimeAdapter.cancel``(含 pending-cancel 语
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator, Mapping
 from typing import Any, Optional
 
@@ -140,16 +141,31 @@ class A2ARuntimeTaskAdapter:
         input_data: Any,
     ) -> RunHandle:
         """通过 RuntimeAdapter 启动 A2A task,返回后续共用的真实 handle。"""
-        await self.prepare_context(context)
+        session_id = await self.prepare_context(context)
         context_metadata = self._as_dict(getattr(context, "metadata", None))
         context_metadata.pop("user_id", None)
         context_metadata.pop("agent_id", None)
         tenant = self._trusted_tenant(context)
+        from ksadk.sessions import resolve_session_service
+
+        service = resolve_session_service()
+        call_context = getattr(context, "call_context", None)
+        state = getattr(call_context, "state", None)
+        identity = state.get("a2a_identity") if isinstance(state, Mapping) else None
+        agent_id = (
+            str(identity.target_agent_id).strip()
+            if isinstance(identity, A2AIngressIdentity)
+            else os.environ.get("KSADK_A2A_AGENT_ID", "").strip()
+        )
+        if agent_id:
+            existing = await service.get_session_metadata(session_id)
+            if existing is None:
+                await service.create_session(agent_id, tenant, session_id=session_id)
         handle = await self._adapter.start(
             StartRequest(
                 input=input_data,
                 user_id=tenant,
-                session_id=self._extract_session_id(context),
+                session_id=session_id,
                 agent_id=None,
                 metadata={**context_metadata, "invocation_id": task_id},
             )
@@ -374,9 +390,7 @@ class A2ARuntimeTaskAdapter:
     @classmethod
     def _resume_payload(cls, state: A2AResumeState, *, answer: Any) -> ResumePayload:
         data = (
-            cls._approval_decision(answer)
-            if state.payload_kind == "approval_decision"
-            else answer
+            cls._approval_decision(answer) if state.payload_kind == "approval_decision" else answer
         )
         return ResumePayload(kind=state.payload_kind, call_id=state.call_id, data=data)
 

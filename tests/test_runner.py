@@ -335,10 +335,22 @@ def test_adk_runner_reports_runtime_level_with_durable_backend(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "valid",
+        "no_hint",
+        "wrong_hint",
+        "missing_event",
+        "missing_binding",
+        "wrong_run",
+        "generated",
+    ],
+)
 async def test_adk_runner_attaches_persisted_invocation_with_shared_backend(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, case
 ):
-    """Catch Runtime v2 rejecting ADK recovery after the original process exits."""
+    """Shared-backend flags alone cannot prove that this invocation exists."""
     from ksadk.runners.adk_runner import ADKRunner
     from ksadk.runtime.adapter import RunHandle
 
@@ -357,16 +369,73 @@ async def test_adk_runner_attaches_persisted_invocation_with_shared_backend(
             "SharedAcrossPods": True,
         },
     )
+    from google.adk.events import Event
+    from google.adk.sessions import InMemorySessionService
+
+    from ksadk.sessions.continuity import ConversationSessionCore
+    from ksadk.sessions.local_service import LocalSessionService
+
+    canonical = LocalSessionService(tmp_path / "canonical.sqlite")
+    await canonical.create_session("root", "native-user", "session-1")
+    core = ConversationSessionCore(canonical)
+    if case != "missing_binding":
+        await core.set_binding_by_session_id(
+            "session-1",
+            "adk",
+            {
+                "internal_session_id": "native-session",
+                "native_user_id": "native-user",
+                "invocation_map": {} if case == "generated" else {"run-1": "invocation-1"},
+            },
+        )
+    # Re-open the durable canonical binding; keep the native-session read real.
+    monkeypatch.setattr(
+        "ksadk.sessions.resolve_session_service",
+        lambda: LocalSessionService(tmp_path / "canonical.sqlite"),
+    )
+    native = InMemorySessionService()
+    session = await native.create_session(
+        app_name="root", user_id="native-user", session_id="native-session"
+    )
+    if case != "missing_event":
+        await native.append_event(
+            session=session, event=Event(invocation_id="invocation-1", author="root")
+        )
+    runner._agent = SimpleNamespace(name="root")
+    runner._session_service = native
+    if case == "generated":
+        calls = []
+
+        async def run_async(**kwargs):
+            calls.append(kwargs)
+            yield Event(invocation_id="invocation-1", author="root")
+
+        runner._runner = SimpleNamespace(run_async=run_async)
+        runner._resumable = True
+        for resume in (False, True):
+            stream = await runner._prepare_run_events(
+                input_data={"run_id": "run-1", "session_id": "session-1"},
+                session_id="native-session",
+                native_user_id="native-user",
+                user_input="hello",
+                is_resume=resume,
+            )
+            assert [event async for event in stream]
+        assert all(call["session_id"] == "native-session" for call in calls)
+        assert calls[-1]["invocation_id"] == "invocation-1"
+        assert (await core.get_binding_by_session_id("session-1", "adk"))["invocation_map"] == {
+            "run-1": "invocation-1"
+        }
     handle = RunHandle(
-        run_id="run-1",
+        run_id="other-run" if case == "wrong_run" else "run-1",
         session_id="session-1",
         runtime_type="adk",
-        native_ref={"invocation_id": "invocation-1"},
+        native_ref={}
+        if case == "no_hint"
+        else {"invocation_id": "other-invocation" if case == "wrong_hint" else "invocation-1"},
     )
 
-    assert await runner.attach_runtime_handle(handle) is True
-
-
+    assert await runner.attach_runtime_handle(handle) is (case in {"valid", "no_hint", "generated"})
 @pytest.mark.asyncio
 async def test_adk_runner_rejects_persisted_invocation_without_shared_backend(
     monkeypatch, tmp_path
@@ -504,6 +573,68 @@ async def test_adk_runner_rejects_resume_when_resumability_disabled(tmp_path):
             user_input="",
             is_resume=True,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "expected_response"),
+    [
+        ("Shanghai", {"result": '"Shanghai"'}),
+        ({"city": "Shanghai"}, {"result": '{"city":"Shanghai"}'}),
+        (False, {"result": "false"}),
+        (None, {"result": "null"}),
+    ],
+)
+async def test_adk_runner_request_input_resume_sends_function_response(
+    monkeypatch, tmp_path, answer, expected_response
+):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+    runner._agent = SimpleNamespace(sub_agents=[])
+    captured = {}
+
+    async def empty_events():
+        if False:
+            yield None
+
+    class FakeRunner:
+        def run_async(self, **kwargs):
+            captured.update(kwargs)
+            return empty_events()
+
+    async def resolve(**_kwargs):
+        return "native-invocation-1"
+
+    runner._runner = FakeRunner()
+    monkeypatch.setattr(runner, "_resolve_resume_invocation_id", resolve)
+
+    stream = await runner._prepare_run_events(
+        input_data={
+            "checkpoint_resume": True,
+            "run_id": "run-1",
+            "framework_ref": {"adk": {"invocation_id": "native-invocation-1"}},
+            "resume_payload_kind": "hitl_answer",
+            "resume_call_id": "city-input-1",
+            "input": answer,
+        },
+        session_id="session-1",
+        user_input="[checkpoint resume]",
+        is_resume=True,
+    )
+    await stream.aclose()
+
+    assert captured["invocation_id"] == "native-invocation-1"
+    content = captured["new_message"]
+    assert content.role == "user"
+    response = content.parts[0].function_response
+    assert response.id == "city-input-1"
+    assert response.name == "adk_request_input"
+    assert response.response == expected_response
+    from google.adk.workflow.utils._rehydration_utils import _unwrap_response
+
+    assert _unwrap_response(response.response) == answer
 
 
 def test_adk_runner_checkpoint_metadata_includes_backend_info(tmp_path):
@@ -978,9 +1109,10 @@ def test_langgraph_runner_reports_actual_memory_checkpointer_over_backend_env(mo
     assert capability["ReasonCode"] == "CHECKPOINTER_NOT_DURABLE"
 
 
+@pytest.mark.parametrize("via_adapter", [False, True])
 @pytest.mark.asyncio
 async def test_langgraph_runner_rebuilds_studio_graph_with_managed_postgres_checkpoint(
-    monkeypatch,
+    monkeypatch, via_adapter,
 ):
     """Hosted Studio LangGraph agents must replace their local saver before a run.
 
@@ -1026,7 +1158,15 @@ async def test_langgraph_runner_rebuilds_studio_graph_with_managed_postgres_chec
     monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://checkpoint.test/app")
     monkeypatch.setenv("KSADK_SESSION_NAMESPACE", "tenant:acct:agent:studio-graph")
 
-    await runner.prepare_runtime_capabilities()
+    if via_adapter:
+        from ksadk.runtime.framework_adapters import LangGraphRuntimeAdapter
+        adapter = LangGraphRuntimeAdapter(runner)
+        assert not adapter.capabilities().durable_restore.supported
+        await adapter.preflight()
+        assert adapter.capabilities().durable_restore.supported
+        assert adapter.capabilities().interaction_mode == "durable_resume"
+    else:
+        await runner.prepare_runtime_capabilities()
 
     assert captured == {
         "dsn": "postgresql://checkpoint.test/app",
@@ -1926,6 +2066,7 @@ async def test_adk_runner_invoke_accumulates_usage_across_events(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_path, monkeypatch):
+    from google.adk.events import Event
     from google.genai import types
 
     from ksadk.runners.adk_runner import ADKRunner
@@ -1949,11 +2090,18 @@ async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_pat
             run_config=None,
         ):
             del session_id, user_id, new_message, state_delta, run_config
-            yield SimpleNamespace(
+            yield Event(
+                id="usage-partial",
+                invocation_id="native-run",
+                author="demo-agent",
                 partial=True,
-                content=SimpleNamespace(parts=[types.Part(text="hello")]),
+                content=types.Content(role="model", parts=[types.Part(text="hello")]),
             )
-            yield SimpleNamespace(
+            yield Event(
+                id="usage-terminal",
+                invocation_id="native-run",
+                author="demo-agent",
+                partial=False,
                 usage_metadata={
                     "prompt_token_count": 12,
                     "candidates_token_count": 5,
@@ -1962,7 +2110,7 @@ async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_pat
                     "tool_use_prompt_token_count": 3,
                     "thoughts_token_count": 2,
                 },
-                content=SimpleNamespace(parts=[]),
+                content=types.Content(role="model", parts=[types.Part(text="hello")]),
             )
 
     async def _fake_ensure_session(external_session_id=None):

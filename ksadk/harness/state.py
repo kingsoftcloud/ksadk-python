@@ -85,6 +85,8 @@ class RetryState(BaseModel):
 
     consecutive_failures: int = Field(default=0, ge=0, le=32)
     emergency_compaction_retries: int = Field(default=0, ge=0, le=3)
+    # G18 压缩鲁棒性：连续摘要失败熔断计数（连续 3 次熔断，停止空转）。
+    consecutive_compaction_failures: int = Field(default=0, ge=0, le=8)
     last_error_kind: str | None = Field(default=None, max_length=64)
 
 

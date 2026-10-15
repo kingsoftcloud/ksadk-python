@@ -94,8 +94,7 @@ class _A2ATaskSnapshotMixin:
             native_event_id=None,
             native_cursor=None,
             identity=(
-                f"get-task:{reason}:{attempt_id}:"
-                f"{TaskState.Name(state)}:{_proto_fingerprint(task)}"
+                f"get-task:{reason}:{attempt_id}:{TaskState.Name(state)}:{_proto_fingerprint(task)}"
             ),
             provisional=False,
         )
@@ -157,11 +156,15 @@ class _A2ATaskSnapshotMixin:
         snapshot_artifact_ids: set[str] = set()
 
         for artifact in task.artifacts:
+            from ksadk.events.adapters._a2a_tool_activity import map_tool_artifact
+
+            public = map_tool_artifact(self, artifact, context, scope.timestamp)
+            if public is not None:
+                scope.events.extend(public)
+                continue
             artifact_id = _required_string(artifact.artifact_id, "task.artifacts.artifact_id")
             snapshot_artifact_ids.add(artifact_id)
-            item_id = stable_item_id(
-                "a2a", context.context_id, context.task_id, "artifact", artifact_id
-            )
+            item_id = stable_item_id("a2a", *context.item_identity, "artifact", artifact_id)
             parts = self._convert_parts(artifact, item_id, start_index=0)
             if not parts:
                 _fail(
@@ -329,14 +332,15 @@ class _A2ATaskSnapshotMixin:
 
         if state in _TERMINAL_STATES and self._active_interaction is not None:
             interaction_id, _ = self._active_interaction
-            events.append(
-                InteractionResolved(
-                    **env(interaction_id, "interaction.resolved", "interaction", len(events)),
-                    interaction_id=interaction_id,
-                    interaction_kind="structured_input",
-                    response=StructuredInputResponse(data={"state": TaskState.Name(state)}),
+            if self._active_interaction_kind == "structured_input":
+                events.append(
+                    InteractionResolved(
+                        **env(interaction_id, "interaction.resolved", "interaction", len(events)),
+                        interaction_id=interaction_id,
+                        interaction_kind="structured_input",
+                        response=StructuredInputResponse(data={"state": TaskState.Name(state)}),
+                    )
                 )
-            )
             self._active_interaction = None
 
         def status_text() -> str | None:
@@ -365,7 +369,7 @@ class _A2ATaskSnapshotMixin:
                             if state == TaskState.TASK_STATE_REJECTED
                             else "a2a_task_failed"
                         ),
-                        message=status_text(),
+                        message=status_text() or "Remote A2A task failed",
                         source="a2a",
                         scope_id=context.scope_id,
                         source_ref=terminal_source,
@@ -421,7 +425,7 @@ class _A2ATaskSnapshotMixin:
                 identity=occurrence_identity or message_id,
                 provisional=False,
             )
-        signature = message.SerializeToString(deterministic=True)
+        signature = _proto_fingerprint(message)
         existing = self._messages.get(message_id)
         if existing is not None:
             if existing.signature != signature:

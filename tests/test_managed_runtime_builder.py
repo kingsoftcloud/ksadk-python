@@ -254,3 +254,38 @@ def test_build_command_rejects_ks3_push_for_managed_runtime(tmp_path):
 
     assert result.exit_code != 0
     assert "不使用 KS3" in result.output
+
+
+@pytest.mark.parametrize('policy', ['policy://a2a/strict', 'policy://missing-policy'])
+def test_managed_cli_build_enforces_frozen_expert_policy(tmp_path, policy):
+    from ksadk.studio.contracts import RemoteAgentBinding
+    config = _write_codex_project(tmp_path)
+    # Keep the public CLI regression self-contained; importing another test
+    # module made a clean export depend on unexported provider fixtures.
+    binding = RemoteAgentBinding.freeze(
+        local_name="expert",
+        space_id="a2a-space-00000000000040008000000000000001",
+        target_agent_id="a2a-agent-00000000000040008000000000000001",
+        expected_version_id="a2a-version-00000000000040008000000000000001",
+        policy_ref=policy,
+    )
+    config['remote_agents'] = [binding.model_dump(mode='json')]
+    (tmp_path / 'agentengine.yaml').write_text(yaml.safe_dump(config))
+    result = CliRunner().invoke(build_command, [str(tmp_path), '--mode', 'managed', '--region', 'pre-online'])
+    artifacts = list((tmp_path / '.agentengine/managed_runtime').glob('*-runtime.yaml'))
+    if policy == 'policy://a2a/strict':
+        assert result.exit_code == 0, result.output
+        assert len(artifacts) == 1
+        assert yaml.safe_load(artifacts[0].read_text())['remote_agents'][0]['policy_ref'] == policy
+    else:
+        assert result.exit_code != 0
+        assert not artifacts
+
+
+def test_managed_build_rejects_silently_dropped_camel_case_bindings(tmp_path):
+    config = _write_codex_project(tmp_path)
+    config['remoteAgents'] = []
+    result = ManagedRuntimeBuilder(tmp_path, config).build()
+    assert not result.success
+    assert 'remote_agents' in result.error_message
+    assert not (tmp_path / '.agentengine/managed_runtime').exists()

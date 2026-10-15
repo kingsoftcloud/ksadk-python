@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from ksadk.context_engine.instruction_authority import validate_instruction_authority
 from ksadk.context_engine.models import ContextItem, ContextPlan
 
 ProjectionFormat = Literal["chat", "responses"]
@@ -52,6 +53,9 @@ def _split_prompt_and_rest(selected: list[ContextItem]) -> tuple[str, list[Conte
     prompt_text = ""
     rest: list[ContextItem] = []
     for item in selected:
+        validate_instruction_authority(
+            kind=item.kind, trust_level=item.trust_level, metadata=item.metadata
+        )
         if item.kind == "compiled_prompt":
             prompt_text = (
                 (prompt_text + "\n\n" + _item_text(item)).strip("\n\n")
@@ -74,6 +78,11 @@ def _role_for(item: ContextItem) -> str:
         return "assistant"
     if item.kind == "tool_result":
         return "tool"
+    # 其他 kind（如 ContextSection 的 resource_manifest）可显式声明投影
+    # 角色：trust="system" 的段应进 system 层，而非被当作 assistant 文本。
+    role = item.metadata.get("role")
+    if isinstance(role, str):
+        return role
     return "assistant"
 
 

@@ -212,3 +212,27 @@ describe("Conversation v1 browser contract", () => {
     ]);
   });
 });
+
+it("keeps identical tool call IDs isolated across runs and A2A scopes", () => {
+  let state = createConversationItemState();
+  for (const [index, runId, scopeId] of [[0, "run-1", "scope-a"], [1, "run-1", "scope-b"], [2, "run-2", "scope-a"]] as const) {
+    state = reduceConversationItem(state, decodeConversationItem(item({
+      itemId: `call-${index}`, sourceEventIds: [`event-call-${index}`], runId,
+      nativeRef: { scopeId }, kind: "tool_call", payloadSchemaRef: "conversation.item.tool-call/v1",
+      payload: { callId: "repeated-id", tool: "search", args: { index } },
+    }))!);
+    state = reduceConversationItem(state, decodeConversationItem(item({
+      itemId: `result-${index}`, sourceEventIds: [`event-result-${index}`], runId,
+      nativeRef: { scopeId }, kind: "tool_call", payloadSchemaRef: "conversation.item.tool-call/v1",
+      operation: "completed", lifecycle: "completed",
+      payload: { callId: "repeated-id", output: { result: index } },
+    }))!);
+  }
+  const timeline = projectConversationItems(state).timeline;
+  expect(timeline).toHaveLength(3);
+  expect(new Set(timeline.map(entry => entry.key)).size).toBe(3);
+  timeline.forEach((entry, index) => {
+    expect(entry.sourceItemIds).toEqual([`call-${index}`, `result-${index}`]);
+    expect(entry.item.payload.output).toEqual({ result: index });
+  });
+});

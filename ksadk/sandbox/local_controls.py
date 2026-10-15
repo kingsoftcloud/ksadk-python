@@ -7,6 +7,7 @@ They are deliberately not presented as a security sandbox.
 from __future__ import annotations
 
 import ast
+import codecs
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from selectors import EVENT_READ, DefaultSelector
@@ -194,9 +196,21 @@ def run_bounded_process(
     timeout: int | float | None,
     settings: LocalControlSettings,
     start_new_session: bool,
+    on_output: Callable[[str, str], None] | None = None,
 ) -> BoundedProcessResult:
     read_fd, write_fd = os.pipe()
-    launcher = settings.launcher_arguments() + ["--report-fd", str(write_fd), "--", *args]
+    # The local command owns a separate group from its caller (which can be a
+    # disposable tool worker). Keep the only pipe writer in that caller so a
+    # hard kill closes the lease and stops the nested group as well.
+    owner_read, owner_write = os.pipe() if start_new_session else (None, None)
+    owner_arguments = ["--owner-fd", str(owner_read)] if owner_read is not None else []
+    launcher = settings.launcher_arguments() + [
+        "--report-fd",
+        str(write_fd),
+        *owner_arguments,
+        "--",
+        *args,
+    ]
     process: subprocess.Popen[bytes] | None = None
     stdout = bytearray()
     stderr = bytearray()
@@ -207,6 +221,8 @@ def run_bounded_process(
     cleanup_error: str | None = None
     started = time.monotonic()
     selector = DefaultSelector()
+    decoders = {name: codecs.getincrementaldecoder("utf-8")("replace")
+                for name in ("stdout", "stderr")}
     try:
         process = subprocess.Popen(
             launcher,
@@ -216,14 +232,18 @@ def run_bounded_process(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=start_new_session,
-            pass_fds=(write_fd,),
+            pass_fds=(write_fd, owner_read) if owner_read is not None else (write_fd,),
         )
     except BaseException:
         os.close(read_fd)
+        if owner_write is not None:
+            os.close(owner_write)
         selector.close()
         raise
     finally:
         os.close(write_fd)
+        if owner_read is not None:
+            os.close(owner_read)
     try:
         assert process.stdout is not None and process.stderr is not None
         for stream in (process.stdout, process.stderr):
@@ -246,6 +266,14 @@ def run_bounded_process(
                 remaining = settings.max_output_bytes - len(target)
                 if remaining > 0:
                     target.extend(chunk[:remaining])
+                    if on_output is not None:
+                        channel = "stdout" if key.fileobj is process.stdout else "stderr"
+                        text = decoders[channel].decode(chunk[:remaining])
+                        if text:
+                            try:
+                                on_output(channel, text)
+                            except Exception:
+                                pass  # Output observers never affect command execution.
                 if len(chunk) > max(remaining, 0):
                     if key.fileobj is process.stdout:
                         stdout_truncated = True
@@ -276,6 +304,8 @@ def run_bounded_process(
         report = _read_control_report(read_fd)
     finally:
         os.close(read_fd)
+        if owner_write is not None:
+            os.close(owner_write)
         selector.close()
         if process is not None:
             if process.stdout is not None:

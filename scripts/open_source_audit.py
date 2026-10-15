@@ -174,6 +174,11 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
 
 WHEEL_RULES = (
     DenyRule(
+        name="test-tree",
+        prefixes=("tests/",),
+        description="tests belong in the source repository, not installed Python artifacts",
+    ),
+    DenyRule(
         name="studio-frontend-source",
         prefixes=("ksadk/studio/react-ui/",),
         description=(

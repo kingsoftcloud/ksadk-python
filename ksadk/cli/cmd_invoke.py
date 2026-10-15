@@ -583,6 +583,14 @@ def run_invoke_command(
 
     if message:
         # 单次调用模式
+        if not local and not _is_openclaw_target(next_state, latest_access) and not _is_hermes_target(next_state, latest_access):
+            from ksadk.cli.hosted_invoke import try_invoke_hosted_once
+
+            if try_invoke_hosted_once(
+                endpoint=endpoint, api_key=api_key, session_id=session_id,
+                message=message, model=model, insecure=insecure,
+            ):
+                return
         api_format_resolved = asyncio.run(
             _resolve_remote_api_format(
                 endpoint=endpoint,
@@ -1375,7 +1383,7 @@ async def _invoke_once(
             else:
                 click.echo(content)
     except Exception as e:
-        click.secho(f"\n❌ 调用失败: {e}", fg="red")
+        raise click.ClickException(f"调用失败: {e}") from e
 
 
 async def _chat(
@@ -1485,40 +1493,40 @@ async def _stream_chat(
     async with httpx.AsyncClient(**client_kwargs) as client:
         async with client.stream("POST", url, json=payload, headers=headers) as response:
             response.raise_for_status()
-            try:
-                current_event = ""
-                # Use aiter_lines() for robust UTF-8 decoding and line splitting
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
+            current_event = ""
+            # Use aiter_lines() for robust UTF-8 decoding and line splitting
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
 
-                    if line.startswith("event: "):
-                        current_event = line[7:].strip()
-                        continue
+                if line.startswith("event: "):
+                    current_event = line[7:].strip()
+                    continue
 
-                    if line.startswith("data: "):
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
+                if line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
 
-                        try:
-                            data = json.loads(data_str)
-                            if not isinstance(data, dict):
-                                continue
-                            if current_event and isinstance(data, dict):
-                                data = {**data, "_event": current_event}
-                            # 直接 yield 解析后的 JSON 数据，让 _extract_content 处理
-                            yield data
+                    try:
+                        data = json.loads(data_str)
+                        if not isinstance(data, dict):
+                            continue
+                        if current_event and isinstance(data, dict):
+                            data = {**data, "_event": current_event}
+                        event_type = current_event or data.get("type")
+                        response_payload = data.get("response")
+                        nested_error = (
+                            response_payload.get("error")
+                            if isinstance(response_payload, dict) else None
+                        )
+                        error = data.get("error") or nested_error
+                        if error or event_type in {"error", "response.failed"}:
+                            raise RuntimeError(str(error or data.get("message") or event_type))
+                        yield data
 
-                            # Handle events/errors
-                            error = data.get("error")
-                            if error:
-                                click.secho(f"\nError: {error}", fg="red")
-
-                        except json.JSONDecodeError:
-                            pass
-            except Exception as e:
-                click.secho(f"\nStream error: {e}", fg="red")
+                    except json.JSONDecodeError:
+                        pass
 
 
 def _extract_content(chunk: dict) -> tuple[str, str]:

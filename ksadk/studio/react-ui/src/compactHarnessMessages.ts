@@ -57,6 +57,13 @@ export function compactHarnessMessages(messages: Message[]): Array<Message & { s
             : /write|edit/.test(name) ? "编辑并保存结果" : /read|list/.test(name) ? "查看工作区内容"
             : /delegate/.test(name) ? "调度子智能体" : "使用工具处理任务";
           activities.set(label, `${block.status === "running" ? "正在" : "已"}${label}`);
+          // Compact opaque payloads, not the action's position in public work.
+          // Detailed public receipts remain in the host activity inspector.
+          blocks.push({
+            id: block.id, type: "tool", toolName: block.toolName,
+            status: block.status, args: "",
+            extra: { summary: block.status === "running" ? "正在运行" : "已完成" },
+          });
           continue;
         }
         blocks.push(block);

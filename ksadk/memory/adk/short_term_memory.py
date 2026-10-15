@@ -153,18 +153,17 @@ class ShortTermMemory(BaseModel):
         try:
             from ksadk.compat.adk_compat import DatabaseSessionService
             from ksadk.memory.adk.resilient_session_service import ResilientADKSessionService
-            from ksadk.sessions.resilience import session_backend_timeout_seconds
-
-            service_kwargs = {}
             if normalized_db_url.startswith(("postgresql://", "postgresql+asyncpg://")):
-                timeout = session_backend_timeout_seconds()
-                service_kwargs["connect_args"] = {
-                    "timeout": timeout,
-                    "command_timeout": timeout,
-                }
+                from ksadk.memory.adk.bounded_database_session_service import (
+                    BoundedADKDatabaseSessionService,
+                )
+
+                primary = BoundedADKDatabaseSessionService(db_url=normalized_db_url)
+            else:
+                primary = DatabaseSessionService(db_url=normalized_db_url)
 
             self._session_service = ResilientADKSessionService(
-                DatabaseSessionService(db_url=normalized_db_url, **service_kwargs)
+                primary
             )
             logger.info("ShortTermMemory: using DatabaseSessionService")
         except ImportError:

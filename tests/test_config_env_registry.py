@@ -29,6 +29,7 @@ def test_env_registry_covers_ksadk_env_vars_in_source():
     # The broad source scan intentionally finds their constant names too, so keep
     # the exception explicit rather than documenting fictional configuration.
     non_environment_symbols = {
+        "KSADK_DB_",  # Database phase environment-name prefix.
         "KSADK_SANDBOX_",  # Environment-name prefix, not a configurable key.
         "KSADK_LOCAL_PROCESS_",  # Local-process environment-name prefix.
         # Private parent/sidecar bootstrap and stdout control-plane symbols.
@@ -39,6 +40,9 @@ def test_env_registry_covers_ksadk_env_vars_in_source():
         "KSADK_DSH_CAPABILITY_READY_FILE",
         "KSADK_DSH_CAPABILITY_READY_STDOUT",
         "KSADK_DSH_CAPABILITY_TOKEN",
+        # Framed public tool-output lines emitted by the builtin child worker;
+        # this is a stdout protocol marker, never an environment input.
+        "KSADK_PUBLIC_OUTPUT",
         "KSADK_DSH_CORDIS_MODULE",
         "KSADK_DSH_CORE_TOKEN",
         "KSADK_DSH_PROFILE_DIGEST",
@@ -55,6 +59,9 @@ def test_env_registry_covers_ksadk_env_vars_in_source():
         "KSADK_PLATFORM_RESOURCE_KINDS",
         "KSADK_PLATFORM_RESOURCE_MEMORY_WRITE",
         "KSADK_PLATFORM_RESOURCE_SUBJECT",
+        # Bound local Studio Agent identity overwritten by the builtin worker
+        # launcher, then consumed by Skill management; never a user override.
+        "KSADK_STUDIO_AGENT_ID",
     }
     assert _source_ksadk_env_names() - non_environment_symbols <= registry_names
 
@@ -91,7 +98,7 @@ def test_internal_env_registry_items_do_not_expand_the_public_reference():
 def test_env_registry_pins_ksadk_web_static_sync_to_a_published_npm_release():
     specs = {item.name: item for item in ENV_VAR_REGISTRY}
 
-    assert specs["KSADK_WEB_VERSION"].default == "0.3.12"
+    assert specs["KSADK_WEB_VERSION"].default == "0.3.13"
     assert specs["KSADK_WEB_PACKAGE"].default == "@kingsoftcloud/ksadk-web"
     assert specs["KSADK_WEB_RELEASE_URL"].default == ""
 

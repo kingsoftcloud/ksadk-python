@@ -5,31 +5,95 @@
 append 引擎事件队列——把事件作为列表返回，由引擎节点收集。
 
 失败语义（§7.2 稳定性策略）：model 调用抛错时，started 必被闭合（failed 事件），
-``raise`` 由调用方决定是否重试（见 ``loop/retry.py``）。
+``raise`` 由调用方决定是否重试（重试与退避逻辑见 ``model_provider`` 的
+``classify_model_failure`` / ``retry_delay_ms``，本模块已按需导入）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
+import logging
+import re
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
 from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.model_provider import (
     ModelFailureAction,
+    ModelFailureKind,
     classify_model_failure,
     decide_model_failure_action,
+    retry_after_ms_from_error,
     retry_delay_ms,
     safe_model_error_message,
 )
-from ksadk.harness.public_activity import public_commentary_text
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn
 from ksadk.harness.spec import ModelProviderPolicy
+from ksadk.model_gateway.events import ModelStreamEvent, ModelStreamEventType
+
+_LOGGER = logging.getLogger(__name__)
 
 #: reason 节点的路由结果。引擎据此走 tool_calls 或 final 出口。
 ROUTE_TOOL_CALLS = "tool_calls"
 ROUTE_FINAL = "final"
+
+_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.IGNORECASE | re.DOTALL)
+_THINK_OPEN = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
+_THINK_CLOSE = re.compile(r"</think\s*>", re.IGNORECASE)
+
+
+def _visible_answer(text: str | None) -> str:
+    """Remove provider think envelopes from the assistant's public text.
+
+    Some compatible endpoints return the reasoning prefix in ``content`` and
+    only the closing ``</think>`` marker survives their stream projection.
+    That prefix must not become a Studio answer or compaction fact.
+    """
+    value = text or ""
+    if not any(marker in value.lower() for marker in ("<think", "</think")):
+        return value
+    value = _THINK_BLOCK.sub("", value)
+    if _THINK_CLOSE.search(value):
+        value = _THINK_CLOSE.split(value, maxsplit=1)[-1]
+    if _THINK_OPEN.search(value):
+        value = _THINK_OPEN.split(value, maxsplit=1)[0]
+    return value.strip()
+
+
+def _provider_failure_stream_event(
+    *,
+    model: str,
+    sequence: int,
+    failure_category: str,
+    status_code: int | None,
+    retrying: bool,
+    retry_after_ms: int | None,
+    error: Exception,
+) -> dict[str, Any]:
+    """Project a provider failure/retry decision into the shared stream contract."""
+
+    if retrying:
+        event_type = ModelStreamEventType.PROVIDER_RETRYING
+    elif failure_category == ModelFailureKind.RATE_LIMIT.value:
+        event_type = ModelStreamEventType.PROVIDER_RATE_LIMITED
+    else:
+        event_type = ModelStreamEventType.TURN_FAILED
+
+    details = getattr(error, "details", None)
+    provider_request_id = ""
+    if isinstance(details, dict):
+        provider_request_id = str(details.get("providerRequestId") or "")
+
+    return ModelStreamEvent(
+        type=event_type,
+        model=model,
+        sequence=sequence,
+        failure_category=failure_category,
+        status_code=status_code,
+        provider_request_id=provider_request_id,
+        retry_after_ms=retry_after_ms,
+    ).as_dict()
 
 
 @dataclass(frozen=True)
@@ -54,6 +118,9 @@ class ReasonInput:
     max_turns: int = 8
     #: 本次 Provider 调用允许生成的硬上限；None 表示未配置 Run 预算。
     max_output_tokens: int | None = None
+    #: 本次 Provider 调用的推理强度。它来自宿主的回合级选择（如 Studio
+    #: reasoning_effort），不是 Harness 自行猜测的模型默认值。
+    reasoning_effort: str | None = None
     #: 流式模式：True 时调 reasoner.stream_complete 逐 chunk 发 TEXT_DELTA。
     streaming: bool = False
     #: 可选实时事件出口。流式引擎用它在模型调用尚未结束时交付 started/delta；
@@ -95,26 +162,49 @@ class ModelFailoverExhausted(RuntimeError):
         stop_reason: ModelFailureAction,
     ) -> None:
         safe_error = safe_model_error_message(last_error)
+        failure = classify_model_failure(last_error)
+        retry_detail = f" after {len(attempted_models)} attempts"
+        if failure.status_code is not None:
+            retry_detail += f" (HTTP {failure.status_code})"
+        elif failure.kind.value != "unknown":
+            retry_detail += f" ({failure.kind.value})"
         if stop_reason == ModelFailureAction.ABORT:
             message = (
                 "model invocation aborted by provider policy "
-                f"({len(attempted_models)} attempts): {safe_error}"
+                f"{retry_detail}: {safe_error}"
             )
         elif stop_reason == ModelFailureAction.RECOVER_CONTEXT:
             message = (
                 "model context overflow requires emergency context recovery "
-                f"({len(attempted_models)} attempts): {safe_error}"
+                f"{retry_detail}: {safe_error}"
+            )
+        elif failure.kind.value == "rate_limit":
+            message = (
+                "模型服务限流，已停止自动重试"
+                f"{retry_detail}: {safe_error}"
             )
         else:
             message = (
                 "all configured model profiles failed "
-                f"({len(attempted_models)} attempts): {safe_error}"
+                f"{retry_detail}: {safe_error}"
             )
         super().__init__(message)
         self.events = tuple(events)
         self.attempted_models = tuple(attempted_models)
         self.last_error = last_error
+        self.failure = failure
         self.stop_reason = stop_reason
+
+    def runtime_error(self) -> RuntimeError:
+        """Keep classified failure facts across the graph exception boundary."""
+        wrapped = RuntimeError(str(self))
+        if self.failure.kind.value != "unknown":
+            wrapped.error_category = self.failure.kind.value
+        if self.failure.status_code is not None:
+            wrapped.status_code = self.failure.status_code
+        if self.failure.kind.value == "rate_limit":
+            wrapped.error_code = "MODEL_RATE_LIMITED"
+        return wrapped
 
 
 def reason_turn(turn_count: int, inp: ReasonInput) -> ReasonOutput | None:
@@ -144,7 +234,14 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
 
     out = ReasonOutput()
 
-    candidates = tuple(dict.fromkeys((inp.model_ref, *inp.fallback_model_refs)))
+    # Bound alternatives are not an implicit failover chain.  The caller must
+    # explicitly opt into automatic failover, otherwise an explicit model
+    # choice remains stable for the whole turn.
+    candidates = (
+        tuple(dict.fromkeys((inp.model_ref, *inp.fallback_model_refs)))
+        if inp.provider_policy.allow_failover
+        else (inp.model_ref,)
+    )
     turn: HarnessReasoningTurn | None = None
     selected_model_ref: str | None = None
     total_attempt = 0
@@ -165,6 +262,10 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                 "model": model_ref,
                 "attempt": total_attempt,
                 "model_attempt": model_attempt,
+                # Only rate limits receive the full ten-attempt schedule.
+                # A no-progress timeout gets at most two same-model attempts
+                # when automatic failover is disabled, so the public activity
+                # must not claim it is on attempt N/10.
                 "max_attempts": inp.provider_policy.max_attempts_per_model,
                 "candidate_index": candidate_index,
                 "fallback": candidate_index > 1,
@@ -174,20 +275,50 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             out.events.append(started_event)
             if inp.live_event_sink is not None:
                 inp.live_event_sink(started_event)
+            from ksadk.harness.public_summary import PublicSummaryBuffer
+
+            summary_parts: list[str] = []
+            summary_buffer = PublicSummaryBuffer()
+            summary_raw = ""
+
+            def append_summary(raw="", *, final=False):
+                nonlocal seq, summary_raw
+                summary_raw = (summary_raw + raw)[:summary_buffer.LIMIT]
+                summary = summary_buffer.drain(summary_raw, final=final)
+                if not summary:
+                    return
+                seq += 1
+                event = _event(EventType.PUBLIC_SUMMARY_DELTA, inp, seq, {
+                    "text": summary, "summary_id": f"{turn_count}:{model_ref}:{total_attempt}",
+                    "summary_start": not summary_parts,
+                }, phase="commentary")
+                summary_parts.append(summary)
+                out.events.append(event)
+                if inp.live_event_sink is not None:
+                    inp.live_event_sink(event)
+
             try:
                 if inp.streaming and hasattr(inp.reasoner, "stream_complete"):
                     text_parts: list[str] = []
                     reasoning_parts: list[str] = []
-                    async for item in inp.reasoner.stream_complete(
-                        model=model_ref,
-                        prompt=inp.instructions,
-                        messages=tuple(inp.messages),
-                        tools=list(inp.tools),
+                    request_options = {
                         **(
                             {"max_output_tokens": inp.max_output_tokens}
                             if inp.max_output_tokens is not None
                             else {}
                         ),
+                        **(
+                            {"reasoning_effort": inp.reasoning_effort}
+                            if inp.reasoning_effort
+                            else {}
+                        ),
+                    }
+                    async for item in inp.reasoner.stream_complete(
+                        model=model_ref,
+                        prompt=inp.instructions,
+                        messages=tuple(inp.messages),
+                        tools=list(inp.tools),
+                        **request_options,
                     ):
                         if "text_delta" in item:
                             text_parts.append(item["text_delta"])
@@ -221,6 +352,8 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                                 and not inp.fallback_model_refs
                             ):
                                 inp.live_event_sink(delta_event)
+                        if "summary_delta" in item:
+                            append_summary(str(item["summary_delta"]))
                         if "reasoning_delta" in item:
                             reasoning_parts.append(item["reasoning_delta"])
                             seq += 1
@@ -239,19 +372,45 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                                 inp.live_event_sink(reasoning_event)
                         if "turn" in item:
                             turn = item["turn"]
+                    append_summary(final=True)
+                    if summary_parts:
+                        seq += 1
+                        completed_summary = _event(EventType.PUBLIC_SUMMARY_COMPLETED, inp, seq, {
+                            "text": "".join(summary_parts), "summary_id": f"{turn_count}:{model_ref}:{total_attempt}",
+                        }, phase="commentary")
+                        out.events.append(completed_summary)
+                        if inp.live_event_sink is not None:
+                            inp.live_event_sink(completed_summary)
                 else:
-                    turn = await inp.reasoner.complete(
-                        model=model_ref,
-                        prompt=inp.instructions,
-                        messages=tuple(inp.messages),
-                        tools=list(inp.tools),
+                    request_options = {
                         **(
                             {"max_output_tokens": inp.max_output_tokens}
                             if inp.max_output_tokens is not None
                             else {}
                         ),
+                        **(
+                            {"reasoning_effort": inp.reasoning_effort}
+                            if inp.reasoning_effort
+                            else {}
+                        ),
+                    }
+                    turn = await inp.reasoner.complete(
+                        model=model_ref,
+                        prompt=inp.instructions,
+                        messages=tuple(inp.messages),
+                        tools=list(inp.tools),
+                        **request_options,
                     )
             except Exception as exc:  # noqa: BLE001 - 每次 started 必被 failed 闭合
+                append_summary(final=True)
+                if summary_parts:
+                    seq += 1
+                    summary_end = _event(EventType.PUBLIC_SUMMARY_COMPLETED, inp, seq, {
+                        "text": "".join(summary_parts), "summary_id": f"{turn_count}:{model_ref}:{total_attempt}",
+                    }, phase="commentary")
+                    out.events.append(summary_end)
+                    if inp.live_event_sink is not None:
+                        inp.live_event_sink(summary_end)
                 # Failed-attempt output is not a user answer.  Retain the
                 # model.call.failed fact, but remove its partial text/reasoning
                 # before retry/failover so it cannot be replayed into chat.
@@ -271,24 +430,81 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                     has_fallback=candidate_index < len(candidates),
                 )
                 stop_reason = action
-                delay_ms = (
-                    retry_delay_ms(inp.provider_policy, model_attempt=model_attempt)
-                    if action == ModelFailureAction.RETRY
-                    else 0
-                )
+                public_max_attempts = inp.provider_policy.max_attempts_per_model
+                if (
+                    failure.kind is ModelFailureKind.TIMEOUT
+                    and not inp.provider_policy.allow_failover
+                ):
+                    # The timeout policy permits one same-model recovery only.
+                    # Keep the durable/public attempt denominator honest.
+                    public_max_attempts = min(public_max_attempts, 2)
+                delay_ms = 0
+                retry_after_source = ""
+                if action == ModelFailureAction.RETRY:
+                    delay_ms = retry_delay_ms(
+                        inp.provider_policy, model_attempt=model_attempt
+                    )
+                    # 限流类错误优先尊重服务端 Retry-After 头（G15.2）；
+                    # 以策略 max_backoff 封顶，超限时退回确定性退避节奏。
+                    if failure.status_code == 429:
+                        header_ms = retry_after_ms_from_error(exc)
+                        if header_ms is not None:
+                            max_backoff = inp.provider_policy.max_backoff_ms
+                            delay_ms = (
+                                min(header_ms, max_backoff)
+                                if max_backoff > 0
+                                else header_ms
+                            )
+                            retry_after_source = "header"
                 seq += 1
+                # 统一的失败取证点：无论异常从哪个抛点冒出来（缓冲 / 流式 / Responses /
+                # 传输层），这里都能拿到异常类型、错误码、状态码与安全化消息。
+                # 2026-09-19 实测教训：逐个抛点加日志会漏——我在 model_client 的两个抛点
+                # 都加了日志，18 条 MODEL_REQUEST_FAILED 重试却一条都没触发；必须在
+                # **分类发生的那一处**统一留痕，才不会再靠猜。
+                _LOGGER.warning(
+                    "模型调用失败：attempt=%s/%s category=%s exc=%s code=%s status=%s msg=%s",
+                    model_attempt,
+                    inp.provider_policy.max_attempts_per_model,
+                    failure.kind.value,
+                    type(exc).__name__,
+                    str(getattr(exc, "code", "") or ""),
+                    failure.status_code,
+                    safe_model_error_message(exc),
+                )
                 failed_event = _event(
                     EventType.MODEL_CALL_FAILED,
                     inp,
                     seq,
                     {
                         **event_meta,
+                        "max_attempts": public_max_attempts,
                         "error": safe_model_error_message(exc),
                         "error_type": type(exc).__name__,
+                        # 错误码必须进事件：否则"上游真的 502"和"我们自判失败用了
+                        # 502"在公开叙述里长得一模一样，无法区分（2026-09-18 实测：
+                        # 18 条 unavailable[502] 重试，查不出到底是谁的问题）。
+                        "error_code": str(getattr(exc, "code", "") or ""),
                         "failure_category": failure.kind.value,
                         "status_code": failure.status_code,
                         "action": action.value,
+                        "failover_model": (
+                            candidates[candidate_index]
+                            if action is ModelFailureAction.FAILOVER
+                            and candidate_index < len(candidates)
+                            else ""
+                        ),
                         "retry_delay_ms": delay_ms,
+                        "retry_after_source": retry_after_source,
+                        "model_stream_event": _provider_failure_stream_event(
+                            model=model_ref,
+                            sequence=total_attempt,
+                            failure_category=failure.kind.value,
+                            status_code=failure.status_code,
+                            retrying=action is ModelFailureAction.RETRY,
+                            retry_after_ms=delay_ms or None,
+                            error=exc,
+                        ),
                     },
                 )
                 out.events.append(failed_event)
@@ -340,6 +556,9 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                 usage.get("total_tokens")
                 or (int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0))
             ),
+            # 单次模型调用的增量（长任务方案 §19.2 usage_mode）：消费者
+            # 按 mode=delta 累加，而非覆盖（交接记录 §6 Usage 计量缺陷）。
+            "mode": "delta",
         }
         if usage.get("cached_tokens") is not None:
             usage_payload["cached_tokens"] = int(usage.get("cached_tokens") or 0)
@@ -356,6 +575,15 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
         )
         out.usage = usage
 
+    visible_text = _visible_answer(turn.final_text)
+    if visible_text != (turn.final_text or ""):
+        # Buffered deltas may still contain the provider's private prefix.
+        # The final snapshot below is built only from normalized public text.
+        out.events = [
+            event for event in out.events if event.event_type != EventType.TEXT_DELTA
+        ]
+    turn = replace(turn, final_text=visible_text)
+
     if turn.reasoning:
         seq += 1
         out.events.append(
@@ -369,22 +597,18 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
         )
 
     if turn.tool_calls:
-        commentary = public_commentary_text(turn.final_text)
-        if commentary:
-            seq += 1
-            out.events.append(
-                _event(
-                    EventType.TEXT_COMPLETED,
-                    inp,
-                    seq,
-                    {"text": commentary, "streamed": False},
-                    phase="commentary",
-                )
-            )
+        # Tool-call content is not a trustworthy public commentary channel.
+        # Some OpenAI-compatible reasoning endpoints place private analysis
+        # (including stray </think> markers) there. The tool call and its
+        # result carry the actionable context; keep model prose out of both
+        # the public feed and the next model/compaction transcript.
+        out.events = [
+            event for event in out.events if event.event_type != EventType.TEXT_DELTA
+        ]
         out.new_messages.append(
             {
                 "role": "assistant",
-                "content": turn.final_text,
+                "content": "",
                 "tool_calls": [
                     {
                         "id": call.call_id,
@@ -399,11 +623,32 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             }
         )
         out.pending_tool_calls = [
-            {"call_id": c.call_id, "name": c.name, "arguments": c.arguments}
+            {
+                "call_id": c.call_id,
+                "name": c.name,
+                "arguments": c.arguments,
+                "invalid_reason": c.invalid_reason,
+            }
             for c in turn.tool_calls
         ]
         out.route = ROUTE_TOOL_CALLS
     else:
+        if turn.degraded:
+            # 可见降级（不静默）：例如始终思考的端点把输出预算耗在
+            # reasoning_content 上，本回合既无内容也无工具调用。
+            seq += 1
+            out.events.append(
+                _event(
+                    EventType.POLICY_DECISION,
+                    inp,
+                    seq,
+                    {
+                        "action": "degraded",
+                        "reason": turn.degraded,
+                        "outcome": "degraded",
+                    },
+                )
+            )
         out.new_messages.append({"role": "assistant", "content": turn.final_text or ""})
         seq += 1
         out.events.append(

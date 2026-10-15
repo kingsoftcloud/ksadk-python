@@ -132,7 +132,7 @@ def _extract_input_modalities(raw_model: Mapping[str, Any]) -> list[str]:
     if not isinstance(architecture, Mapping):
         return []
     modalities = architecture.get("input_modalities")
-    if not isinstance(modalities, list):
+    if not isinstance(modalities, (list, tuple)):
         return []
 
     normalized: list[str] = []
@@ -144,11 +144,19 @@ def _extract_input_modalities(raw_model: Mapping[str, Any]) -> list[str]:
 
 
 def supports_native_image_input(model_metadata: Mapping[str, Any] | None) -> bool:
+    """Resolve the locked declaration once; explicit flags precede modalities.
+
+    Canonical capabilities take precedence over the legacy Studio spelling.
+    Unknown names or truthy non-booleans never grant image input. Frozen Build
+    tuples have the same meaning as the discovery payload's JSON arrays.
+    """
     if not isinstance(model_metadata, Mapping):
         return False
     capabilities = model_metadata.get("capabilities")
     if isinstance(capabilities, Mapping) and capabilities.get("multimodal_input_image") is not None:
-        return bool(capabilities.get("multimodal_input_image"))
+        return capabilities.get("multimodal_input_image") is True
+    if model_metadata.get("supports_image_input") is not None:
+        return model_metadata.get("supports_image_input") is True
     return "image" in _extract_input_modalities(model_metadata)
 
 
@@ -387,9 +395,9 @@ def normalize_model_metadata(raw_model: Mapping[str, Any] | str | None) -> dict[
         **dict(base.get("capabilities") or {}),
     }
     if input_modalities:
-        capabilities["multimodal_input_image"] = "image" in input_modalities
         capabilities["multimodal_input_video"] = "video" in input_modalities
         capabilities["multimodal_input_file"] = "file" in input_modalities
+    capabilities["multimodal_input_image"] = supports_native_image_input(base)
     limits = {
         **DEFAULT_MODEL_LIMITS,
         **dict(base.get("limits") or {}),

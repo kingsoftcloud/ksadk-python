@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 from ksadk.events.canonical import RuntimeEvent, dump_runtime_event, parse_runtime_event
 from ksadk.kernel.contracts import ActivationWriteGuard, SessionEventEnvelope
 from ksadk.sessions.base import SessionEvent, SessionEventSeqBinding
+from ksadk.sessions.db_budget import DatabaseOperationDeadline, session_db_budget
+from ksadk.sessions.resilience import is_session_backend_failure
 
 if TYPE_CHECKING:
     from ksadk.events.session_event import SessionEventStore
@@ -215,8 +217,32 @@ class RuntimeEventStore:
             raise ValueError("typed append requires a session_id bound at construction")
         if not isinstance(guard, ActivationWriteGuard):
             raise TypeError("RuntimeEventStore only accepts ActivationWriteGuard")
+        deadline = DatabaseOperationDeadline(session_db_budget())
         envelope = runtime_event_envelope(self._typed_session_id, event)
-        persisted = await self._event_store.append(envelope, guard=guard)
+        try:
+            persisted = await self._event_store.append(envelope, guard=guard)
+        except Exception as error:
+            # A lost commit acknowledgement is resolved by the stable event
+            # identity.  Never re-append: that would repeat a guarded write
+            # after a possible fence change.  Domain/fence errors remain errors.
+            if not is_session_backend_failure(error):
+                raise
+            lookup = getattr(self._event_store, "get_by_id", None)
+            if not callable(lookup):
+                raise
+            try:
+                persisted = await deadline.run(
+                    lookup(self._typed_session_id, envelope.event_id)
+                )
+            except Exception:
+                raise error
+            if persisted is None:
+                raise error
+            if persisted.session_id != envelope.session_id or persisted.family != "runtime":
+                raise ValueError("committed runtime event identity mismatch")
+            confirmed = parse_runtime_event(dict(persisted.payload) | {"seq": persisted.seq})
+            self._assert_same_fact(confirmed, event)
+            return confirmed
         return parse_runtime_event(dict(persisted.payload) | {"seq": persisted.seq})
 
     async def append_one(self, session_id: str, event: RuntimeEvent) -> RuntimeEvent:
@@ -226,12 +252,26 @@ class RuntimeEventStore:
     async def persist_one(self, session_id: str, event: RuntimeEvent) -> tuple[RuntimeEvent, bool]:
         """Persist before publication and return whether this call created the fact."""
 
+        budget = getattr(self._service, "db_budget", None) or session_db_budget()
+        deadline = DatabaseOperationDeadline(budget)
+        return await deadline.run(self._persist_one(session_id, event))
+
+    async def _event_by_id_for_write(self, session_id: str, event_id: str) -> RuntimeEvent | None:
+        lookup = getattr(self._service, "get_event_by_id_for_write", None)
+        if self._event_store is None and callable(lookup):
+            self._require_storage_capabilities()
+            stored = await lookup(session_id, canonical_storage_id(session_id, event_id))
+            return session_event_to_runtime_event(stored) if stored is not None else None
+        return await self.event_by_id(session_id, event_id)
+
+    async def _persist_one(self, session_id: str, event: RuntimeEvent) -> tuple[RuntimeEvent, bool]:
+
         if getattr(event, "schema_version", None) != 2:
             raise ValueError("canonical RuntimeEventStore accepts schema_version=2 only")
         if not session_id.strip():
             raise ValueError("session_id must be nonempty")
         self._require_storage_capabilities()
-        existing = await self.event_by_id(session_id, event.event_id)
+        existing = await self._event_by_id_for_write(session_id, event.event_id)
         if existing is not None:
             self._assert_same_fact(existing, event)
             return existing, False
@@ -242,7 +282,7 @@ class RuntimeEventStore:
             # The deterministic physical id turns concurrent appends into an
             # insert-winner/insert-loser race on durable backends.  Re-read the
             # winner and only absorb the error when it is the same fact.
-            existing = await self.event_by_id(session_id, event.event_id)
+            existing = await self._event_by_id_for_write(session_id, event.event_id)
             if existing is None:
                 raise
             self._assert_same_fact(existing, event)
@@ -328,11 +368,27 @@ class RuntimeEventStore:
         return events[:limit]
 
     async def event_by_id(self, session_id: str, event_id: str) -> RuntimeEvent | None:
-        if self._service is not None:
+        # Typed envelopes use a UUID event identity before the physical row
+        # key is allocated. The legacy carrier key cannot find those rows,
+        # even when the typed store happens to expose its session service.
+        if self._event_store is None and self._service is not None:
             self._require_storage_capabilities()
             storage_id = canonical_storage_id(session_id, event_id)
             stored = await self._service.get_event_by_id(session_id, storage_id)
             return session_event_to_runtime_event(stored) if stored is not None else None
+        lookup = getattr(self._event_store, "get_by_id", None)
+        if callable(lookup):
+            envelope = await lookup(session_id, runtime_event_envelope_id(session_id, event_id))
+            if envelope is None:
+                return None
+            if envelope.session_id != session_id:
+                raise ValueError("canonical event lookup returned another session")
+            if envelope.family != "runtime" or envelope.family_version != 2:
+                raise ValueError("canonical event lookup returned another event family")
+            event = parse_runtime_event(dict(envelope.payload) | {"seq": envelope.seq})
+            if event.event_id != event_id:
+                raise ValueError("canonical event lookup returned another event identity")
+            return event
         for event in await self.list(session_id):
             if event.event_id == event_id:
                 return event
@@ -382,6 +438,21 @@ class RuntimeEventStore:
                 raise ValueError("limit must be positive")
             events = events[-limit:]
         return events
+
+    async def latest_seq_by_sessions(self, session_ids: list[str]) -> dict[str, int]:
+        """Read canonical watermarks in one backend query when available."""
+
+        if not session_ids:
+            return {}
+        bulk_reader = getattr(self._service, "latest_event_seq_by_sessions", None)
+        if callable(bulk_reader):
+            return await bulk_reader(list(session_ids))
+        result: dict[str, int] = {}
+        for session_id in session_ids:
+            latest = await self.list(session_id, limit=1)
+            if latest:
+                result[session_id] = latest[-1].seq
+        return result
 
     async def list_run_ids(self, session_id: str) -> list[str]:
         """Distinct run ids in session order of first appearance."""

@@ -75,6 +75,7 @@ class LangGraphAdapterContext:
     graph_run_id: str
     initial_seq: int = 0
     checkpoint_ref: Mapping[str, str] | None = None
+    publication_epoch: str | None = None
     _next_seq: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -153,7 +154,10 @@ def _map_data_channel(
     value: Any,
 ) -> tuple[RuntimeEvent, ...]:
     env = _envelope(context, frame.occurrence_key, frame.timestamp)
-    item_id = stable_item_id("langgraph", frame.scope_id, "channel", method, frame.source_seq)
+    item_id = stable_item_id(
+        "langgraph", frame.scope_id, "channel", method, frame.source_seq,
+        *([context.publication_epoch] if context.publication_epoch else []),
+    )
     part_id = _part_id(item_id, "channel", method)
     content = DataContent(part_id=part_id, data=_json_value(value))
     envelope = lambda event_type: env(  # noqa: E731
@@ -465,6 +469,9 @@ def _envelope(
     occurrence_key: str,
     timestamp: float,
 ) -> Callable[..., dict[str, Any]]:
+    if context.publication_epoch:
+        occurrence_key = f"{context.publication_epoch}:{occurrence_key}"
+
     def env(
         scope_id: str,
         parent_scope_id: str | None,
@@ -474,6 +481,10 @@ def _envelope(
         source: SourceRef,
         ordinal: int = 0,
     ) -> dict[str, Any]:
+        if context.publication_epoch:
+            source = source.model_copy(update={"metadata": {
+                **source.metadata, "publication_epoch": context.publication_epoch,
+            }})
         return {
             "schema_version": 2,
             "event_id": stable_event_id(

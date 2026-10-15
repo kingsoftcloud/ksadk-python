@@ -189,6 +189,8 @@ class StreamReducer:
 
     def __init__(self) -> None:
         self._run_id: str | None = None
+        self._root_scope_id: str | None = None
+        self._managed_scopes: set[str] = set()
         self._status: RunStatus | None = None
         self._last_seq: int | None = None
         self._items: OrderedDict[tuple[str, str], ItemProjection] = OrderedDict()
@@ -219,12 +221,92 @@ class StreamReducer:
             return self._noop_patch(event)
 
         self._validate_run(event)
+        managed_descriptor = self._validate_managed_scope(event)
         patch = self._apply_event(event)
+        if managed_descriptor:
+            self._managed_scopes.add(event.scope_id)
+        if event.event_type in _RUN_LIFECYCLE_EVENT_TYPES and self._root_scope_id is None:
+            self._root_scope_id = event.scope_id
         if self._run_id is None:
             self._run_id = event.run_id
         self._last_seq = event.seq
         self._record_recent(event, fingerprint)
         return patch
+
+    def _validate_managed_scope(self, event: RuntimeEvent) -> bool:
+        if event.event_type in _RUN_LIFECYCLE_EVENT_TYPES:
+            # Older graph adapters use child run.progress as a nonterminal
+            # observation. Preserve that lane until a managed descriptor opts
+            # the run into the root-only contract; child terminals never pass.
+            if (
+                (
+                    event.parent_scope_id is not None
+                    and (not isinstance(event, RunProgress) or self._managed_scopes)
+                )
+                or event.scope_id in self._managed_scopes
+                or (
+                    self._managed_scopes
+                    and self._root_scope_id is not None
+                    and event.scope_id != self._root_scope_id
+                )
+            ):
+                raise self._error(
+                    event, "child_run_lifecycle", "run lifecycle belongs to root scope"
+                )
+        if not isinstance(event, (ItemStarted, ItemUpdated, ItemSnapshotReplaced, ItemCompleted)):
+            return False
+        if isinstance(event, ItemUpdated):
+            parts = (event.update,)
+        else:
+            snapshot = event.initial if isinstance(event, ItemStarted) else event.snapshot
+            parts = snapshot.parts if snapshot else ()
+        descriptors = [
+            part.data
+            for part in parts
+            if isinstance(part, DataContent)
+            and isinstance(part.data, dict)
+            and part.data.get("schema") == "execution.scope/v1"
+        ]
+        if not descriptors:
+            return False
+        from ksadk.a2a.presentation import ExecutionScopeDescriptor, validate_scope_transition
+
+        try:
+            if len(descriptors) != 1 or event.item_kind != "status":
+                raise ValueError("scope descriptor requires one status item")
+            current = ExecutionScopeDescriptor.model_validate(descriptors[0])
+            if (
+                current.scope_id != event.scope_id
+                or current.parent_scope_id != event.parent_scope_id
+            ):
+                raise ValueError("scope descriptor does not match event scope")
+            previous = self._items.get((event.scope_id, event.item_id))
+            if previous:
+                for part in previous.parts:
+                    if (
+                        isinstance(part, DataContent)
+                        and isinstance(part.data, dict)
+                        and part.data.get("schema") == "execution.scope/v1"
+                    ):
+                        validate_scope_transition(
+                            ExecutionScopeDescriptor.model_validate(part.data), current
+                        )
+            for ref in current.output_refs:
+                item = self._items.get((ref.scope_id, ref.item_id))
+                if (
+                    item is None
+                    or item.status != "completed"
+                    or (
+                        ref.part_id is not None
+                        and not any(p.part_id == ref.part_id for p in item.parts)
+                    )
+                ):
+                    raise ValueError("scope output reference is not completed")
+        except ValueError as exc:
+            raise self._error(
+                event, "invalid_execution_scope", "invalid execution scope descriptor"
+            ) from exc
+        return True
 
     def snapshot(self) -> RunProjection:
         """Return a detached projection suitable for live output or replay."""

@@ -104,6 +104,8 @@ console = get_console()
     default=None,
     help="Serverless 部署模式；默认从 agentengine.yaml 推断",
 )
+@click.option("--a2a-space-id", help="绑定 A2A Space（Serverless）；省略时保留已有绑定")
+@click.option("--a2a-runtime-profile", type=click.Choice(["managed-a2a", "managed-a2a-basic", "managed-a2a-memory"]), help="A2A 能力配置；需同时指定 --a2a-space-id")
 @click.option("--namespace", default="default", help="K8s 命名空间")
 @click.option("--port", "-p", default=8000, help="服务端口 (default: 8000)")
 @click.option("--registry", help="镜像仓库地址 (k8s/serverless Container 模式)")
@@ -148,6 +150,8 @@ def deploy(
     region: str,
     account_id: str,
     artifact_type: str,
+    a2a_space_id: str | None,
+    a2a_runtime_profile: str | None,
     namespace: str,
     port: int,
     registry: str,
@@ -250,6 +254,8 @@ def deploy(
             repackage=repackage,
             dry_run_context=dry_run_context,
             agent_id=agent_id,
+            a2a_space_id=a2a_space_id,
+            a2a_runtime_profile=a2a_runtime_profile,
         ),
         dry_run=dry_run,
         on_dry_run=render_deploy_dry_run,
@@ -326,10 +332,19 @@ async def _deploy_async(
     *,
     repackage: bool = False,
     agent_id: str | None = None,
+    a2a_space_id: str | None = None,
+    a2a_runtime_profile: str | None = None,
 ):
     """异步部署流程"""
     from ksadk.deployment import DeploymentManager, DeployStatus, DeployTarget
     from ksadk.detection import FrameworkDetector
+
+    if a2a_runtime_profile and not a2a_space_id:
+        raise validation_error("--a2a-runtime-profile requires --a2a-space-id")
+    if a2a_space_id is not None:
+        a2a_space_id = a2a_space_id.strip()
+        if target != "serverless" or not a2a_space_id:
+            raise validation_error("--a2a-space-id 需要非空 Space ID，且仅支持 Serverless 部署")
 
     agent_path = Path(agent_dir).resolve()
     config = _load_config(agent_path)
@@ -385,6 +400,11 @@ async def _deploy_async(
 
     resolved_runtime = None
     if effective_artifact_type == "ManagedRuntime":
+        if image:
+            raise validation_error(
+                "ManagedRuntime 不支持 --image；镜像由服务端 Runtime catalog 选择。"
+                "请通过 runtime.version 指定已登记的运行时版本。"
+            )
         if detection_result.type.value != "codex":
             raise validation_error("ManagedRuntime v1 目前仅支持 framework: codex")
         if ks3_path:
@@ -443,6 +463,8 @@ async def _deploy_async(
             "runtime_name": resolved_runtime.name if resolved_runtime else "",
             "runtime_version": resolved_runtime.version if resolved_runtime else "",
             "agent_id": agent_id,
+            "a2a_space_id": a2a_space_id,
+            "a2a_runtime_profile": a2a_runtime_profile,
         },
     )
 
@@ -611,7 +633,9 @@ async def _deploy_async(
             # CreateAgent callback may still be pending, so presenting it as a
             # completed deployment is misleading (and hides a broken
             # callback/data-plane handoff).
-            if result.status == DeployStatus.RUNNING:
+            if result.metadata.get("update_accepted"):
+                print_info("Agent 更新请求已提交，服务端将在后台执行，请稍后查看 Agent 状态")
+            elif result.status == DeployStatus.RUNNING:
                 print_success("部署成功")
             else:
                 print_info("部署请求已提交，等待实例就绪")
@@ -631,7 +655,8 @@ async def _deploy_async(
                 print_kv("信息", result.message)
 
             # 9. 自动创建版本快照 (仅热更新时，首次部署平台自动创建 v1)
-            is_update = result.message and "已更新" in result.message
+            is_update = (not result.metadata.get("update_accepted")
+                         and result.message and "已更新" in result.message)
             if result.agent_id and is_update and not no_version and not dry_run:
                 from ksadk.cli.deploy_utils import auto_release_version
 

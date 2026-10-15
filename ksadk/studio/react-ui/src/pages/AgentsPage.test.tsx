@@ -8,6 +8,34 @@ vi.mock("../api", () => ({ apiFetch: vi.fn() }));
 const mockedFetch = vi.mocked(apiFetch);
 
 describe("AgentsPage appearance", () => {
+  it("distinguishes a source framework from its canonical runtime adapter", () => {
+    render(
+      <AgentsPage
+        agents={[{
+          metadata: {
+            id: "deepagents-demo",
+            name: "DeepAgents Demo",
+            labels: { "agentkit.ksyun.com/source-framework": "deepagents" },
+          },
+          spec: { runtime: { type: "langgraph" } },
+          builds: [],
+        }]}
+        runtimeReady
+        workspaceName="fixture"
+        onCreate={() => undefined}
+        onDetail={() => undefined}
+        onChat={() => undefined}
+        onBuild={() => undefined}
+        onChanged={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("deepagents · langgraph")).toHaveAttribute(
+      "title",
+      "源码框架 deepagents，执行适配器 langgraph",
+    );
+  });
+
   beforeEach(() => {
     mockedFetch.mockReset();
     mockedFetch.mockResolvedValue({ ok: true, json: async () => ({ items: [] }) } as Response);

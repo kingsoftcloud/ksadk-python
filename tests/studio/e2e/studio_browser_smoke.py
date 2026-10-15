@@ -25,13 +25,13 @@ def _open_skill_discovery(page: Page) -> None:
     skill_tab.click()
     expect(skill_tab).to_have_attribute("aria-selected", "true")
     page.get_by_role("button", name="发现 Skill", exact=True).click()
-    expect(page.get_by_role("dialog", name="发现本地 Skill")).to_be_visible()
+    expect(page.get_by_role("dialog", name="发现 Skill")).to_be_visible()
     page.get_by_label("扫描目录（逗号分隔；留空扫描安全默认目录）").fill("skills")
 
 
 def _assert_multi_import_and_partial_failure(page: Page, workspace: Path) -> None:
     _open_skill_discovery(page)
-    page.get_by_role("button", name="扫描候选", exact=True).click()
+    page.get_by_role("button", name="检查候选", exact=True).click()
     expect(page.get_by_role("checkbox")).to_have_count(2)
     _candidate(page, "alpha").get_by_role("button", name="查看详情", exact=True).click()
     preview = page.get_by_role("dialog", name="alpha · 文件")
@@ -50,7 +50,7 @@ def _assert_multi_import_and_partial_failure(page: Page, workspace: Path) -> Non
     assert (workspace / "capabilities/skills/beta/SKILL.md").is_file()
 
     write_skill(workspace / "skills", "gamma")
-    page.get_by_role("button", name="扫描候选", exact=True).click()
+    page.get_by_role("button", name="检查候选", exact=True).click()
     expect(page.get_by_role("checkbox")).to_have_count(3)
     expect(_candidate(page, "alpha")).to_contain_text("已安装")
     expect(_candidate(page, "gamma")).to_contain_text("可导入")

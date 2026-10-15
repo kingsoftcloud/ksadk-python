@@ -4,6 +4,7 @@ import { OutboxStore, type ConversationId } from "@kingsoftcloud/ksadk-web/conve
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
 import { ChatWorkspace, type ChatWorkspaceHandle } from "./ChatWorkspace";
+import { StudioChatApiFacade } from "../studioChatApiFacade";
 
 const mocks = vi.hoisted(() => {
   const chat = {
@@ -23,6 +24,7 @@ const mocks = vi.hoisted(() => {
     hasMoreSessions: false,
     isMobile: false,
     isStreaming: false,
+    activity: undefined as { runId: string } | undefined,
     uiCapabilities: {
       StopRun: true,
       Attachments: true,
@@ -70,6 +72,7 @@ vi.mock("@kingsoftcloud/ksadk-web/hooks", () => ({
   useAgentChat: mocks.useAgentChat,
 }));
 vi.mock("@kingsoftcloud/ksadk-web/runtime", () => ({
+  AgentEngineClient: class { postJsonAction = vi.fn(); },
   ApiFacadeImpl: class {
     constructor(options: Record<string, unknown>) {
       mocks.facadeOptions.push(options);
@@ -85,7 +88,7 @@ vi.mock("@kingsoftcloud/ksadk-web/chat/timeline", () => ({
 vi.mock("@kingsoftcloud/ksadk-web/chat/composer", () => ({
   AgentConversationComposer: (props: Record<string, unknown>) => {
     mocks.composerProps = props;
-    return <div data-testid="shared-composer" />;
+    return <div data-testid="shared-composer">{props.headerSlot as React.ReactNode}</div>;
   },
 }));
 vi.mock("../api", () => ({ apiFetch: vi.fn() }));
@@ -94,6 +97,10 @@ vi.mock("./ConfirmDialog", () => ({ ConfirmDialog: () => <div data-testid="confi
 
 describe("ChatWorkspace shared conversation composition", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
+    delete (mocks.chat.uiCapabilities as Record<string, unknown>).StudioRunReceiptQuery;
+    delete (mocks.chat.uiCapabilities as Record<string, unknown>).SteerRun;
+    mocks.chat.uiCapabilities.RuntimeCapabilityMatrix = {};
     mocks.chat.bootstrapStatus = "ready";
     mocks.chat.isLoadingSessions = false;
     mocks.chat.isStreaming = false;
@@ -152,11 +159,51 @@ describe("ChatWorkspace shared conversation composition", () => {
     outbox.clear();
   });
 
+  it("retains the published query path for targets without original receipt capability", async () => {
+    const outbox = new OutboxStore();
+    const entry = outbox.enqueue({ conversationId: "conversation_test", agentId: "local-1", text: "cloud", attachments: [] });
+    outbox.update(entry.requestId, { status: "unknown" });
+    mocks.chat.conversationId = "conversation_test";
+    mocks.chat.conversationOutbox = outbox;
+    const query = vi.spyOn(StudioChatApiFacade.prototype, "getRunReceipt");
+    mocks.chat.retryOutbox.mockResolvedValue(false);
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    fireEvent.click(screen.getByRole("button", { name: "查询投递状态" }));
+    await waitFor(() => expect(mocks.chat.retryOutbox).toHaveBeenCalledWith(entry.requestId));
+    expect(query).not.toHaveBeenCalled();
+    expect(outbox.get(entry.requestId)?.status).toBe("unknown");
+  });
+
+  it("uses the original completion receipt to remove a restored delivery notice", async () => {
+    (mocks.chat.uiCapabilities as Record<string, unknown>).StudioRunReceiptQuery = true;
+    const query = vi.spyOn(StudioChatApiFacade.prototype, "getRunReceipt").mockResolvedValue({
+      SchemaVersion: 1, AgentId: "local-1", SessionId: "session-1", InvocationId: "original-client",
+      RunId: "actual-host-run", Source: "run", Status: "completed",
+    });
+    const outbox = new OutboxStore();
+    const entry = outbox.enqueue({ conversationId: "conversation_test", agentId: "local-1", text: "restored", attachments: [],
+      nativeSessionId: "session-1", invocationId: "original-client" });
+    outbox.update(entry.requestId, { status: "unknown" });
+    mocks.chat.conversationId = "conversation_test";
+    mocks.chat.conversationOutbox = outbox;
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    await waitFor(() => expect(outbox.get(entry.requestId)?.status).toBe("completed"));
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(mocks.chat.retryOutbox).not.toHaveBeenCalled();
+    expect(screen.queryByText("有一条消息需要处理")).not.toBeInTheDocument();
+  });
+
   it("allows unknown attachment deliveries to be queried without restoring file bytes", async () => {
+    (mocks.chat.uiCapabilities as Record<string, unknown>).StudioRunReceiptQuery = true;
+    const query = vi.spyOn(StudioChatApiFacade.prototype, "getRunReceipt").mockResolvedValue({
+      SchemaVersion: 1, AgentId: "local-1", SessionId: "session-1", InvocationId: "original-client",
+      RunId: "", Source: "unavailable", Status: "unknown",
+    });
     const outbox = new OutboxStore("test:outbox-attachment");
     outbox.clear();
     const entry = outbox.enqueue({ conversationId: "conversation_test", agentId: "local-1",
-      text: "处理附件", attachments: [{ name: "report.txt", type: "text/plain", size: 12 }] });
+      text: "处理附件", attachments: [{ name: "report.txt", type: "text/plain", size: 12 }],
+      nativeSessionId: "session-1", invocationId: "original-client" });
     outbox.update(entry.requestId, { status: "unknown", error: "暂时无法查询原任务状态，请稍后重新查询。" });
     mocks.chat.conversationId = "conversation_test";
     mocks.chat.conversationOutbox = outbox;
@@ -164,7 +211,8 @@ describe("ChatWorkspace shared conversation composition", () => {
     render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
     expect(screen.getByText("暂时无法查询原任务状态，请稍后重新查询。")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "查询投递状态" }));
-    await waitFor(() => expect(mocks.chat.retryOutbox).toHaveBeenCalledWith(entry.requestId));
+    await waitFor(() => expect(query).toHaveBeenCalledWith("local-1", "session-1", "original-client", expect.any(AbortSignal)));
+    expect(mocks.chat.retryOutbox).not.toHaveBeenCalled();
     act(() => { outbox.update(entry.requestId, { status: "failed" }); });
     expect(screen.getByRole("button", { name: "无法恢复附件" })).toBeDisabled();
     outbox.clear();
@@ -320,6 +368,44 @@ describe("ChatWorkspace shared conversation composition", () => {
     expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
   });
 
+  it("keeps a user-started turn when bootstrap becomes ready after Session creation", async () => {
+    mocks.chat.bootstrapStatus = "loading";
+    const props = { agentId: "local-1", agentName: "Agent" };
+    const { rerender } = render(<ChatWorkspace {...props}/>);
+    await act(async () => {
+      await (mocks.composerProps?.submitDraft as (...args: unknown[]) => Promise<void>)(
+        "Remember this code", [], undefined, undefined, undefined,
+      );
+    });
+    mocks.chat.currentSessionId = "new-session";
+    mocks.chat.isStreaming = true;
+    rerender(<ChatWorkspace {...props}/>);
+    mocks.chat.bootstrapStatus = "ready";
+    rerender(<ChatWorkspace {...props}/>);
+    expect(mocks.chat.send).toHaveBeenCalledOnce();
+    expect(mocks.chat.selectSession).not.toHaveBeenCalled();
+    expect(mocks.chat.stop).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicitly created local draft through late bootstrap", () => {
+    mocks.chat.bootstrapStatus = "loading";
+    const ref = createRef<ChatWorkspaceHandle>();
+    const { rerender } = render(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
+    act(() => ref.current?.startNewChat());
+    mocks.chat.bootstrapStatus = "ready";
+    rerender(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
+    expect(mocks.chat.selectSession).not.toHaveBeenCalled();
+  });
+
+  it("still clears an automatically adopted Session when there is no user intent", () => {
+    mocks.chat.bootstrapStatus = "loading";
+    const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
+    mocks.chat.bootstrapStatus = "ready";
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
+    expect(mocks.chat.selectSession).toHaveBeenCalledExactlyOnceWith(null);
+  });
+
   it("starts new conversations through the product rail without interrupting a stream", () => {
     const ref = createRef<ChatWorkspaceHandle>();
     const { rerender } = render(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
@@ -364,7 +450,7 @@ describe("ChatWorkspace shared conversation composition", () => {
   });
 
   it("binds the shared controller to the selected agent and Studio fetch", () => {
-    render(<ChatWorkspace agentId="ar-cloud-1" agentName="云端 Agent" />);
+    render(<ChatWorkspace agentId="ar-cloud-1" agentName="云端 Agent" cloudTarget />);
 
     expect(mocks.facadeOptions).toEqual([{ fetch: apiFetch, agentId: "ar-cloud-1" }]);
     expect(mocks.useAgentChat).toHaveBeenCalledWith(expect.objectContaining({
@@ -394,6 +480,51 @@ describe("ChatWorkspace shared conversation composition", () => {
 
     (mocks.timelineProps?.onStopGeneration as () => void)();
     expect(mocks.chat.stop).toHaveBeenCalledOnce();
+  });
+
+  it("does not pass an unsupported steering prop to the published composer", () => {
+    (mocks.chat.uiCapabilities as Record<string, unknown>).SteerRun = true;
+    render(<ChatWorkspace agentId="local-1" agentName="本地 Agent" />);
+    expect(mocks.composerProps).not.toHaveProperty("canSteer");
+  });
+
+  it("offers steering through the published composer slot only for an active capable Run", () => {
+    (mocks.chat.uiCapabilities as Record<string, unknown>).SteerRun = true;
+    mocks.chat.isStreaming = true;
+    mocks.chat.activity = { runId: "active-run" };
+    const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="本地 Agent" />);
+    expect(screen.queryByLabelText("调整当前任务")).toBeNull();
+    const facade = (mocks.useAgentChat.mock.calls as unknown as Array<[{ api: StudioChatApiFacade }]>)[0][0].api;
+    const admitted = { agentId: "local-1", sessionId: "session-1", invocationId: "active-run", runId: "host-run" };
+    const spy = vi.spyOn(facade, "controlRun").mockReturnValue(admitted);
+    rerender(<ChatWorkspace agentId="local-1" agentName="本地 Agent" />);
+    expect(screen.getByLabelText("调整当前任务")).toBeVisible();
+    expect(mocks.composerProps).not.toHaveProperty("canSteer");
+    mocks.chat.isStreaming = false;
+    rerender(<ChatWorkspace agentId="local-1" agentName="本地 Agent" />);
+    expect(screen.queryByLabelText("调整当前任务")).toBeNull();
+    mocks.chat.activity = undefined;
+    spy.mockRestore();
+  });
+
+  it("exposes child controls only for the admitted Run and declared runtime capability", () => {
+    mocks.chat.isStreaming = true;
+    mocks.chat.uiCapabilities.RuntimeCapabilityMatrix = {
+      extensions: { child_input: { supported: true, mode: "native" } },
+    };
+    const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="本地 Agent" />);
+    expect(screen.queryByRole("button", { name: "子任务" })).toBeNull();
+    const facade = (mocks.useAgentChat.mock.calls as unknown as Array<[{ api: StudioChatApiFacade }]>)[0][0].api;
+    const spy = vi.spyOn(facade, "controlRun").mockReturnValue({
+      agentId: "local-1", sessionId: "session-1", invocationId: "inv-1", runId: "host-run",
+      childControls: { input: true, promotion: false },
+    });
+    rerender(<ChatWorkspace agentId="local-1" agentName="本地 Agent" />);
+    expect(screen.getByRole("button", { name: "子任务" })).toBeVisible();
+    spy.mockReturnValue({ agentId: "local-1", sessionId: "session-1", invocationId: "inv-1", runId: "host-run" });
+    rerender(<ChatWorkspace agentId="local-1" agentName="本地 Agent" />);
+    expect(screen.queryByRole("button", { name: "子任务" })).toBeNull();
+    spy.mockRestore();
   });
 
   it("keeps Studio session navigation and refresh wired to the shared controller", async () => {

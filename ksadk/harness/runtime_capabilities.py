@@ -11,7 +11,56 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ksadk.kernel.contracts import RuntimeCapabilityMatrix
+from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
+
+
+def managed_harness_native_capabilities(*, durable: bool = False) -> dict[str, Any]:
+    """Declare the Managed assembly without importing its execution engine.
+
+    Metadata readers and the Managed adapter share this one declaration. A
+    declaration does not install the optional framework or select an engine.
+    """
+    return {
+        "cancel": {"supported": True},
+        "resume": {"supported": True},
+        "checkpoint": {"supported": True, "granularity": "snapshot"},
+        "session_continuity": {
+            "durable": durable,
+            "scope": "workspace" if durable else "process",
+        },
+        "progressive_disclosure": {"skill": True, "mcp": True},
+        "steering": {"supported": True, "mode": "native", "follow_up": True},
+    }
+
+
+def managed_harness_capabilities(
+    *, durable: bool, execution_policy: bool = False
+) -> RuntimeCapabilityMatrix:
+    """Return the canonical control declaration for one Managed assembly tier."""
+    def available() -> RuntimeCapability:
+        return RuntimeCapability(supported=True, mode="native")
+
+    def unavailable(reason: str) -> RuntimeCapability:
+        return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
+
+    durable_capability = (
+        available() if durable else unavailable("managed_harness_checkpoint_is_process_local")
+    )
+    return RuntimeCapabilityMatrix(
+        cancel=available(),
+        pause=unavailable("managed_harness_pause_not_implemented"),
+        resume=available(),
+        submit_interaction=durable_capability,
+        attach=durable_capability,
+        steer=available(),
+        inject=unavailable("runtime_no_native_inject"),
+        checkpoint=available(),
+        durable_restore=durable_capability,
+        interaction_mode="durable_resume" if durable else "unavailable",
+        execution_policy=(
+            available() if execution_policy else unavailable("managed_harness_no_host_resolver")
+        ),
+    )
 
 
 class CapabilitySupport(str, Enum):
@@ -83,6 +132,7 @@ def managed_langgraph_capabilities() -> RuntimeHarnessCapabilities:
         "checkpoint": ("tests/harness/test_engine_langgraph.py",),
         "recovery": ("tests/harness/test_runner_conformance_matrix.py",),
         "events": ("tests/harness/test_event_v2_envelope.py",),
+        "steering": ("tests/harness/test_steering.py",),
     }
     return RuntimeHarnessCapabilities(
         runtime_type="managed-langgraph",
@@ -93,6 +143,24 @@ def managed_langgraph_capabilities() -> RuntimeHarnessCapabilities:
                 evidence_refs=evidence_by_capability[name],
             )
             for name in RuntimeHarnessCapabilities._REQUIRED
+        }
+        | {
+            # steering（steer/follow_up）是可选扩展能力，不进 _REQUIRED，
+            # 避免旧 runtime 报缺声明；托管引擎原生支持（G1）。
+            "steering": HarnessCapability(
+                support=CapabilitySupport.SUPPORTED,
+                owner=CapabilityOwner.PLATFORM,
+                evidence_refs=evidence_by_capability["steering"],
+            ),
+        },
+        metadata={
+            "skill_standard": "agentskills-v1-compatible",
+            # G5 §5.2 Provider 钩子纪律声明：顺序 await、异常可见降级、钩子不获得
+            # approval 绕过权与沙箱豁免、不可改模型路由（引擎强制回写）。
+            "provider_hooks_discipline": (
+                "ordered-await; visible-degradation; no-approval-bypass; "
+                "no-sandbox-exemption; model-immutable"
+            ),
         },
     )
 
@@ -153,6 +221,8 @@ __all__ = [
     "CapabilitySupport",
     "HarnessCapability",
     "RuntimeHarnessCapabilities",
+    "managed_harness_capabilities",
+    "managed_harness_native_capabilities",
     "managed_langgraph_capabilities",
     "project_adapter_capabilities",
 ]

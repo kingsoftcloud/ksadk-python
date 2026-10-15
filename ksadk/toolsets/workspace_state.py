@@ -7,6 +7,8 @@ from ksadk.runtime_context import get_current_tool_execution_context_or_default
 
 @dataclass
 class WorkspaceReadState:
+    """The last observed file revision, including successful writes and edits."""
+
     path: str
     mtime_ns: int
     size_bytes: int
@@ -14,6 +16,10 @@ class WorkspaceReadState:
     end_line: int
     total_lines: int
     partial: bool
+    # Older executor rows omit these fields and must be refreshed by a read.
+    # A relative path plus mtime/size is not an observed file revision.
+    canonical_path: str | None = None
+    content_sha256: str | None = None
 
 
 _READ_STATE: dict[tuple[str, str], WorkspaceReadState] = {}

@@ -49,6 +49,15 @@ from ksadk.kernel.contracts import (
     SessionEventEnvelope,
     SessionEventSubscription,
 )
+from ksadk.kernel.ingress_bootstrap import (
+    _is_hosted,
+    _remote_jwks_source,
+    authority_mode,
+    make_env_permit_verifier,
+)
+from ksadk.kernel.ingress_bootstrap import (
+    bootstrap_agent_kernel_from_env as _bootstrap_agent_kernel_from_env,
+)
 
 # ---------------------------------------------------------------------------
 # opt-in 开关与 kernel 注册
@@ -315,9 +324,10 @@ def _command(
     idempotency_key: str,
     payload: dict[str, Any],
     correlation_id: str | None = None,
+    command_id: uuid.UUID | None = None,
 ) -> AgentControlCommand:
     return AgentControlCommand(
-        command_id=uuid.uuid4(),
+        command_id=command_id or uuid.uuid4(),
         idempotency_key=idempotency_key,
         tenant_id=trusted.tenant_id,
         agent_instance_id=trusted.agent_instance_id,
@@ -426,16 +436,25 @@ def map_studio_request(
     content: Any,
     run_id: str | None = None,
     trusted: TrustedRuntimeContext,
+    runtime_options: Mapping[str, Any] | None = None,
+    execution_grant_id: str | None = None,
+    command_id: uuid.UUID | None = None,
 ) -> AgentControlCommand:
     """Studio run -> enqueue；studio run id 保存在 correlation ref。"""
 
+    payload: dict[str, Any] = {"content": content}
+    if runtime_options:
+        payload["runtime_options"] = dict(runtime_options)
+    if execution_grant_id:
+        payload["execution_grant_id"] = execution_grant_id
     return _command(
         trusted=trusted,
         command_type="enqueue",
         session_id=session_id,
         idempotency_key=idempotency_key,
-        payload={"content": content},
+        payload=payload,
         correlation_id=run_id,
+        command_id=command_id,
     )
 
 
@@ -467,6 +486,7 @@ def map_control_request(
     payload: dict[str, Any],
     trusted: TrustedRuntimeContext,
     run_id: str | None = None,
+    command_id: uuid.UUID | None = None,
 ) -> AgentControlCommand:
     """Cancel/Resume/Pause 等 control 动作 -> 对应 command_type。"""
 
@@ -477,6 +497,7 @@ def map_control_request(
         idempotency_key=idempotency_key,
         payload=payload,
         correlation_id=run_id,
+        command_id=command_id,
     )
 
 
@@ -563,211 +584,19 @@ _AUTHORITY_LOCAL = "local"
 _AUTHORITY_HOSTED = "hosted"
 
 
-def authority_mode() -> str:
-    """当前 permit authority 模式。
-
-    - ``AGENT_KERNEL_AUTHORITY_MODE=local``：显式本地授权（开发 / 灰度 /
-      canary）。允许进程内 issuer 自签 trusted-context permit，且 JWKS
-      合并本地公钥。
-    - ``AGENT_KERNEL_AUTHORITY_MODE=hosted``：托管模式，fail closed——缺
-      permit 一律 401，本地自签 / 未知 key 一律 403，JWKS 不得合并本地
-      公钥。
-    - 未显式配置时：配置了 ``AGENT_CONTROL_JWKS_URL`` 视为 hosted（server
-      签发是唯一信任源），否则默认 local（保持本地灰度行为）。
-    """
-
-    explicit = os.environ.get(ENV_AUTHORITY_MODE, "").strip().lower()
-    if explicit in (_AUTHORITY_LOCAL, _AUTHORITY_HOSTED):
-        return explicit
-    if os.environ.get(ENV_JWKS_URL, "").strip():
-        return _AUTHORITY_HOSTED
-    return _AUTHORITY_LOCAL
-
-
-def _is_hosted() -> bool:
-    return authority_mode() == _AUTHORITY_HOSTED
-
-
 async def bootstrap_agent_kernel_from_env() -> Any | None:
-    """``AGENT_KERNEL_ENABLED=1`` 且能装配 store 时自动 ``set_agent_kernel``。
-
-    避免"开了 env 也不生效"：server lifespan 启动时调用；装配失败抛异常
-    （fail loud），不静默降级。已注册 kernel 时幂等返回。
-    """
-
-    existing = get_agent_kernel()
-    if existing is not None:
-        if _is_hosted():
-            # A caller may have registered a bare AgentKernel before entering
-            # this helper.  Treat that exactly like a fresh half-runtime: an
-            # ingress facade without the production owner loops is not a
-            # healthy hosted deployment.
-            from ksadk.kernel.bootstrap import get_agent_kernel_runtime
-
-            runtime = get_agent_kernel_runtime()
-            if runtime is None or runtime.kernel is not existing:
-                raise RuntimeError(
-                    "hosted agent kernel ingress requires the full production "
-                    "composition root; a bare kernel is not allowed"
-                )
-        return existing
-    if not kernel_ingress_enabled():
-        return None
-    # This legacy helper only has enough context to build the ingress facade.
-    # In a hosted workload that would create a dangerous half-runtime: it can
-    # accept a Server permit, but no worker, lease owner or recovery loop will
-    # ever consume the durable command.  Hosted applications must enter via
-    # ``bootstrap_agent_kernel_runtime_from_env`` from the FastAPI lifespan,
-    # where the real RuntimeAdapter provider is available.
-    if _is_hosted():
-        raise RuntimeError(
-            "hosted agent kernel ingress requires the full production "
-            "composition root; use bootstrap_agent_kernel_runtime_from_env"
-        )
-
-    from ksadk.events.session_event import SessionServiceEventStore
-    from ksadk.kernel.control import AgentKernel
-    from ksadk.sessions.in_memory import InMemorySessionService
-
-    driver = os.environ.get(ENV_KERNEL_STORE_DRIVER, "memory").strip().lower()
-    dsn = os.environ.get(ENV_KERNEL_STORE_DSN, "").strip()
-    session_service: Any = InMemorySessionService()
-    events = SessionServiceEventStore(session_service)
-    store: Any = None
-    nonce_store: Any = None
-
-    if driver == "postgres":
-        from ksadk.kernel.postgres_store import (
-            PostgresAgentKernelStore,
-            PostgresFencedSessionEventStore,
-            PostgresKernelEventLog,
-            PostgresNonceStore,
-        )
-        from ksadk.sessions.postgres_service import PostgresSessionService
-
-        if not dsn:
-            raise RuntimeError("postgres kernel store requires AGENT_KERNEL_STORE_DSN")
-        namespace = str(os.environ.get("KSADK_SESSION_NAMESPACE") or "default").strip()
-        tenant_id = str(
-            os.environ.get("KSADK_TENANT_ID")
-            or os.environ.get("AGENTENGINE_TENANT_ID")
-            or "default"
-        ).strip()
-        workspace_id = str(
-            os.environ.get("KSADK_WORKSPACE_ID")
-            or os.environ.get("AGENTENGINE_WORKSPACE_ID")
-            or "default"
-        ).strip()
-        # 事件与 session 走同一 PG（PG-backed SessionServiceEventStore），
-        # 使 worker 产生的 family=runtime/v2 事件对 canonical SSE 可见；
-        # nonce 用 PG durable 存储，跨 Pod / 重启防重放。
-        session_service = PostgresSessionService(
-            dsn=dsn,
-            namespace=namespace or "default",
-            tenant_id=tenant_id or "default",
-            workspace_id=workspace_id or "default",
-        )
-        await session_service._ensure_pool()
-        pool = session_service._pool
-        event_log = PostgresKernelEventLog(
-            pool,
-            namespace=session_service.namespace,
-            tenant_id=session_service.tenant_id,
-            workspace_id=session_service.workspace_id,
-        )
-        store = PostgresAgentKernelStore(
-            pool, event_log, tenant_id=session_service.tenant_id, owns_pool=True
-        )
-        # typed RuntimeEvent 写路径走 fenced store：ActivationWriteGuard
-        # append 与 activation 行验证同一事务（Task 4 Step 5）。
-        events = PostgresFencedSessionEventStore(store)
-        nonce_store = PostgresNonceStore(pool)
-    elif driver == "sqlite":
-        if dsn:
-            from ksadk.kernel.sqlite_store import SQLiteAgentKernelStore
-
-            store = SQLiteAgentKernelStore(dsn, events)
-    if store is None:
-        from ksadk.kernel.memory_store import InMemoryAgentKernelStore
-
-        store = InMemoryAgentKernelStore(events)
-
-    kernel = AgentKernel(
-        store, events, permit_verifier=_env_permit_verifier(nonce_store=nonce_store)
+    return await _bootstrap_agent_kernel_from_env(
+        get_kernel=get_agent_kernel, set_kernel=set_agent_kernel,
+        ingress_enabled=kernel_ingress_enabled, hosted=_is_hosted,
+        permit_verifier=_env_permit_verifier,
     )
-    if hasattr(store, "ensure_schema"):
-        try:
-            await store.ensure_schema()
-        except Exception:  # pragma: no cover - schema 已存在等场景
-            pass
-    set_agent_kernel(kernel)
-    return kernel
-
-
-class _HttpJwks:
-    """Server JWKS source used only in hosted deployments."""
-
-    def __init__(self, url: str) -> None:
-        self._url = url
-
-    async def fetch_verification_keys(self) -> Mapping[str, str]:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-            response = await client.get(self._url)
-            response.raise_for_status()
-            raw = response.json().get("keys") or {}
-        if isinstance(raw, Mapping):
-            return {str(k): str(v) for k, v in raw.items()}
-        # 标准 JWKS shape：[{"kty","crv","kid","x"}, ...]
-        return {
-            str(item["kid"]): str(item["x"])
-            for item in raw
-            if isinstance(item, Mapping) and "kid" in item and "x" in item
-        }
-
-
-def _remote_jwks_source(jwks_url: str | None = None) -> JwksSource:
-    """构造唯一的 Server JWKS source；空值绝不回退本地 authority。"""
-
-    url = (jwks_url or os.environ.get(ENV_JWKS_URL) or "").strip()
-    if not url:
-        raise RuntimeError("hosted agent kernel runtime requires AGENT_CONTROL_JWKS_URL")
-    return _HttpJwks(url)
 
 
 def _env_permit_verifier(*, nonce_store: Any = None) -> Any:
-    """JWKS URL 配置时用远端 verifier；否则用进程内 issuer（本地/灰度）。
-
-    authority mode 决定是否合并进程内 issuer 公钥：
-
-    - local：合并本地公钥——canonical ingress 的 status/subscribe 等本地
-      trusted-context permit 与 server permit 都能被同一个 verifier 验签，
-      fail closed 语义不变（两把 key 都必须真实签名）。
-    - hosted：禁止合并本地公钥/自签。JWKS 内的 server key 是唯一信任源，
-      本地签发的 permit 得到 unknown_signing_key -> fail closed。
-    """
-
-    jwks_url = os.environ.get(ENV_JWKS_URL, "").strip()
-    if jwks_url:
-        from ksadk.kernel.authorization import AgentControlPermitVerifier
-
-        source = _remote_jwks_source(jwks_url)
-        if _is_hosted():
-            # hosted 模式：server JWKS 是唯一信任源，绝不合并本地公钥。
-            return AgentControlPermitVerifier(source, nonce_store=nonce_store)
-
-        class _LocalCompatibleJwks:
-            async def fetch_verification_keys(self) -> Mapping[str, str]:
-                merged = dict(await source.fetch_verification_keys())
-                local = _default_issuer()
-                merged[local.key_id] = local._public_b64
-                return merged
-
-        return AgentControlPermitVerifier(_LocalCompatibleJwks(), nonce_store=nonce_store)
-    if _is_hosted():
-        raise RuntimeError("hosted agent kernel runtime requires AGENT_CONTROL_JWKS_URL")
-    return _default_issuer().verifier(nonce_store=nonce_store)
+    return make_env_permit_verifier(
+        nonce_store=nonce_store, remote_jwks_source=_remote_jwks_source,
+        default_issuer=_default_issuer, hosted=_is_hosted,
+    )
 
 
 async def _ensure_shared_log_session(command: Any) -> None:
@@ -793,7 +622,9 @@ async def _ensure_shared_log_session(command: Any) -> None:
 
         payload = getattr(command, "payload", {})
         identity = payload.get("invocation_identity") if isinstance(payload, Mapping) else None
-        agent_id = str(getattr(command, "agent_instance_id", "") or "runtime")
+        agent_id = os.environ.get("AGENT_RUNTIME_ID", "").strip() or str(
+            getattr(command, "agent_instance_id", "") or "runtime"
+        )
         existing = await service.get_session_metadata(session_id)
         if existing is not None and str(existing.agent_id or "").strip():
             agent_id = str(existing.agent_id)
@@ -1049,6 +880,61 @@ def _build_kernel_router() -> Any:
                 operations=("subscribe_events",),
             )
 
+        # Verify before sending response headers: permit parsing alone does
+        # not authenticate the requested tenant/session binding.
+        if _is_hosted():
+            verifier = getattr(kernel, "_permit_verifier", None)
+            if verifier is None:
+                return JSONResponse(status_code=503, content={"error": {
+                    "Code": "permit_verifier_unavailable", "Message": "permit verifier unavailable"
+                }})
+            subscription = SessionEventSubscription(
+                tenant_id=tenant_id, agent_instance_id=instance_id,
+                session_id=session_id, authorization_ref=trusted.permit.permit_id,
+                after_seq=after_seq,
+            )
+            try:
+                from ksadk.kernel.authorization import PermitExpiredError
+                from ksadk.kernel.errors import InvalidPermitError
+
+                await verifier.verify(
+                    trusted.permit, subscription, "subscribe_events",
+                    kernel._clock(),
+                )
+            except (InvalidPermitError, PermitExpiredError):
+                return JSONResponse(status_code=403, content={"error": {
+                    "Code": "invalid_permit", "Message": "subscription permit rejected"
+                }})
+            except Exception:
+                return JSONResponse(status_code=503, content={"error": {
+                    "Code": "permit_verifier_unavailable",
+                    "Message": "permit verifier unavailable",
+                }})
+
+        from ksadk.kernel.bootstrap import get_agent_kernel_runtime
+        from ksadk.sessions.history_identity import history_identity
+
+        runtime = get_agent_kernel_runtime()
+        session_service = getattr(getattr(runtime, "config", None), "session_service", None)
+        if session_service is None:
+            session_service = getattr(getattr(kernel, "_events", None), "session_service", None)
+        if session_service is None:
+            return JSONResponse(status_code=503, content={"error": {
+                "Code": "session_backend_unavailable", "Message": "session service unavailable",
+            }})
+        try:
+            metadata = await session_service.get_session_metadata(session_id)
+        except Exception:
+            return JSONResponse(status_code=503, content={"error": {
+                "Code": "session_backend_unavailable", "Message": "session metadata unavailable",
+            }})
+        if metadata is None:
+            return JSONResponse(status_code=404, content={"error": {
+                "Code": "session_not_found", "Message": "session not found",
+            }})
+        epoch, _ = history_identity(session_service, metadata)
+        response_headers = {"X-AgentEngine-History-Epoch": epoch}
+
         async def _client_disconnected() -> bool:
             # 客户端断开后及时收口 SSE，而不是轮询到订阅 timeout。
             try:
@@ -1081,7 +967,9 @@ def _build_kernel_router() -> Any:
                         frame.setdefault("run_id", envelope.run_id)
                 yield f"id: {seq}\ndata: {json.dumps(frame, ensure_ascii=False)}\n\n"
 
-        return StreamingResponse(generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            generator(), media_type="text/event-stream", headers=response_headers
+        )
 
     @router.get(KERNEL_INGRESS_HEALTH_PATH)
     async def kernel_health() -> Any:

@@ -45,6 +45,11 @@ DEPLOY_PROCESS_ENV_DENYLIST = frozenset(
         "KSADK_GLOBAL_CONFIG_ENV_KEYS",
         "KSADK_UPDATED_AT",
         "KSADK_VERSION",
+        # Local Studio host selection must not change a hosted Runtime policy.
+        "KSADK_STUDIO_NATIVE_DEFAULT",
+        "KSADK_STUDIO_NATIVE_AGENT_IDS",
+        "KSADK_STUDIO_NATIVE_DURABLE",
+        "KSADK_STUDIO_AGENT_ID",
     }
 )
 

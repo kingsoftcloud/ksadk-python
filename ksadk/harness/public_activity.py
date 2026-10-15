@@ -128,6 +128,65 @@ def tool_public_action(payload: dict[str, Any]) -> dict[str, str] | None:
             else "查看目录"
         )
         return {"text": f"{verb}：{target}"}
+    # Skill / MCP 披露 / 知识库：这几类工具此前没有 public_action，
+    # Studio 活动流只能显示笼统的"使用工具处理任务"。这里补上**一句话动作**，
+    # 只暴露名字与用途，绝不带参数原文或结果。
+    if name in {"skill_read_manifest", "skill_read_instructions", "skill_read_resource"}:
+        skill = _text(
+            args.get("skill")
+            or args.get("skill_name")
+            or args.get("name")
+            or args.get("resource_ref")
+            or ""
+        )
+        verb = "读取 Skill 说明" if name != "skill_read_manifest" else "读取 Skill 清单"
+        return {"text": f"{verb}：{skill}" if skill else verb}
+    if name == "mcp_list_tools":
+        server = _text(args.get("server_id") or args.get("server") or "")
+        return {"text": f"查看 MCP 工具清单：{server}" if server else "查看 MCP 工具清单"}
+    if name == "mcp_read_tool_schema":
+        tool = _text(args.get("tool_name") or args.get("tool") or "")
+        server = _text(args.get("server_id") or args.get("server") or "")
+        target = f"{server}/{tool}" if server and tool else tool or server
+        return {"text": f"读取 MCP 工具说明：{target}" if target else "读取 MCP 工具说明"}
+    if name == "mcp_call_tool":
+        tool = _text(args.get("tool_name") or args.get("tool") or "")
+        server = _text(args.get("server_id") or args.get("server") or "")
+        target = f"{server}/{tool}" if server and tool else tool or server
+        return {
+            "text": (
+                f"调用 MCP 工具：{target}（参数未展示）"
+                if target
+                else "调用 MCP 工具（参数未展示）"
+            )
+        }
+    if name in {
+        "search_knowledge",
+        "search_knowledge_base",
+        "knowledge_search",
+        "search_knowledge_bases",
+    }:
+        query = _text(args.get("query") or args.get("q") or args.get("keywords") or "")
+        return {"text": f"检索知识库：{query}" if query else "检索知识库"}
+    if name == "artifact_read":
+        target = _text(PurePosixPath(str(args.get("uri") or args.get("artifact_uri") or "")).name)
+        return {"text": f"读取外置结果：{target}" if target else "读取外置结果"}
+    if name == "sandbox_read_file":
+        target = _text(PurePosixPath(str(args.get("path") or "").replace("\\", "/")).name)
+        return {"text": f"查看沙箱文件：{target}" if target else "查看沙箱文件"}
+    if name == "sandbox_run_command":
+        try:
+            words = shlex.split(str(args.get("command") or ""))
+        except ValueError:
+            return None
+        command = PurePosixPath(words[0]).name if words else ""
+        return (
+            {"text": f"运行沙箱命令：{command}（参数未展示）"}
+            if command
+            else {"text": "运行沙箱命令（参数未展示）"}
+        )
+    if name in {"execute_skills", "run_code"}:
+        return {"text": "执行 Skill" if name == "execute_skills" else "运行代码"}
     if name in {"exec_command", "run_command", "execute_command", "run_workspace_command"}:
         try:
             words = shlex.split(str(args.get("command") or args.get("cmd") or ""))

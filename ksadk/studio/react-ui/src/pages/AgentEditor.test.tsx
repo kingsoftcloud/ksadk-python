@@ -475,6 +475,7 @@ describe("AgentEditor form", () => {
       const updateCall = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT");
       const spec = JSON.parse(String(updateCall?.[1]?.body));
       expect(spec.bindings.modelProfileIds).toEqual(["model-a", "model-b"]);
+      expect(spec.bindings.modelFailoverMode).toBe("strict");
       expect(spec.bindings.skills).toEqual([{ resourceId: "skill-a" }]);
       expect(spec.bindings.mcpServers).toEqual(runtimeType === "harness"
         ? [{ resourceId: "mcp-a" }, { resourceId: "mcp-new", enabled: true }]
@@ -561,6 +562,9 @@ describe("AgentEditor form", () => {
       expect(document.getElementById("editRuntimeEntryPoint")).toHaveValue(runtimeType === "adk" ? "agent.py" : "workflow.py");
       expect(document.getElementById("editRuntimeAgentVariable")).toHaveValue(runtimeType === "adk" ? "root_agent" : "graph");
       expect(document.getElementById("editExecutionMaxSteps")).toHaveValue(27);
+      expect(document.getElementById("editExecutionMaxSteps")).not.toHaveAttribute("max");
+      expect(screen.getByText("步骤提示（兼容）")).toBeVisible();
+      expect(screen.getByText(/不是统一运行上限/)).toBeVisible();
       expect(document.getElementById("editExecutionTimeout")).toHaveValue(720);
 
       fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
@@ -958,4 +962,66 @@ it("saves Harness child agents with authoritative parent tool names and retains 
   await waitFor(() => expect(onSaved).toHaveBeenCalled());
   const sent = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT")!;
   expect(JSON.parse(String(sent[1]!.body)).subAgents).toEqual([{ ...child, tools: ["read_file"] }]);
+});
+
+describe("AgentEditor frozen A2A bindings", () => {
+  it.each([false, true])("preserves an untouched binding or explicitly removes it (remove=%s)", async (remove) => {
+    const remote = { bindingId: "fixed-binding", spaceId: "space-1", targetAgentId: "agent-1", expectedVersionId: "v1", localName: "reviewer", exposure: "auto", policyRef: "policy://a2a/runtime", digest: "sha256:fixed" };
+    mockedFetch.mockReset();
+    mockedFetch.mockImplementation(async (input, init) => {
+      if (String(input).includes("/a2a/")) return { ok: true, json: async () => ({ items: [], total: 0 }) } as Response;
+      if (init?.method === "PUT") return { ok: true, json: async () => ({ metadata: { id: "agentkit-a1b2c3d4", revision: 2 } }) } as Response;
+      return { ok: true, json: async () => ({ draft: {
+        metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 1 },
+        spec: {
+          runtime: { type: "langgraph", projectPath: ".", entryPoint: "graph.py", agentVariable: "app" },
+          instructions: { system: "Review the supplied evidence." },
+          bindings: { modelProfileId: "model-fixture", modelProfileIds: ["model-fixture"], remoteAgents: [remote] },
+        },
+      } }) } as Response;
+    });
+    render(<AgentEditor agentId="agentkit-a1b2c3d4" activeSection={2} catalog={[{
+      resourceId: "model-fixture", kind: "model", name: "fixture", displayName: "Fixture", version: "1", status: "ready", contract: { model: "fixture" },
+    }]} onSaved={vi.fn()} />);
+    await screen.findByText(/远端 A2A Agent/, { selector: "summary" });
+    if (remove) {
+      fireEvent.click(screen.getByText(/远端 A2A Agent/, { selector: "summary" }));
+      fireEvent.click(screen.getByRole("button", { name: "移除 reviewer" }));
+    }
+    fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT");
+      expect(call).toBeDefined();
+      expect(JSON.parse(String(call![1]?.body)).bindings.remoteAgents).toEqual(remove ? [] : [remote]);
+      expect(call![1]?.headers).toMatchObject({ "If-Match": "1" });
+    });
+  });
+});
+
+it.each(["handoff", "remove"])("saves an A2A orchestration edit without changing the frozen binding (%s)", async change => {
+  const remote = { bindingId: "binding-1", spaceId: "space-1", targetAgentId: "agent-1", expectedVersionId: "v1", localName: "expert", exposure: "auto", policyRef: "policy://a2a/runtime", digest: "sha256:fixed" };
+  const plan = { entryNodeId: "local", nodes: [{ nodeId: "local", kind: "local" }, { nodeId: "remote", kind: "remote", bindingId: remote.bindingId }], edges: [{ source: "local", target: "remote", kind: "sequential" }] };
+  mockedFetch.mockReset();
+  mockedFetch.mockImplementation(async (_, init) => {
+    if (init?.method === "PUT") return { ok: true, json: async () => ({ metadata: { id: "agentkit-a1b2c3d4", revision: 2 } }) } as Response;
+    return { ok: true, json: async () => ({ draft: {
+      metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 1 },
+      spec: { runtime: { type: "langgraph", projectPath: ".", entryPoint: "agent.py", agentVariable: "root_agent" }, instructions: { system: "Review the evidence." }, bindings: { modelProfileId: "model-fixture", modelProfileIds: ["model-fixture"], remoteAgents: [remote] }, a2aOrchestration: plan },
+    } }) } as Response;
+  });
+  render(<AgentEditor agentId="agentkit-a1b2c3d4" activeSection={2} catalog={[{ resourceId: "model-fixture", kind: "model", name: "fixture", displayName: "Fixture", version: "1", status: "ready", contract: { model: "fixture" } }]} onSaved={vi.fn()} />);
+  fireEvent.click(await screen.findByText(/A2A 编排/, { selector: "summary" }));
+  if (change === "remove") fireEvent.click(screen.getByRole("button", { name: "移除编排" }));
+  else fireEvent.change(screen.getByLabelText("连线方式 1"), { target: { value: "handoff" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
+  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  await waitFor(() => {
+    const call = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT");
+    expect(call).toBeDefined();
+    const body = JSON.parse(String(call![1]?.body));
+    expect(body.bindings.remoteAgents).toEqual([remote]);
+    expect(body.a2aOrchestration).toEqual(change === "remove" ? null : { ...plan, edges: [{ source: "local", target: "remote", kind: "handoff" }] });
+    expect(call![1]?.headers).toMatchObject({ "If-Match": "1" });
+  });
 });

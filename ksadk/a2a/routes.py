@@ -31,6 +31,7 @@ from ksadk.a2a.card import build_agent_card
 from ksadk.a2a.server import A2AProtocolServer
 from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
 from ksadk.a2a.task_store import A2A_TASK_TABLE, A2AOwnerContextBuilder, build_a2a_task_store
+from ksadk.a2a.tool_activity import PublicToolActivityPolicy
 
 
 @dataclass
@@ -48,6 +49,7 @@ class A2AConfig:
     # 本地调试可显式开放 reasoning artifact；托管 Runtime 默认关闭，避免把
     # 模型内部推理写入公开 A2A Task。
     include_reasoning: bool = False
+    public_tool_policy: PublicToolActivityPolicy = field(default_factory=PublicToolActivityPolicy)
     # durable task store:dsn(如 sqlite+aiosqlite:///.agentengine/a2a_tasks.db 或
     # postgresql+asyncpg://...)或外部传入 engine/task_store。
     task_store_dsn: Optional[str] = None
@@ -76,6 +78,7 @@ def add_a2a_protocol_routes(
         version=config.version,
         skills=config.skills,
         streaming=config.streaming,
+        public_tool_policy=config.public_tool_policy,
     )
     store = task_store or build_a2a_task_store(
         dsn=config.task_store_dsn,
@@ -89,6 +92,7 @@ def add_a2a_protocol_routes(
         task_adapter=task_adapter,
         context_builder=context_builder,
         include_reasoning=config.include_reasoning,
+        public_tool_policy=config.public_tool_policy,
     )
     rest = server.rest_routes()
     # a2a-sdk REST routes 附带贪婪 Mount('/{tenant}')(多租户 catch-all),
@@ -97,7 +101,8 @@ def add_a2a_protocol_routes(
     from starlette.routing import Mount as _Mount
 
     rest = [
-        route for route in rest
+        route
+        for route in rest
         if not (isinstance(route, _Mount) and getattr(route, "path", "") == "/{tenant}")
     ]
     add_a2a_routes_to_fastapi(

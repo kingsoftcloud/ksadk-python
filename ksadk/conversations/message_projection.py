@@ -130,7 +130,11 @@ def _project_event_group(
             # emit a placeholder assistant message for them first.
             if has_pre_assistant_approvals and not assistant_seen:
                 anchor = next(
-                    (e for e in events if str(e.get("EventType") or "") == "approval_request"),
+                    (
+                        e for e in events
+                        if str(e.get("EventType") or "")
+                        in {"approval_request", "interaction.requested"}
+                    ),
                     events[0],
                 )
                 placeholder = _base_message(anchor, "assistant", content="")
@@ -175,6 +179,7 @@ def _project_event_group(
                     "assistant_stream_snapshot",
                     "assistant_stream_delta",
                     "approval_request",
+                    "interaction.requested",
                     "tool_call",
                     "reasoning",
                     "a2ui.surface.begin",
@@ -791,11 +796,17 @@ def _normalize_runtime_event(
     agui_invocations: set[str],
 ) -> Mapping[str, Any]:
     metadata = _event_metadata(event)
-    is_canonical = metadata.get("ksadk_canonical_runtime_event")
-    if not metadata.get("ksadk_runtime_event") and not is_canonical:
-        return event
     raw_content = event.get("Content")
     content = raw_content if isinstance(raw_content, Mapping) else {}
+    runtime_event = content.get("runtime_event")
+    is_canonical = metadata.get("ksadk_canonical_runtime_event") or (
+        metadata.get("ksadk_session_event_envelope") is True
+        and metadata.get("family") == "runtime"
+        and isinstance(runtime_event, Mapping)
+        and runtime_event.get("schema_version") == 2
+    )
+    if not metadata.get("ksadk_runtime_event") and not is_canonical:
+        return event
     if is_canonical:
         return _normalize_canonical_event(event, content, metadata)
     payload = content.get("payload")

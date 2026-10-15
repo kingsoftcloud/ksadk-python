@@ -115,4 +115,71 @@ describe("Harness timeline integration", () => {
     expect(screen.getByTestId("shared-message")).toHaveTextContent("form-1");
     expect(screen.getByTestId("shared-message")).not.toHaveTextContent("private reasoning");
   });
+  it("streams the live reasoning text with a pulse indicator and without character counters", () => {
+    const live = [
+      { id: "user", role: "user" as const, timestamp: 1, content: "问题" },
+      { id: "live", role: "model" as const, timestamp: 2, content: "", invocationId: "run-live",
+        blocks: [{ id: "t1", type: "thinking" as const, content: "第一步：读取工作区", status: "streaming" as const }] },
+    ];
+    const { rerender } = render(<CompactHarnessTimeline {...props} isStreaming messages={live} />);
+    const block = screen.getByTestId("live-thinking");
+    expect(block).toHaveAttribute("data-streaming", "true");
+    expect(block).toHaveTextContent("第一步：读取工作区");
+    expect(screen.getByTestId("live-thinking-pulse")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("正在思考…");
+    expect(screen.getByTestId("live-thinking-text")).not.toBeVisible();
+    fireEvent.click(screen.getByRole("status"));
+    expect(screen.getByTestId("live-thinking-text")).toBeVisible();
+
+    // 逐字追加：新增 delta 后同一块继续增长。
+    rerender(<CompactHarnessTimeline {...props} isStreaming messages={[
+      live[0],
+      { ...live[1], blocks: [{ id: "t1", type: "thinking" as const, content: "第一步：读取工作区，然后分析", status: "streaming" as const }] },
+    ]} />);
+    expect(screen.getByTestId("live-thinking-text")).toHaveTextContent("第一步：读取工作区，然后分析");
+
+    // 思考结束：脉冲停止，且不渲染"累计多少字"这类计数。
+    rerender(<CompactHarnessTimeline {...props} isStreaming messages={[
+      live[0],
+      { ...live[1], content: "答案", blocks: [{ id: "t1", type: "thinking" as const, content: "第一步：读取工作区，然后分析", status: "done" as const }] },
+    ]} />);
+    const finished = screen.getByTestId("live-thinking");
+    expect(finished).toHaveAttribute("data-streaming", "false");
+    expect(finished).not.toHaveTextContent("正在思考…");
+    expect(finished.textContent).not.toMatch(/\d+\s*字/);
+  });
+  it("shows this turn's reasoning token usage next to the thinking block", () => {
+    render(<CompactHarnessTimeline {...props} isStreaming reasoningTokens={2048} messages={[
+      { id: "user", role: "user", timestamp: 1, content: "问题" },
+      { id: "live", role: "model", timestamp: 2, content: "", invocationId: "run-live",
+        blocks: [{ id: "t1", type: "thinking", content: "推理中", status: "streaming" }] },
+    ]} />);
+    expect(screen.getByTestId("live-thinking-tokens")).toHaveTextContent("思考 Token 2,048");
+    expect(screen.getByTestId("live-thinking").textContent).not.toMatch(/\d+\s*字/);
+  });
+  it("keeps the historical and compacted transcript on the summary-only policy", () => {
+    const { container } = render(<CompactHarnessTimeline {...props} messages={[
+      { id: "user", role: "user", timestamp: 1, content: "调研" },
+      { id: "history", role: "model", timestamp: 2, content: "结果", invocationId: "run-old",
+        reasoning: "内部参数 token=secret，具体推理过程",
+        blocks: [{ id: "t1", type: "thinking", content: "内部参数 token=secret，具体推理过程", status: "done" }] },
+    ]} />);
+    expect(screen.queryByTestId("live-thinking")).toBeNull();
+    expect(container.textContent).not.toContain("secret");
+    expect(container.textContent).not.toContain("具体推理过程");
+  });
+  it("keeps the last live thinking snapshot visible after the run settles", () => {
+    const live = [
+      { id: "user", role: "user" as const, timestamp: 1, content: "问题" },
+      { id: "live", role: "model" as const, timestamp: 2, content: "", invocationId: "run-live",
+        blocks: [{ id: "t1", type: "thinking" as const, content: "推理快照", status: "streaming" as const }] },
+    ];
+    const { rerender } = render(<CompactHarnessTimeline {...props} isStreaming messages={live} />);
+    expect(screen.getByTestId("live-thinking")).toHaveTextContent("推理快照");
+    rerender(<CompactHarnessTimeline {...props} isStreaming={false} reasoningTokens={77} messages={live} />);
+    const pinned = screen.getByTestId("live-thinking");
+    expect(pinned).toHaveAttribute("data-streaming", "false");
+    expect(pinned).toHaveTextContent("推理快照");
+    expect(screen.getByTestId("live-thinking-tokens")).toHaveTextContent("77");
+  });
 });

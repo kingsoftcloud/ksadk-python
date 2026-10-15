@@ -295,6 +295,7 @@ def session_invocation_context(
     user_id="",
     session_id="",
     runner_type="",
+    tool_approval_mode="",
     identity: PlatformIdentityContext | Mapping[str, Any] | None = None,
 ):
     """Build the narrow context for kernel starts without conversation preprocessing."""
@@ -303,6 +304,7 @@ def session_invocation_context(
         user_id=user_id,
         session_id=session_id,
         runner_type=runner_type,
+        tool_approval_mode=tool_approval_mode,
         history=[],
         input_content=[],
         input_messages=[],

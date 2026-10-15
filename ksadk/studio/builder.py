@@ -142,6 +142,15 @@ class AgentBundleBuilder:
         resource_reference = None
         try:
             self._copy_runtime_source(bundle_root, draft)
+            for filename, content in (("studio_a2a_composition.py", compiled.a2a_source),
+                                      ("studio_a2a_entry.py", compiled.a2a_entry_source)):
+                if content is None:
+                    continue
+                generated = bundle_root / "runtime" / filename
+                if generated.exists():
+                    raise ValueError("A2A_GENERATED_SOURCE_CONFLICT")
+                generated.parent.mkdir(parents=True, exist_ok=True)
+                generated.write_text(content, encoding="utf-8")
             if draft.spec.runtime and draft.spec.runtime.type == "harness":
                 from ksadk.plugins.providers.harness_tools import python_tool_bundle_path
 
@@ -265,7 +274,11 @@ class AgentBundleBuilder:
             shutil.rmtree(staging, ignore_errors=True)
 
         now = datetime.now(timezone.utc)
+        from ksadk.studio.a2a_bindings import bindings_digest
+
         record = BuildRecord(
+            a2a_binding_digest=bindings_digest(compiled.resolved.remote_agents),
+            a2a_orchestration_digest=(compiled.resolved.a2a_orchestration or {}).get("digest"),
             id=build_id,
             agent_id=draft.metadata.id,
             source_revision=draft.metadata.revision,
@@ -456,6 +469,11 @@ class AgentBundleBuilder:
             "model": compiled.resolved.model.model,
             "models": list(dict.fromkeys(bound_models)),
         }
+        if compiled.a2a_source is not None:
+            lock["originalEntryPoint"] = lock["entryPoint"]
+            lock["originalAgentVariable"] = lock["agentVariable"]
+            lock["entryPoint"] = "studio_a2a_entry.py"
+            lock["agentVariable"] = "root_agent"
         return (
             runtime_type,
             source_digest,
@@ -491,8 +509,8 @@ class AgentBundleBuilder:
             {
                 "name": draft.metadata.id,
                 "framework": runtime.type,
-                "entry_point": runtime.entry_point or "agent.py",
-                "agent_variable": runtime.agent_variable or "root_agent",
+                "entry_point": "studio_a2a_entry.py" if draft.spec.a2a_orchestration else (runtime.entry_point or "agent.py"),
+                "agent_variable": "root_agent" if draft.spec.a2a_orchestration else (runtime.agent_variable or "root_agent"),
                 "package": ".",
             },
         )

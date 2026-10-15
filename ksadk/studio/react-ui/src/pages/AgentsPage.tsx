@@ -103,7 +103,11 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
         const runtimeType = agent.spec?.runtime?.type
           || agent.metadata.labels?.["agentkit.ksyun.com/framework"]
           || "adk";
-        return <span className="tag mono">{runtimeType}</span>;
+        const sourceFramework = agent.metadata.labels?.["agentkit.ksyun.com/source-framework"];
+        const label = sourceFramework && sourceFramework !== runtimeType
+          ? `${sourceFramework} · ${runtimeType}`
+          : runtimeType;
+        return <span className="tag mono" title={sourceFramework ? `源码框架 ${sourceFramework}，执行适配器 ${runtimeType}` : undefined}>{label}</span>;
       },
     },
     {

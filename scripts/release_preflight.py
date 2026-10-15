@@ -52,6 +52,7 @@ COMPATIBILITY_TESTS = (
     "tests/packaging/test_release_preflight.py",
 )
 CREDENTIAL_FREE_NATIVE_TESTS = (
+    "tests/studio/test_native_default_install.py",
     "tests/e2e/test_codex_plugin_bridge_e2e.py",
     "tests/e2e/test_codex_provider_app_server_e2e.py",
     "tests/e2e/test_codex_subagent_provider_e2e.py",

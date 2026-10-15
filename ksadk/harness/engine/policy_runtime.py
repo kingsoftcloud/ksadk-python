@@ -25,7 +25,6 @@ def configure_run(engine, run, *, policy=None, resolver=None, request=None):
     if policy is not None:
         run.approval_required.update(policy.approval_required)
     _apply_request_approval_mode(run, request)
-    _apply_request_approval_mode(run, request)
     run.sub_agents = {
         **engine._sub_agents,
         **{b.name: SubAgentSpec.from_binding(b) for b in run.compiled.spec.sub_agents},
@@ -55,7 +54,10 @@ async def revalidate_policy(engine, run):
         {name: tool for name, tool in policy.tools.items() if name in run.policy_tool_names}
     )
     run.tools = {name: allowed[name] for name in run.tools if name in allowed}
-    run.approval_required.update(policy.approval_required)
+    if not run.session_approval_granted:
+        run.approval_required.update(policy.approval_required)
+    else:
+        run.approval_required = set()
     limits_only = ExecutionPolicy(limits=policy.limits)
     run.compiled = replace(
         run.compiled, spec=apply_execution_policy(run.compiled.spec, limits_only)

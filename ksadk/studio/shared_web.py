@@ -22,11 +22,14 @@ from ksadk.conversations.message_projection import project_session_messages
 from ksadk.events.canonical import parse_runtime_event
 from ksadk.events.canonical_store import session_event_to_runtime_event
 from ksadk.sessions.base import Session
-from ksadk.studio.contracts import OperationStatus, RunRecord, RunStatus
+from ksadk.studio import shared_web_run_state as run_state
+from ksadk.studio.active_run_output import active_run_output
+from ksadk.studio.contracts import OperationStatus, RunRecord, RunStatus, RunSubmissionRef
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.run_documents import link_run_documents
 from ksadk.studio.run_service import project_runtime_event
 from ksadk.studio.service import StudioService
+from ksadk.studio.shared_web_response_events import project_response_events
 from ksadk.tools.gateway import tool_approval_capability
 
 _TERMINAL_OPERATIONS = {
@@ -74,6 +77,7 @@ class StudioSharedWebBridge:
                     else "standard",
                 },
                 "RuntimePrewarm": self.studio.agent_runtime_type(agent_id) == "harness",
+                "StudioRunReceiptQuery": True,
                 "HostedChat": {
                     "Enabled": True,
                     "ApiFormats": ["responses"],
@@ -102,6 +106,8 @@ class StudioSharedWebBridge:
                 },
                 "ApprovalPolicy": tool_approval_capability(),
                 "InteractionV1": True,
+                "SteerRun": self.studio.agent_runtime_type(agent_id).strip().lower()
+                == "harness",
                 "WorkspaceFiles": {"Enabled": False},
                 "NativeDashboard": {"Enabled": False},
                 "NativeTerminal": {"Enabled": False},
@@ -243,6 +249,25 @@ class StudioSharedWebBridge:
                     "InvocationId": run.id,
                 }
             )
+            last_steer_at = None
+            for event in self.studio.event_store.events(run.id):
+                if event.type != "run.steer_requested":
+                    continue
+                text = event.data.get("text")
+                if not isinstance(text, str) or not text:
+                    continue
+                sequence += 1
+                last_steer_at = event.created_at
+                messages.append(
+                    {
+                        "MessageId": f"{run.id}:steer:{event.id}",
+                        "Role": "user",
+                        "Content": {"text": text},
+                        "Timestamp": self._timestamp(event.created_at),
+                        "SeqId": sequence,
+                        "InvocationId": run.id,
+                    }
+                )
             sequence += 1
             messages.append(
                 {
@@ -252,17 +277,17 @@ class StudioSharedWebBridge:
                         # Run status is metadata, not an assistant reply. An
                         # empty pending reply lets canonical reasoning/tools
                         # restore without a synthetic status text shadowing them.
-                        "text": (
-                            link_run_documents(
-                                self.studio,
-                                run,
-                                run.output
-                                if self._active_status(run.status)
-                                else self._run_output(run),
-                            )
+                        "text": link_run_documents(
+                            self.studio,
+                            run,
+                            await active_run_output(self.studio.run_service, run)
+                            if self._active_status(run.status)
+                            else self._run_output(run),
                         )
                     },
-                    "Timestamp": self._timestamp(run.completed_at or run.started_at),
+                    "Timestamp": self._timestamp(
+                        run.completed_at or last_steer_at or run.started_at
+                    ),
                     "SeqId": sequence,
                     "InvocationId": run.id,
                     "Activities": await self._run_activities(run),
@@ -409,11 +434,52 @@ class StudioSharedWebBridge:
         if run.runtime_type != "harness" or not isinstance(native, dict):
             return content
         native = dict(native)
-        native_type = native.get("source", {}).get("metadata", {}).get("native_event_type")
+        source_metadata = native.get("source", {}).get("metadata", {})
+        native_type = source_metadata.get(
+            "native_event_type", source_metadata.get("native_event_kind")
+        )
         if native_type == "run.progress" and native.get("item_kind") == "message":
             # Progress is an activity, never assistant answer prose. This also
             # repairs historical runs without rewriting their audit transcript.
             native["item_kind"] = "reasoning"
+        if (
+            native_type == "text.completed"
+            and native.get("item_kind") == "message"
+            and source_metadata.get("phase") == "final_answer"
+            and run.output
+            and not self._active_status(run.status)
+        ):
+            snapshot = native.get("snapshot") or {}
+            text = "".join(
+                str(part.get("text") or "")
+                for part in snapshot.get("parts", [])
+                if part.get("content_type") == "text"
+            )
+            if text and text != run.output:
+                # Older Harness runs projected compaction summaries through
+                # the same final item as the actual answer.  The durable run
+                # output is the terminal authority; retain the legacy event as
+                # redacted trace state so refresh cannot restore stale prose.
+                native["item_kind"] = "status"
+                native["snapshot"] = {
+                    **snapshot,
+                    "parts": [
+                        {
+                            **part,
+                            "text": json.dumps(
+                                {
+                                    "event": "text.completed",
+                                    "details": {"purpose": "non_authoritative_final"},
+                                },
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        }
+                        if part.get("content_type") == "text"
+                        else part
+                        for part in snapshot.get("parts", [])
+                    ],
+                }
         if native_type == "text.completed" and native.get("snapshot"):
             native["snapshot"] = {
                 **native["snapshot"],
@@ -481,7 +547,12 @@ class StudioSharedWebBridge:
                 break
             offset += len(self.studio.event_store.events(record.id))
         cursor = max(0, after_seq_id - offset)
+        control_sent = False
         while True:
+            control = run_state.control_ready_event(self.studio, run_id, invocation_id)
+            if control and not control_sent:
+                yield self._sse(*control)
+                control_sent = True
             for event in await self.studio.run_service.events(run_id, after=cursor):
                 cursor = max(cursor, event.id)
                 yield self._sse(
@@ -506,10 +577,13 @@ class StudioSharedWebBridge:
 
     async def cancel_run(self, invocation_id: str) -> dict[str, Any]:
         operation_id = self._operations_by_invocation.get(invocation_id)
-        run_id = self._run_ids_by_invocation.get(invocation_id)
+        run_id = run_state.resolve_cancel_run_id(
+            self.studio,
+            invocation_id,
+            self._run_ids_by_invocation,
+            self._response_runs,
+        )
         if run_id is None and operation_id is None:
-            # get_session reports the canonical run id; accept it as a cancel
-            # reference by resolving back to the invoking client id.
             client_id = next((
                 client_id
                 for client_id, canonical_id in self._run_ids_by_invocation.items()
@@ -560,6 +634,20 @@ class StudioSharedWebBridge:
             raise StudioError("RUN_NOT_READY", "运行尚未创建，请稍后重试", status_code=409)
         return await self.studio.run_service.pause_run(run_id)
 
+    async def steer_run(
+        self, invocation_id: str, text: str, *, delivery: str = "replace"
+    ) -> dict[str, Any]:
+        run_id = self.resolve_run_reference(invocation_id)
+        self.studio._require_direct_run(run_id)
+        result = await self.studio.run_service.steer_run(run_id, text, delivery=delivery)
+        message_id = f"{run_id}:steer:{result['eventId']}" if result.get("eventId") else None
+        return {
+            "InvocationId": invocation_id,
+            "RunId": result["runId"],
+            "Status": result["status"],
+            **({"MessageId": message_id} if message_id else {}),
+        }
+
     async def resume_run(self, invocation_id: str) -> dict[str, Any]:
         self.studio._require_direct_run(invocation_id)
         run_id = self._run_ids_by_invocation.get(invocation_id)
@@ -568,15 +656,188 @@ class StudioSharedWebBridge:
         return await self.studio.run_service.resume_run(run_id)
 
     def response_session_id(self, response_id: str) -> str:
-        run_id = self._response_runs.get(response_id, response_id)
+        run_id = (
+            self._run_ids_by_invocation.get(response_id)
+            or self._response_runs.get(response_id)
+            or response_id
+        )
         return self.studio.event_store.get(run_id).session_id
 
     def resolve_run_reference(self, reference: str) -> str:
         """Resolve a live Responses invocation without guessing the latest run."""
-        return (
-            self._run_ids_by_invocation.get(reference)
-            or self._response_runs.get(reference)
-            or reference
+        return run_state.resolve_run_reference(
+            self._run_ids_by_invocation, self._response_runs, reference
+        )
+
+    def run_receipt(self, agent_id: str, session_id: str, invocation_id: str) -> dict[str, Any]:
+        from ksadk.studio.run_submission_receipts import submission_receipt
+
+        return submission_receipt(
+            self.studio,
+            RunSubmissionRef(
+                client_invocation_id=invocation_id, agent_id=agent_id, session_id=session_id
+            ),
+        )
+
+    async def _submit_response_resume(
+        self,
+        *,
+        previous_response_id: str,
+        response_id: str,
+        resume_input: dict[str, Any],
+    ) -> RunRecord:
+        """Resolve one Responses approval item through Interaction/v1."""
+
+        if str(resume_input.get("type") or "") != "mcp_approval_response":
+            raise StudioError(
+                "RESPONSE_RESUME_UNSUPPORTED",
+                "Studio 当前只支持 MCP 审批恢复",
+                status_code=422,
+            )
+        run_id = self.resolve_run_reference(previous_response_id)
+        record = self.studio.event_store.get(run_id)
+        requested_id = str(
+            resume_input.get("approval_request_id") or resume_input.get("id") or ""
+        )
+        events = self.studio.event_store.events(run_id)
+        resolved_ids = {
+            str(event.data.get("interactionId") or event.data.get("interaction_id") or "")
+            for event in events
+            if event.type in {"a2ui.action", "interaction.resolved"}
+        }
+        pending = [
+            event
+            for event in events
+            if event.type == "a2ui.interaction"
+            and str(
+                event.data.get("interactionId") or event.data.get("interaction_id") or ""
+            )
+            not in resolved_ids
+        ]
+        interaction = next(
+            (
+                event
+                for event in reversed(pending)
+                if not requested_id
+                or requested_id
+                in {
+                    str(
+                        event.data.get("interactionId")
+                        or event.data.get("interaction_id")
+                        or ""
+                    ),
+                    str(event.data.get("callId") or event.data.get("call_id") or ""),
+                }
+            ),
+            None,
+        )
+        if interaction is None:
+            raise StudioError(
+                "INTERACTION_NOT_FOUND",
+                "未找到待处理的审批请求",
+                status_code=404,
+            )
+        interaction_id = str(
+            interaction.data.get("interactionId")
+            or interaction.data.get("interaction_id")
+            or ""
+        )
+        revision = int(interaction.data.get("revision") or 1)
+        approved = bool(resume_input.get("approve"))
+        action = "approve" if approved else "reject"
+        data: dict[str, Any] = {"decision": action}
+        if resume_input.get("reason") is not None:
+            data["reason"] = str(resume_input.get("reason") or "")
+        await self.studio.run_service.submit_interaction(
+            run_id,
+            interaction_id,
+            name=action,
+            data=data,
+            expected_revision=revision,
+            idempotency_key=f"responses:{response_id}:{interaction_id}:{revision}",
+        )
+        self._run_ids_by_invocation[response_id] = run_id
+        self._response_runs[response_id] = run_id
+        return record
+
+    async def _wait_for_resumed_response(self, run_id: str) -> RunRecord:
+        while True:
+            run = self.studio.event_store.get(run_id)
+            if run.status == RunStatus.COMPLETED:
+                return run
+            if run.status in {RunStatus.FAILED, RunStatus.CANCELLED}:
+                raise StudioError("RUN_FAILED", self._run_output(run), status_code=500)
+            await asyncio.sleep(0.05)
+
+    async def stream_response_resume(
+        self,
+        *,
+        previous_response_id: str,
+        response_id: str,
+        resume_input: dict[str, Any],
+    ) -> AsyncIterator[str]:
+        try:
+            record = await self._submit_response_resume(
+                previous_response_id=previous_response_id,
+                response_id=response_id,
+                resume_input=resume_input,
+            )
+            model = str(record.model or "")
+            yield run_state.created_response_sse(
+                response_id,
+                model=model,
+                encode=self._sse,
+                response_shell=self._response_shell,
+            )
+            yield self._sse(
+                "response.in_progress",
+                {
+                    "type": "response.in_progress",
+                    "response": self._response_shell(response_id, model=model),
+                },
+            )
+            wait_task = asyncio.create_task(self._wait_for_resumed_response(record.id))
+            while not wait_task.done():
+                yield ": keep-alive\n\n"
+                await asyncio.sleep(1)
+            run = await wait_task
+            if run.output:
+                yield self._response_delta_sse(
+                    "response.output_text.delta",
+                    invocation_id=response_id,
+                    delta=run.output,
+                )
+            yield self._sse(
+                "response.completed",
+                {
+                    "type": "response.completed",
+                    "response": self._response_payload(
+                        run,
+                        model=model,
+                        response_id=response_id,
+                    ),
+                },
+            )
+        except StudioError as exc:
+            yield self._failed_sse(response_id, exc.message)
+
+    async def invoke_response_resume(
+        self,
+        *,
+        previous_response_id: str,
+        response_id: str,
+        resume_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        record = await self._submit_response_resume(
+            previous_response_id=previous_response_id,
+            response_id=response_id,
+            resume_input=resume_input,
+        )
+        run = await self._wait_for_resumed_response(record.id)
+        return self._response_payload(
+            run,
+            model=str(run.model or record.model or ""),
+            response_id=response_id,
         )
 
     async def stream_run(
@@ -592,12 +853,16 @@ class StudioSharedWebBridge:
             agent_id = self.resolve_agent_id(str(payload.get("AgentId") or "") or None)
             prompt = self._input_text(payload)
             runtime_input = self._runtime_input(payload)
-            model = self._select_model(agent_id, str(payload.get("Model") or ""))
+            # A cold provider-backed Agent may not have populated the mutable
+            # provider catalog yet.  Building first performs the authoritative
+            # discovery and freezes the resolved model into the Build; model
+            # validation must therefore happen after this step.
+            build = await self._ensure_build(agent_id)
+            model = self._select_build_model(build, str(payload.get("Model") or ""))
             model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
             approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
                 self._request_controls(payload)
             )
-            build = await self._ensure_build(agent_id)
             self._validate_conversation_turn(
                 build_id=build.id,
                 session_id=session_id,
@@ -637,21 +902,17 @@ class StudioSharedWebBridge:
             )
         )
 
-        def release_operation(task: asyncio.Task[RunRecord]) -> None:
-            self._operations_by_invocation.pop(invocation_id, None)
-            if not task.cancelled():
-                task.exception()
-
-        execution.add_done_callback(release_operation)
-
-        yield self._sse(
-            "response.created",
-            {
-                "type": "response.created",
-                "response": self._response_shell(invocation_id, model=model),
-            },
-        )
+        run_state.attach_release_callback(execution, self._operations_by_invocation, invocation_id)
         try:
+            await run_state.wait_for_durable_run(
+                execution,
+                self._run_ids_by_invocation,
+                invocation_id,
+                self._operations_by_invocation,
+            )
+            yield run_state.created_response_sse(
+                invocation_id, model=model, encode=self._sse, response_shell=self._response_shell
+            )
             yield self._sse(
                 "response.in_progress",
                 {
@@ -703,19 +964,32 @@ class StudioSharedWebBridge:
                     invocation_id=invocation_id,
                     delta=remaining,
                 )
+            response = self._response_payload(run, model=model, response_id=invocation_id)
+            # A delta can be a provisional model preview. Responses clients may
+            # suppress response.completed's text after any delta, so publish the
+            # committed (and document-linked) replacement explicitly first.
+            yield self._sse(
+                "response.output_text.done",
+                {
+                    "type": "response.output_text.done",
+                    "item_id": f"msg_{invocation_id}",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "text": response["output"][0]["content"][0]["text"],
+                },
+            )
             yield self._sse(
                 "response.completed",
                 {
                     "type": "response.completed",
-                    "response": self._response_payload(
-                        run,
-                        model=model,
-                        response_id=invocation_id,
-                    ),
+                    "response": response,
                 },
             )
         except StudioError as exc:
-            yield self._failed_sse(invocation_id, exc.message)
+            if exc.code == "RUN_CANCELLED":
+                yield run_state.cancelled_response_sse(invocation_id, encode=self._sse)
+            else:
+                yield self._failed_sse(invocation_id, exc.message)
         except Exception:
             yield self._failed_sse(invocation_id, "本地 Agent 运行失败")
         finally:
@@ -729,12 +1003,14 @@ class StudioSharedWebBridge:
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
         idempotency_key = str(payload.get("IdempotencyKey") or f"responses:{invocation_id}")
-        model = self._select_model(agent_id, str(payload.get("Model") or ""))
+        # Keep the non-streaming entry point consistent with stream_run: a
+        # cold Build is what discovers provider-backed models.
+        build = await self._ensure_build(agent_id)
+        model = self._select_build_model(build, str(payload.get("Model") or ""))
         model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
         approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
             self._request_controls(payload)
         )
-        build = await self._ensure_build(agent_id)
         prompt = self._input_text(payload)
         runtime_input = self._runtime_input(payload)
         self._validate_conversation_turn(
@@ -816,6 +1092,9 @@ class StudioSharedWebBridge:
             runtime_input=runtime_input or None,
             idempotency_key=idempotency_key or f"responses:{invocation_id}",
             on_event=observe,
+            submission_ref=RunSubmissionRef(
+                client_invocation_id=invocation_id, agent_id=agent_id, session_id=session_id
+            ),
         )
         self._operations_by_invocation[invocation_id] = operation.id
         while True:
@@ -824,23 +1103,14 @@ class StudioSharedWebBridge:
                 break
             await asyncio.sleep(0.05)
         if current.status != OperationStatus.SUCCEEDED:
-            message = str((current.error or {}).get("message") or "Agent 运行失败")
-            raise StudioError("RUN_FAILED", message, status_code=500)
+            run_state.raise_for_unsuccessful_operation(self.studio, current)
         run = self.studio.event_store.get(current.resource_id)
         if run.status != RunStatus.COMPLETED:
             raise StudioError("RUN_FAILED", self._run_output(run), status_code=500)
         self._response_runs[invocation_id] = run.id
         return run
 
-    @staticmethod
-    def _response_shell(response_id: str, *, model: str) -> dict[str, Any]:
-        return {
-            "id": response_id,
-            "object": "response",
-            "status": "in_progress",
-            "model": model,
-            "output": [],
-        }
+    _response_shell = staticmethod(run_state.response_shell)
 
     async def _project_response_events(
         self,
@@ -850,106 +1120,9 @@ class StudioSharedWebBridge:
         invocation_id: str,
         seen: set[tuple[str, int]],
     ) -> list[tuple[str, dict[str, Any]]]:
-        projected: list[tuple[str, dict[str, Any]]] = []
-        current_run_id = self._run_ids_by_invocation.get(invocation_id)
-        if not current_run_id:
-            return projected
-        for run in self.studio.event_store.list_runs(session_id=session_id):
-            if run.agent_id != agent_id or run.id != current_run_id:
-                continue
-            events = await self.studio.run_service.events(run.id)
-            starts = {
-                str(event.data.get("callId") or event.data.get("call_id") or ""): event.data
-                for event in events
-                if event.type in {"command.started", "tool.started", "tool.requested"}
-            }
-            for event in events:
-                key = (run.id, event.id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                if event.type in {"message.delta", "thinking.delta"}:
-                    delta = str(event.data.get("text") or event.data.get("delta") or "")
-                    if not delta:
-                        continue
-                    native = event.data.get("runtimeEvent") or {}
-                    is_activity = run.runtime_type == "harness" and (
-                        native.get("source", {}).get("metadata", {}).get("native_event_type")
-                        == "run.progress"
-                    )
-                    event_name = (
-                        "response.output_text.delta"
-                        if event.type == "message.delta" and not is_activity
-                        else "response.reasoning_summary_text.delta"
-                    )
-                    projected.append(
-                        (
-                            event_name,
-                            self._response_delta_payload(
-                                event_name,
-                                invocation_id=invocation_id,
-                                delta=f"\n{delta}\n" if is_activity else delta,
-                            ),
-                        )
-                    )
-                    continue
-                if event.type.startswith("a2ui."):
-                    projected.append(
-                        (
-                            event.type,
-                            {
-                                "type": event.type,
-                                "runId": run.id,
-                                **event.data,
-                            },
-                        )
-                    )
-                    continue
-                if event.type == "run.paused":
-                    projected.append(
-                        (
-                            "response.paused",
-                            {
-                                "type": "response.paused",
-                                "response_id": invocation_id,
-                                "runId": run.id,
-                            },
-                        )
-                    )
-                    continue
-                if event.type == "run.resumed":
-                    projected.append(
-                        (
-                            "response.resumed",
-                            {
-                                "type": "response.resumed",
-                                "response_id": invocation_id,
-                                "runId": run.id,
-                            },
-                        )
-                    )
-                    continue
-                if event.type == "approval.resolved":
-                    projected.append(
-                        (
-                            "response.ksadk.approval_resolved",
-                            {
-                                "type": "response.ksadk.approval_resolved",
-                                "approvalRequestId": event.data.get("approvalId")
-                                or event.data.get("interactionId"),
-                                "decision": event.data.get("decision")
-                                or event.data.get("name")
-                                or "approved",
-                                "revision": event.data.get("revision") or 2,
-                                "runId": run.id,
-                            },
-                        )
-                    )
-                    continue
-                item_event = self._response_item_event(event.type, event.data, starts)
-                if item_event is not None:
-                    projected.append(item_event)
-        return projected
+        return await project_response_events(
+            self, session_id=session_id, agent_id=agent_id, invocation_id=invocation_id, seen=seen
+        )
 
     @staticmethod
     def _response_item_event(
@@ -965,6 +1138,9 @@ class StudioSharedWebBridge:
             "command.failed",
             "tool.failed",
         }
+        failed = event_type.endswith("failed") or str(data.get("status") or "").lower() in {
+            "failed", "error", "uncertain",
+        }
         if event_type.startswith("command."):
             command = str(data.get("command") or started.get("command") or "执行命令")
             item = {
@@ -973,7 +1149,7 @@ class StudioSharedWebBridge:
                 "type": "shell_call",
                 "status": (
                     "failed"
-                    if event_type.endswith("failed") or data.get("exitCode") not in {None, 0}
+                    if failed or data.get("exitCode") not in {None, 0}
                     else "completed"
                     if done
                     else "in_progress"
@@ -996,7 +1172,7 @@ class StudioSharedWebBridge:
                 "arguments": json.dumps(args, ensure_ascii=False) if args is not None else "",
                 "status": (
                     "failed"
-                    if event_type.endswith("failed")
+                    if failed
                     else "completed"
                     if done
                     else "in_progress"
@@ -1304,7 +1480,7 @@ class StudioSharedWebBridge:
         binding_ids = list(draft.spec.bindings.model_profile_ids)
         if not binding_ids and draft.spec.bindings.model_profile_id:
             binding_ids = [draft.spec.bindings.model_profile_id]
-        descriptors: list[dict[str, Any]] = []
+        resolved_descriptors: list[tuple[str, dict[str, Any]]] = []
         for binding_id in binding_ids:
             try:
                 spec = self.studio.catalog.resolve_model(
@@ -1318,19 +1494,25 @@ class StudioSharedWebBridge:
                 # 而不是让整个 bootstrap 404（前端只能无限转圈）。
                 continue
             if spec is not None:
-                descriptors.append(
-                    self._model_descriptor_from_spec(
-                        draft,
-                        spec,
-                        display_name=self.studio.catalog.get(binding_id).display_name,
+                resolved_descriptors.append(
+                    (
+                        binding_id,
+                        self._model_descriptor_from_spec(
+                            draft,
+                            spec,
+                            display_name=self.studio.catalog.get(binding_id).display_name,
+                        ),
                     )
                 )
-        if descriptors:
+        if resolved_descriptors:
             default_id = draft.spec.bindings.model_profile_id
-            if default_id and default_id in binding_ids:
-                default_index = binding_ids.index(default_id)
-                descriptors.insert(0, descriptors.pop(default_index))
-            return descriptors
+            # Provider resources are discovered lazily.  Keep the resource ID
+            # paired with each successfully resolved descriptor: indexing the
+            # shortened descriptor list with the original binding position
+            # raises IndexError when an earlier binding is temporarily absent.
+            if default_id:
+                resolved_descriptors.sort(key=lambda item: item[0] != default_id)
+            return [descriptor for _, descriptor in resolved_descriptors]
         if draft.spec.model is not None:
             return [self._model_descriptor_from_spec(draft, draft.spec.model)]
         return [self._unconfigured_model_descriptor(draft)]
@@ -1415,6 +1597,44 @@ class StudioSharedWebBridge:
         default = str(self._model_descriptor(agent_id, models)["id"])
         selected = requested.strip() or default
         if selected not in allowed:
+            raise StudioError(
+                "MODEL_NOT_BOUND",
+                "请求模型未绑定到当前 Agent Build",
+                status_code=422,
+                details={"model": selected, "allowedModels": allowed},
+            )
+        return selected
+
+    def _select_build_model(self, build, requested: str) -> str:
+        """Authorize execution against the immutable Build model lock."""
+
+        runtime_lock = dict(getattr(build, "runtime_lock", {}) or {})
+        allowed = [str(item) for item in runtime_lock.get("models") or [] if str(item)]
+        default = str(runtime_lock.get("model") or "").strip()
+        # Managed Codex runtime-lock.json deliberately contains only the
+        # runtime and manifest digest.  Its immutable model allowlist lives in
+        # the manifest addressed by that digest (and is revalidated by
+        # CodexRunService).  Treating the generic Bundle lock as authoritative
+        # for Codex therefore turns every cold/default turn into
+        # AGENT_MODEL_REQUIRED.  Read the same pinned manifest used to build
+        # this record; framework/Harness Builds continue to use runtime_lock.
+        agent_name = str(getattr(build, "agent_name", "") or "")
+        manifest_sha256 = str(getattr(build, "manifest_sha256", "") or "")
+        if agent_name and manifest_sha256:
+            snapshot = self.studio.codex_manifests.load(agent_name)
+            if snapshot.manifest_sha256 == manifest_sha256:
+                allowed = list(snapshot.manifest.allowed_models)
+                default = snapshot.manifest.model
+        if default and default not in allowed:
+            allowed.insert(0, default)
+        selected = requested.strip() or default
+        if not selected:
+            raise StudioError(
+                "AGENT_MODEL_REQUIRED",
+                "Build 没有绑定可运行模型",
+                status_code=422,
+            )
+        if allowed and selected not in allowed:
             raise StudioError(
                 "MODEL_NOT_BOUND",
                 "请求模型未绑定到当前 Agent Build",
@@ -1596,11 +1816,16 @@ class StudioSharedWebBridge:
 
     @staticmethod
     def _run_output(run: RunRecord) -> str:
+        status = run.status.value if isinstance(run.status, RunStatus) else str(run.status)
+        if status == RunStatus.FAILED.value and run.error:
+            # Progress text may end with a retry notice.  Once the run is
+            # terminal, that notice must not shadow the authoritative failure
+            # recorded by the runtime.
+            return str(run.error.get("message") or "Agent 运行失败")
         if run.output:
             return run.output
         if run.error:
             return str(run.error.get("message") or "Agent 运行失败")
-        status = run.status.value if isinstance(run.status, RunStatus) else str(run.status)
         return f"运行状态：{status}"
 
     @staticmethod
@@ -1635,6 +1860,5 @@ class StudioSharedWebBridge:
                 "error": {"message": message},
             },
         )
-
 
 __all__ = ["StudioSharedWebBridge"]

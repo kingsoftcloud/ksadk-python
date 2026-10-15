@@ -1,15 +1,19 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, useSyncExternalStore, type Ref } from "react";
 import { Bot, MessageSquarePlus, PanelLeftOpen, Search, Trash2, X } from "lucide-react";
 import { AgentConversationTimeline } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { AgentConversationComposer } from "@kingsoftcloud/ksadk-web/chat/composer";
 import { useAgentChat } from "@kingsoftcloud/ksadk-web/hooks";
-import { ApiFacadeImpl } from "@kingsoftcloud/ksadk-web/runtime";
+import { StudioChatApiFacade } from "../studioChatApiFacade";
+import { RunSteeringControl } from "./RunSteeringControl";
+import { ChildRunControls } from "./ChildRunControls";
 import { apiFetch } from "../api";
 import { AgentAvatar, type AgentAppearance } from "./AgentAvatar";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CompactHarnessTimeline } from "./CompactHarnessTimeline";
 import { useRunDocumentActions } from "./RunDocumentActions";
+import { useTurnReasoningTokens } from "../turnReasoningTokens";
+import { useRunReceiptRecovery } from "../useRunReceiptRecovery";
 import { ConversationController, type ConversationId } from "@kingsoftcloud/ksadk-web/conversation";
 import { pickStudioWelcome } from "./studioWelcome";
 import { ConversationFind } from "./ConversationFind";
@@ -26,6 +30,7 @@ interface ChatWorkspaceProps {
   headerHost?: HTMLElement | null;
   onSelectConversation?: () => void;
   agentId: string;
+  cloudTarget?: boolean;
   agentName: string;
   workspacePath?: string;
   workspaceId?: string;
@@ -73,6 +78,7 @@ function sessionDisplayTitle(session: { SessionId: string; Title?: string }): st
 export function ChatWorkspace({
   agentId,
   agentName,
+  cloudTarget = false,
   workspacePath = "",
   workspaceId = "",
   credentialScope = "",
@@ -85,7 +91,7 @@ export function ChatWorkspace({
   newChatRequest = 0, onNewChatStarted,
   ref, integratedHistory = false, onStreamingChange, historyHost, headerHost, onSelectConversation,
 }: ChatWorkspaceProps) {
-  const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
+  const api = useMemo(() => new StudioChatApiFacade({ fetch: apiFetch, agentId }), [agentId]);
   // Keep the local identity ledger scoped to the selected Agent. A single
   // browser-wide key would let drafts/outbox entries from one Agent appear
   // after switching to another Agent (and would make tenant changes unsafe).
@@ -96,13 +102,21 @@ export function ChatWorkspace({
     () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspaceId || workspacePath)}:${encodeURIComponent(credentialScope)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
     [agentId, credentialScope, targetId, workspaceId, workspacePath],
   );
+  // The published Web 0.3.12 uses the Actions-compatible timeline. Keep
+  // this route until a matching canonical renderer package is published.
+  const conversationClient = null;
   // Restore the last selected session on mount so an active run can reconnect
   // after a browser refresh instead of silently falling back to a blank draft.
-  const chat = useAgentChat({ api, agentId, targetId, conversationClient: null, conversationController, restoreSession: true });
+  const chat = useAgentChat({ api, agentId, targetId, conversationClient, conversationController, restoreSession: true });
+  const controlRun = useSyncExternalStore(api.subscribeControls, () => api.controlRun(chat.currentSessionId));
+  const childInput = controlRun?.childControls?.input === true;
+  const childCancellation = controlRun?.childControls?.cancellation === true;
+  const childPromotion = controlRun?.childControls?.promotion === true;
   const documents = useRunDocumentActions();
   const compactTimeline = chat.uiCapabilities.ConversationPresentation?.Timeline === "compact";
   const Timeline = compactTimeline ? CompactHarnessTimeline : AgentConversationTimeline;
   const startedNewChatRequest = useRef(0);
+  const initialSelectionHandled = useRef(false);
   // facade 的 createNewSession 没有在途去重：连点"新对话"会连发
   // CreateSession 产生多条空会话。这里统一加互斥，创建完成后才允许下一次。
   const creatingSession = useRef(false);
@@ -148,6 +162,7 @@ export function ChatWorkspace({
     if (creatingSession.current) return;
     if (currentSessionIdRef.current
       && currentSessionIdRef.current === autoCreatedEmptySessionId.current) return;
+    initialSelectionHandled.current = true;
     creatingSession.current = true;
     try {
       setWelcomeCopy(pickStudioWelcome());
@@ -187,6 +202,13 @@ export function ChatWorkspace({
   const [welcomeCopy, setWelcomeCopy] = useState(() => pickStudioWelcome());
   const [outboxRevision, setOutboxRevision] = useState(0);
   useEffect(() => chat.conversationOutbox?.subscribe(() => setOutboxRevision(revision => revision + 1)), [chat.conversationOutbox]);
+  const originalReceiptQuery = (chat.uiCapabilities as { StudioRunReceiptQuery?: boolean }).StudioRunReceiptQuery === true;
+  const confirmOriginalSubmission = useRunReceiptRecovery({
+    api, controller: conversationController, outbox: chat.conversationOutbox,
+    agentId, conversationId: draftKey, streaming: chat.isStreaming, revision: outboxRevision,
+    enabled: active && chat.bootstrapStatus === "ready" && chat.agentId === agentId && originalReceiptQuery,
+    isRequestActive: chat.isOutboxRequestActive,
+  });
   const unresolvedOutbox = useMemo(() => {
     const id = chat.conversationId || conversationController.getOrCreate(agentId, chat.currentSessionId);
     return chat.conversationOutbox?.listUnresolved(id)
@@ -219,6 +241,14 @@ export function ChatWorkspace({
   const previousRefreshTick = useRef(refreshTick);
   const refreshChat = chat.refresh;
   const previousTransport = useRef({ agentId, sessionId: chat.currentSessionId, streaming: false });
+  const stopByUser = () => {
+    api.authorizeUserCancellation(agentId, chat.currentSessionId, chat.activity?.runId);
+    chat.stop();
+  };
+  const cancelRemoteByUser = () => {
+    api.authorizeUserCancellation(agentId, chat.currentSessionId, chat.activity?.runId);
+    void chat.cancelRemote().finally(() => refreshChat());
+  };
   // 提交→SSE 首帧之间存在会话创建/运行时预热窗口，此时 facade 的
   // isStreaming 仍为 false；用本地 pending 让"正在思考"流光即时出现。
   const [submitPending, setSubmitPending] = useState(false);
@@ -260,8 +290,8 @@ export function ChatWorkspace({
   }, [agentId, chat.uiCapabilities.RuntimePrewarm, chat.bootstrapStatus, chat.currentSessionId]);
 
   // facade bootstrap 会自动 adopt 最近会话；切 Agent 应回到初始对话框，
-  // 仅当路由显式要求打开某会话时才保留。只在 bootstrap 完成时执行一次。
-  const initialSelectionHandled = useRef(false);
+  // 仅当路由显式要求打开某会话时才保留。用户先行创建 draft 或提交的
+  // turn 已经决定会话归属，迟到的 bootstrap 不能清空它或脱离当前流。
   useEffect(() => {
     if (chat.bootstrapStatus !== "ready" || initialSelectionHandled.current) return;
     initialSelectionHandled.current = true;
@@ -310,6 +340,14 @@ export function ChatWorkspace({
   const currentSession = chat.sessions.find(session => session.SessionId === chat.currentSessionId);
   const conversationTitle = currentSession && currentSession.Title !== currentSession.SessionId
     ? currentSession.Title || "新对话" : "新对话";
+
+  // 实时思考块附近展示"本轮思考 token"：来自运行事件里的
+  // UsageReported.reasoning_tokens（一次运行多个模型调用，取整轮求和）。
+  const reasoningTokens = useTurnReasoningTokens({
+    sessionId: chat.currentSessionId,
+    streaming: chat.isStreaming || submitPending,
+    enabled: chat.agentFramework === "harness",
+  });
 
   // 流式运行期间冻结会话列表顺序：isStreaming 翻转会触发 refresh 重排序，
   // 正在阅读/点击列表时行位置乱跳；运行结束后才允许按最新 UpdatedAt 排序。
@@ -492,6 +530,7 @@ export function ChatWorkspace({
               messages={chat.messages}
               isStreaming={chat.isStreaming || submitPending}
               activity={chat.activity}
+              {...(chat.agentFramework === "harness" ? { activeRunId: chat.activity?.runId, reasoningTokens } : {})}
               sessionId={chat.currentSessionId}
               hasMoreMessages={Boolean(chat.messageHistory?.hasMore)}
               revealMessage={revealMessage}
@@ -506,8 +545,8 @@ export function ChatWorkspace({
               onSubmitFeedback={chat.submitResponseFeedback}
               onRespondToApproval={chat.respondToApproval}
               onSubmitAguiAction={chat.submitAguiAction}
-              onStopGeneration={chat.stop}
-              onCancelRemote={chat.uiCapabilities.StopRun ? chat.cancelRemote : undefined}
+              onStopGeneration={stopByUser}
+              onCancelRemote={chat.uiCapabilities.StopRun ? cancelRemoteByUser : undefined}
               onLoadOlderSessionMessages={chat.loadOlderMessages}
               interactionRecords={chat.interactionRecords}
             />
@@ -545,7 +584,8 @@ export function ChatWorkspace({
                     </div>
                     <button type="button" disabled={(entry.status !== "unknown" && !canRetry) || retryingOutboxId === entry.requestId} onClick={() => {
                       setRetryingOutboxId(entry.requestId);
-                      void chat.retryOutbox(entry.requestId).catch(() => {
+                      void (entry.status === "unknown" && originalReceiptQuery ? confirmOriginalSubmission(entry.requestId)
+                        : chat.retryOutbox(entry.requestId)).catch(() => {
                         chat.conversationOutbox?.update(entry.requestId, { error: "操作未完成，请查看会话状态后再试。" });
                       }).finally(() => setRetryingOutboxId(null));
                     }}>{retryingOutboxId === entry.requestId ? (entry.status === "unknown" ? "查询中…" : "发送中…")
@@ -557,16 +597,31 @@ export function ChatWorkspace({
             </div>
           ) : null}
           <AgentConversationComposer
+            headerSlot={active && chat.isStreaming && controlRun ? (
+              <>
+                {(chat.uiCapabilities as { SteerRun?: boolean }).SteerRun ? (
+                  <RunSteeringControl key={`${agentId}:${controlRun.invocationId}`}
+                    runId={controlRun.invocationId}
+                    submit={(runId, text) => api.steerRun(agentId, runId, text)} />
+                ) : null}
+                {childInput || childPromotion || childCancellation ? (
+                  <ChildRunControls key={`${agentId}:${controlRun.sessionId}:${controlRun.runId}`}
+                    run={controlRun} api={api} allowInput={childInput} allowPromotion={childPromotion}
+                    allowCancellation={childCancellation} />
+                ) : null}
+              </>
+              ) : undefined}
             draftKey={draftKey}
             draftStore={chat.conversationDrafts}
             onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
             composerMaxHeight={176}
             submitDraft={async (text, attachments, _responsesInput, _previousResponseId, executionMode) => {
+              initialSelectionHandled.current = true;
               setSubmitPending(true);
               chat.send(text, { attachments, executionMode });
             }}
-            stopGeneration={chat.stop}
-            cancelRemote={chat.uiCapabilities.StopRun ? chat.cancelRemote : undefined}
+            stopGeneration={stopByUser}
+            cancelRemote={chat.uiCapabilities.StopRun ? cancelRemoteByUser : undefined}
             isMobile={chat.isMobile}
             attachmentsEnabled={chat.uiCapabilities.Attachments !== false}
             approvalEnabled={Boolean(chat.uiCapabilities.Approval)}

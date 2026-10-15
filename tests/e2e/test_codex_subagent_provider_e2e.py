@@ -66,9 +66,9 @@ class _RealFactory:
         self.homes.append(home)
         (home / "config.toml").write_text(
             f"""model = "ksadk-codex-plugin-stub"
-model_provider = "ksadk_provider_stub"
-approval_policy = "never"
-sandbox_mode = "read-only"
+            model_provider = "ksadk_provider_stub"
+            approval_policy = "never"
+            sandbox_mode = "read-only"
 
 [model_providers.ksadk_provider_stub]
 name = "KsADK subagent deterministic E2E"
@@ -82,9 +82,20 @@ requires_openai_auth = false
         )
         delegate = AsyncCodexClient(
             openai_codex.CodexConfig(
+                # Declare the fixture's unauthenticated native provider at
+                # the launch boundary; ambient URL injection must not select
+                # ksadk_direct (which correctly requires OPENAI_API_KEY).
+                config_overrides=("model_provider=ksadk_provider_stub",),
                 env={
                     "CODEX_HOME": str(home),
                     "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
+                    # This fixture exposes a native Responses endpoint. Do not
+                    # inherit a process-wide Studio proxy setting while testing
+                    # the App Server's direct provider lifecycle.
+                    "KSADK_CODEX_USE_PROXY": "0",
+                    # Keep the direct-provider injection (which also consults
+                    # process env) pointed at the same local Responses stub.
+                    "OPENAI_BASE_URL": self.responses_url,
                     "RUST_LOG": "warn",
                 }
             )
@@ -123,7 +134,10 @@ async def test_real_children_use_distinct_app_servers_threads_and_cleanup(
             provider.result(first), provider.result(second)
         )
 
-        assert first_result.state == second_result.state == "succeeded"
+        assert first_result.state == second_result.state == "succeeded", (
+            first_result.model_dump(),
+            second_result.model_dump(),
+        )
         assert first_result.output == second_result.output == "bridge skill received"
         assert first.child_session_id != second.child_session_id
         requests = responses.requests()

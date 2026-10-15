@@ -213,14 +213,11 @@ def _events_from_artifact(
     """解析一个 artifact-like 对象，支持增量、累计快照和权威替换。"""
 
     artifact_id = str(
-        getattr(artifact, "artifact_id", "")
-        or getattr(artifact, "name", "")
-        or "anonymous"
+        getattr(artifact, "artifact_id", "") or getattr(artifact, "name", "") or "anonymous"
     )
-    artifact_is_reasoning = (
-        str(getattr(artifact, "name", "")).lower() == "reasoning"
-        or _metadata_flag(getattr(artifact, "metadata", None), "adk_thought")
-    )
+    artifact_is_reasoning = str(
+        getattr(artifact, "name", "")
+    ).lower() == "reasoning" or _metadata_flag(getattr(artifact, "metadata", None), "adk_thought")
     grouped: list[tuple[str, str, bool]] = []
     for part in getattr(artifact, "parts", []):
         text = str(getattr(part, "text", "") or "")
@@ -277,7 +274,23 @@ def _metadata_flag(metadata: Any, key: str) -> bool:
         return False
 
 
+def remote_node(spec):
+    """Build a fixed managed node; runtime supplies identity and authorization."""
+    from ksadk.a2a.langgraph_managed import remote_node as factory
+
+    return factory(spec)
+
+
+def handoff_tool(spec):
+    """Build a fixed managed supervisor tool backed by A2AInvocationService."""
+    from ksadk.a2a.langgraph_managed import handoff_tool as factory
+
+    return factory(spec)
+
+
 __all__ = [
+    "remote_node",
+    "handoff_tool",
     "A2AStreamEvent",
     "stream_a2a_agent",
     "stream_a2a_agent_events",

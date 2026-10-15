@@ -22,6 +22,7 @@ from ksadk.conversations.runtime_constants import (
 from ksadk.conversations.runtime_observability import _extract_deferred_tool_names
 from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY, PlatformIdentityContext
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
+from ksadk.sessions.agent_identity import session_agent_ids
 from ksadk.sessions.invocation_identity import (
     bind_or_validate_session_identity,
     identity_native_user_id,
@@ -101,7 +102,7 @@ async def require_conversation_session(
     existing = await service.get_session_metadata(session_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    if existing.agent_id != agent_id:
+    if existing.agent_id not in session_agent_ids(agent_id):
         if not identity.is_empty:
             raise HTTPException(status_code=404, detail="Session not found")
         raise HTTPException(

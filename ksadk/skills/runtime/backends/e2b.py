@@ -394,11 +394,9 @@ class E2BSkillRuntimeBackend:
                 )
             event_path = f"/tmp/ksadk-skill-events-{uuid4().hex}.jsonl"
             command_env = {**sandbox_env, SKILL_EVENT_FILE_ENV: event_path}
-            command = f"python -u /home/ksadk/agent.py --request-file {request_path}"
-            if pinned_packages is not None:
-                command = (
-                    f"python -I -u -m ksadk.skills.runtime.agent --request-file {request_path}"
-                )
+            command = _build_skill_command(
+                request_path=request_path, pinned=pinned_packages is not None
+            )
             output_prefix = f"/tmp/ksadk-workflow-output-{uuid4().hex}"
             stdout_path = output_prefix + ".stdout"
             stderr_path = output_prefix + ".stderr"
@@ -524,19 +522,13 @@ class E2BSkillRuntimeBackend:
                     if runtime_result is not None and (
                         runtime_result.error_type or runtime_result.timed_out
                     ):
-                        recovered_stdout = _read_output(
-                            session, stdout_path, runtime_result.stdout
-                        )
+                        recovered_stdout = _read_output(session, stdout_path, runtime_result.stdout)
                         runtime_result = replace(
                             runtime_result,
                             stdout=recovered_stdout,
                             stderr=_read_output(session, stderr_path, runtime_result.stderr),
-                            workflow_status=parse_workflow_result(
-                                recovered_stdout
-                            ).workflow_status,
-                            executed_skill=parse_workflow_result(
-                                recovered_stdout
-                            ).executed_skill,
+                            workflow_status=parse_workflow_result(recovered_stdout).workflow_status,
+                            executed_skill=parse_workflow_result(recovered_stdout).executed_skill,
                         )
                     if event_path:
                         try:
@@ -605,3 +597,14 @@ def _exception_output(exc, name: str) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value if isinstance(value, str) else ""
+
+
+def _build_skill_command(*, request_path: str, pinned: bool) -> str:
+    """G34 远端 skill 禁 shell 插值：动态值经 shlex.quote，不裸拼。
+
+    request_path 含 shell 元字符（; & | $ `）也不会被 shell 当独立命令执行。
+    """
+    safe_path = shlex.quote(request_path)
+    if not pinned:
+        return f"python -u /home/ksadk/agent.py --request-file {safe_path}"
+    return f"python -I -u -m ksadk.skills.runtime.agent --request-file {safe_path}"

@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -78,6 +78,8 @@ from ksadk.sessions._postgres_tables import (
     KSADK_PG_EVENTS_TABLE,
     KSADK_PG_SESSIONS_TABLE,
 )
+from ksadk.sessions.db_budget import budgeted_pool_connection, session_db_budget
+from ksadk.sessions.history_budget import CURRENT_HISTORY_READ_BUDGET
 
 SCHEMA_PATH = Path(__file__).parent / "sql" / "001_agent_kernel.sql"
 
@@ -126,12 +128,11 @@ class PostgresKernelEventLog:
         self._workspace_id = workspace_id.strip() or "default"
 
     @asynccontextmanager
-    async def _connection(self):
-        if hasattr(self._pool, "acquire"):
-            async with self._pool.acquire() as conn:
-                yield conn
-        else:
-            yield self._pool
+    async def _connection(self, *, write: bool = False):
+        async with budgeted_pool_connection(
+            self._pool, session_db_budget(), write=write,
+        ) as connection:
+            yield connection
 
     async def append_on(
         self,
@@ -222,9 +223,14 @@ class PostgresKernelEventLog:
     async def append(
         self, envelope: SessionEventEnvelope, *, guard: Any | None = None
     ) -> SessionEventEnvelope:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 return await self.append_on(connection, envelope, guard)
+
+    async def get_by_id(self, session_id: str, event_id: Any) -> SessionEventEnvelope | None:
+        storage_id = session_event_storage_id(session_id, str(event_id))
+        async with self._connection() as connection:
+            return await self._fetch_event(connection, session_id, storage_id)
 
     async def read(self, session_id: str, after_seq: int, limit: int) -> list[SessionEventEnvelope]:
         if limit < 1:
@@ -274,17 +280,16 @@ class PostgresNonceStore:
         self._retention = float(retention_seconds)
 
     @asynccontextmanager
-    async def _connection(self):
-        if hasattr(self._pool, "acquire"):
-            async with self._pool.acquire() as conn:
-                yield conn
-        else:
-            yield self._pool
+    async def _connection(self, *, write: bool = False):
+        async with budgeted_pool_connection(
+            self._pool, session_db_budget(), write=write,
+        ) as connection:
+            yield connection
 
     async def register(
         self, nonce: str, command_id: str, idempotency_key: str
     ) -> bool:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 inserted = await connection.fetchval(
                     "INSERT INTO kernel_permit_nonces (nonce, command_id,"
@@ -329,20 +334,19 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
     # ------------------------------------------------------------- lifecycle
 
     @asynccontextmanager
-    async def _connection(self):
-        if hasattr(self._pool, "acquire"):
-            async with self._pool.acquire() as conn:
-                yield conn
-        else:
-            yield self._pool
+    async def _connection(self, *, write: bool = False):
+        async with budgeted_pool_connection(
+            self._pool, session_db_budget(), write=write,
+        ) as connection:
+            yield connection
 
     async def ensure_schema(self) -> None:
         schema = SCHEMA_PATH.read_text(encoding="utf-8")
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             await connection.execute(schema)
 
     async def reset_for_tests(self) -> None:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             await connection.execute(
                 "DELETE FROM kernel_inbox; DELETE FROM kernel_runs;"
                 " DELETE FROM kernel_activations; DELETE FROM kernel_accepted_seq;"
@@ -363,13 +367,15 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
     ) -> dict[str, Any]:
         """compare-fence：事务内 ``FOR SHARE`` 读 activation 并比较 token/expiry。"""
 
+        # Lease expiry is authored by PostgreSQL. Never compare it with a Pod's
+        # wall clock: skew can reject a live owner or authorize an expired one.
         row = await connection.fetchrow(
             ACTIVATION_FOR_SHARE_SQL, agent_instance_id, session_id
         )
         if (
             row is None
             or row["released"]
-            or row["lease_expires_at"] <= _now()
+            or row["lease_expires_at"] <= await connection.fetchval("SELECT clock_timestamp()")
             or int(row["fencing_token"]) != int(expected_fence)
         ):
             raise StaleFenceError(
@@ -435,7 +441,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
     ) -> AgentControlReceipt:
         if queue_limit < 1:
             raise InvalidCommandError("queue_limit must be positive")
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 if execution_grant_id(command):
                     await self._postgres_lock_command_grant(connection, command)
@@ -590,6 +596,37 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
             )
         return self._row_to_message(row)
 
+    async def load_messages_for_history(
+        self, message_ids: list[str], *, tenant_id: str, agent_instance_id: str,
+        session_id: str,
+    ) -> dict[str, InboxMessage]:
+        """Fetch admitted messages in bounded batches with the original scope."""
+        result: dict[str, InboxMessage] = {}
+        for start in range(0, len(message_ids), 100):
+            batch = message_ids[start:start + 100]
+            async with self._connection() as connection:
+                budget = CURRENT_HISTORY_READ_BUDGET.get()
+                async with (connection.transaction(isolation="repeatable_read", readonly=True)
+                            if budget is not None else nullcontext()):
+                    if budget is not None:
+                        size = await connection.fetchval(
+                            "SELECT COALESCE(SUM(octet_length(payload::text)+512),0) "
+                            "FROM kernel_inbox WHERE message_id=ANY($1::uuid[]) "
+                            "AND tenant_id=$2 AND agent_instance_id=$3 AND session_id=$4",
+                            batch, tenant_id, agent_instance_id, session_id,
+                        )
+                        budget.account(int(size or 0))
+                    rows = await connection.fetch(
+                        "SELECT * FROM kernel_inbox WHERE message_id=ANY($1::uuid[]) "
+                        "AND tenant_id=$2 AND agent_instance_id=$3 AND session_id=$4",
+                        batch, tenant_id, agent_instance_id, session_id,
+                    )
+            for row in rows:
+                message = self._row_to_message(row)
+                if message is not None:
+                    result[message.message_id] = message
+        return result
+
     @staticmethod
     def _row_to_message(row: Any) -> InboxMessage | None:
         if row is None:
@@ -635,7 +672,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         与 InMemory 版语义一致：只追加 ``control.command_rejected`` 事实，
         不写 Inbox 行。
         """
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 await self._append_admission(
                     connection,
@@ -703,7 +740,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
     async def claim_message(self, message_id: str, fencing_token: int) -> InboxMessage:
         """按 message_id 认领（worker 选择性 FIFO）；同 fence 重复认领幂等。"""
         message_id = str(message_id)
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 # Lock grant before Inbox, matching the revocation lock order.
                 candidate = await connection.fetchrow(
@@ -789,7 +826,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
     async def discard_claim(self, message_id: str, *, expected_fence: int) -> None:
         """typed rejection 的确定性收口：CLAIMED -> DISCARDED。"""
         message_id = str(message_id)
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 row = await connection.fetchrow(
                     "SELECT * FROM kernel_inbox WHERE message_id=$1::uuid FOR UPDATE",
@@ -875,7 +912,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
             row = await connection.fetchrow(
                 "SELECT * FROM kernel_activations WHERE agent_instance_id=$1"
                 + (" AND session_id=$2" if session_id else "")
-                + " AND released=FALSE AND lease_expires_at > now()"
+                + " AND released=FALSE AND lease_expires_at > clock_timestamp()"
                 + (" ORDER BY lease_expires_at DESC LIMIT 1"),
                 agent_instance_id,
                 *([session_id] if session_id else []),
@@ -895,7 +932,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
     async def claim_next(
         self, agent_instance_id: str, session_id: str, fencing_token: int
     ) -> InboxMessage | None:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 activation = await self._assert_fence(
                     connection, agent_instance_id, session_id, fencing_token
@@ -943,7 +980,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
 
     async def complete_claim(self, message_id: str, *, expected_fence: int) -> None:
         message_id = str(message_id)
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 row = await connection.fetchrow(
                     "SELECT * FROM kernel_inbox WHERE message_id=$1::uuid", message_id
@@ -993,7 +1030,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         if (
             row is None
             or row["released"]
-            or row["lease_expires_at"] <= _now()
+            or row["lease_expires_at"] <= await connection.fetchval("SELECT clock_timestamp()")
             or int(row["fencing_token"]) != int(guard.fencing_token)
             or row["agent_instance_id"] != agent_instance_id
             or row["session_id"] != session_id
@@ -1029,7 +1066,9 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         if (
             activation is None
             or activation["released"]
-            or activation["lease_expires_at"] <= _now()
+            or activation["lease_expires_at"] <= await connection.fetchval(
+                "SELECT clock_timestamp()"
+            )
             or int(activation["fencing_token"]) != int(guard.fencing_token)
         ):
             raise StaleFenceError(
@@ -1088,7 +1127,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         self, record: InteractionRecord, *, guard: Any
     ) -> InteractionRecord:
         digest = request_digest(record)
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 await self._assert_interaction_guard(
                     connection, record.agent_instance_id, record.session_id, guard
@@ -1160,7 +1199,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         self, submission: InteractionSubmission, *, guard: Any
     ) -> InteractionReceipt:
         sub_digest = submission_digest(submission)
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 row = await self._interaction_row_for_guard(
                     connection, submission.interaction_id, guard
@@ -1267,7 +1306,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         status: str,
         reason: str,
     ) -> InteractionReceipt:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 row = await self._interaction_row_for_guard(
                     connection, interaction_id, guard
@@ -1419,7 +1458,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
     # ------------------------------------------------------------- activations
 
     async def acquire_activation(self, request: ActivationLeaseRequest) -> ActivationLease:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 row = await connection.fetchrow(
                     """
@@ -1427,7 +1466,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                         agent_instance_id, session_id, activation_id, fencing_token,
                         lease_expires_at, runtime_type, bundle_digest, capability_digest
                     ) VALUES (
-                        $1, $2, $3, 1, now() + make_interval(secs => $4), $5, $6, $7
+                        $1, $2, $3, 1, clock_timestamp() + make_interval(secs => $4), $5, $6, $7
                     )
                     ON CONFLICT (agent_instance_id, session_id) DO UPDATE SET
                         activation_id = excluded.activation_id,
@@ -1442,7 +1481,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                         bundle_digest = excluded.bundle_digest,
                         capability_digest = excluded.capability_digest
                     WHERE kernel_activations.released
-                       OR kernel_activations.lease_expires_at <= now()
+                       OR kernel_activations.lease_expires_at <= clock_timestamp()
                        OR kernel_activations.activation_id = excluded.activation_id
                     RETURNING fencing_token, lease_expires_at
                     """,
@@ -1483,7 +1522,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
     async def renew_activation(
         self, activation_id: str, *, expected_fence: int, lease_ttl_seconds: float
     ) -> ActivationLease:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 row = await connection.fetchrow(
                     "SELECT * FROM kernel_activations WHERE activation_id=$1 FOR UPDATE",
@@ -1493,14 +1532,16 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                     raise InvalidCommandError(f"unknown activation_id {activation_id!r}")
                 if (
                     row["released"]
-                    or row["lease_expires_at"] <= _now()
+                    or row["lease_expires_at"] <= await connection.fetchval(
+                        "SELECT clock_timestamp()"
+                    )
                     or int(row["fencing_token"]) != int(expected_fence)
                 ):
                     raise StaleFenceError(
                         f"cannot renew activation {activation_id!r} at fence {expected_fence}"
                     )
                 expires_at = await connection.fetchval(
-                    "UPDATE kernel_activations SET lease_expires_at = now()"
+                    "UPDATE kernel_activations SET lease_expires_at = clock_timestamp()"
                     " + make_interval(secs => $1) WHERE activation_id=$2"
                     " RETURNING lease_expires_at",
                     lease_ttl_seconds,
@@ -1517,7 +1558,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         )
 
     async def release_activation(self, activation_id: str, *, expected_fence: int) -> None:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 row = await connection.fetchrow(
                     "SELECT fencing_token, released FROM kernel_activations"
@@ -1531,7 +1572,8 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                         f"cannot release activation {activation_id!r} at fence {expected_fence}"
                     )
                 await connection.execute(
-                    "UPDATE kernel_activations SET released=TRUE, lease_expires_at=now()"
+                    "UPDATE kernel_activations SET released=TRUE,"
+                    " lease_expires_at=clock_timestamp()"
                     " WHERE activation_id=$1",
                     activation_id,
                 )
@@ -1545,7 +1587,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         expected_fence: int,
         agent_instance_id: str | None = None,
     ) -> SessionEventEnvelope:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 activation = await self._resolve_activation(
                     connection, envelope.session_id, agent_instance_id
@@ -1593,6 +1635,19 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
 
     # -------------------------------------------------------------------- runs
 
+    async def find_command_run(
+        self, agent_instance_id: str, session_id: str, command_id: str
+    ) -> RunRecord | None:
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                "SELECT run_id FROM kernel_runs WHERE agent_instance_id=$1 AND session_id=$2 "
+                "AND metadata->>'command_id'=$3 LIMIT 2",
+                agent_instance_id, session_id, command_id,
+            )
+        if len(rows) > 1:
+            raise InvalidCommandError("ambiguous runs for the same command")
+        return await self.load_run(rows[0]["run_id"]) if rows else None
+
     async def load_run(self, run_id: str) -> RunRecord | None:
         async with self._connection() as connection:
             row = await connection.fetchrow(
@@ -1611,17 +1666,86 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
             metadata=json.loads(row["metadata"]),
         )
 
+    async def load_runs_for_history(
+        self, run_ids: list[str], *, tenant_id: str, agent_instance_id: str,
+        session_id: str,
+    ) -> dict[str, RunRecord]:
+        result: dict[str, RunRecord] = {}
+        for start in range(0, len(run_ids), 100):
+            batch = run_ids[start:start + 100]
+            async with self._connection() as connection:
+                budget = CURRENT_HISTORY_READ_BUDGET.get()
+                async with (connection.transaction(isolation="repeatable_read", readonly=True)
+                            if budget is not None else nullcontext()):
+                    if budget is not None:
+                        size = await connection.fetchval(
+                            "SELECT COALESCE(SUM(octet_length(metadata::text)+512),0) "
+                            "FROM kernel_runs WHERE run_id=ANY($1::text[]) "
+                            "AND tenant_id=$2 AND agent_instance_id=$3 AND session_id=$4",
+                            batch, tenant_id, agent_instance_id, session_id,
+                        )
+                        budget.account(int(size or 0))
+                    rows = await connection.fetch(
+                        "SELECT * FROM kernel_runs WHERE run_id=ANY($1::text[]) "
+                        "AND tenant_id=$2 AND agent_instance_id=$3 AND session_id=$4",
+                        batch, tenant_id, agent_instance_id, session_id,
+                    )
+            for row in rows:
+                result[row["run_id"]] = RunRecord(
+                    run_id=row["run_id"], agent_instance_id=row["agent_instance_id"],
+                    session_id=row["session_id"], state=row["state"],
+                    activation_fence=int(row["activation_fence"]),
+                    created_at=row["created_at"].isoformat(),
+                    updated_at=row["updated_at"].isoformat(),
+                    metadata=json.loads(row["metadata"]),
+                )
+        return result
+
+    async def save_runtime_checkpoint(
+        self, run_id: str, checkpoint: dict, *, agent_instance_id: str,
+        session_id: str, guard: ActivationWriteGuard,
+    ) -> None:
+        from ksadk.kernel.runtime_checkpoint import checkpoint_copy, require_checkpoint_owner
+
+        checkpoint = checkpoint_copy(checkpoint)
+        async with self._connection(write=True) as connection:
+            async with connection.transaction():
+                activation = await self._assert_fence(
+                    connection, agent_instance_id, session_id, guard.fencing_token,
+                )
+                if str(activation["activation_id"]) != guard.activation_id:
+                    raise StaleFenceError("runtime checkpoint activation mismatch")
+                row = await connection.fetchrow(
+                    "SELECT * FROM kernel_runs WHERE run_id=$1 FOR UPDATE", run_id,
+                )
+                run = (RunRecord(run_id=row["run_id"], agent_instance_id=row["agent_instance_id"],
+                                 session_id=row["session_id"], state=row["state"])
+                       if row is not None else None)
+                require_checkpoint_owner(
+                    run, agent_instance_id=agent_instance_id, session_id=session_id,
+                )
+                await connection.execute(
+                    "UPDATE kernel_runs SET metadata=jsonb_set(metadata, '{runtime_checkpoint}', "
+                    "$2::jsonb), updated_at=now() WHERE run_id=$1",
+                    run_id, json.dumps(checkpoint, ensure_ascii=False),
+                )
+
     async def save_run_transition(
         self, run: RunRecord, *, expected_fence: int
     ) -> RunRecord:
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 activation = await self._assert_fence(
                     connection, run.agent_instance_id, run.session_id, expected_fence
                 )
                 existing = await connection.fetchrow(
-                    "SELECT * FROM kernel_runs WHERE run_id=$1", run.run_id
+                    "SELECT * FROM kernel_runs WHERE run_id=$1 FOR UPDATE", run.run_id
                 )
+                from ksadk.kernel.runtime_checkpoint import preserve_runtime_checkpoint
+
+                run = run.model_copy(update={"metadata": preserve_runtime_checkpoint(
+                    run.metadata, json.loads(existing["metadata"]) if existing else None,
+                )})
                 assert_run_transition(
                     RunState(existing["state"]) if existing is not None else None, run.state
                 )
@@ -1706,7 +1830,7 @@ class PostgresFencedSessionEventStore:
 
     @asynccontextmanager
     async def _connection(self):
-        async with self._store._connection() as connection:
+        async with self._store._connection(write=True) as connection:
             yield connection
 
     async def append(
@@ -1737,7 +1861,7 @@ class PostgresFencedSessionEventStore:
         if (
             row is None
             or row["released"]
-            or row["lease_expires_at"] <= _now()
+            or row["lease_expires_at"] <= await connection.fetchval("SELECT clock_timestamp()")
             or int(row["fencing_token"]) != int(guard.fencing_token)
         ):
             raise StaleFenceError(
@@ -1762,6 +1886,9 @@ class PostgresFencedSessionEventStore:
         self, session_id: str, after_seq: int, limit: int
     ) -> list[SessionEventEnvelope]:
         return await self._log.read(session_id, after_seq, limit)
+
+    async def get_by_id(self, session_id: str, event_id: Any) -> SessionEventEnvelope | None:
+        return await self._log.get_by_id(session_id, event_id)
 
     async def subscribe(
         self, session_id: str, after_seq: int, *, poll_interval: float = 0.25

@@ -11,6 +11,7 @@ import hashlib
 import hmac
 from html import escape
 from http.cookiejar import CookieJar
+from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPCookieProcessor, ProxyHandler, build_opener
@@ -25,13 +26,23 @@ from ksadk.studio.errors import StudioError
 from ksadk.studio.plugin_lifecycle import RECOVERY_URL, lifecycle_failure
 
 _HOP_HEADERS = {"host", "connection", "transfer-encoding", "content-length"}
+_STUDIO_COOKIE_PREFIXES = ("agentkit_studio_session", "agentkit_studio_chat_agent")
 
 _STUDIO_CORE_BRAND_SCRIPT = (
-    "<script>(() => { const title = 'AgentKit Studio'; const apply = () => { "
-    "if (document.title !== title) document.title = title; }; apply(); "
-    "new MutationObserver(apply).observe(document.head, "
+    "<script>(() => { const title = 'AgentKit Studio'; "
+    "const apply = () => { if (document.title !== title) document.title = title; }; "
+    "apply(); new MutationObserver(apply).observe(document.head, "
     "{ childList: true, subtree: true }); })();</script>"
 )
+
+
+def _core_cookie_header(cookies) -> str:
+    """Forward Core cookies without leaking obsolete Studio-local sessions."""
+    return "; ".join(
+        f"{name}={value}"
+        for name, value in cookies.items()
+        if not name.startswith(_STUDIO_COOKIE_PREFIXES)
+    )
 
 
 def _brand_core_document(body: bytes) -> bytes:
@@ -103,18 +114,48 @@ def register_dsh_application(
         token = cookies.get(session_cookie_name) or cookies.get(legacy_session_cookie_name, "")
         return not security_enabled or hmac.compare_digest(token, session_secret)
 
+    def attach_local_session(response: Response) -> Response:
+        """Bootstrap direct Core links without a redirect/cookie loop.
+
+        The loopback root already grants the local Studio session.  Granting
+        the same cookie on the Core document keeps a fresh or restored browser
+        partition from bouncing between ``/`` and ``/studio-core/`` when it
+        does not retain cookies from intermediate 307 responses.
+        """
+        if security_enabled:
+            for name in (session_cookie_name, legacy_session_cookie_name):
+                response.set_cookie(
+                    name,
+                    session_secret,
+                    httponly=True,
+                    samesite="strict",
+                    secure=False,
+                    path="/",
+                )
+        return response
+
     @app.api_route("/studio-core/", methods=["GET"])
     async def application(request: Request):
-        if not authorized(request.cookies):
-            # A fresh browser follows the normal loopback bootstrap first;
-            # the root issues the Studio cookie before entering Core.
-            target = "/" + ("?" + request.url.query if request.url.query else "")
-            return RedirectResponse(target, status_code=307, headers={"Cache-Control": "no-store"})
         try:
             lease = await studio.dsh_capabilities.connector_lease()
         except Exception as error:
-            status = getattr(studio.dsh_capabilities, "startup_status", {})
-            return unavailable(error, status.get("stage", "core_start"))
+            if fallback_url:
+                return unavailable(error, "core_start")
+            # Core is an optional enhancement to the local React shell. If its
+            # host is busy or unavailable, keep the Studio page usable instead
+            # of returning a JSON 503 document that renders as a blank screen.
+            path = Path(__file__).with_name("static") / "index.html"
+            body = path.read_bytes()
+            return attach_local_session(
+                Response(
+                    body,
+                    media_type="text/html",
+                    headers={
+                        "Cache-Control": "no-store",
+                        "X-AgentKit-Studio-Degraded": "dsh-unavailable",
+                    },
+                )
+            )
 
         def bootstrap():
             # urllib does not log the process-token URL at INFO like httpx.
@@ -138,7 +179,7 @@ def register_dsh_application(
             result.set_cookie(
                 cookie.name, cookie.value, path=cookie.path, httponly=True, samesite="strict"
             )
-        return result
+        return attach_local_session(result)
 
     # Registered last: the Studio API/static routes retain ownership of their paths.
     @app.api_route("/{core_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"])
@@ -166,6 +207,11 @@ def register_dsh_application(
         headers = {
             key: value for key, value in request.headers.items() if key.lower() not in _HOP_HEADERS
         }
+        core_cookie = _core_cookie_header(request.cookies)
+        if core_cookie:
+            headers["cookie"] = core_cookie
+        else:
+            headers.pop("cookie", None)
         # Core checks origin against its own listening socket.
         if "origin" in headers:
             headers["origin"] = origin
@@ -216,7 +262,7 @@ def register_dsh_application(
         async with connect(
             f"ws://127.0.0.1:{endpoint.port}{path}",
             origin=f"http://127.0.0.1:{endpoint.port}",
-            extra_headers={"Cookie": websocket.headers.get("cookie", "")},
+            extra_headers={"Cookie": _core_cookie_header(websocket.cookies)},
             subprotocols=protocols or None,
             max_size=16 * 1024 * 1024,
         ) as upstream:

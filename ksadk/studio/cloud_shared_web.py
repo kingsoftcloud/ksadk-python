@@ -142,6 +142,13 @@ class CloudSharedWebBridge:
     async def _bootstrap(self, agent_id: str) -> dict[str, Any]:
         target = cloud_chat_target(agent_id)
         normalized_agent_id = target.removeprefix("account:")
+        authoritative = await self.cloud.shared_web_action(target, "GetAgentUiBootstrap", {})
+        if authoritative is not None:
+            capabilities = dict(authoritative.get("Capabilities") or {})
+            # Studio does not proxy hosted files, dashboards or terminals.
+            for name in ("WorkspaceFiles", "NativeDashboard", "NativeTerminal"):
+                capabilities[name] = {"Enabled": False}
+            return {**authoritative, "Capabilities": capabilities}
         detail = await self.cloud.get_account_agent(normalized_agent_id)
         return {
             "Agent": {

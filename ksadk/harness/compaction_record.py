@@ -39,6 +39,22 @@ class CompactionRecord:
     dropped_critical_facts: tuple[str, ...] = field(default=())
     #: 摘要缺失但经重注入保留在模型输入中的关键事实（§8.4.1）。
     reinjected_critical_facts: tuple[str, ...] = field(default=())
+    #: 压缩边界是否落在一个进行中回合的内部（尾部以非 user/system 开头，
+    #: head 中已有 user）——G3 一期 split-turn 留痕，供恢复侧接续 pending 工具调用。
+    split_turn: bool = False
+    #: 摘要输入是否经脱敏（G12 §15.2：tool result 正文不进摘要模型输入）。
+    sanitized_input: bool = False
+    #: 摘要输入中被替换的 tool result 段数 + 敏感正则命中次数（G12）。
+    sanitized_replacements: int = 0
+    #: G3 二期 §3.2.3 摘要链：上一次 CompactionRecord 的 id（链头为空）。
+    previous_compaction_id: str = ""
+    # G21 压缩后重建预算 + boundary 一等消息 + preserved segment 锚点：
+    #: 压缩后保留的首条 entry_id（锚点，映射我们的 entry_id 而非 uuid）。
+    first_kept_entry_id: str = ""
+    #: 重建预算（压缩后重建上下文的 token 上限）。
+    rebuild_budget_tokens: int = 0
+    #: preserved segment key 集合（锚点集合）。
+    preserved_segments: tuple[str, ...] = field(default=())
 
     # ---- 质量校验（§6.4 quality_checks） ----
     tool_pairs_complete: bool = True
@@ -69,6 +85,13 @@ class CompactionRecord:
             "retained_critical_facts": list(self.retained_critical_facts),
             "dropped_critical_facts": list(self.dropped_critical_facts),
             "reinjected_critical_facts": list(self.reinjected_critical_facts),
+            "split_turn": self.split_turn,
+            "sanitized_input": self.sanitized_input,
+            "sanitized_replacements": self.sanitized_replacements,
+            "previous_compaction_id": self.previous_compaction_id,
+            "first_kept_entry_id": self.first_kept_entry_id,
+            "rebuild_budget_tokens": self.rebuild_budget_tokens,
+            "preserved_segments": list(self.preserved_segments),
             "quality_checks": self.quality_checks(),
         }
 
@@ -86,6 +109,10 @@ def build_compaction_record(
     reinjected_critical_facts: tuple[str, ...] = (),
     summary_model_ref: str = "",
     memory_candidate_refs: tuple[str, ...] = (),
+    split_turn: bool = False,
+    sanitized_input: bool = False,
+    sanitized_replacements: int = 0,
+    previous_compaction_id: str = "",
     tool_pairs_complete: bool = True,
     approvals_preserved: bool = True,
     goal_preserved: bool = True,
@@ -112,6 +139,10 @@ def build_compaction_record(
         retained_critical_facts=retained_critical_facts,
         dropped_critical_facts=dropped_critical_facts,
         reinjected_critical_facts=reinjected_critical_facts,
+        split_turn=split_turn,
+        sanitized_input=sanitized_input,
+        sanitized_replacements=sanitized_replacements,
+        previous_compaction_id=previous_compaction_id,
         tool_pairs_complete=tool_pairs_complete,
         approvals_preserved=approvals_preserved,
         goal_preserved=goal_preserved,

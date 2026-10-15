@@ -1,0 +1,9 @@
+.child-run-controls { padding: 8px 12px; font-size: 13px; }
+.child-run-controls button { padding: 6px 10px; }
+.child-run-controls > div:not([hidden]) { display: grid; gap: 8px; margin-top: 8px; max-height: 260px; overflow-y: auto; }
+.child-run-row { padding: 10px; border: 1px solid var(--studio-border); border-radius: 8px; }
+.child-run-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.child-run-heading span, .child-run-row p { color: var(--studio-text-secondary); }
+.child-run-input { display: flex; flex-wrap: wrap; gap: 8px; }
+.child-run-input input { flex: 1; min-width: 160px; padding: 6px 8px; border: 1px solid var(--studio-border); border-radius: 6px; background: var(--studio-surface); color: inherit; }
+.child-run-row p { margin: 8px 0 0; }

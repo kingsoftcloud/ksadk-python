@@ -3,11 +3,100 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from typing import Any
 
 from ksadk.harness.engine.mcp_disclosure import McpDisclosureCursors
 from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.run_control import ControlAction, RunControlReplan, RunControlStop
+from ksadk.harness.tool_result_policy import govern_tool_result, policy_for_tool
+
+
+class ToolNotDisclosedError(RuntimeError):
+    """G24 发现门：工具未在当前披露面中。
+
+    不阻断 Run（被 loop/tools.py 的 except Exception 捕获后回填模型，模型可经
+    发现工具自愈重试）；``category`` 记入 TOOL_CALL_END 的 error_category。
+    """
+
+    category = "undisclosed_tool"
+
+    def __init__(self, name: str) -> None:
+        self.tool_name = name
+        super().__init__(self._message(name))
+
+    @staticmethod
+    def _message(name: str) -> str:
+        return (
+            f"工具 {name!r} 未在当前披露面中。它可能需要先经发现工具加载：\n"
+            "- MCP 工具：用 mcp_list_tools 查看，mcp_read_tool_schema 读 schema，"
+            "再 mcp_call_tool 调用\n"
+            "- Skill 工具：用 execute_skills 调用已绑定 Skill\n"
+            "若确认该工具应无条件可见，检查 Agent 的 capability binding 是否包含它。"
+        )
+
+
+class RunToolResultGovernor:
+    """Run 级中央结果治理器（G10 §13.2 / G16）。
+
+    - 治理元数据取自 ``run.tools`` 中的工具声明（缺省中央默认值）；
+    - 引擎内部工具（MCP 披露三件套 / Skill 披露）按外部来源定界（G16），
+      Schema/list 类披露结果体积可控，不做外置；
+    - 超限结果外置到 ArtifactStore 并发 artifact.created 事件（与 MCP
+      Offload 同一事件形态，Studio 展示与审计一致）。
+    """
+
+    #: 引擎内部披露工具：结果视为外部内容（G16 定界），但不参与外置。
+    _DISCLOSURE_EXTERNAL = frozenset(
+        {"mcp_list_tools", "mcp_read_tool_schema", "mcp_call_tool"}
+    )
+
+    def __init__(self, *, engine: Any, run: Any) -> None:
+        self._engine = engine
+        self._run = run
+
+    def govern(self, name: str, result_text: str) -> tuple[str, dict[str, Any]]:
+        run = self._run
+        tool = run.tools.get(name)
+        policy = policy_for_tool(tool)
+        if tool is None:
+            # 披露/委托工具不在 run.tools：MCP 披露结果按外部来源定界。
+            if name in self._DISCLOSURE_EXTERNAL:
+                policy = replace(policy, external=True, offload_to_artifact=False)
+            else:
+                policy = replace(policy, offload_to_artifact=False)
+        store = getattr(self._engine, "_artifact_store", None)
+        text, meta = govern_tool_result(
+            name=name,
+            result_text=result_text,
+            policy=policy,
+            artifact_store=store,
+            run_id=run.handle.run_id,
+        )
+        if meta.get("offloaded") and store is not None:
+            self._emit_artifact_created(name, meta)
+        return text, meta
+
+    def _emit_artifact_created(self, name: str, meta: dict[str, Any]) -> None:
+        run = self._run
+        self._engine._pending_child_events.setdefault(run.handle.run_id, []).append(
+            RuntimeEvent.create(
+                EventType.ARTIFACT_CREATED,
+                agent_id=run.state.agent_id,
+                user_id=run.state.user_id,
+                session_id=run.state.session_id,
+                invocation_id=run.handle.run_id,
+                seq_id=0,
+                payload={
+                    "name": f"tool_result_{name}",
+                    "uri": meta.get("artifact_uri") or "",
+                    "mime": meta.get("mime") or "text/plain",
+                    "content_hash": meta.get("content_hash") or "",
+                    "size_bytes": meta.get("size_bytes") or 0,
+                    "source": "tool_result",
+                },
+            )
+        )
 
 
 async def invoke_tool(
@@ -98,9 +187,8 @@ async def invoke_tool(
         return result
     tool = (run.tools if run is not None else self._tools).get(name)
     if tool is None:
-        raise RuntimeError(
-            f"engine tool {name!r} is not available; it may be filtered or unpublished"
-        )
+        # G24 发现门：未披露即拒绝（不阻断，回填自愈提示给模型）
+        raise ToolNotDisclosedError(name)
     if run is not None and callable(getattr(tool, "drain_artifacts", None)):
         artifact_budget = run.compiled.spec.execution_strategy.config.get("max_artifacts")
         declared_cost = getattr(tool, "artifact_budget_cost", None)

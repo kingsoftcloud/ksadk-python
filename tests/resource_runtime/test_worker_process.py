@@ -402,11 +402,17 @@ async def test_supervisor_enforces_worker_capacity(upstream):
         await supervisor.aclose()
 
 
-async def test_broker_to_real_subprocess_to_sdk_http(upstream, monkeypatch):
+@pytest.mark.parametrize("source", [None, "worker-fixture"])
+async def test_broker_to_real_subprocess_to_sdk_http(upstream, monkeypatch, source):
     endpoint, calls = upstream
     for name in ("KSYUN_ACCESS_KEY", "KSYUN_SECRET_KEY", "HTTPS_PROXY", "HTTP_PROXY"):
         monkeypatch.setenv(name, "fake-unrelated-environment-value")
+    monkeypatch.delenv("KSADK_TRAFFIC_SOURCE", raising=False)
+    if source is not None:
+        monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", source)
     init = initialization(endpoint)
+    assert init.pipe_payload()["trafficSource"] == (source or "agentkit")
+    monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", "changed-after-initialization")
     assert "fake-selected-secret" not in repr(init)
     assert "fake-selected-secret" not in init.model_dump_json()
     registry = ResourceLeaseRegistry()
@@ -431,6 +437,7 @@ async def test_broker_to_real_subprocess_to_sdk_http(upstream, monkeypatch):
         assert calls[0][1]["DatasetId"] == "kb-selected"
         assert calls[0][1]["Query"] == "from-process"
         headers = {key.lower(): value for key, value in calls[0][0].items()}
+        assert headers["x-traffic-source"] == (source or "agentkit")
         assert "fake-selected-access" in headers["authorization"]
         assert "fake-unrelated" not in str(headers)
         broker.revoke_activation("activation-a")

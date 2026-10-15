@@ -19,9 +19,9 @@ from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any
 
-import httpx
+import httpx as httpx  # Preserve the existing injected HTTP-client seam.
 from pydantic import ValidationError
 
 from ksadk.plugins.bridges.dsh import (
@@ -44,9 +44,6 @@ from ksadk.plugins.dsh_home import (
 from ksadk.plugins.dsh_toolchain import DshToolchainManager
 from ksadk.plugins.host import PluginHostError
 from ksadk.plugins.providers.dsh_capabilities import (
-    DSH_CAPABILITY_BUNDLE_PACKAGE,
-    DSH_CAPABILITY_HOST_VERSION,
-    DSH_CAPABILITY_MCP_PROTOCOL,
     DshCapabilityTool,
     DshMcpConnectorLease,
     DshProfileCapabilityDescriptor,
@@ -61,8 +58,17 @@ from ksadk.resource_runtime.supervisor import (
     ResourceSupervisor,
 )
 from ksadk.resource_runtime.worker import WorkerInitialization
-from ksadk.studio.errors import StudioError
 from ksadk.studio.dsh_lifecycle import DshStartupLifecycle
+from ksadk.studio.dsh_mcp_transport import (
+    DshMcpTransport,
+)
+from ksadk.studio.dsh_mcp_transport import (
+    _duplicate_rejecting_object as _duplicate_rejecting_object,
+)
+from ksadk.studio.dsh_mcp_transport import (
+    _reject_non_finite as _reject_non_finite,
+)
+from ksadk.studio.errors import StudioError
 
 _CALL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
@@ -88,6 +94,7 @@ class DshCapabilityRuntimeSnapshot:
 
     descriptor: DshProfileCapabilityDescriptor
     lease: DshMcpConnectorLease = dataclass_field(repr=False)
+    generation_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -117,20 +124,7 @@ def _strict_json_size(value: Any) -> int:
     return len(encoded)
 
 
-def _duplicate_rejecting_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("duplicate JSON member")
-        value[key] = item
-    return value
-
-
-def _reject_non_finite(value: str) -> None:
-    raise ValueError(f"non-finite JSON number: {value}")
-
-
-class StudioDshCapabilityService(DshStartupLifecycle):
+class StudioDshCapabilityService(DshStartupLifecycle, DshMcpTransport):
     """Lazy, generation-fenced access to a DSH Profile's real MCP lease."""
 
     def __init__(
@@ -427,7 +421,9 @@ class StudioDshCapabilityService(DshStartupLifecycle):
             host, lease = await self._ensure_ready_locked()
             descriptor = host.descriptor
             self._validate_lease(descriptor, lease)
-            return DshCapabilityRuntimeSnapshot(descriptor=descriptor, lease=lease)
+            return DshCapabilityRuntimeSnapshot(
+                descriptor=descriptor, lease=lease, generation_id=self._require_generation_id()
+            )
 
     async def capability_snapshot(self) -> DshCapabilitySnapshot:
         """Read descriptor, tools and health without crossing a refresh."""
@@ -1200,156 +1196,6 @@ class StudioDshCapabilityService(DshStartupLifecycle):
         cleanup_task.result()
         if interrupted:
             raise asyncio.CancelledError
-
-    async def _mcp_request(
-        self,
-        lease: DshMcpConnectorLease,
-        *,
-        request_id: str,
-        method: Literal[
-            "initialize",
-            "io.ksadk/scopes/revoke",
-            "tools/list",
-            "tools/call",
-        ],
-        params: Mapping[str, Any],
-        timeout_seconds: float,
-    ) -> dict[str, Any]:
-        payload = {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": dict(params),
-        }
-        headers = {**lease.headers(), "Content-Type": "application/json"}
-        try:
-            async with httpx.AsyncClient(
-                headers=headers,
-                timeout=timeout_seconds,
-                trust_env=False,
-            ) as client:
-                response = await client.post(lease.endpoint, json=payload)
-        except httpx.TimeoutException as error:
-            raise asyncio.TimeoutError from error
-        except httpx.HTTPError as error:
-            raise StudioError(
-                "DSH_CAPABILITY_HOST_UNAVAILABLE",
-                "DSH capability MCP 连接失败",
-                status_code=503,
-                details={"errorType": type(error).__name__},
-            ) from error
-        if response.status_code != 200 or len(response.content) > self._max_wire_response_bytes:
-            raise self._protocol_error()
-        try:
-            envelope = json.loads(
-                response.content,
-                object_pairs_hook=_duplicate_rejecting_object,
-                parse_constant=_reject_non_finite,
-            )
-        except (UnicodeError, ValueError, TypeError, RecursionError) as error:
-            raise self._protocol_error() from error
-        if (
-            not isinstance(envelope, dict)
-            or envelope.get("jsonrpc") != "2.0"
-            or envelope.get("id") != request_id
-        ):
-            raise self._protocol_error()
-        if "error" in envelope:
-            rpc_error = envelope.get("error")
-            code = rpc_error.get("code") if isinstance(rpc_error, dict) else None
-            raise StudioError(
-                "DSH_CAPABILITY_REQUEST_FAILED",
-                "DSH capability MCP 拒绝了请求",
-                status_code=502,
-                details={"rpcCode": code if isinstance(code, int) else None},
-            )
-        result = envelope.get("result")
-        if not isinstance(result, dict):
-            raise self._protocol_error()
-        try:
-            result_bytes = len(
-                json.dumps(
-                    result,
-                    allow_nan=False,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            )
-        except (TypeError, ValueError, RecursionError) as error:
-            raise self._protocol_error() from error
-        if result_bytes > self._max_result_bytes:
-            raise self._protocol_error()
-        return cast(dict[str, Any], result)
-
-    async def _initialize_lease(self, lease: DshMcpConnectorLease) -> None:
-        request_id = f"initialize-{os.urandom(12).hex()}"
-        result = await self._mcp_request(
-            lease,
-            request_id=request_id,
-            method="initialize",
-            params={
-                "protocolVersion": DSH_CAPABILITY_MCP_PROTOCOL,
-                "capabilities": {},
-                "clientInfo": {"name": "ksadk-studio", "version": "1.0.0"},
-            },
-            timeout_seconds=5.0,
-        )
-        server_info = result.get("serverInfo")
-        capabilities = result.get("capabilities")
-        if (
-            result.get("protocolVersion") != DSH_CAPABILITY_MCP_PROTOCOL
-            or not isinstance(server_info, dict)
-            or server_info.get("name") != DSH_CAPABILITY_BUNDLE_PACKAGE
-            or server_info.get("version") != DSH_CAPABILITY_HOST_VERSION
-            or not isinstance(capabilities, dict)
-            or not isinstance(capabilities.get("tools"), dict)
-        ):
-            raise self._protocol_error()
-        await self._send_notification(
-            lease,
-            method="notifications/initialized",
-            params={},
-            tolerate_failure=False,
-        )
-
-    async def _send_cancel(self, lease: DshMcpConnectorLease, call_id: str) -> None:
-        await self._send_notification(
-            lease,
-            method="notifications/cancelled",
-            params={"requestId": call_id, "reason": "Studio UI cancelled the call"},
-            tolerate_failure=True,
-        )
-
-    async def _send_notification(
-        self,
-        lease: DshMcpConnectorLease,
-        *,
-        method: Literal["notifications/initialized", "notifications/cancelled"],
-        params: Mapping[str, Any],
-        tolerate_failure: bool,
-    ) -> None:
-        headers = {**lease.headers(), "Content-Type": "application/json"}
-        payload = {"jsonrpc": "2.0", "method": method, "params": dict(params)}
-        try:
-            async with httpx.AsyncClient(headers=headers, timeout=2.0, trust_env=False) as client:
-                response = await client.post(lease.endpoint, json=payload)
-            if response.status_code not in {200, 202, 204}:
-                raise self._protocol_error()
-        except (httpx.HTTPError, StudioError):
-            # Disposal still kills the process and aborts all work.  Cancellation
-            # is best effort here so refresh/close cannot be held hostage by a
-            # broken loopback listener.
-            if tolerate_failure:
-                return
-            raise self._protocol_error() from None
-
-    @staticmethod
-    def _protocol_error() -> StudioError:
-        return StudioError(
-            "DSH_CAPABILITY_PROTOCOL_INVALID",
-            "DSH capability MCP 返回了无效响应",
-            status_code=502,
-        )
 
     @staticmethod
     def _unavailable(error: BaseException) -> StudioError:

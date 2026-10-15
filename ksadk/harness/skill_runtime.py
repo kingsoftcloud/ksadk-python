@@ -10,18 +10,19 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from ksadk.skills.loader import load_local_skill
 
+SKILL_CATALOG_TOOL = "skill_catalog"
 SKILL_MANIFEST_TOOL = "skill_read_manifest"
 SKILL_INSTRUCTIONS_TOOL = "skill_read_instructions"
 SKILL_RESOURCE_TOOL = "skill_read_resource"
 
 
 class SkillDisclosureError(RuntimeError):
-    """越级披露（未先读过 Level 1/2 就要求 Level 3 正文/资源）。"""
+    """Skill 披露请求违反资源顺序或锁定包边界。"""
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,21 @@ class SkillManifest:
     summary: str
     conditions: str = ""
     required_tools: tuple[str, ...] = ()
+    # Optional host-declared, immutable resource namespace. None preserves
+    # the existing direct-reference contract for sources without such claims.
+    resource_refs: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        refs = self.resource_refs
+        if refs is None:
+            return
+        if type(refs) is not tuple or any(
+            type(ref) is not str or not ref or "\\" in ref
+            or PurePosixPath(ref).is_absolute() or ".." in PurePosixPath(ref).parts
+            or PurePosixPath(ref).as_posix() != ref or ref == "."
+            for ref in refs
+        ) or len(set(refs)) != len(refs):
+            raise ValueError("invalid Skill resource namespace")
 
 
 class SkillSource(Protocol):
@@ -108,6 +124,17 @@ class SkillRuntime:
     def level(self, run_id: str, skill_id: str) -> int:
         return self._levels.get((run_id, skill_id), 0)
 
+    def restore_level(self, run_id: str, skill_id: str, level: int) -> None:
+        """Rebuild a cursor only from a host-verified committed disclosure receipt."""
+        current = self.level(run_id, skill_id)
+        # Loading the bound Skill body is a complete disclosure receipt by
+        # itself; OpenCode/ZCode do not force a second model round-trip through
+        # a separate manifest tool first. Resources still require the body so
+        # their package-relative references have been observed.
+        if level not in (1, 2, 3) or (level == 3 and current < 2):
+            raise SkillDisclosureError("Skill disclosure receipt order invalid")
+        self._levels[(run_id, skill_id)] = max(current, level)
+
     # ------------------------------------------------------------- 披露
 
     def level0(self, skill_id: str) -> str:
@@ -143,7 +170,10 @@ class SkillRuntime:
             score = float(name_hits * 3 + summary_hits)
             ranked.append((score, index, entry))
         ranked.sort(key=lambda item: (-item[0], item[1]))
-        positive = {id(entry) for score, _index, entry in ranked[:limit] if score > 0}
+        # A name hit is weighted as 3. Only scores at or above that boundary
+        # are authoritative enough to mark a Skill as recommended; a lone
+        # generic word from the description must remain model-directed.
+        positive = {id(entry) for score, _index, entry in ranked[:limit] if score >= 3}
         return tuple(
             {
                 **entry,
@@ -159,19 +189,25 @@ class SkillRuntime:
         return manifest
 
     def level2(self, run_id: str, skill_id: str) -> str:
-        """完整 SKILL.md：必须先读过 Level 1（Manifest）。"""
-        if self.level(run_id, skill_id) < 1:
-            raise SkillDisclosureError(f"skill {skill_id} 须先披露 Level 1 (Manifest) 再读正文")
-        self._levels[(run_id, skill_id)] = 2
-        return self._source.full_text(skill_id)
+        """Load the full bound SKILL.md without a redundant manifest turn."""
+        instructions = self._source.full_text(skill_id)
+        self._levels[(run_id, skill_id)] = max(self.level(run_id, skill_id), 2)
+        return instructions
 
     def level3(self, run_id: str, skill_id: str, resource_ref: str) -> bytes:
         """引用资源：仅执行时加载，必须已披露 Level 2。"""
         if self.level(run_id, skill_id) < 2:
             raise SkillDisclosureError(f"skill {skill_id} 须先披露 Level 2 (SKILL.md) 再加载资源")
-        instructions = self._source.full_text(skill_id)
-        if resource_ref not in instructions:
-            raise SkillDisclosureError(f"skill {skill_id} 的 SKILL.md 未引用资源 {resource_ref!r}")
+        manifest = self._source.manifest(skill_id)
+        if manifest.resource_refs is not None:
+            if resource_ref not in manifest.resource_refs:
+                raise SkillDisclosureError(f"skill {skill_id} 未声明资源 {resource_ref!r}")
+        else:
+            instructions = self._source.full_text(skill_id)
+            if resource_ref not in instructions:
+                raise SkillDisclosureError(
+                    f"skill {skill_id} 的 SKILL.md 未引用资源 {resource_ref!r}"
+                )
         resource = self._source.resource(skill_id, resource_ref)
         self._levels[(run_id, skill_id)] = 3
         return resource
@@ -180,6 +216,17 @@ class SkillRuntime:
         """Run 关闭后清理披露游标，避免长期进程累积状态。"""
         for key in [key for key in self._levels if key[0] == run_id]:
             self._levels.pop(key, None)
+
+    @staticmethod
+    def catalog_tool() -> SkillDisclosureTool:
+        return SkillDisclosureTool(
+            name=SKILL_CATALOG_TOOL,
+            description=(
+                "列出本轮 Agent Revision 实际绑定的 Skill。此目录是绑定状态的权威来源；"
+                "工作区文件不能证明某个 Skill 已绑定，空目录也不代表网上不存在。"
+            ),
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        )
 
     @staticmethod
     def disclosure_tools() -> tuple[SkillDisclosureTool, ...]:
@@ -191,8 +238,8 @@ class SkillRuntime:
             SkillDisclosureTool(
                 name=SKILL_MANIFEST_TOOL,
                 description=(
-                    "读取已绑定 Skill 的 Manifest、适用条件和所需工具。"
-                    "使用 Skill 前必须先调用此工具。"
+                    "按需读取已绑定 Skill 的 Manifest、适用条件和所需工具；"
+                    "只想使用 Skill 时可直接读取完整操作说明。"
                 ),
                 parameters={
                     "type": "object",
@@ -203,7 +250,7 @@ class SkillRuntime:
             ),
             SkillDisclosureTool(
                 name=SKILL_INSTRUCTIONS_TOOL,
-                description=("读取 Skill 的完整操作说明。必须先读取同一 Skill 的 Manifest。"),
+                description=("读取已绑定 Skill 的完整操作说明。无需先单独读取 Manifest。"),
                 parameters={
                     "type": "object",
                     "properties": {"skill_id": skill_id},
@@ -220,7 +267,10 @@ class SkillRuntime:
                         "skill_id": skill_id,
                         "resource_ref": {
                             "type": "string",
-                            "description": "SKILL.md 中引用的相对资源路径。",
+                            "description": (
+                                "以 Skill 包根目录为基准的相对资源路径。"
+                                "访问范围以 Manifest 的 resource_access 为准。"
+                            ),
                         },
                     },
                     "required": ["skill_id", "resource_ref"],
@@ -238,7 +288,15 @@ class SkillRuntime:
 def _search_terms(value: str) -> set[str]:
     """Produce small English tokens and CJK bi-grams for metadata matching."""
     normalized = value.casefold()
-    terms = set(re.findall(r"[a-z0-9][a-z0-9._-]*", normalized))
+    terms: set[str] = set()
+    for token in re.findall(r"[a-z0-9][a-z0-9._-]*", normalized):
+        normalized_token = token.strip("._-")
+        if normalized_token:
+            terms.add(normalized_token)
+        # Skill identifiers conventionally use kebab/snake/dotted names.
+        # Index their semantic components as well as the full identifier so a
+        # query for "Roguelike" can match "roguelike-web-development".
+        terms.update(part for part in re.split(r"[._-]+", normalized_token) if part)
     for chunk in re.findall(r"[\u3400-\u9fff]+", normalized):
         if len(chunk) == 1:
             terms.add(chunk)

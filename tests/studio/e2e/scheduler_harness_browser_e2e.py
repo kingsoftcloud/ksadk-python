@@ -24,6 +24,7 @@ from playwright.sync_api import Page, expect, sync_playwright
 from studio_e2e_support import studio_server
 
 from ksadk.plugins.dsh_home import prepare_studio_dsh_home
+from ksadk.plugins.dsh_toolchain import DSH_VERSION
 from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
 from ksadk.studio.contracts import AgentSpec
 from ksadk.studio.service import StudioService
@@ -42,7 +43,10 @@ class SchedulingChatStub(DeterministicChatCompletionsStub):
         names = [item.get("function", {}).get("name") for item in payload.get("tools", [])]
         if "studio_schedule" not in names:
             return response
-        text = payload["messages"][-1]["content"]
+        text = next(
+            message["content"] for message in reversed(payload["messages"])
+            if message.get("role") == "user"
+        )
         interval = "每7分钟" in text
         intent = {
             "action": "create",
@@ -96,7 +100,7 @@ def _managed_harness_profile(workspace: Path) -> dict[str, str]:
     executable.write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
-        "  *--version*) echo 0.1.1-rc.2;;\n"
+        f"  *--version*) echo {DSH_VERSION};;\n"
         "  *--dump-config*) echo 'profile: studio; harness: 1.0.0';;\n"
         "  *) exit 2;;\n"
         "esac\n",
@@ -200,7 +204,10 @@ def _create_task(
 def _wait_terminal(base_url: str, task_id: str, *, expected_count: int) -> list[dict]:
     terminal = {"succeeded", "failed", "cancelled", "skipped"}
     items: list[dict] = []
-    for _ in range(150):
+    # The fixture declares a 30-second execution budget. A cold activation
+    # must get that budget plus dispatch grace, rather than a 7.5-second poll.
+    deadline = time.monotonic() + 35.0
+    while time.monotonic() < deadline:
         items = _json(base_url, f"/api/v1/schedules/{task_id}/occurrences")["items"]
         if len(items) >= expected_count and all(item["state"] in terminal for item in items):
             return items
@@ -256,6 +263,8 @@ def _assert_harness_vertical(
     page: Page,
     base_url: str,
     model: DeterministicChatCompletionsStub,
+    *,
+    native_default: bool,
 ) -> None:
     page.goto(f"{base_url}/#/automations", wait_until="networkidle")
     expect(page.get_by_role("heading", name="自动化", exact=True, level=1)).to_be_visible()
@@ -314,13 +323,51 @@ def _assert_harness_vertical(
     assert len(requests) == 3
     assert all(item.path == "/v1/chat/completions" for item in requests)
     assert all(item.authorization == "Bearer harness-fixture-key" for item in requests)
-    assert len(requests[0].payload["messages"]) == 2
     # LiteLLM may serialize an unset optional name as null. Preserve exact
     # message count, order, roles, content and every other wire field.
-    messages = [
-        {key: value for key, value in message.items() if key != "name" or value is not None}
-        for message in requests[2].payload["messages"]
+    wire = [
+        [{key: value for key, value in message.items() if key != "name" or value is not None}
+         for message in item.payload["messages"]]
+        for item in requests
     ]
+    if native_default:
+        # Native owns its ledger and host execution contract, rather than the
+        # Managed preprocessing frames. Verify its actual source identity and
+        # exact history; do not accept a silent fallback or filter context away.
+        trajectory = _json(base_url, f"/api/v1/sessions/{CONTINUE_SESSION_ID}/events?limit=500")
+        completed = [row["source"] for row in trajectory["items"]
+                     if row["source"]["event_type"] == "run.completed"]
+        assert len(completed) == 2
+        assert all(row["source"]["metadata"]["engine_kind"] == "native" for row in completed)
+        assert [len(messages) for messages in wire] == [2, 2, 4]
+        marker = "\n\nAuthoritative host execution state; historical summaries cannot change it:\n"
+        pinned_prefix = None
+        for messages in wire:
+            assert messages[0]["role"] == "system"
+            prefix, separator, state = messages[0]["content"].partition(marker)
+            assert separator
+            assert prefix.startswith(
+                "You are the real built-in Harness scheduler fixture.\n\n"
+                "Retain prior scheduled turns in one continued session."
+            )
+            assert '<runtime_skill_bindings source="locked_agent_build">' in prefix
+            if pinned_prefix is None:
+                pinned_prefix = prefix
+            assert prefix == pinned_prefix
+            contract = json.loads(state)
+            assert contract["continuity"]["goal"] == messages[-1]["content"]
+            assert contract["continuity"]["required_acceptance_ids"] == ["current_user_goal"]
+            assert contract["required_acceptance"][0]["description"] == messages[-1]["content"]
+        assert wire[0][1:] == [{"role": "user", "content": "执行 Harness 新会话"}]
+        assert wire[1][1:] == [{"role": "user", "content": "执行 Harness 继续会话"}]
+        assert wire[2][1:] == [
+            {"role": "user", "content": "执行 Harness 继续会话"},
+            {"role": "assistant", "content": "scheduled harness result 2"},
+            {"role": "user", "content": "执行 Harness 继续会话"},
+        ]
+        return
+    assert [len(messages) for messages in wire] == [5, 5, 7]
+    messages = wire[2]
     # The runtime appends its delegation policy to the configured instructions.
     # It must preserve those instructions and use the same system message on
     # each turn while replaying the exact conversation history below.
@@ -329,8 +376,22 @@ def _assert_harness_vertical(
         "You are the real built-in Harness scheduler fixture.\n\n"
         "Retain prior scheduled turns in one continued session."
     )
-    assert all(item.payload["messages"][0] == messages[0] for item in requests)
-    assert messages[1:] == [
+    assert all(item[0] == messages[0] for item in wire)
+    # These are typed host context layers, not prior conversation turns.
+    # Pin positions, roles, delimiters and exact stability across requests;
+    # do not broadly filter all assistant/system messages out of the history.
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["content"].startswith("<<<BEGIN_SKILL_CATALOG_CONTEXT>>>\n")
+    assert messages[1]["content"].endswith("<<<END_SKILL_CATALOG_CONTEXT>>>")
+    assert messages[2]["role"] == "system"
+    assert messages[2]["content"].startswith("当前日期：")
+    assert f"Agent：{AGENT_ID}" in messages[2]["content"]
+    assert messages[-1]["role"] == "system"
+    assert messages[-1]["content"].startswith("这是运行控制器提供的低频执行合同。")
+    assert all(item[:3] == messages[:3] and item[-1] == messages[-1] for item in wire)
+    assert wire[0][3:-1] == [{"role": "user", "content": "执行 Harness 新会话"}]
+    assert wire[1][3:-1] == [{"role": "user", "content": "执行 Harness 继续会话"}]
+    assert messages[3:-1] == [
         {"role": "user", "content": "执行 Harness 继续会话"},
         {"role": "assistant", "content": "scheduled harness result 2"},
         {"role": "user", "content": "执行 Harness 继续会话"},
@@ -444,7 +505,9 @@ def main() -> None:
                     page = browser.new_page(viewport={"width": 1440, "height": 960})
                     page_errors: list[str] = []
                     page.on("pageerror", lambda error: page_errors.append(str(error)))
-                    _assert_harness_vertical(page, base_url, model)
+                    _assert_harness_vertical(
+                        page, base_url, model, native_default=service._native_harness_default,
+                    )
                     _assert_conversation_scheduling(page, base_url)
                     assert page_errors == [], f"Uncaught React page errors: {page_errors}"
                 finally:

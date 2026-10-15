@@ -18,6 +18,7 @@ from ksadk.evaluation.adapters import TargetAdapterError
 from ksadk.evaluation.contracts import (
     EvalCase,
     EvalRunSpec,
+    FileCheckEvidence,
     TargetKind,
     TargetRef,
     TargetRun,
@@ -27,7 +28,12 @@ from ksadk.evaluation.contracts import (
     TraceRef,
     UsageSnapshot,
 )
-from ksadk.evaluation.evidence import EvidenceStore, project_tool_calls
+from ksadk.evaluation.evidence import (
+    EvidenceStore,
+    project_file_checks,
+    project_runtime_facts,
+    project_tool_calls,
+)
 from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
@@ -240,6 +246,17 @@ class LocalSourceTargetAdapter:
         trace_ref: TraceRef | None = None
         trace_refs: list[TraceRef] = []
         tool_calls: list[ToolCallEvidence] = []
+        runtime_facts = {
+            "maxTerminalEventsPerScope": 0,
+            "retryCount": 0,
+            "compactionCount": 0,
+            "subagentCount": 0,
+            "toolCallCount": 0,
+            "memoryRecallCount": 0,
+            "memoryWriteCount": 0,
+            "skillDisclosureCount": 0,
+            "mcpDisclosureCount": 0,
+        }
         try:
             for turn_index, turn in enumerate(case.turns, start=1):
                 invocation_id = _scoped_id(
@@ -270,20 +287,44 @@ class LocalSourceTargetAdapter:
                         invocation_id=invocation_id,
                     )
                 )
-                if self._evidence_store is not None:
-                    events = await RuntimeEventStore(self._session_service).list(
-                        session_id,
-                        run_id=invocation_id,
+                events = await RuntimeEventStore(self._session_service).list(
+                    session_id,
+                    run_id=invocation_id,
+                )
+                if events:
+                    trace_ref = TraceRef(
+                        run_id=spec.id,
+                        session_id=session_id,
+                        invocation_id=invocation_id,
+                        seq_start=events[0].seq,
+                        seq_end=events[-1].seq,
                     )
-                    if events:
+                    if self._evidence_store is not None:
                         trace_ref = self._evidence_store.write_trace(
                             spec.id,
                             events,
                             session_id=session_id,
                             policy=spec.config.data_policy,
                         )
-                        trace_refs.append(trace_ref)
-                        tool_calls.extend(project_tool_calls(events))
+                    trace_refs.append(trace_ref)
+                    turn_tool_calls = project_tool_calls(events)
+                    tool_calls.extend(turn_tool_calls)
+                    runtime_facts["toolCallCount"] += len(turn_tool_calls)
+                    turn_facts = project_runtime_facts(events)
+                    runtime_facts["maxTerminalEventsPerScope"] = max(
+                        runtime_facts["maxTerminalEventsPerScope"],
+                        turn_facts["maxTerminalEventsPerScope"],
+                    )
+                    for key in (
+                        "retryCount",
+                        "compactionCount",
+                        "subagentCount",
+                        "memoryRecallCount",
+                        "memoryWriteCount",
+                        "skillDisclosureCount",
+                        "mcpDisclosureCount",
+                    ):
+                        runtime_facts[key] += turn_facts[key]
         except asyncio.CancelledError:
             raise
         except TimeoutError:
@@ -297,7 +338,12 @@ class LocalSourceTargetAdapter:
                 trace_refs=tuple(trace_refs),
                 tool_calls=tuple(tool_calls),
             )
-            return _to_target_run(result, runtime=resolved.snapshot.runtime)
+            return _to_target_run(
+                result,
+                runtime=resolved.snapshot.runtime,
+                runtime_facts=runtime_facts,
+                file_checks=project_file_checks(case, Path(resolved.workspace.name)),
+            )
         except Exception:
             result = _LocalCaseResult(
                 status=TargetRunStatus.ERROR,
@@ -309,7 +355,12 @@ class LocalSourceTargetAdapter:
                 trace_refs=tuple(trace_refs),
                 tool_calls=tuple(tool_calls),
             )
-            return _to_target_run(result, runtime=resolved.snapshot.runtime)
+            return _to_target_run(
+                result,
+                runtime=resolved.snapshot.runtime,
+                runtime_facts=runtime_facts,
+                file_checks=project_file_checks(case, Path(resolved.workspace.name)),
+            )
         finally:
             await asyncio.shield(self._session_service.delete_session(session_id))
 
@@ -330,7 +381,12 @@ class LocalSourceTargetAdapter:
             trace_refs=tuple(trace_refs),
             tool_calls=tuple(tool_calls),
         )
-        return _to_target_run(result, runtime=resolved.snapshot.runtime)
+        return _to_target_run(
+            result,
+            runtime=resolved.snapshot.runtime,
+            runtime_facts=runtime_facts,
+            file_checks=project_file_checks(case, Path(resolved.workspace.name)),
+        )
 
 
 def _resolve_project_dir(locator: str) -> Path:
@@ -463,7 +519,13 @@ def _sum_usage(turns: tuple[_LocalTurnResult, ...]) -> UsageSnapshot:
     )
 
 
-def _to_target_run(result: _LocalCaseResult, *, runtime: str) -> TargetRun:
+def _to_target_run(
+    result: _LocalCaseResult,
+    *,
+    runtime: str,
+    runtime_facts: dict[str, int],
+    file_checks: list[FileCheckEvidence],
+) -> TargetRun:
     final_turn = result.turns[-1] if result.turns else None
     return TargetRun(
         status=result.status,
@@ -479,9 +541,11 @@ def _to_target_run(result: _LocalCaseResult, *, runtime: str) -> TargetRun:
         trace_ref=result.trace_ref,
         trace_refs=list(result.trace_refs),
         tool_calls=list(result.tool_calls),
+        file_checks=file_checks,
         metadata={
             "runtime": runtime,
             "turnCount": len(result.turns),
+            **runtime_facts,
         },
     )
 

@@ -325,7 +325,7 @@ cat > "$STUDIO_APP_BUNDLE/Contents/Resources/manifest.json" <<MANIFEST
   "platform": "macos",
   "arch": "arm64",
   "source_commit": "$(git rev-parse HEAD 2>/dev/null || echo unavailable)",
-  "ksadk_web_version": "${KSADK_WEB_VERSION:-0.3.12}"
+  "ksadk_web_version": "${KSADK_WEB_VERSION:-0.3.13}"
 }
 MANIFEST
 

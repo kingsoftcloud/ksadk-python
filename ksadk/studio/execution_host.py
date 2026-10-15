@@ -18,9 +18,9 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from ksadk.conversations.projector import (
-    project_conversation_item,
     project_interaction_conversation_item,
 )
+from ksadk.conversations.runtime_projection import RuntimeConversationProjection
 from ksadk.events.canonical import parse_runtime_event
 from ksadk.kernel.contracts import AgentControlCommand
 from ksadk.kernel.execution_grants import ExecutionGrantSpec, execution_grant_run_id
@@ -299,6 +299,7 @@ class StudioExecutionHost:
             # Terminal-only scan; streaming observation uses its own cursor.
             # Stable completed item identities avoid duplicate final chunks.
             messages = {}
+            projection = RuntimeConversationProjection(scope.session_id, profile="flat-v1")
             cursor = 0
             while True:
                 events = await runtime.session_events.read(scope.session_id, cursor, 500)
@@ -317,10 +318,13 @@ class StudioExecutionHost:
                         )
                     source_metadata = (payload.get("source") or {}).get("metadata") or {}
                     if envelope.family_version == 2 and not source_metadata.get("parent_run_id"):
-                        item = project_conversation_item(
-                            parse_runtime_event(payload), session_id=scope.session_id
-                        )
-                        if item.kind == "assistant_text" and item.lifecycle == "completed":
+                        item = projection.apply(parse_runtime_event(payload))
+                        if (
+                            item is not None
+                            and item.kind == "assistant_text"
+                            and item.lifecycle == "completed"
+                            and item.visibility == "public"
+                        ):
                             messages[item.item_id] = str(item.payload.get("text") or "")
                     source_id = str(envelope.event_id)
             output = "\n\n".join(messages.values())
@@ -527,17 +531,40 @@ class StudioExecutionHost:
         target, runtime = await self._target(scope, "observe")
         await self._require_run(scope, runtime, target, run_id)
         envelopes = await runtime.session_events.read(scope.session_id, after, min(limit, 1000))
+        projection = RuntimeConversationProjection(
+            scope.session_id, profile="flat-v1", kernel_interactions=True
+        )
+        # The host's flat surface has no process-local presentation truth. Warm
+        # the reducer from the durable prefix before serving a reconnect suffix.
+        cursor = 0
+        while cursor < after:
+            prefix = await runtime.session_events.read(scope.session_id, cursor, 1000)
+            if not prefix:
+                break
+            for envelope in prefix:
+                if envelope.seq > after:
+                    break
+                if (
+                    envelope.run_id == run_id
+                    and envelope.family == "runtime"
+                    and envelope.family_version == 2
+                ):
+                    projection.apply(parse_runtime_event(envelope.payload))
+            next_cursor = prefix[-1].seq
+            if next_cursor <= cursor:
+                raise RuntimeError("session event cursor did not advance")
+            cursor = next_cursor
         items = []
         for envelope in envelopes:
             if envelope.run_id != run_id:
                 continue
             item = None
             if envelope.family == "runtime" and envelope.family_version == 2:
-                item = project_conversation_item(
-                    parse_runtime_event(envelope.payload), session_id=scope.session_id
-                )
+                item = projection.apply(parse_runtime_event(envelope.payload))
             elif envelope.family == "interaction":
                 item = project_interaction_conversation_item(envelope)
+                if item is not None:
+                    item = projection.scope_ledger_item(item)
             if item:
                 items.append(
                     {"item": item.model_dump(mode="json", by_alias=True), "cursor": envelope.seq}

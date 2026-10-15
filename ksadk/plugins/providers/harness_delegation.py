@@ -54,10 +54,32 @@ _NEGATED_CODING_SIGNALS = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_FILE_DELIVERY_SIGNALS = re.compile(
-    r"(?:创建|生成|保存|写入|输出)(?:一个|一份|为)?[^。；\n]{0,80}"
-    r"(?:\.(?:md|txt|json|csv|html?)\b|(?:Markdown|MD|文本|JSON|CSV|HTML)\s*文档|文件)|"
+    r"(?:创建|生成|保存|写入|落盘)(?:一个|一份|为)?[^。；\n]{0,80}"
+    r"(?:\.(?:md|txt|json|csv|html?)\b|(?:Markdown|MD|文本|JSON|CSV|HTML)\s*文档|文件|产物)|"
     r"\b(?:create|generate|save|write)\b[^.\n]{0,80}"
     r"(?:\.(?:md|txt|json|csv|html?)\b|\b(?:markdown|text|json|csv|html)\s+file\b)",
+    re.IGNORECASE,
+)
+_BOUND_CAPABILITY_ACTION = re.compile(
+    r"(?:(?:调用|读取|查询|检索|搜索|浏览|使用)[^。；\n]{0,24}"
+    r"(?:知识库|技能|Skill|MCP|网页|官方资料)|"
+    r"\b(?:call|read|query|search|browse|use)\b[^.\n]{0,40}"
+    r"\b(?:knowledge\s*base|skill|mcp|web|official\s+sources?)\b)",
+    re.IGNORECASE,
+)
+_DESIGN_ONLY_SIGNALS = re.compile(
+    r"(?:设计|方案|草案|接口|状态机|机制|关卡|可访问性|测试策略|"
+    r"\b(?:design|proposal|spec(?:ification)?|interface|state\s+machine|"
+    r"test\s+strategy)\b)",
+    re.IGNORECASE,
+)
+_DELIVERY_LEAD = re.compile(
+    r"^\s*(?:请\s*|please\s+)?(?:(?:创建|生成|保存|写入)|"
+    r"(?:create|generate|save|write)\b)",
+    re.IGNORECASE,
+)
+_READ_ONLY_TOOL_NAME = re.compile(
+    r"(?:^|_)(?:read|search|list|status|inspect|lint|fetch|view)(?:_|$)",
     re.IGNORECASE,
 )
 _RESEARCH_SIGNALS = re.compile(
@@ -73,9 +95,28 @@ _RESEARCH_LEAD = re.compile(
 _MUTATING_TASK_SIGNALS = re.compile(
     r"^\s*(?:请\s*|please\s+)?(?:将|把)?[^。；\n]{0,40}"
     r"(?:保存|写入|编辑|修改|上传|发布|删除|"
-    r"\b(?:save|write|edit|modify|upload|publish|delete)\b)",
+    r"实现|开发|编写|构建|编码|落地|落盘|产出|交付|重构|修复|"
+    r"\b(?:save|write|edit|modify|upload|publish|delete|"
+    r"implement|develop|build|code|refactor|fix)\b)",
     re.IGNORECASE,
 )
+
+
+def _is_direct_file_delivery(task: str) -> bool:
+    """Distinguish a durable file request from a design that names files.
+
+    Child design briefs often mention the future ``game-core.mjs`` contract or
+    say "生成设计方案".  Those are text conclusions for the parent, not a
+    request for the child to persist the final artifact.
+    """
+
+    if not _DIRECT_FILE_DELIVERY_SIGNALS.search(task):
+        return False
+    if _NEGATED_CODING_SIGNALS.search(task):
+        return False
+    if _DESIGN_ONLY_SIGNALS.search(task) and not _DELIVERY_LEAD.search(task):
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -196,6 +237,18 @@ class AdaptiveDelegationRuntime:
         interrupts while allowing independent product research to run in
         parallel.  Other general tasks retain the existing sequential,
         approval-capable behaviour.
+
+        ⚠️ 判定的唯一依据必须是"任务本身要不要写"，不能只看关键词表够不够全
+        （2026-09-18 实测事故）：父 Agent 并行委派"实现核心规则/开发界面交互/
+        编写自动化测试"三个实现型子任务，而 ``_MUTATING_TASK_SIGNALS`` 当时只认
+        「保存/写入/编辑/修改…」，**不认「实现/开发/编写」**，于是把实现型任务误判
+        成"并行安全的调研"→ 子 Agent 只拿到只读工具 → 一个文件都写不出来 →
+        父 Agent 以 COMPLETED + 0 产物收场。
+
+        这与 Claude Code 的形态一致：**默认可写，只读是显式声明的例外**
+        （``GENERAL_PURPOSE_AGENT.tools = ['*']``；只有 Explore/Plan 用
+        ``disallowedTools`` 禁写）。所以任何"可能产出交付物"的任务都必须走
+        串行、可审批、可写的路径。
         """
         task = str(arguments.get("task") or "").strip()
         if (
@@ -204,18 +257,25 @@ class AdaptiveDelegationRuntime:
             != "general"
         ):
             return False
-        if not _RESEARCH_SIGNALS.search(task):
-            return False
         mutating = (
-            bool(_DIRECT_FILE_DELIVERY_SIGNALS.search(task))
+            _is_direct_file_delivery(task)
             if _RESEARCH_LEAD.search(task)
             else bool(_MUTATING_TASK_SIGNALS.search(task))
         )
+        if _DESIGN_ONLY_SIGNALS.search(task) and not _DELIVERY_LEAD.search(task):
+            mutating = False
         if mutating:
             return False
+        # Bound Skill/MCP catalogs should not serialize every otherwise pure
+        # design/analysis child. Only tasks that explicitly need those shared
+        # external capabilities stay sequential. Parallel children receive a
+        # read-only tool subset and do not inherit the shared runtimes below.
         return not (
-            bool(getattr(parent_run, "skill_catalog", ()))
-            or bool(getattr(parent_run, "mcp_catalog", ()))
+            _BOUND_CAPABILITY_ACTION.search(task)
+            and (
+                bool(getattr(parent_run, "skill_catalog", ()))
+                or bool(getattr(parent_run, "mcp_catalog", ()))
+            )
         )
 
     def preview_route(self, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]:
@@ -248,7 +308,12 @@ class AdaptiveDelegationRuntime:
         # write lets a text-only child claim success without any durable write
         # receipt. Fail before spawning so the next parent turn can call the
         # bound workspace tool itself.
-        if _DIRECT_FILE_DELIVERY_SIGNALS.search(task):
+        # A model may phrase the same forbidden delegation as "落盘产物"
+        # without spelling out a filename.  Keep this guard intentionally
+        # narrower than the general mutation classifier: coding children are
+        # allowed to implement patches, while final durable delivery remains
+        # parent-owned.
+        if _is_direct_file_delivery(task):
             raise SubagentProviderError(
                 "delegation_requires_parent_tool",
                 "final file delivery must use the parent workspace write tool",
@@ -430,9 +495,21 @@ class AdaptiveDelegationRuntime:
     ) -> tuple[Any, list[RuntimeEvent]]:
         child_name = self._child_name("harness", call_id)
         child_tools = tuple(name for name in parent_run.tools if name != self.name)
-        if self.parallel_safe({"task": task, "task_kind": "general"}, parent_run=parent_run):
-            approval_required = set(getattr(parent_run, "approval_required", ()))
-            child_tools = tuple(name for name in child_tools if name not in approval_required)
+        parallel_safe = self.parallel_safe(
+            {"task": task, "task_kind": "general"}, parent_run=parent_run
+        )
+        if parallel_safe:
+            # ⚠️ 2026-09-18 实测结论（勿轻易放开）：
+            #
+            # 直接去掉这个只读过滤会让子 Agent 立刻撞上**审批门控**——实测
+            # `tests/plugins/test_harness_adaptive_delegation.py` 三个用例同时挂
+            # （子 Agent 不再产出 usage），即写工具带来的并发审批会把子 Agent 卡住。
+            # 所以"让实现型子 Agent 能写"不能只改这一行，必须先有并发写的处置手段
+            # （参照 pi 的 `file-mutation-queue`：同文件串行、不同文件并行）。
+            #
+            # 现状的代价也要记住：并行委派的子 Agent 在架构上**不可能产出交付物**，
+            # 交付必须由父 Agent 落盘（见 run_service 的 EMPTY_DELIVERY 判定）。
+            child_tools = tuple(name for name in child_tools if _READ_ONLY_TOOL_NAME.search(name))
         sub = SubAgentSpec(
             name=child_name,
             description=label,
@@ -448,8 +525,8 @@ class AdaptiveDelegationRuntime:
             timeout_seconds=float(self._child_timeout_seconds),
             max_turns=self._child_max_turns,
             max_total_tokens=self._child_max_total_tokens,
-            inherit_skills=True,
-            inherit_mcp=True,
+            inherit_skills=not parallel_safe,
+            inherit_mcp=not parallel_safe,
             failure_policy="return_error",
         )
         result, _ = await run_subagent(

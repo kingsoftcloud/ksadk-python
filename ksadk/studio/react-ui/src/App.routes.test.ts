@@ -36,6 +36,14 @@ describe("Studio route parsing", () => {
     expect(parseStudioLocationHash("#/extensions/tasks")).toMatchObject({ view: "agents" });
   });
 
+  it("deep-links the full-page settings view and its categories", () => {
+    expect(parseStudioLocationHash("#/settings")).toMatchObject({ view: "settings", settingsSection: "" });
+    expect(parseStudioLocationHash("#/settings/models")).toMatchObject({ view: "settings", settingsSection: "models" });
+    expect(parseStudioLocationHash("#/settings/cloud")).toMatchObject({ view: "settings", settingsSection: "cloud" });
+    // 未知分类不进 settingsSection，页面回落到默认分区。
+    expect(parseStudioLocationHash("#/settings/unknown")).toMatchObject({ view: "settings", settingsSection: "" });
+  });
+
   it("preserves an account-scoped CLI Agent id when selecting a cloud chat target", () => {
     expect(parseChatTargetValue("cloud:account:ar-20260820153835-94c90b9b")).toEqual({
       kind: "cloud",

@@ -23,7 +23,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 
-from ksadk.harness.engine import budgets
+from ksadk.harness.engine import budgets, hooked_reasoner
 from ksadk.harness.engine.base import (
     CompiledHarness,
     EngineCapability,
@@ -31,6 +31,7 @@ from ksadk.harness.engine.base import (
     ExecutionEngineError,
 )
 from ksadk.harness.engine.context_pipeline import EngineContextPipeline
+from ksadk.harness.engine.hooked_reasoner import bind_hooked_reasoner, clear_hook_run
 from ksadk.harness.engine.mcp_disclosure import (
     McpDisclosureBridge,
     McpDisclosureCursors,
@@ -38,12 +39,24 @@ from ksadk.harness.engine.mcp_disclosure import (
 from ksadk.harness.engine.policy_runtime import configure_run, revalidate_policy
 from ksadk.harness.engine.run_types import _EngineRun, _GraphState
 from ksadk.harness.engine.skill_disclosure import SkillDisclosureBridge
+from ksadk.harness.engine.steering import (
+    SteeringQueue,
+    SteerReceipt,
+    follow_up_origin,
+    follow_up_run,
+    steer_run,
+)
 from ksadk.harness.engine.thread_ids import encode_thread_id
 from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.execution_policy import execution_policy_scope
 from ksadk.harness.mcp_runtime import McpCapabilityRuntime
+from ksadk.harness.multimodal import (
+    multimodal_user_content,
+    restore_multimodal_current_input,
+    runtime_input_text,
+)
 from ksadk.harness.prompt_cache import PromptCacheTracker
-from ksadk.harness.reasoner import HarnessReasoner, LiteLLMHarnessReasoner
+from ksadk.harness.reasoner import HarnessReasoner, ModelGatewayHarnessReasoner
 from ksadk.harness.run_control import (
     RunController,
     RunControlStop,
@@ -83,20 +96,34 @@ class ManagedLangGraphEngine:
         memory_runtime: Any | None = None,
         skill_runtime: SkillRuntime | None = None,
         mcp_runtime: McpCapabilityRuntime | None = None,
+        context_contributors: tuple[Any, ...] = (),
+        hooks: tuple[Any, ...] = (),
         artifact_store: Any | None = None,
         mcp_offload_policy: Any | None = None,
         delegation_runtime: Any | None = None,
         event_sink: Callable[[str, str, RuntimeEvent], None] | None = None,
         max_reasoning_turns: int = _MAX_REASONING_TURNS,
     ) -> None:
-        self._reasoner = reasoner or LiteLLMHarnessReasoner()
+        self._reasoner = reasoner or ModelGatewayHarnessReasoner()
         self._checkpointer = checkpointer
         # 集成项 4：Strategy Registry 真正参与 compile()——拓扑来自注册表。
         self._strategy_registry = strategy_registry or ExecutionStrategyRegistry()
         self._tenant_id = tenant_id
         self._tools = tools or {}
+        # G10 §13.2：装配 ArtifactStore 时同步提供 artifact_read 取回工具
+        # （纳入 L0 工具面，审批分级走既有 tool_policy）。
+        if artifact_store is not None:
+            from ksadk.harness.tools import artifact_read_tool
+
+            self._tools.setdefault("artifact_read", artifact_read_tool(artifact_store))
         self._approval_required = approval_required or set()
         self._context_engine = context_engine
+        # G9 §12.3.1：ContextSection 贡献者在引擎构造期固化（不可变），
+        # Runtime 期只读；与 hooks 的 Compile 期固化纪律一致。
+        self._context_contributors = tuple(context_contributors)
+        # G5 §5.2：Provider 级扩展钩子（on_context 等），Compile 期固化。
+        self._hooks = tuple(hooks)
+        bind_hooked_reasoner(self)  # G5 §5.2：hooks 非空时包装 Reasoner（provider 钩子）
         # 收口 2：统一 CapabilityRuntime（Policy 决策 + Receipt 幂等）。
         # 为 None 时 tool_calls 节点回退静态 approval_required 集合。
         self._capability_runtime = capability_runtime
@@ -117,6 +144,8 @@ class ManagedLangGraphEngine:
         # 由 McpDisclosureBridge 接入默认 Loop。
         self._mcp_runtime = mcp_runtime
         # P1 大结果 Offload：L3 结果超阈值/命中敏感策略 → Artifact Store 外置。
+        # 策略对象同时供摘要输入脱敏复用（G12 §15.2 与 MCP Offload 同源正则）。
+        self._mcp_offload_policy = mcp_offload_policy
         self._mcp_disclosure = McpDisclosureBridge(
             mcp_runtime,
             artifact_store=artifact_store,
@@ -137,6 +166,9 @@ class ManagedLangGraphEngine:
                 event_fn=self._event,
                 memory_runtime=self._memory_runtime,
                 prompt_cache_tracker=self._prompt_cache_tracker,
+                context_contributors=self._context_contributors,
+                sensitive_policy=self._mcp_offload_policy,
+                hooks=self._hooks,
             )
             if self._context_engine is not None
             else None
@@ -154,6 +186,15 @@ class ManagedLangGraphEngine:
         # 显式传播到所有活动子 Run，不能只依赖 asyncio 任务树的隐式取消。
         self._active_subagent_runs: dict[str, dict[str, tuple[Any, RunHandle]]] = {}
         self._runs: dict[str, _EngineRun] = {}
+        # G1 流式中 Steering：引擎级队列，run 活跃性判断在方法内做。
+        self._steering = SteeringQueue()
+
+    # ------------------------------------------------------------- 只读视图
+
+    @property
+    def hooks(self) -> tuple[Any, ...]:
+        """运行期只读的 Provider 钩子（构造期固化，G5）。"""
+        return self._hooks
 
     # ------------------------------------------------------------- compile
 
@@ -249,7 +290,7 @@ class ManagedLangGraphEngine:
             state=state,
             thread_id=thread_id,
             skill_catalog=self._skill_disclosure.catalog(
-                compiled.spec, query=str(request.input or "")
+                compiled.spec, query=runtime_input_text(request.input)
             ),
             mcp_catalog=self._mcp_disclosure.catalog(compiled.spec),
             sub_agents=effective_sub_agents,
@@ -428,7 +469,12 @@ class ManagedLangGraphEngine:
         run.state.status = RunStatus.RUNNING
         if not run.started_emitted:
             run.started_emitted = True
-            run.events.append(self._event(run, EventType.RUN_STARTED, {"status": "in_progress"}))
+            run.events.append(
+                self._event(
+                    run, EventType.RUN_STARTED,
+                    {"status": "in_progress", **follow_up_origin(run)},
+                )
+            )
             # 收口 5：事件树根——Agent 生命周期（主 Agent 与未来子 Agent 同构）。
             run.events.append(
                 self._event(run, EventType.AGENT_STARTED, {"agent_id": run.state.agent_id})
@@ -480,8 +526,15 @@ class ManagedLangGraphEngine:
                         conversation.extend(dict(m) for m in history if isinstance(m, dict))
                     else:
                         conversation.append(
-                            {"role": "user", "content": str(run.request.input or "")}
+                            {
+                                "role": "user",
+                                "content": multimodal_user_content(run.request.input)
+                                or runtime_input_text(run.request.input),
+                            }
                         )
+                conversation = restore_multimodal_current_input(
+                    conversation, run.request.input
+                )
                 invoke_input = {
                     "messages": conversation,
                     "pending_tool_calls": [],
@@ -491,6 +544,8 @@ class ManagedLangGraphEngine:
                     "mcp_schema_read": [],
                     "finalization_retries": 0,
                     "delegation_synthesis_pending": False,
+                    "active_model_ref": run.compiled.spec.model.profile_ref,
+                    "active_model_turns": 0,
                     "run_control": (
                         run.controller.snapshot() if run.controller is not None else {}
                     ),
@@ -518,6 +573,8 @@ class ManagedLangGraphEngine:
                             "approval_id": approval_id,
                             "call_id": str(info.get("call_id", "")),
                             "kind": "tool",
+                            "tool_name": str(info.get("name") or ""),
+                            "risk_level": str(info.get("risk") or ""),
                             "detail": info,
                         },
                     )
@@ -548,6 +605,17 @@ class ManagedLangGraphEngine:
                     f"evidence: {labels}"
                 )
             run.state.status = RunStatus.COMPLETED
+            # 会话串轮修复（交接记录 2026-09-22 §7）：把最终图状态的 turn_count
+            # 同步到 run.state，使 completion_payload 能据此派生 turn_id 写进
+            # RUN_COMPLETED payload，进而让 output_refs 指向当前轮的 turn 级
+            # final item_id（与 reason 节点写入 TEXT_COMPLETED 的 turn_id 对齐）。
+            run.state.turn_count = int(final_state.get("turn_count", 0) or 0)
+            # 最终组装窗口（最后一次 reason drain 之后到达的 steer）残留条目
+            # 升级进 follow_up 队列并补发升级回执，使其可被 adapter 续跑消费，
+            # 而不是滞留到 close()。
+            from ksadk.harness.engine.steering import upgrade_leftover_steering
+
+            upgrade_leftover_steering(self, run)
             run.events.append(
                 self._event(
                     run,
@@ -578,6 +646,7 @@ class ManagedLangGraphEngine:
             run.state.status = RunStatus.CANCELED
             run.done = True
             run.events.append(self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"}))
+            self._steering.discard(run.handle.run_id)
             return []
         except GraphInterrupt as exc:
             # checkpoint=False 路径（无 Checkpointer 时 interrupt 直接抛出）。
@@ -595,8 +664,11 @@ class ManagedLangGraphEngine:
             from ksadk.harness.engine.run_control_bridge import append_controlled_stop
 
             append_controlled_stop(self, run, exc.reason)
+            # 控制器硬停是终态：残留 steering/follow_up 不再有消费者。
+            self._steering.discard(run.handle.run_id)
             return []
         except Exception as exc:  # noqa: BLE001
+            hooked_reasoner.flush_hook_degradations(self, run)  # G5：失败终态前落残留降级
             run.state.status = RunStatus.FAILED
             run.done = True
             run.events.append(
@@ -618,14 +690,32 @@ class ManagedLangGraphEngine:
                             if getattr(exc, "category", None)
                             else {}
                         ),
+                        **(
+                            {"error_category": str(exc.error_category)}
+                            if getattr(exc, "error_category", None)
+                            else {}
+                        ),
+                        **(
+                            {"error_code": str(exc.error_code)}
+                            if getattr(exc, "error_code", None)
+                            else {}
+                        ),
+                        **(
+                            {"status_code": int(exc.status_code)}
+                            if getattr(exc, "status_code", None) is not None
+                            else {}
+                        ),
                     },
                 )
             )
+            # 失败同样是终态：adapter 不会在 RUN_FAILED 后续跑，残留条目应释放。
+            self._steering.discard(run.handle.run_id)
             return []
 
         finally:
             budgets.account_elapsed(run)
             run.execution_started_at = None
+            clear_hook_run(self, run)
 
     # ---------------------------------------------------------------- graph
 
@@ -653,6 +743,19 @@ class ManagedLangGraphEngine:
             return await invoke_tool(
                 self, name, arguments, run=run, mcp_cursors=mcp_cursors, call_id=call_id
             )
+
+    # -------------------------------------------------------------- steering
+
+    def steer(
+        self, handle: RunHandle, text: str, *, allow_follow_up: bool = True
+    ) -> SteerReceipt:
+        return steer_run(self, handle, text, allow_follow_up=allow_follow_up)
+
+    def follow_up(self, handle: RunHandle, text: str) -> SteerReceipt:
+        return follow_up_run(self, handle, text)
+
+    def pop_follow_up(self, run_id: str) -> str | None:
+        return self._steering.pop_follow_up(run_id)
 
     # --------------------------------------------------------------- cancel
 
@@ -684,6 +787,7 @@ class ManagedLangGraphEngine:
             run.done = True
             run.state.status = RunStatus.CANCELED
             run.events.append(self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"}))
+            self._steering.discard(handle.run_id)
             return CancelResult.INTERRUPTED_ACTIVE_TURN
         return CancelResult.INTERRUPTED_ACTIVE_TURN
 
@@ -751,7 +855,7 @@ class ManagedLangGraphEngine:
             payload is None or payload.kind != "approval_decision"
             or not run.pending_approval_call_id
             or payload.call_id != run.pending_approval_call_id
-            or payload.data not in ("approved", "denied", "rejected")
+            or payload.data not in ("approved", "approved_session", "denied", "rejected")
         ):
             raise ExecutionEngineError(
                 "approval resume requires an explicit decision for the pending call_id"
@@ -759,6 +863,9 @@ class ManagedLangGraphEngine:
         decision = "denied"
         if payload is not None:
             decision = str(payload.data) if payload.data is not None else "approved"
+            if decision == "approved_session":
+                run.session_approval_granted = True
+                run.approval_required = set()
             run.events.append(
                 self._event(
                     run,
@@ -767,6 +874,11 @@ class ManagedLangGraphEngine:
                         "approval_id": f"ap-{run.handle.run_id}-{payload.call_id or ''}",
                         "call_id": payload.call_id or "",
                         "decision": decision,
+                        "decided_by": (
+                            "user_permanent"
+                            if decision in {"approved", "approved_session"}
+                            else "user_reject"
+                        ),
                     },
                 )
             )
@@ -778,7 +890,10 @@ class ManagedLangGraphEngine:
                 {"target": target.id, "resume_kind": "approval_decision"},
             )
         )
-        run.task = asyncio.create_task(self._execute(run, resume_command=Command(resume=decision)))
+        resume_decision = "approved" if decision == "approved_session" else decision
+        run.task = asyncio.create_task(
+            self._execute(run, resume_command=Command(resume=resume_decision))
+        )
         return handle
 
     # ------------------------------------------------------------- snapshot
@@ -820,6 +935,9 @@ class ManagedLangGraphEngine:
             self._active_subagent_runs.pop(run.handle.run_id, None)
             if self._delegation_runtime is not None:
                 self._delegation_runtime.clear_run(run.handle.run_id)
+            # close 是 Run 的终点：未消费的 steering 与未 pop 的 follow_up
+            # 必须释放，否则已关闭的 Run 仍会被续跑，且条目长期驻留内存。
+            self._steering.discard(run.handle.run_id)
 
     # ------------------------------------------------------------- helpers
 

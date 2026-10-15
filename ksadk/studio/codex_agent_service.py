@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import copy
 import json
 import os
 import shutil
@@ -40,6 +41,7 @@ from ksadk.studio.contracts import (
     OperationKind,
     RunEvent,
     RunStatus,
+    RunSubmissionRef,
     RuntimeRef,
 )
 from ksadk.studio.errors import StudioError
@@ -507,6 +509,8 @@ class CodexAgentService:
 
         async def runner(_operation_id: str):
             await self.studio.start()
+            snapshot = self.studio.codex_manifests.load(resolved_id)
+            await self.studio.a2a_catalog.validate_bindings(snapshot.manifest.remote_agents or [])
             return await asyncio.to_thread(
                 self.studio.codex_builder.build,
                 resolved_id,
@@ -538,7 +542,10 @@ class CodexAgentService:
         goal_objective: str | None = None,
         reasoning_effort: str | None = None,
         runtime_input: Any = None,
+        submission_ref: RunSubmissionRef | None = None,
     ) -> Operation:
+        runtime_input = copy.deepcopy(runtime_input)
+        submission_ref = submission_ref.model_copy(deep=True) if submission_ref else None
         async def runner(_operation_id: str):
             return await self.studio.run_build(
                 build_id,
@@ -552,6 +559,9 @@ class CodexAgentService:
                 reasoning_effort=reasoning_effort,
                 runtime_input=runtime_input,
                 on_event=on_event,
+                submission_ref=submission_ref,
+                queue_if_active=True,
+                on_admitted=lambda: self.studio.operations.mark_started(_operation_id),
             )
 
         return cast(
@@ -560,7 +570,11 @@ class CodexAgentService:
                 kind=OperationKind.RUN,
                 resource_id=build_id,
                 idempotency_key=idempotency_key,
+                metadata=(
+                    {"submission_ref": submission_ref.model_dump()} if submission_ref else None
+                ),
                 runner=runner,
+                deferred_start=True,
             ),
         )
 
@@ -599,6 +613,7 @@ class CodexAgentService:
             draft.spec.bindings.skills = skill_bindings
             draft.spec.bindings.mcp_servers = mcp_bindings
             draft.spec.bindings.plugins = list(manifest.plugins or [])
+            draft.spec.bindings.remote_agents = list(manifest.remote_agents or [])
             draft.spec.context = context_spec
             draft.spec.memory = memory_spec
             draft.metadata.labels.update(self._labels(manifest))
@@ -624,6 +639,7 @@ class CodexAgentService:
                     skills=skill_bindings,
                     mcp_servers=mcp_bindings,
                     plugins=list(manifest.plugins or []),
+                    remote_agents=list(manifest.remote_agents or []),
                 ),
                 context=context_spec,
                 memory=memory_spec,
@@ -672,6 +688,7 @@ class CodexAgentService:
             skills=skill_ids or None,
             mcp_servers=mcp_servers or None,
             plugins=list(spec.bindings.plugins) or None,
+            remote_agents=list(spec.bindings.remote_agents) or None,
             sandbox=spec.execution.sandbox,
             approval_mode=spec.execution.approval_mode,
             context=context_payload,

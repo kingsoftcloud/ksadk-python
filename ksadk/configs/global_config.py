@@ -35,6 +35,7 @@ CONFIG_GROUPS = {
         "OPENAI_MODEL_NAME",
     ],
     "cloud": [
+        "KSADK_TRAFFIC_SOURCE",
         "KSYUN_ACCESS_KEY",
         "KSYUN_SECRET_KEY",
         "KSYUN_ACCOUNT_ID",

@@ -9,6 +9,11 @@ from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Callable
 
+from ksadk.events.adapters._codex_errors import (
+    codex_error_label,
+    codex_http_status,
+    codex_retry_numbers,
+)
 from ksadk.events.adapters._codex_interactions import _CodexInteractionMixin
 from ksadk.events.adapters._codex_items import (
     _CODEX_0_147_0_NOTIFICATION_METHODS,
@@ -80,6 +85,7 @@ class CodexEventAdapter(_CodexInteractionMixin):
     def __init__(self, *, known_thread_ids: Iterable[str] = ()) -> None:
         self._items: dict[tuple[str, str], _ItemState] = {}
         self._active_turns: set[str] = set()
+        self._retry_counts: dict[str, int] = {}
         self._completed_items: dict[str, list[OutputRef]] = {}
         self._interactions: dict[str, _InteractionState] = {}
         self._thread_continuations: dict[str, str] = {
@@ -632,11 +638,19 @@ class CodexEventAdapter(_CodexInteractionMixin):
         elif status == "failed":
             error = _mapping(turn.get("error"), "params.turn.error")
             message = _required_text(error.get("message"), "params.turn.error.message")
+            http_status = codex_http_status(error)
+            retry_count = self._retry_counts.get(scope_id, 0)
+            if http_status is not None:
+                outcome = f"自动重试 {retry_count} 次后仍失败" if retry_count else "本次请求失败"
+                message = f"{codex_error_label(http_status)}，{outcome}，请稍后重试。"
+                source = source.model_copy(update={"metadata": {
+                    **source.metadata, "status_code": http_status, "retry_count": retry_count,
+                }})
             terminal = RunFailed(
                 **env(scope_id, turn_id, "run.failed", "run", source),
                 status="failed",
                 error=ErrorInfo(
-                    code="codex_turn_failed",
+                    code="MODEL_RATE_LIMITED" if http_status == 429 else "codex_turn_failed",
                     message=message,
                     source="codex",
                     scope_id=scope_id,
@@ -656,6 +670,7 @@ class CodexEventAdapter(_CodexInteractionMixin):
                 f"Unsupported terminal Codex turn status: {status}",
             )
         self._active_turns.remove(scope_id)
+        self._retry_counts.pop(scope_id, None)
         self._completed_items.pop(scope_id, None)
         return (terminal,)
 
@@ -735,7 +750,7 @@ class CodexEventAdapter(_CodexInteractionMixin):
         cursor: str,
     ) -> tuple[RuntimeEvent, ...]:
         error = _mapping(params.get("error"), "params.error")
-        _required_text(error.get("message"), "params.error.message")
+        native_message = _required_text(error.get("message"), "params.error.message")
         will_retry = params.get("willRetry")
         if not isinstance(will_retry, bool):
             _fail(
@@ -750,11 +765,26 @@ class CodexEventAdapter(_CodexInteractionMixin):
             turn_id=turn_id,
             native_item_id=None,
         )
+        http_status = codex_http_status(error)
+        observed = self._retry_counts.get(scope_id, 0)
+        if will_retry:
+            observed += 1
+            self._retry_counts[scope_id] = observed
+        count, maximum = codex_retry_numbers(native_message, observed)
+        counter = f"{count}/{maximum}" if maximum else str(count)
+        public_message = (
+            f"{codex_error_label(http_status)}，正在自动重试（第 {counter} 次）"
+            if will_retry
+            else f"{codex_error_label(http_status)}，自动重试已停止"
+        )
         source = base.model_copy(
             update={
                 "metadata": {
                     **base.metadata,
                     "will_retry": will_retry,
+                    "status_code": http_status,
+                    "retry_count": count,
+                    "max_retries": maximum,
                     "error_message_present": True,
                     "additional_details_present": error.get("additionalDetails") is not None,
                     "codex_error_info_present": error.get("codexErrorInfo") is not None,
@@ -774,11 +804,7 @@ class CodexEventAdapter(_CodexInteractionMixin):
                     source,
                 ),
                 status="running",
-                message=(
-                    "Codex reported a retryable turn error"
-                    if will_retry
-                    else "Codex reported a non-retryable turn error"
-                ),
+                message=public_message,
             ),
         )
 

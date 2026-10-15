@@ -130,6 +130,8 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
     def __init__(self, runner: BaseRunner, *, runtime_type: str) -> None:
         super().__init__(_RunnerAsBaseRuntime(runner, runtime_type))
         self._runner = runner
+        self._runner_owned_by_app = False
+        self._app_resources_closed = False
         self._runtime_type = runtime_type
         self._active_runs: dict[str, _ActiveRun] = {}
         self._known_runs: set[str] = set()
@@ -143,9 +145,31 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
 
     # ---- 框架钩子(子类按需 override) ----
 
+    def adopt_app_lifetime(self) -> None:
+        """A composition root sharing this adapter owns the runner's lifetime."""
+        self._runner_owned_by_app = True
+
+    async def close_app_resources(self) -> None:
+        if self._runner_owned_by_app and not self._app_resources_closed:
+            self._app_resources_closed = True
+            close = getattr(self._runner, "close", None)
+            if callable(close):
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+
+    def configure_managed_a2a(self, bootstrap) -> None:
+        if self._active_runs:
+            raise RuntimeError("cannot configure managed A2A during an active run")
+        if self._runtime_type in {"adk", "langgraph"}:
+            self._runner._managed_a2a_bootstrap = bootstrap
+
     def _requires_stable_stream_context(self) -> bool:
         """Whether one Task must own the runner generator for its lifetime."""
-        return self._runtime_type == "adk"
+        return self._runtime_type == "adk" or (
+            self._runtime_type == "langgraph"
+            and getattr(self._runner, "_managed_a2a_bootstrap", None) is not None
+        )
 
     def capabilities(self) -> RuntimeCapabilityMatrix:
         """诚实矩阵:cancel 经 asyncio 任务打断(emulated,过 conformance);
@@ -164,7 +188,13 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             and checkpoint_capability.shared_across_pods
             and attach_seam
         )
+        bootstrap = getattr(self._runner, "_managed_a2a_bootstrap", None)
+        scoped_cancel = bool(
+            bootstrap is not None and getattr(bootstrap, "scoped_cancel_available", False)
+        )
         return RuntimeCapabilityMatrix(
+            scoped_cancel=(RuntimeCapability(supported=True, mode="emulated")
+                           if scoped_cancel else None),
             cancel=RuntimeCapability(
                 supported=True,
                 mode="emulated",
@@ -269,6 +299,11 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         """Load the framework agent before a streaming HTTP response commits."""
 
         ensure_runner_loaded(self._runner, runtime_type=self._runtime_type)
+        # Hosted Kernel pins capabilities immediately after preflight. A graph
+        # loaded with MemorySaver must finish its managed checkpoint setup first.
+        prepare = getattr(self._runner, "prepare_runtime_capabilities", None)
+        if callable(prepare):
+            await prepare()
 
     async def start(self, request: StartRequest) -> RunHandle:
         ensure_runner_loaded(self._runner, runtime_type=self._runtime_type)
@@ -287,7 +322,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         self._active_runs[run_id].__dict__["_start_request"] = request
         snapshot = request.metadata.get("session_context")
         invocation_identity = request.metadata.get(TRUSTED_IDENTITY_METADATA_KEY)
-        if snapshot is not None or invocation_identity is not None:
+        if snapshot is not None or invocation_identity is not None or request.metadata.get("tool_approval_mode"):
             self._active_runs[run_id].__dict__["_tag_context"] = session_invocation_context(
                 snapshot,
                 agent_id=request.agent_id or "",
@@ -295,6 +330,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                 session_id=request.session_id,
                 runner_type=self._runtime_type,
                 identity=invocation_identity,
+                tool_approval_mode=str(request.metadata.get("tool_approval_mode") or ""),
             )
         if prepared_start is not None:
             self._active_runs[run_id].__dict__["_prepared_start"] = prepared_start
@@ -497,6 +533,8 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         self._pending_cancels.discard(handle.run_id)
         self._known_runs.discard(handle.run_id)
         self._run_sessions.pop(handle.run_id, None)
+        if self._runner_owned_by_app:
+            return
         close = getattr(self._runner, "close", None)
         if callable(close):
             result = close()
@@ -524,8 +562,9 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         if run.stream is None:
             run.cancellation_ack.set()
             return
-        if run.chunk_task is not None:
-            run.chunk_task.cancel()
+        # The stream owner cancels and joins the in-flight task. Cancelling it
+        # here as well interrupts async cleanup (including durable A2A cancel
+        # facts) when the stream owner delivers the second cancellation.
         await asyncio.wait_for(run.cancellation_ack.wait(), timeout=2)
 
     # ---- 内部:stream → RuntimeEvent ----
@@ -549,6 +588,42 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             else handle.model_copy(update={"run_id": run.invocation_id})
         )
 
+        authority = None
+        existing_start = None
+        if self._runtime_type == "adk" or (
+            self._runtime_type == "langgraph"
+            and getattr(self._runner, "_managed_a2a_bootstrap", None) is not None
+        ):
+            from ksadk.events.run_authority import current_run_event_authority
+
+            authority = current_run_event_authority()
+            if authority is not None:
+                authority.require_session(handle.session_id)
+                # Adapter start/cancel and canonical Runner completion must
+                # describe the same public root, while native input keeps its
+                # private invocation identity for framework checkpoints.
+                if self._runtime_type == "langgraph":
+                    # Keep the shared native_ref: canonical checkpoint mapping
+                    # records resume targets on the original opaque handle.
+                    event_handle.native_ref["invocation_id"] = run.invocation_id
+                    for existing in await authority.list(handle.session_id):
+                        if (
+                            isinstance(existing, RunStarted)
+                            and existing.run_id == authority.run_id
+                            and existing.parent_scope_id is None
+                            and existing.source.framework == "langgraph"
+                        ):
+                            existing_start = existing
+                            break
+                    # Bind before early cancel/skip paths as well as resume.
+                    # Only the active authority can supply this public owner.
+                    event_handle.native_ref["_ksadk_public_root"] = {
+                        "run_id": authority.run_id,
+                        "scope_id": existing_start.scope_id if existing_start else
+                        stable_scope_id("langgraph", authority.run_id, "$run"),
+                    }
+                event_handle = event_handle.model_copy(update={"run_id": authority.run_id})
+
         # 消费 pending cancel:start 时若已记 pending,立即中断该 turn。
         if handle.run_id in self._pending_cancels:
             self._pending_cancels.discard(handle.run_id)
@@ -566,7 +641,25 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         if run.resume_key is not None:
             self._consumed_resumes.add(run.resume_key)
 
-        yield self._make_run_started(event_handle)
+        # Reuse the original fact across producer upgrades and fenced takeover.
+        started = existing_start or self._make_run_started(event_handle)
+        if run.__dict__.get("_restored_from_record"):
+            if authority is None:
+                raise RuntimeError("ADK restored stream requires Kernel run authority")
+            for existing in await authority.list(handle.session_id):
+                if existing.event_id == started.event_id:
+                    # Reuse the original fact's timestamp; guarded append
+                    # still checks the full payload and current fencing token.
+                    started = started.model_copy(update={"timestamp": existing.timestamp})
+                    break
+        if authority is not None and run.resume_key is not None:
+            for existing in await authority.list(handle.session_id):
+                if existing.event_id == started.event_id:
+                    # Resuming an interaction continues the same public run.
+                    # Its initial start fact must not acquire a new timestamp.
+                    started = existing
+                    break
+        yield started
 
         request = run.__dict__.get("_start_request")
         runner_input = self._build_runner_input(handle, request)
@@ -603,7 +696,6 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                             )
                         }
                     )
-                yield event
                 if event.event_type == "interaction.requested":
                     approval_interrupted = True
                     # Track pending approval for canonical streams that bypass
@@ -615,6 +707,9 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                             pending_ids = handle.native_ref.setdefault("pending_approval_ids", [])
                             if call_id not in pending_ids:
                                 pending_ids.append(call_id)
+                # Consumers may persist the handle as soon as they receive the
+                # interaction. Include its identity before yielding that event.
+                yield event
                 if event.event_type in {
                     "run.completed",
                     "run.failed",
@@ -759,15 +854,18 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         framework = self._runtime_type
         if framework not in {"adk", "langgraph", "codex", "a2a", "ksadk"}:
             framework = "ksadk"
+        native_invocation_id = handle.run_id
+        if framework == "langgraph":
+            native_invocation_id = str(handle.native_ref.get("invocation_id") or handle.run_id)
         return SourceRef(
             framework=framework,
             protocol=protocol,
-            native_run_id=handle.run_id,
+            native_run_id=native_invocation_id,
             metadata={
                 "agent_id": str(handle.native_ref.get("agent_id") or "agent"),
                 "user_id": str(handle.native_ref.get("user_id") or "user"),
                 "session_id": handle.session_id,
-                "invocation_id": handle.run_id,
+                "invocation_id": native_invocation_id,
             },
         )
 
@@ -783,6 +881,8 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         """Build common EventEnvelope kwargs for the dict-chunk degraded path."""
         framework = self._runtime_type
         run_id = handle.run_id
+        if framework == "langgraph" and event_type.startswith("run."):
+            scope_id = self._root_lifecycle_scope(handle)
         # TODO(runtime-event-v2): dict chunk 退化路径,chunk_ordinal 用 seq counter;
         # LangGraph/Codex 切 stream_canonical_events 后清理
         n = self._next_seq()
@@ -798,10 +898,20 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             "source": self._make_source(handle),
         }
 
+    def _root_lifecycle_scope(self, handle: RunHandle) -> str:
+        if self._runtime_type != "langgraph":
+            return stable_scope_id(self._runtime_type, handle.run_id)
+        bound = handle.native_ref.get("_ksadk_public_root")
+        if isinstance(bound, Mapping) and bound.get("run_id") == handle.run_id:
+            scope_id = bound.get("scope_id")
+            if isinstance(scope_id, str) and scope_id:
+                return scope_id
+        return stable_scope_id("langgraph", handle.run_id, "$run")
+
     def _make_run_started(self, handle: RunHandle) -> RunStarted:
         framework = self._runtime_type
         run_id = handle.run_id
-        scope_id = stable_scope_id(framework, run_id)
+        scope_id = self._root_lifecycle_scope(handle)
         item_id = stable_item_id(framework, run_id, "$run")
         return RunStarted(
             schema_version=2,
@@ -823,13 +933,13 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
     ) -> RunCompleted:
         framework = self._runtime_type
         run_id = handle.run_id
-        scope_id = stable_scope_id(framework, run_id)
+        scope_id = self._root_lifecycle_scope(handle)
         item_id = stable_item_id(framework, run_id, "$run")
         output_refs: tuple[OutputRef, ...] = ()
         if run is not None and run.final_answer_item_id:
             output_refs = (
                 OutputRef(
-                    scope_id=scope_id,
+                    scope_id=stable_scope_id(framework, run_id),
                     item_id=run.final_answer_item_id,
                     part_id="text-0",
                 ),
@@ -856,7 +966,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
     def _make_run_canceled(self, handle: RunHandle, *, reason: str | None = None) -> RunCanceled:
         framework = self._runtime_type
         run_id = handle.run_id
-        scope_id = stable_scope_id(framework, run_id)
+        scope_id = self._root_lifecycle_scope(handle)
         item_id = stable_item_id(framework, run_id, "$run")
         return RunCanceled(
             schema_version=2,
@@ -877,7 +987,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
     ) -> RunInterrupted:
         framework = self._runtime_type
         run_id = handle.run_id
-        scope_id = stable_scope_id(framework, run_id)
+        scope_id = self._root_lifecycle_scope(handle)
         item_id = stable_item_id(framework, run_id, "$run")
         return RunInterrupted(
             schema_version=2,

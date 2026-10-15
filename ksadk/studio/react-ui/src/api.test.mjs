@@ -148,3 +148,42 @@ test("a stale CSRF token is refreshed once before retrying a local write", async
     "fresh-csrf",
   );
 });
+
+test("an open tab recovers a rotated local session before retrying the write", async () => {
+  const requests = [];
+  let writeCount = 0;
+  const { api } = await loadApi({
+    hash: "#/conversations",
+    fetch: async (input, init = {}) => {
+      const request = { input: String(input), init };
+      requests.push(request);
+      if (request.input.endsWith("/api/v1/system/bootstrap")) {
+        return jsonResponse({ csrfToken: "fresh-after-restart" });
+      }
+      if (request.input === "/") return jsonResponse({ reentered: true });
+      if (request.input.endsWith("/api/v1/sessions")) {
+        writeCount += 1;
+        if (writeCount === 1) {
+          return jsonResponse({ error: { code: "LOCAL_SESSION_REQUIRED" } }, 401);
+        }
+        return jsonResponse({ SessionId: "session-after-restart" });
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND" } }, 404);
+    },
+  });
+
+  await api.initializeStudioSession();
+  const response = await api.apiFetch("/api/v1/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ AgentId: "local-1" }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(writeCount, 2);
+  assert.equal(requests.filter(request => request.input === "/").length, 1);
+  assert.equal(
+    new Headers(requests.at(-1).init.headers).get("X-CSRF-Token"),
+    "fresh-after-restart",
+  );
+});
