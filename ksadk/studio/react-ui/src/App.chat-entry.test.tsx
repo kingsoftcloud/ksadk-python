@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "./api";
 import App from "./App";
@@ -8,12 +8,24 @@ vi.mock("./useStudioViewportMode", () => ({ useStudioViewportMode: () => "deskto
 vi.mock("./useStudioTheme", () => ({
   useStudioTheme: () => ({ preference: "light", resolvedTheme: "light", setPreference: vi.fn() }),
 }));
+const chatEvents = vi.hoisted(() => ({ current: undefined as {
+  agentId: string; requestedSessionId?: string;
+  onSessionChanged?: (sessionId: string, agentId?: string, reason?: "cleanup") => void;
+  onSelectConversation?: (sessionId?: string) => void;
+} | undefined }));
 vi.mock("./components/ChatWorkspace", () => ({
-  ChatWorkspace: ({ agentId, agentName, credentialScope }: { agentId: string; agentName: string; credentialScope?: string }) => (
+  ChatWorkspace: ({ agentId, agentName, credentialScope, requestedSessionId, onSessionChanged, onSelectConversation }: {
+    agentId: string; agentName: string; credentialScope?: string; requestedSessionId?: string;
+    onSessionChanged?: (sessionId: string, agentId?: string, reason?: "cleanup") => void;
+    onSelectConversation?: (sessionId?: string) => void;
+  }) => {
+    chatEvents.current = { agentId, requestedSessionId, onSessionChanged, onSelectConversation };
+    return (
     <div data-testid={agentId.startsWith("ar-") ? "cloud-chat-workspace" : "local-chat-workspace"} data-scope={credentialScope || ""}>
       {agentName} · {agentId}
     </div>
-  ),
+    );
+  },
 }));
 vi.mock("./pages/CreatePage", () => ({
   CreatePage: ({ onCreated, quickCreateRequest }: { quickCreateRequest?: number; onCreated: (id?: string, openChat?: boolean) => void }) => (
@@ -35,6 +47,7 @@ function deferred<T>() {
 
 describe("Studio chat entry", () => {
   beforeEach(() => {
+    chatEvents.current = undefined;
     window.history.replaceState(null, "", "#/conversations");
     const values = new Map<string, string>();
     const storage: Storage = {
@@ -109,6 +122,116 @@ describe("Studio chat entry", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByTestId("local-chat-workspace")).toHaveAttribute("data-scope", "credential-scope"));
+  });
+
+  it("mirrors a selected local session into the reload URL without opening it again", async () => {
+    window.localStorage.setItem("agentkit-studio:chat-target:v1", "local:local-scoped");
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/agents?limit=100") {
+        return response({ items: [{ metadata: { id: "local-scoped", name: "隔离 Agent" } }] });
+      }
+      if (String(input) === "/api/v1/agents/local-scoped") return response({ builds: [] });
+      return base(input, init);
+    });
+    render(<App />);
+    await screen.findByTestId("local-chat-workspace");
+    act(() => chatEvents.current?.onSessionChanged?.("session /1", "local-scoped"));
+    const route = new URLSearchParams(window.location.hash.split("?")[1]);
+    expect(route.get("agentId")).toBe("local-scoped");
+    expect(route.get("sessionId")).toBe("session /1");
+    expect(chatEvents.current?.requestedSessionId).toBe("");
+    act(() => chatEvents.current?.onSelectConversation?.("session /1"));
+    expect(new URLSearchParams(window.location.hash.split("?")[1]).get("sessionId")).toBe("session /1");
+    const selectedHash = window.location.hash;
+    act(() => chatEvents.current?.onSessionChanged?.("foreign-session", "other-agent"));
+    act(() => chatEvents.current?.onSessionChanged?.("", "local-scoped", "cleanup"));
+    expect(window.location.hash).toBe(selectedHash);
+    act(() => {
+      window.history.pushState(null, "", "#/agents");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    act(() => chatEvents.current?.onSessionChanged?.("background-session", "local-scoped"));
+    expect(window.location.hash).toBe("#/agents");
+  });
+
+  it("keeps a requested deep link while an older local session is still restoring", async () => {
+    window.history.replaceState(null, "", "#/conversations?agentId=local-scoped&sessionId=requested-session");
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/agents?limit=100") {
+        return response({ items: [{ metadata: { id: "local-scoped", name: "隔离 Agent" } }] });
+      }
+      if (String(input) === "/api/v1/agents/local-scoped") return response({ builds: [] });
+      return base(input, init);
+    });
+    render(<App />);
+    await screen.findByTestId("local-chat-workspace");
+    act(() => chatEvents.current?.onSessionChanged?.("older-session", "local-scoped"));
+    expect(new URLSearchParams(window.location.hash.split("?")[1]).get("sessionId")).toBe("requested-session");
+    expect(chatEvents.current?.requestedSessionId).toBe("requested-session");
+    act(() => chatEvents.current?.onSessionChanged?.("requested-session", "local-scoped"));
+    act(() => chatEvents.current?.onSessionChanged?.("", "local-scoped"));
+    expect(new URLSearchParams(window.location.hash.split("?")[1]).get("sessionId")).toBeNull();
+    expect(chatEvents.current?.requestedSessionId).toBe("");
+  });
+
+  it("waits for the workspace identity before mounting a restored conversation", async () => {
+    window.localStorage.setItem("agentkit-studio:chat-target:v1", "local:local-scoped");
+    const bootstrap = deferred<Response>();
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/system/bootstrap") return bootstrap.promise;
+      if (path === "/api/v1/agents?limit=100") {
+        return response({ items: [{ metadata: { id: "local-scoped", name: "隔离 Agent" } }] });
+      }
+      if (path === "/api/v1/agents/local-scoped") return response({ builds: [] });
+      return base(input, init);
+    });
+
+    await act(async () => { render(<App />); });
+    expect(screen.queryByTestId("local-chat-workspace")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "正在连接工作区" })).toBeVisible();
+
+    bootstrap.resolve(response({
+      workspace: { name: "studio-test", path: "/workspace", workspaceId: "workspace-1" },
+      operationScope: { workspace: "workspace-scope", cloudCredential: "credential-scope" },
+    }));
+    await waitFor(() => expect(screen.getByTestId("local-chat-workspace")).toHaveAttribute("data-scope", "credential-scope"));
+  });
+
+  it.each(["network", "http"])("preserves the conversation owner after a %s bootstrap refresh failure", async failure => {
+    window.localStorage.setItem("agentkit-studio:chat-target:v1", "local:local-scoped");
+    const base = mockedFetch.getMockImplementation()!;
+    let bootstrapReads = 0;
+    mockedFetch.mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/system/bootstrap") {
+        bootstrapReads += 1;
+        if (bootstrapReads > 1) {
+          if (failure === "network") throw new Error("fixture bootstrap unavailable");
+          return response({ message: "fixture bootstrap unavailable" }, false);
+        }
+        return response({
+          workspace: { name: "studio-test", path: "/workspace", workspaceId: "workspace-1" },
+          operationScope: { workspace: "workspace-scope", cloudCredential: "credential-scope" },
+        });
+      }
+      if (path === "/api/v1/agents?limit=100") {
+        return response({ items: [{ metadata: { id: "local-scoped", name: "隔离 Agent" } }] });
+      }
+      if (path === "/api/v1/agents/local-scoped") return response({ builds: [] });
+      return base(input, init);
+    });
+
+    render(<App />);
+    const conversation = await screen.findByTestId("local-chat-workspace");
+    expect(conversation).toHaveAttribute("data-scope", "credential-scope");
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "刷新" })); });
+    expect(bootstrapReads).toBe(2);
+    expect(screen.getByTestId("local-chat-workspace")).toBe(conversation);
+    expect(conversation).toHaveAttribute("data-scope", "credential-scope");
   });
 
   it("restores the selected cloud Agent after a full page reload", async () => {

@@ -28,7 +28,7 @@ interface ChatWorkspaceProps {
   onStreamingChange?: (streaming: boolean) => void;
   historyHost?: HTMLElement | null;
   headerHost?: HTMLElement | null;
-  onSelectConversation?: () => void;
+  onSelectConversation?: (sessionId?: string) => void;
   agentId: string;
   cloudTarget?: boolean;
   agentName: string;
@@ -41,7 +41,7 @@ interface ChatWorkspaceProps {
   active?: boolean;
   refreshTick?: number;
   requestedSessionId?: string;
-  onSessionChanged?: (sessionId: string) => void;
+  onSessionChanged?: (sessionId: string, agentId?: string, reason?: "cleanup") => void;
   onRunChanged?: () => void;
   onConfigureAgent?: () => void;
   onOpenSettings?: () => void;
@@ -102,7 +102,7 @@ export function ChatWorkspace({
     () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspaceId || workspacePath)}:${encodeURIComponent(credentialScope)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
     [agentId, credentialScope, targetId, workspaceId, workspacePath],
   );
-  // The published Web 0.3.12 uses the Actions-compatible timeline. Keep
+  // The published Web 0.3.x uses the Actions-compatible timeline. Keep
   // this route until a matching canonical renderer package is published.
   const conversationClient = null;
   // Restore the last selected session on mount so an active run can reconnect
@@ -153,6 +153,7 @@ export function ChatWorkspace({
     // running in the broker. This is intentionally separate from aborting the
     // execution subscription.
     conversationController.navigate();
+    initialSelectionHandled.current = false;
     openedRequest.current = "";
   }, [agentId]);
   useEffect(() => {
@@ -262,9 +263,10 @@ export function ChatWorkspace({
   }, [submitPending]);
 
   useEffect(() => {
-    onSessionChanged?.(chat.currentSessionId || "");
-    return () => onSessionChanged?.("");
-  }, [chat.currentSessionId, onSessionChanged]);
+    if (!active || chat.agentId !== agentId || !initialSelectionHandled.current) return;
+    onSessionChanged?.(chat.currentSessionId || "", agentId);
+    return () => onSessionChanged?.("", agentId, "cleanup");
+  }, [active, agentId, chat.agentId, chat.currentSessionId, draftKey, onSessionChanged]);
 
   useEffect(() => {
     onStreamingChange?.(chat.isStreaming);
@@ -293,13 +295,14 @@ export function ChatWorkspace({
   // 仅当路由显式要求打开某会话时才保留。用户先行创建 draft 或提交的
   // turn 已经决定会话归属，迟到的 bootstrap 不能清空它或脱离当前流。
   useEffect(() => {
-    if (chat.bootstrapStatus !== "ready" || initialSelectionHandled.current) return;
+    if (chat.bootstrapStatus !== "ready" || chat.agentId !== agentId || initialSelectionHandled.current) return;
     initialSelectionHandled.current = true;
     if (requestedSessionId) return;
-    // facade bootstrap 会自动 adopt 最近会话（React state 此刻可能尚未更新），
-    // 因此无条件回到初始对话框；路由显式指定会话时除外。
-    chat.selectSession(null);
-  }, [chat.bootstrapStatus, requestedSessionId, chat.selectSession]);
+    // 标记本地草稿归属，同时使已在途的列表/历史恢复失效。仅设 session=null
+    // 不会阻止 ListSessions 迟到后重新 adopt 旧会话并覆盖刚输入的草稿。
+    if (chat.startNewConversation) chat.startNewConversation();
+    else chat.selectSession(null);
+  }, [agentId, chat.agentId, chat.bootstrapStatus, requestedSessionId, chat.startNewConversation, chat.selectSession]);
 
   useImperativeHandle(ref, () => ({ startNewChat() {
     void guardedCreateNewSession();
@@ -465,7 +468,7 @@ export function ChatWorkspace({
                   className="chat-session-main"
                   type="button"
                   aria-current={chat.currentSessionId === session.SessionId ? "true" : undefined}
-                  onClick={() => { chat.selectSession(session.SessionId); onSelectConversation?.(); if (sessionPanelOpen) closeSessionPanel(); }}
+                  onClick={() => { chat.selectSession(session.SessionId); onSelectConversation?.(session.SessionId); if (sessionPanelOpen) closeSessionPanel(); }}
                   title={`${displayTitle} · ${formatSessionTime(String(session.UpdatedAt || ""))}`}
                 >
                   <strong>{shortText(displayTitle)}</strong>

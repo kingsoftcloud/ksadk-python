@@ -103,6 +103,7 @@ describe("ChatWorkspace shared conversation composition", () => {
     delete (mocks.chat.uiCapabilities as Record<string, unknown>).StudioRunReceiptQuery;
     delete (mocks.chat.uiCapabilities as Record<string, unknown>).SteerRun;
     mocks.chat.uiCapabilities.RuntimeCapabilityMatrix = {};
+    mocks.chat.agentId = "local-1";
     mocks.chat.bootstrapStatus = "ready";
     mocks.chat.isLoadingSessions = false;
     mocks.chat.isStreaming = false;
@@ -305,7 +306,8 @@ describe("ChatWorkspace shared conversation composition", () => {
 
   it("reports the selected session so the host inspector follows it", async () => {
     const onSessionChanged = vi.fn();
-    render(
+    mocks.chat.currentSessionId = "";
+    const { rerender } = render(
       <ChatWorkspace
         agentId="local-1"
         agentName="Agent"
@@ -313,7 +315,9 @@ describe("ChatWorkspace shared conversation composition", () => {
       />,
     );
 
-    await waitFor(() => expect(onSessionChanged).toHaveBeenCalledWith("session-1"));
+    mocks.chat.currentSessionId = "session-1";
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" onSessionChanged={onSessionChanged}/>);
+    await waitFor(() => expect(onSessionChanged).toHaveBeenCalledWith("session-1", "local-1"));
   });
 
   it("opens a scheduled result only after bootstrap and session loading settle", async () => {
@@ -400,17 +404,43 @@ describe("ChatWorkspace shared conversation composition", () => {
     expect(mocks.chat.selectSession).not.toHaveBeenCalled();
   });
 
-  it("still clears an automatically adopted Session when there is no user intent", () => {
+  it("marks the initial blank conversation as a local draft before a late session list", () => {
     mocks.chat.bootstrapStatus = "loading";
     const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
     mocks.chat.bootstrapStatus = "ready";
+    mocks.chat.isLoadingSessions = true;
     rerender(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
-    expect(mocks.chat.selectSession).toHaveBeenCalledExactlyOnceWith(null);
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
+    expect(mocks.chat.selectSession).not.toHaveBeenCalled();
+    mocks.chat.isLoadingSessions = false;
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
+  });
+
+  it("waits for the selected Agent before assigning the initial draft owner", () => {
+    mocks.chat.agentId = "previous-agent";
+    const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
+    expect(mocks.chat.startNewConversation).not.toHaveBeenCalled();
+    mocks.chat.agentId = "local-1";
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
+  });
+
+  it("assigns a fresh initial draft after switching Agents in the same workspace", () => {
+    const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
+    rerender(<ChatWorkspace agentId="local-2" agentName="Agent 2"/>);
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
+    mocks.chat.agentId = "local-2";
+    rerender(<ChatWorkspace agentId="local-2" agentName="Agent 2"/>);
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledTimes(2);
+    expect(mocks.chat.selectSession).not.toHaveBeenCalled();
   });
 
   it("starts new conversations through the product rail without interrupting a stream", () => {
     const ref = createRef<ChatWorkspaceHandle>();
     const { rerender } = render(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
+    mocks.chat.startNewConversation.mockClear();
     ref.current?.startNewChat();
     expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     mocks.chat.isStreaming = true;
@@ -534,6 +564,7 @@ describe("ChatWorkspace shared conversation composition", () => {
       <ChatWorkspace agentId="local-1" agentName="本地 Agent" refreshTick={0} />,
     );
 
+    mocks.chat.startNewConversation.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "新对话" }));
     fireEvent.click(screen.getByRole("button", { name: "已有会话" }));
     expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();

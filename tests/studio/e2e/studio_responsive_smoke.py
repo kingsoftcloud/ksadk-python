@@ -31,6 +31,7 @@ from ksadk.events.canonical import (
 )
 from ksadk.events.content import TextContent
 from ksadk.runtime import RunHandle, StartRequest
+from ksadk.studio.contracts import ModelSpec
 from ksadk.studio.service import StudioService
 from tests.studio.runtime_adapter_fixtures import RuntimeFixture
 
@@ -418,6 +419,13 @@ def main() -> None:
                 "codex-cli 0.147.0",
             ),
         )
+        service.catalog.create_model_profile(
+            name="responsive-fixture", display_name="响应式测试模型", version="1.0.0",
+            description="隔离浏览器验证", spec=ModelSpec(
+                model="fixture-model", endpoint_url="https://model.example.com/v1",
+                credential_ref="env://MODEL_API_KEY",
+            ),
+        )
         with (
             studio_server(workspace, service=service) as base_url,
             sync_playwright() as playwright,
@@ -436,9 +444,11 @@ def main() -> None:
                 expect(page.locator("html")).to_have_attribute("data-theme", "light")
                 open_navigation(page)
                 page.get_by_role("button", name="设置", exact=True).click()
-                settings_dialog = page.get_by_role("dialog", name="设置")
-                expect(settings_dialog).to_be_visible()
-                settings_dialog.locator('input[name="studio-theme"][value="dark"]').check()
+                expect(page.locator(".app-shell")).to_have_attribute("data-view", "settings")
+                page.get_by_role("navigation", name="设置分类").get_by_role("button", name="通用", exact=True).click()
+                settings_page = page.locator("#settings-general")
+                expect(settings_page).to_be_visible()
+                settings_page.locator('input[name="studio-theme"][value="dark"]').check()
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
                 assert page.locator("html").evaluate(
                     "element => element.classList.contains('dark')"
@@ -447,24 +457,23 @@ def main() -> None:
                     page.evaluate("getComputedStyle(document.documentElement).colorScheme")
                     == "dark"
                 )
-                page.keyboard.press("Escape")
                 reload_studio(page)
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
 
                 open_navigation(page)
                 page.get_by_role("button", name="设置", exact=True).click()
-                settings_dialog = page.get_by_role("dialog", name="设置")
-                settings_dialog.locator('input[name="studio-theme"][value="system"]').check()
+                page.get_by_role("navigation", name="设置分类").get_by_role("button", name="通用", exact=True).click()
+                settings_page.locator('input[name="studio-theme"][value="system"]').check()
                 page.emulate_media(color_scheme="dark")
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
                 page.emulate_media(color_scheme="light")
                 expect(page.locator("html")).to_have_attribute("data-theme", "light")
-                settings_dialog.locator('input[name="studio-theme"][value="light"]').check()
+                settings_page.locator('input[name="studio-theme"][value="light"]').check()
                 page.emulate_media(color_scheme="dark")
                 expect(page.locator("html")).to_have_attribute("data-theme", "light")
-                settings_dialog.locator('input[name="studio-theme"][value="system"]').check()
+                settings_page.locator('input[name="studio-theme"][value="system"]').check()
                 page.emulate_media(color_scheme="light")
-                page.keyboard.press("Escape")
+                navigate(page, "Agent")
 
                 main_rect = rect(page, ".app-main")
                 assert main_rect["left"] >= 0, main_rect
