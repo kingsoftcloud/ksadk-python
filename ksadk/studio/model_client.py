@@ -1481,10 +1481,19 @@ class OpenAICompatibleModelClient:
                         provider_request_id=provider_request_id,
                     )
                     return
-                if pending_done_finish_reason in _INCOMPLETE_CALL_NON_SUCCESS_FINISH_REASONS:
+                empty_output_limit_retry = (
+                    retry_empty_stream and not tool_stream.calls and not raw_text.strip()
+                    and pending_done_finish_reason in {
+                        "length", "incomplete", "max_tokens", "max_output_tokens", "output_limit",
+                    }
+                )
+                if (pending_done_finish_reason in _INCOMPLETE_CALL_NON_SUCCESS_FINISH_REASONS
+                        and not empty_output_limit_retry):
                     # An explicit non-success termination cannot authorize any
                     # partially assembled tool. Preserve its reason; do not
-                    # retry. An unfilled call under a success/missing reason
+                    # retry. Explicit empty-stream compatibility repair is
+                    # limited to output caps with no tool envelope. An unfilled
+                    # call under a success/missing reason
                     # still falls through to tool_stream.finish() and surfaces
                     # as a provider_retryable_error.
                     yield ModelStreamChunk(
