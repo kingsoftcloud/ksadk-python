@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import bisect
 import copy
+import json
 import time
 from typing import Any, AsyncIterator, Literal, Optional
 
 from ksadk.ids import new_session_id
+from ksadk.sessions.errors import HistoryProjectionBudgetExceeded
 from ksadk.sessions._checkpoint_resume_audit import CheckpointResumeAudit
 from ksadk.sessions.base import (
     CANONICAL_EVENT_STORAGE_CAPABILITIES,
@@ -22,6 +24,8 @@ from ksadk.sessions.base import (
     generate_id,
 )
 
+from ksadk.sessions._in_memory_query import _InMemoryQueryMixin
+
 
 class _CheckpointSnapshotView:
     """Compatibility view over task-scoped checkpoint snapshots."""
@@ -34,7 +38,7 @@ class _CheckpointSnapshotView:
         return self._snapshots.get(task) if task is not None else None
 
 
-class InMemorySessionService(BaseSessionService):
+class InMemorySessionService(_InMemoryQueryMixin, BaseSessionService):
     storage_capabilities = CANONICAL_EVENT_STORAGE_CAPABILITIES
 
     def __init__(self):
@@ -81,14 +85,149 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.get(session_id)
             return copy.deepcopy(session) if session else None
 
+    async def get_session_event_ids(self, session_id: str) -> set[str]:
+        """Recovery membership check without copying event payloads."""
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            return {event.id for event in session.events} if session else set()
+
+    async def align_session_created_at(self, session_id: str, created_at: float) -> None:
+        """Keep a clean recovery mirror on the durable session incarnation."""
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is not None:
+                session.created_at = created_at
+
+    async def get_adk_session_snapshot(
+        self, session_id: str, expected_session: Session | None = None
+    ) -> Optional[Session]:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if expected_session is not None and (
+                session is None or session.agent_id != expected_session.agent_id
+                or session.user_id != expected_session.user_id
+                or session.created_at != expected_session.created_at
+            ):
+                from ksadk.sessions.errors import HistoryReloadRequired
+
+                raise HistoryReloadRequired("Session changed during legacy read")
+            return copy.deepcopy(session) if session else None
+
+    async def get_event_by_id_if_session_matches(
+        self, session_id: str, event_id: str, expected_session: Session
+    ) -> Optional[SessionEvent]:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if (session is None or session.agent_id != expected_session.agent_id
+                    or session.user_id != expected_session.user_id
+                    or session.created_at != expected_session.created_at):
+                from ksadk.sessions.errors import HistoryReloadRequired
+
+                raise HistoryReloadRequired("Session changed during legacy import")
+            event = self._events_by_id.get(event_id)
+            return copy.deepcopy(event) if event is not None and event.session_id == session_id else None
+
     async def get_session_metadata(self, session_id: str) -> Optional[Session]:
         async with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
                 return None
-            metadata = copy.deepcopy(session)
-            metadata.events = []
-            return metadata
+            return self._session_metadata(session)
+
+    async def get_session_header(self, session_id: str) -> Optional[Session]:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            return Session(
+                id=session.id, agent_id=session.agent_id, user_id=session.user_id,
+                created_at=session.created_at, updated_at=session.updated_at,
+                version=session.version,
+            )
+
+    async def ensure_session_header(
+        self, agent_id: str, user_id: str, session_id: str
+    ) -> Session:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                session = Session(id=session_id, agent_id=agent_id, user_id=user_id)
+                self._sessions[session_id] = session
+                self._states[self._state_key("session", agent_id, user_id, session_id)] = (
+                    SessionState(scope="session", agent_id=agent_id,
+                                 user_id=user_id, session_id=session_id)
+                )
+            return Session(
+                id=session.id, agent_id=session.agent_id, user_id=session.user_id,
+                created_at=session.created_at, updated_at=session.updated_at,
+                version=session.version,
+            )
+
+    async def get_session_summary_events(self, session_id: str) -> list[SessionEvent]:
+        """Copy prompt endpoints and the exact active/latest invocation fact."""
+        from ksadk.conversations.run_status import RUN_STATUS_ACTIVE, RUN_STATUS_TERMINAL
+
+        canonical_status = {
+            "run.started": "in_progress", "run.progress": "in_progress",
+            "run.interrupted": "interrupted", "run.completed": "completed",
+            "run.failed": "failed", "run.canceled": "cancelled",
+        }
+        lifecycle_types = {"run_status", *canonical_status}
+
+        def run_id(event: SessionEvent) -> str:
+            metadata = event.metadata or {}
+            return str(metadata.get("run_id") or metadata.get("invocation_id")
+                       or event.invocation_id or "").strip()
+
+        def status(event: SessionEvent) -> str:
+            metadata = event.metadata or {}
+            content = event.content or {}
+            payload = content.get("payload")
+            return str(metadata.get("status") or metadata.get("run_status")
+                       or content.get("status")
+                       or (payload.get("status") if isinstance(payload, dict) else "")
+                       or canonical_status.get(event.event_type, "")).strip()
+
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return []
+            events = session.events
+            first = next((e for e in events if e.event_type == "user_message"), None)
+            last = next((e for e in reversed(events) if e.event_type == "user_message"), None)
+            latest: dict[str, SessionEvent] = {}
+            for event in reversed(events):
+                if event.event_type in lifecycle_types:
+                    latest.setdefault(run_id(event), event)
+            chosen = next((e for e in latest.values() if status(e) in RUN_STATUS_ACTIVE), None)
+            if chosen is None:
+                chosen = next((e for e in latest.values()
+                               if status(e) not in RUN_STATUS_TERMINAL), None)
+            if chosen is None:
+                chosen = next(iter(latest.values()), None)
+            selected = {e.id: copy.deepcopy(e) for e in (first, last) if e is not None}
+            if chosen is not None:
+                chosen_run_id = run_id(chosen)
+                classification = next((e.metadata for e in reversed(events)
+                                       if e.event_type in lifecycle_types
+                                       and run_id(e) == chosen_run_id
+                                       and ((e.metadata or {}).get("run_mode") not in (None, "unknown")
+                                            or (e.metadata or {}).get("run_trigger") not in (None, "unknown"))), {})
+                selected[chosen.id] = SessionEvent(
+                    id=chosen.id, session_id=session_id, author=chosen.author,
+                    event_type=chosen.event_type, timestamp=chosen.timestamp,
+                    seq_id=chosen.seq_id, invocation_id=chosen_run_id,
+                    content={"status": status(chosen)},
+                    metadata={"run_id": chosen_run_id, "status": status(chosen),
+                              "run_mode": classification.get("run_mode", "unknown"),
+                              "run_trigger": classification.get("run_trigger", "unknown")},
+                )
+            return sorted(selected.values(), key=lambda e: e.seq_id)
+
+    async def get_max_seq_id(self, session_id: str) -> int:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            return int(session.events[-1].seq_id) if session and session.events else 0
 
     async def list_sessions(
         self,
@@ -99,7 +238,7 @@ class InMemorySessionService(BaseSessionService):
     ) -> list[Session]:
         async with self._lock:
             sessions = [
-                copy.deepcopy(session)
+                self._session_metadata(session)
                 for session in self._sessions.values()
                 if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
             ]
@@ -188,13 +327,31 @@ class InMemorySessionService(BaseSessionService):
             if last_prompt is not None:
                 session.last_prompt = last_prompt
             session.updated_at = time.time()
-            return copy.deepcopy(session)
+            return self._session_metadata(session)
 
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
+        return await self._append_event_with_expected(session_id, event, None)
+
+    async def append_event_if_session_matches(
+        self, session_id: str, event: SessionEvent, expected_session: Session
+    ) -> SessionEvent:
+        return await self._append_event_with_expected(session_id, event, expected_session)
+
+    async def _append_event_with_expected(
+        self, session_id: str, event: SessionEvent, expected_session: Session | None
+    ) -> SessionEvent:
         async with self._lock:
             session = self._sessions.get(session_id)
             if not session:
                 raise ValueError(f"Session {session_id} not found")
+            if expected_session is not None and (
+                session.agent_id != expected_session.agent_id
+                or session.user_id != expected_session.user_id
+                or session.created_at != expected_session.created_at
+            ):
+                from ksadk.sessions.errors import HistoryReloadRequired
+
+                raise HistoryReloadRequired("Session changed during legacy import")
 
             # Match the durable Local/Postgres physical primary-key contract.
             # Canonical RuntimeEvent storage relies on a deterministic
@@ -397,6 +554,8 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.get(session_id)
             if not session:
                 return 0
+            if after_seq_id is None and before_seq_id is None:
+                return len(session.events)
             events = list(session.events)
             if after_seq_id is not None:
                 events = [event for event in events if event.seq_id > after_seq_id]
@@ -412,102 +571,37 @@ class InMemorySessionService(BaseSessionService):
                 if session_id in self._sessions
             ]
 
+    async def get_session_ids_by_ids(
+        self, session_ids: list[str], agent_id: str | None = None,
+    ) -> list[str]:
+        async with self._lock:
+            return [sid for sid in session_ids if (session := self._sessions.get(sid))
+                    is not None and (agent_id is None or session.agent_id == agent_id)]
+
+    async def list_session_ids(
+        self, agent_id: str | None = None, user_id: str | None = None,
+    ) -> list[str]:
+        async with self._lock:
+            return [sid for sid, session in self._sessions.items()
+                    if (agent_id is None or session.agent_id == agent_id)
+                    and (user_id is None or session.user_id == user_id)]
+
     @staticmethod
     def _session_metadata(session: Session) -> Session:
-        metadata = copy.deepcopy(session)
-        metadata.events = []
-        return metadata
+        return Session(
+            id=session.id, agent_id=session.agent_id, user_id=session.user_id,
+            title=session.title, title_source=session.title_source,
+            summary=session.summary, first_prompt=session.first_prompt,
+            last_prompt=session.last_prompt, state=copy.deepcopy(session.state),
+            created_at=session.created_at, updated_at=session.updated_at,
+            version=session.version,
+        )
 
     async def query_events(self, query: SessionEventQuery) -> list[SessionEvent]:
         return await self._query_events(query, count_only=False)
 
     async def count_event_query(self, query: SessionEventQuery) -> int:
         return int(await self._query_events(query, count_only=True))
-
-    async def _query_events(
-        self, query: SessionEventQuery, *, count_only: bool
-    ) -> list[SessionEvent] | int:
-        async with self._lock:
-            selected_ids = (
-                list(dict.fromkeys(query.session_ids))
-                if query.session_ids is not None
-                else list(self._sessions)
-            )
-            allowed_types = set(query.event_types or [])
-            allowed_checkpoint_ids = set(query.checkpoint_ids or [])
-            events = [
-                event
-                for session_id in selected_ids
-                for session in [self._sessions.get(session_id)]
-                if session is not None
-                and (query.agent_id is None or session.agent_id == query.agent_id)
-                for event in session.events
-                if (query.after_seq_id is None or event.seq_id > query.after_seq_id)
-                and (query.before_seq_id is None or event.seq_id < query.before_seq_id)
-                and (not allowed_types or event.event_type in allowed_types)
-                and (query.invocation_id is None or event.invocation_id == query.invocation_id)
-                and (
-                    query.run_id is None
-                    or str((event.metadata or {}).get("run_id") or "") == query.run_id
-                    or (
-                        event.event_type == "continuation.created"
-                        and str(
-                            ((event.content or {}).get("runtime_event") or {}).get(
-                                "run_id", ""
-                            )
-                            or ""
-                        )
-                        == query.run_id
-                    )
-                )
-                and (
-                    query.checkpoint_id is None
-                    or str((event.metadata or {}).get("checkpoint_id") or "")
-                    == query.checkpoint_id
-                    or (
-                        event.event_type == "continuation.created"
-                        and str(
-                            ((event.content or {}).get("runtime_event") or {}).get(
-                                "continuation_id", ""
-                            )
-                            or ""
-                        )
-                        == query.checkpoint_id
-                    )
-                )
-                and (
-                    not allowed_checkpoint_ids
-                    or str((event.metadata or {}).get("checkpoint_id") or "")
-                    in allowed_checkpoint_ids
-                    or (
-                        event.event_type == "continuation.created"
-                        and str(
-                            ((event.content or {}).get("runtime_event") or {}).get(
-                                "continuation_id", ""
-                            )
-                            or ""
-                        )
-                        in allowed_checkpoint_ids
-                    )
-                )
-            ]
-            if count_only:
-                return len(events)
-            if query.order_by_seq:
-                events.sort(key=lambda event: (event.session_id, event.seq_id, event.id))
-            else:
-                events.sort(
-                    key=lambda event: (
-                        event.timestamp,
-                        event.session_id,
-                        event.seq_id,
-                        event.id,
-                    )
-                )
-            if query.from_start:
-                return copy.deepcopy(events[query.offset : query.offset + query.limit])
-            end = max(len(events) - query.offset, 0)
-            return copy.deepcopy(events[max(end - query.limit, 0) : end])
 
     async def get_checkpoint_lookup_stats(
         self, session_id: str, run_id: str, checkpoint_id: str
@@ -619,6 +713,44 @@ class InMemorySessionService(BaseSessionService):
                 if task is not None:
                     self._checkpoint_snapshot_by_task.pop(task, None)
 
+    async def iter_resume_related_event_pages(
+        self, session_id: str, *, page_size: int = 256,
+        expected_session: Session | None = None,
+    ) -> AsyncIterator[list[SessionEvent]]:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if expected_session is not None:
+                from ksadk.sessions.errors import HistoryReloadRequired
+
+                if (session is None or session.agent_id != expected_session.agent_id
+                        or session.user_id != expected_session.user_id
+                        or session.created_at != expected_session.created_at):
+                    raise HistoryReloadRequired("Checkpoint session changed during lookup")
+            events = session.events if session is not None else []
+            fixed_length = len(events)
+        index = 0
+        count = 0
+        size = 0
+        while index < fixed_length:
+            async with self._lock:
+                page: list[SessionEvent] = []
+                while index < fixed_length and len(page) < page_size:
+                    event = events[index]
+                    index += 1
+                    if event.event_type not in {
+                        "run_checkpoint", "run_resume", "runtime_resume", "continuation.created", "continuation.resumed"
+                    }:
+                        continue
+                    count += 1
+                    size += len(json.dumps(event.to_dict(), ensure_ascii=False).encode())
+                    if count > 8192 or size > 16 * 1024 * 1024:
+                        raise HistoryProjectionBudgetExceeded(
+                            "Checkpoint lookup exceeds 8192 related events or 16 MiB"
+                        )
+                    page.append(copy.deepcopy(event))
+            if page:
+                yield page
+
     async def get_checkpoint_stats(
         self, keys: list[tuple[str, str, str]]
     ) -> dict[str, object]:
@@ -717,6 +849,20 @@ class InMemorySessionService(BaseSessionService):
                 self._state_key(scope, agent_id, user_id or "", session_id or "")
             )
             return copy.deepcopy(state) if state else None
+
+    async def mirror_state_snapshot(self, state: SessionState) -> None:
+        """Replace a clean durable state mirror without replaying history."""
+        async with self._lock:
+            snapshot = copy.deepcopy(state)
+            key = self._state_key(
+                snapshot.scope, snapshot.agent_id, snapshot.user_id, snapshot.session_id,
+            )
+            if snapshot.scope == "session" and snapshot.session_id in self._sessions:
+                session = self._sessions[snapshot.session_id]
+                session.state = copy.deepcopy(snapshot.state)
+                session.version = snapshot.version
+                session.updated_at = snapshot.updated_at
+            self._states[key] = snapshot
 
     async def update_state(
         self,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 
-from ksadk.harness.managed_runtime import ManagedHarnessRuntime
+from ksadk.harness.runtime_capabilities import managed_harness_native_capabilities
 from ksadk.managed_runtime import installed_runtime_version
 from ksadk.runtime import RuntimeExecutor
 
@@ -61,7 +61,7 @@ def _harness_capabilities() -> dict:
     # StudioPluginRuntime always supplies a Workspace state directory to the
     # shipped DSH Harness provider. The catalog describes that product path,
     # not a separately constructed in-memory SDK adapter.
-    native = ManagedHarnessRuntime(durable=True).native_capabilities()
+    native = managed_harness_native_capabilities(durable=True)
     checkpoint = native.get("checkpoint") or {}
     session_continuity = native.get("session_continuity") or {}
     return {
@@ -82,7 +82,12 @@ def _harness_capabilities() -> dict:
     }
 
 
-def inspect_runtime_catalog(executor: RuntimeExecutor) -> list[dict]:
+def inspect_runtime_catalog(
+    executor: RuntimeExecutor,
+    *,
+    native_harness_default: bool = False,
+    native_harness_durable: bool = False,
+) -> list[dict]:
     items: list[dict] = []
     for runtime_type in executor.registered_runtime_types():
         metadata = _RUNTIMES[runtime_type]
@@ -109,7 +114,21 @@ def inspect_runtime_catalog(executor: RuntimeExecutor) -> list[dict]:
             ),
         }
         if runtime_type == "harness":
-            entry["capabilities"] = _harness_capabilities()
+            if native_harness_default:
+                from ksadk.harness.native_runtime import NativeRuntime
+
+                declared = NativeRuntime(durable=native_harness_durable).native_capabilities()
+                entry["adapter"] = "NativeRuntimeAdapter"
+                entry["capabilities"] = {
+                    "session": True,
+                    "cancel": declared["cancel"]["supported"],
+                    "resume": "ledger_run_id" if native_harness_durable else "in_process",
+                    "checkpoint": "not_supported",
+                    "checkpointGranularity": None,
+                    "durableAcrossProcess": declared["session_continuity"]["durable"],
+                }
+            else:
+                entry["capabilities"] = _harness_capabilities()
         items.append(entry)
     return items
 

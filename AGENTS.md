@@ -23,6 +23,7 @@
 
 ## 3. 当前主线
 
+- 新版本最低支持 Python 3.12；运行时、包元数据、CI 和发布检查保持一致。存量 Agent 可保留原 SDK/镜像，控制面继续兼容旧 Runtime 协议。
 - 托管 runtime 主流程稳定：artifact、runtime、route、invoke、replay。
 - session / transcript / approval / sandbox / MCP 既有边界不回退。
 - Skill Runtime 与 Sandbox Runtime 只做运行时消费，不把 Skill 管理面搬进 SDK。

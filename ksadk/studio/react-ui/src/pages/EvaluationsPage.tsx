@@ -19,6 +19,7 @@ import "./evaluations.css";
 
 type TargetKind = "a2a" | "local_source" | "studio_build";
 type RunFilter = "all" | "active" | "passed" | "attention";
+type ToolApprovalMode = "ask" | "risk" | "full";
 
 function matchesRunFilter(run: EvaluationRun, filter: RunFilter): boolean {
   if (filter === "active") return ACTIVE_EVALUATION_STATES.has(run.status);
@@ -73,6 +74,7 @@ export function EvaluationsPage({
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [targetLocator, setTargetLocator] = useState("");
   const [timeoutSeconds, setTimeoutSeconds] = useState(120);
+  const [toolApprovalMode, setToolApprovalMode] = useState<ToolApprovalMode>("risk");
   const [failFast, setFailFast] = useState(false);
   const [selectedEvaluators, setSelectedEvaluators] = useState<EvaluatorId[]>(() => [...DEFAULT_EVALUATORS]);
 
@@ -193,6 +195,7 @@ export function EvaluationsPage({
             timeoutSeconds,
             failFast,
             dataPolicy: "local_only",
+            toolApprovalMode,
             evaluators: selectedEvaluators,
           },
         }),
@@ -398,6 +401,18 @@ export function EvaluationsPage({
             </FormField>
             <FormField label="超时（秒）" htmlFor="evaluation-timeout" requirement="required">
               <input id="evaluation-timeout" type="number" min={1} max={3600} value={timeoutSeconds} onChange={event => setTimeoutSeconds(Number(event.target.value))} required />
+            </FormField>
+            <FormField label="工具审批" requirement="required">
+              <StudioSelect
+                ariaLabel="工具审批"
+                value={toolApprovalMode}
+                options={[
+                  { value: "risk", label: "风险操作需确认", description: "默认；遇到审批时等待人工处理" },
+                  { value: "full", label: "完全访问", description: "仅用于已隔离、允许写入的自动评测" },
+                  { value: "ask", label: "每次确认", description: "所有工具操作都要求人工确认" },
+                ]}
+                onValueChange={value => setToolApprovalMode(value as ToolApprovalMode)}
+              />
             </FormField>
             <FormField label="运行策略">
               <label className="checkbox-row evaluation-page__fail-fast">

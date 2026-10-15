@@ -244,9 +244,7 @@ class _JSONPayloadLimits:
             if self._in_string:
                 self._string_bytes += 1
                 if self._string_bytes > _MAX_EXTERNAL_JSON_STRING_BYTES:
-                    raise httpx.RemoteProtocolError(
-                        "external A2A JSON string exceeds 1 MiB"
-                    )
+                    raise httpx.RemoteProtocolError("external A2A JSON string exceeds 1 MiB")
                 if self._escaped:
                     self._escaped = False
                 elif byte == ord("\\"):
@@ -421,7 +419,8 @@ class RuntimeLocalA2AExternalTransport(A2AExternalTransport):
             or parsed.password is not None
             or parsed.fragment
             or parsed.netloc.rsplit("@", 1)[-1].endswith(":")
-            or port is not None and not 1 <= port <= 65535
+            or port is not None
+            and not 1 <= port <= 65535
         ):
             raise ValueError("external public A2A route must be an absolute HTTPS URL")
         try:

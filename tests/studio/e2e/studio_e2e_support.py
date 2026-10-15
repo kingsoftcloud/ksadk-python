@@ -5,7 +5,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 from urllib.request import urlopen
 
 import uvicorn
@@ -40,11 +40,33 @@ def studio_server(
     workspace: Path,
     *,
     service: StudioService | None = None,
+    service_factory: Callable[[], StudioService] | None = None,
 ) -> Iterator[str]:
+    if service is not None and service_factory is not None:
+        raise ValueError("provide a service or a service factory, not both")
     port = free_port()
-    app = create_studio_app(workspace, service=service, security_enabled=False)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
-    thread = threading.Thread(target=server.run, daemon=True)
+    servers, failures = [], []
+
+    def serve():
+        try:
+            # Create thread-affine SQLite resources in the server's thread.
+            runtime = service_factory() if service_factory is not None else service
+            app = create_studio_app(workspace, service=runtime, security_enabled=False)
+            server = uvicorn.Server(uvicorn.Config(
+                app, host="127.0.0.1", port=port, log_level="warning",
+                # Keep SSE clients connected across restart, but bound the
+                # HTTP drain as the Studio CLI and durable worker already do.
+                # Lifespan must still close providers before the 5s join gate.
+                timeout_graceful_shutdown=3,
+            ))
+            servers.append(server)
+            server.run()
+            if server.lifespan.startup_failed or server.lifespan.shutdown_failed:
+                raise AssertionError("Studio application lifespan failed")
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{port}"
     try:
@@ -53,7 +75,9 @@ def studio_server(
         deadline = time.monotonic() + 120.0
         while time.monotonic() < deadline:
             if not thread.is_alive():
-                raise AssertionError("Studio server thread exited before becoming healthy")
+                raise AssertionError("Studio server thread exited before becoming healthy") from (
+                    failures[0] if failures else None
+                )
             try:
                 with urlopen(f"{base_url}/api/v1/system/health", timeout=0.2) as response:
                     if response.status == 200:
@@ -63,12 +87,17 @@ def studio_server(
         else:
             raise AssertionError(
                 "Studio server did not become healthy within 120 seconds "
-                f"(started={server.started}, thread_alive={thread.is_alive()})"
+                f"(started={bool(servers and servers[0].started)}, "
+                f"thread_alive={thread.is_alive()})"
             )
         yield base_url
     finally:
-        server.should_exit = True
+        if servers:
+            servers[0].should_exit = True
         thread.join(timeout=5)
+        assert not thread.is_alive(), "Studio server thread did not stop"
+        if failures:
+            raise AssertionError("Studio server failed") from failures[0]
 
 
 def open_navigation(page):

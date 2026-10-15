@@ -257,6 +257,7 @@ async def run_agent_action(
             )
         resume_key = _detached_resume_key_from_input(run_session_id, resume_input)
         _reject_if_detached_resume_active(resume_key)
+        invocation_id = request.InvocationId or new_run_id(run_session_id)
         return deps.detached_streaming_response(
             stream_runtime_responses_conversation_turn(
                 executor=executor,
@@ -273,12 +274,15 @@ async def run_agent_action(
                 include_agentengine_metadata=True,
                 resume_input=resume_input,
                 account_id=account_id,
-                invocation_id=request.InvocationId,
+                invocation_id=invocation_id,
                 session_service_provider=deps.resolve_session_service,
                 run_mode=RUN_MODE_FOREGROUND,
                 runtime_preparation=runtime_preparation,
             ),
-            invocation_id=request.InvocationId,
+            invocation_id=invocation_id,
+            # 与 openai_compat /v1/responses 同因：漏传 session_id 会让 detached
+            # stream 的失败兜底无法写入 run 状态，异常被当成正常完成。
+            session_id=run_session_id,
             resume_key=resume_key,
             run_mode=RUN_MODE_FOREGROUND,
             run_trigger=trigger_from_resume_input(resume_input),

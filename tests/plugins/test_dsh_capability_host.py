@@ -17,6 +17,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from ksadk.plugins.bridges.dsh import DshProfileProjection
 from ksadk.plugins.host import PluginHostError
+from ksadk.plugins.providers._process_group import linux_group_has_live_members
 from ksadk.plugins.providers.dsh import DSH_AGENT_PROVIDER_HOST_METHODS
 from ksadk.plugins.providers.dsh_capabilities import (
     DSH_CAPABILITY_BUNDLE_PACKAGE,
@@ -31,6 +32,77 @@ from ksadk.plugins.providers.dsh_capabilities import (
 
 def _fixture(name: str) -> Path:
     return Path(__file__).parents[1] / "fixtures" / name
+
+
+def _proc_view(root: Path, states: tuple[str, ...], *, options: str = "rw") -> None:
+    (root / "self").mkdir()
+    (root / "self" / "mountinfo").write_text(f"1 0 0:1 / /proc rw - proc proc {options}\n")
+    (root / "self" / "stat").write_text(f"{os.getpid()} (owner) S 1 {os.getpgrp()} 0\n")
+    (root / "self" / "status").write_text(f"NSpid:\t{os.getpid()}\n")
+    for pid, state in enumerate(states, 100):
+        entry = root / str(pid)
+        entry.mkdir()
+        (entry / "stat").write_text(f"{pid} (worker ) name) {state} 1 42 42 0\n")
+
+
+@pytest.mark.parametrize("states", [("Z",), ("Z", "X"), ("Z", "x")])
+def test_linux_group_does_not_wait_for_zombie_only_members(tmp_path: Path, states) -> None:
+    _proc_view(tmp_path, states)
+    assert not linux_group_has_live_members(42, proc_root=tmp_path)
+
+
+@pytest.mark.parametrize("states", [("S",), ("Z", "R"), ("Z", "T"), ()])
+def test_linux_group_retains_live_or_unobserved_members(tmp_path: Path, states) -> None:
+    _proc_view(tmp_path, states)
+    assert linux_group_has_live_members(42, proc_root=tmp_path)
+    assert linux_group_has_live_members(43, proc_root=tmp_path)
+
+
+@pytest.mark.parametrize("options", ["rw,hidepid=1", "rw,hidepid=2", "rw,hidepid=4", "rw,hidepid=invisible", "rw,hidepid=ptraceable"])
+def test_linux_group_does_not_trust_hidden_proc_members(tmp_path: Path, options: str) -> None:
+    _proc_view(tmp_path, ("Z",), options=options)
+    assert linux_group_has_live_members(42, proc_root=tmp_path)
+
+
+def test_linux_group_does_not_trust_unreadable_or_malformed_proc(tmp_path: Path, monkeypatch) -> None:
+    _proc_view(tmp_path, ("Z",))
+    stat = tmp_path / "100" / "stat"
+    stat.write_text("malformed")
+    assert linux_group_has_live_members(42, proc_root=tmp_path)
+
+
+    original = Path.read_text
+
+    def denied(path, *args, **kwargs):
+        if path == stat:
+            raise PermissionError("fixture")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    assert linux_group_has_live_members(42, proc_root=tmp_path)
+
+
+@pytest.mark.parametrize("options", ["rw,hidepid=2", "rw"])
+def test_linux_group_does_not_trust_stacked_proc_mounts(tmp_path: Path, options: str) -> None:
+    _proc_view(tmp_path, ("Z",))
+    mounts = tmp_path / "self" / "mountinfo"
+    mounts.write_text(mounts.read_text() + f"2 1 0:2 / /proc rw - proc proc {options}\n")
+    assert linux_group_has_live_members(42, proc_root=tmp_path)
+
+
+@pytest.mark.parametrize("field", ["pid", "group"])
+def test_linux_group_does_not_trust_a_different_pid_namespace(tmp_path: Path, field: str) -> None:
+    _proc_view(tmp_path, ("Z",))
+    pid = os.getpid() + (1 if field == "pid" else 0)
+    group = os.getpgrp() + (1 if field == "group" else 0)
+    (tmp_path / "self" / "stat").write_text(f"{pid} (owner) S 1 {group} 0\n")
+    assert linux_group_has_live_members(42, proc_root=tmp_path)
+
+
+def test_linux_group_rejects_nested_namespace_even_if_numeric_ids_match(tmp_path: Path) -> None:
+    _proc_view(tmp_path, ("Z",))
+    (tmp_path / "self" / "status").write_text(f"NSpid:\t{os.getpid()}\t{os.getpid()}\n")
+    assert linux_group_has_live_members(42, proc_root=tmp_path)
 
 
 def _projection(config: bytes = b"[]\n") -> DshProfileProjection:

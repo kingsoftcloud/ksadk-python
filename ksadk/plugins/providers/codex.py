@@ -35,6 +35,8 @@ from ksadk.runtime.conversation_execution import invoke_runtime_conversation_onc
 from ksadk.sessions import create_session_service
 from ksadk.sessions.base import BaseSessionService
 
+from ksadk.plugins.providers.codex_skills import _resolve_skills
+
 
 @dataclass(frozen=True)
 class CodexProviderInventory:
@@ -194,6 +196,7 @@ class CodexAgentProviderRuntime:
         runtime_state_root: Path | None = None,
         local_launch_resolver: Callable[..., RuntimeLaunchContext | None] | None = None,
         runtime_executor: RuntimeExecutor | None = None,
+        managed_a2a_bootstrap: Any = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
@@ -202,6 +205,7 @@ class CodexAgentProviderRuntime:
         self._runtime_state_root = runtime_state_root
         self._local_launch_resolver = local_launch_resolver
         self._runtime_executor = runtime_executor
+        self._managed_a2a_bootstrap = managed_a2a_bootstrap
         self._ready = False
         self._disposed = False
         self._last_activation: CodexAgentActivation | None = None
@@ -266,6 +270,7 @@ class CodexAgentProviderRuntime:
                 codex_client_factory=self._client_factory,
                 mcp_projection=projection,
                 runtime_executor=self._runtime_executor,
+                managed_a2a_bootstrap=self._managed_a2a_bootstrap,
             )
         except BaseException:
             await projection.aclose()
@@ -323,6 +328,7 @@ class CodexAgentProviderFactory:
             runtime_state_root=runtime_state_root,
             local_launch_resolver=services.get("codex_local_launch_resolver"),
             runtime_executor=runtime_executor,
+            managed_a2a_bootstrap=services.get("managed_a2a_bootstrap"),
         )
         return self.runtime
 
@@ -337,6 +343,7 @@ class CodexAgentActivation:
         codex_client_factory: Callable[..., Any] | None,
         mcp_projection: MCPProjectionLease,
         runtime_executor: RuntimeExecutor | None = None,
+        managed_a2a_bootstrap: Any = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
@@ -347,7 +354,8 @@ class CodexAgentActivation:
             runtime_type="codex",
             project_dir=config.project_dir,
             config=config.launch_config,
-            services=RuntimeServices(codex_client_factory=codex_client_factory),
+            services=RuntimeServices(codex_client_factory=codex_client_factory,
+                                     managed_a2a_bootstrap=managed_a2a_bootstrap),
         )
         self._ready = False
         self._disposed = False
@@ -564,6 +572,30 @@ def _reject_external_execution(
         )
 
 
+def _bundle_a2a_experts(spec):
+    """Only frozen Bundle bindings may declare fixed experts."""
+    if "remoteAgents" in spec and "remote_agents" in spec:
+        raise PluginHostError("a2a_binding_invalid", "Duplicate A2A binding fields")
+    raw = spec.get("remoteAgents", spec.get("remote_agents", []))
+    # ResolvedPluginBundle freezes JSON arrays into tuples.
+    if not isinstance(raw, (list, tuple)):
+        raise PluginHostError("a2a_binding_invalid", "A2A bindings must be a list")
+    if not raw:
+        return []
+    from ksadk.studio.contracts import RemoteAgentBinding
+    from ksadk.a2a.invocation_types import RemoteAgentSpec
+    from ksadk.a2a.codex import compile_codex_experts
+
+    bindings = [RemoteAgentBinding.model_validate(value) for value in raw]
+    specs = [RemoteAgentSpec(
+        local_name=b.local_name, binding_id=b.binding_id, space_id=b.space_id,
+        target_agent_id=b.target_agent_id, expected_version_id=b.expected_version_id,
+        exposure=b.exposure, policy_ref=b.policy_ref,
+    ) for b in bindings]
+    compile_codex_experts(specs)
+    return [value.model_dump(mode="json") for value in specs]
+
+
 def _resolve_bundle_config(
     bundle: ResolvedPluginBundle,
     *,
@@ -573,6 +605,10 @@ def _resolve_bundle_config(
     local_launch: RuntimeLaunchContext | None = None,
 ) -> _CodexBundleConfig:
     spec = bundle.resolved_agent_spec
+    a2a_experts = _bundle_a2a_experts(spec)
+    if local_launch is not None and "a2a_experts" in local_launch.config:
+        if local_launch.config["a2a_experts"] != a2a_experts:
+            raise PluginHostError("a2a_binding_drift", "Local experts differ from immutable Bundle")
     raw_model = spec.get("model")
     if not isinstance(raw_model, Mapping):
         raise PluginHostError(
@@ -666,6 +702,11 @@ def _resolve_bundle_config(
     # Local launch compatibility never replaces immutable Bundle Skill bytes.
     launch_config["skills"] = skills
     launch_config["enforce_bound_skills"] = True
+    # Local launch configuration cannot add, remove, or retarget experts.
+    if a2a_experts:
+        launch_config["a2a_experts"] = a2a_experts
+    else:
+        launch_config.pop("a2a_experts", None)
     return _CodexBundleConfig(
         model=model,
         allowed_models=allowed_models,
@@ -831,43 +872,6 @@ def _resolve_allowed_models(
             "Bundle model inventory must include its resolved default model",
         )
     return models
-
-
-def _resolve_skills(root: Path, value: Any) -> list[dict[str, str]]:
-    if value is None:
-        return []
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise PluginHostError("codex_skill_invalid", "Bundle Skills must be a list")
-    resolved: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for index, item in enumerate(value):
-        if not isinstance(item, Mapping):
-            raise PluginHostError(
-                "codex_skill_invalid", f"Bundle Skills[{index}] must be an object"
-            )
-        name = str(item.get("name") or "").strip()
-        relative = PurePosixPath(str(item.get("bundlePath") or item.get("bundle_path") or ""))
-        if not name or not relative.parts or relative.is_absolute() or ".." in relative.parts:
-            raise PluginHostError(
-                "codex_skill_invalid", f"Bundle Skills[{index}] has an invalid native path"
-            )
-        path = (root / Path(*relative.parts)).resolve()
-        try:
-            path.relative_to(root)
-        except ValueError as error:
-            raise PluginHostError(
-                "codex_skill_invalid", f"Bundle Skill {name!r} escapes the Bundle root"
-            ) from error
-        if not (path / "SKILL.md").is_file():
-            raise PluginHostError("codex_skill_missing", f"Bundle Skill {name!r} has no SKILL.md")
-        if name in seen:
-            raise PluginHostError("codex_skill_invalid", f"duplicate Bundle Skill {name!r}")
-        seen.add(name)
-        # Codex's native SkillInput expects the concrete SKILL.md source, not
-        # its containing directory.  A directory is accepted by the Python
-        # model but silently omitted by the real App Server turn projection.
-        resolved.append({"name": name, "path": str(path / "SKILL.md")})
-    return resolved
 
 
 def _resolve_mcp(

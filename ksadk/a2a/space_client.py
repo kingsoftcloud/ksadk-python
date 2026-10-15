@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -34,6 +36,7 @@ from ksadk.a2a._space_client_events import _SpaceClientEventMixin
 from ksadk.a2a.control_plane import (
     A2AAgentCardClient,
     A2AControlPlane,
+    A2AControlPlaneError,
     A2ARouteInterface,
     CredentialInjection,
     DiscoveredAgent,
@@ -61,6 +64,7 @@ ERR_PUBLIC_EGRESS_DISABLED = "A2A_PUBLIC_EGRESS_DISABLED"
 MAX_A2A_MESSAGE_BYTES = 1024 * 1024
 MAX_A2A_MESSAGE_PARTS = 64
 MAX_A2A_MESSAGE_ID_LENGTH = 128
+INITIAL_SEND_BIND_WAIT_SECONDS = 120.0
 
 
 def _require_opaque_space_id(value: str, *, field_name: str) -> str:
@@ -190,6 +194,14 @@ class A2ASpaceClient(_SpaceClientEventMixin):
                     f"{ENV_A2A_SPACE_IDS} contains multiple Space IDs; pass space_id explicitly"
                 )
             selected_space_id = normalized_space_ids[0]
+        if backend is None and os.getenv("KSADK_A2A_CONTROL_PLANE_URL", "").strip():
+            from ksadk.a2a.control_plane import InternalA2AControlPlaneClient
+            from ksadk.a2a.platform import _managed_http_verify
+
+            backend = InternalA2AControlPlaneClient(
+                os.environ["KSADK_A2A_CONTROL_PLANE_URL"].strip(),
+                httpx_client=httpx_client, verify=_managed_http_verify(),
+            )
         if backend is None:
             from ksadk.a2a.service_env import (
                 resolve_a2a_service_token,
@@ -284,6 +296,46 @@ class A2ASpaceClient(_SpaceClientEventMixin):
         self._check_egress(agent)
         return agent
 
+    @property
+    def control_plane(self) -> A2AControlPlane:
+        return self._backend
+
+    @asynccontextmanager
+    async def open_prepared_message_stream(self, prepared: PreparedA2AOperation, message: Message):
+        """Guarded wire port; the invocation service owns mapping and persistence."""
+        self._validate_prepared_ids(prepared)
+        agent = self._agent_from_prepared(prepared)
+        async with self._operation_client(agent, prepared) as (client, context):
+            yield client.send_message(SendMessageRequest(message=message), context=context)
+
+    async def get_prepared_task(self, prepared: PreparedA2AOperation):
+        self._validate_prepared_ids(prepared)
+        remote = self._require_remote_task(prepared)
+        async with self._operation_client(self._agent_from_prepared(prepared), prepared) as (
+            client,
+            context,
+        ):
+            task = await client.get_task(GetTaskRequest(id=remote.remote_task_id), context=context)
+            self._validate_remote_task_observation(
+                remote.remote_task_id, remote.remote_context_id, task
+            )
+            return task
+
+    async def cancel_prepared_task(self, prepared: PreparedA2AOperation):
+        self._validate_prepared_ids(prepared)
+        remote = self._require_remote_task(prepared)
+        async with self._operation_client(self._agent_from_prepared(prepared), prepared) as (
+            client,
+            context,
+        ):
+            task = await client.cancel_task(
+                CancelTaskRequest(id=remote.remote_task_id), context=context
+            )
+            self._validate_remote_task_observation(
+                remote.remote_task_id, remote.remote_context_id, task
+            )
+            return task
+
     async def send_message(
         self,
         agent_id: str,
@@ -294,15 +346,31 @@ class A2ASpaceClient(_SpaceClientEventMixin):
     ) -> A2APlatformTask:
         agent = await self._resolve_agent(agent_id)
         normalized = self._normalize_initial_message(message)
-        prepared = await self._backend.prepare_call(
-            space_id=self._space_id,
-            target_agent_id=agent.agent_id,
-            expected_version_id=agent.version_id,
-            message_id=normalized.message_id,
-            message_sha256=_canonical_sha256(normalized),
-            idempotency_token=idempotency_token or f"idem-{uuid.uuid4().hex}",
-        )
+        token = idempotency_token or f"idem-{uuid.uuid4().hex}"
+        deadline = time.monotonic() + INITIAL_SEND_BIND_WAIT_SECONDS
+        while True:
+            try:
+                prepared = await self._backend.prepare_call(
+                    space_id=self._space_id,
+                    target_agent_id=agent.agent_id,
+                    expected_version_id=agent.version_id,
+                    message_id=normalized.message_id,
+                    message_sha256=_canonical_sha256(normalized),
+                    idempotency_token=token,
+                )
+                break
+            except A2AControlPlaneError as exc:
+                if exc.error_code != "A2A_INITIAL_SEND_PENDING" or time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
         self._validate_prepared_target(agent, prepared)
+        if prepared.remote_task is not None:
+            # The control plane resolved this idempotency key to an existing
+            # task. Its send permit is bound to that remote task, so replaying
+            # the initial message would be rejected by the Gateway.
+            self._agents_by_task[prepared.platform_task_id] = agent
+            await self._record_agent_for_task(prepared.platform_task_id, agent)
+            return await self.get_task(prepared.platform_task_id)
         handle = await self._send_prepared_message(
             prepared,
             agent,
@@ -323,6 +391,16 @@ class A2ASpaceClient(_SpaceClientEventMixin):
     ) -> A2APlatformTask:
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
         normalized = self._normalize_initial_message(message)
+        # Resolve the durable binding before hashing the final continuation wire
+        # message. The send permit binds the hash including task/context IDs.
+        binding = await self._backend.prepare_task_operation(
+            platform_task_id=task_id, operation="get_task"
+        )
+        self._validate_prepared_ids(binding)
+        remote_task = self._require_remote_task(binding)
+        normalized.task_id = remote_task.remote_task_id
+        if remote_task.remote_context_id:
+            normalized.context_id = remote_task.remote_context_id
         prepared = await self._backend.prepare_task_operation(
             platform_task_id=task_id,
             operation="send_message",
@@ -331,10 +409,8 @@ class A2ASpaceClient(_SpaceClientEventMixin):
             idempotency_token=idempotency_token or f"idem-{uuid.uuid4().hex}",
         )
         self._validate_prepared_ids(prepared)
-        remote_task = self._require_remote_task(prepared)
-        normalized.task_id = remote_task.remote_task_id
-        if remote_task.remote_context_id:
-            normalized.context_id = remote_task.remote_context_id
+        if self._require_remote_task(prepared) != remote_task:
+            raise RuntimeError("A2A_REMOTE_BINDING_CONFLICT")
         agent = self._agent_from_prepared(prepared)
         return await self._send_prepared_message(
             prepared,
@@ -603,7 +679,11 @@ class A2ASpaceClient(_SpaceClientEventMixin):
         cached = self._agents_by_id.get(prepared.target.agent_id)
         if cached is not None and cached.version_id == prepared.target.version_id:
             return cached
-        card = self._route_only_card(prepared.target.agent_id, prepared.target.version_id)
+        card = self._route_only_card(
+            prepared.target.agent_id,
+            prepared.target.version_id,
+            streaming=prepared.route.streaming,
+        )
         return DiscoveredAgent(
             agent_id=prepared.target.agent_id,
             version_id=prepared.target.version_id,
@@ -613,14 +693,14 @@ class A2ASpaceClient(_SpaceClientEventMixin):
             route_kind=prepared.route.kind,
         )
 
-    def _route_only_card(self, name: str, version: str) -> AgentCard:
+    def _route_only_card(self, name: str, version: str, *, streaming: bool = False) -> AgentCard:
         return ParseDict(
             {
                 "name": name,
                 "description": "AgentEngine prepared A2A route",
                 "version": version,
                 "supportedInterfaces": [],
-                "capabilities": {},
+                "capabilities": {"streaming": streaming},
                 "defaultInputModes": ["text/plain"],
                 "defaultOutputModes": ["text/plain"],
                 "skills": [],
@@ -687,7 +767,12 @@ class A2ASpaceClient(_SpaceClientEventMixin):
             owned_http = None
             if http is None:
                 # 外部调用方需自行传入已配置 verify 的 httpx_client。
-                owned_http = httpx.AsyncClient(trust_env=False)
+                verify = True
+                if prepared.route.kind == "hosted_gateway":
+                    from ksadk.a2a.platform import _gateway_http_verify
+
+                    verify = _gateway_http_verify()
+                owned_http = httpx.AsyncClient(trust_env=False, verify=verify)
                 http = owned_http
             client = await create_client(
                 agent=route_card,

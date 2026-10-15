@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -54,6 +55,8 @@ LEGACY_ASSERTION_EVALUATORS = (
     "response_contract@v1",
     "runtime_budget@v1",
     "tool_trajectory@v1",
+    "artifact_contract@v1",
+    "session_contract@v1",
 )
 # Kept for external imports only. Empty evaluator selection uses the
 # data-derived automatic plan in _automatic_evaluator_names instead.
@@ -127,6 +130,10 @@ def _automatic_evaluator_names(case: EvalCase, config: EvaluationConfig) -> list
         names.append("runtime_budget@v1")
     if _tool_requirements(case):
         names.append("tool_trajectory@v1")
+    if _artifact_assertions(case):
+        names.append("artifact_contract@v1")
+    if _session_assertions(case):
+        names.append("session_contract@v1")
 
     if _final_expected_output(case):
         if _judge_unavailable_reason(config) is None:
@@ -281,6 +288,19 @@ def _evaluate_tool_trajectory(
     return results
 
 
+def _evaluate_artifact_contract(context: _EvaluationContext) -> list[MetricResult]:
+    """Evaluate declared file outcomes using content-free adapter evidence."""
+
+    return [
+        _artifact_metric(assertion, context.target_run)
+        for assertion in _artifact_assertions(context.case)
+    ]
+
+
+def _evaluate_session_contract(context: _EvaluationContext) -> list[MetricResult]:
+    return [_session_metric(assertion, context) for assertion in _session_assertions(context.case)]
+
+
 def _tool_metric(
     assertion_type: str,
     expected: str | list[str],
@@ -361,6 +381,27 @@ def _runtime_assertions(case: EvalCase) -> list[AssertionSpec]:
     ]
 
 
+def _artifact_assertions(case: EvalCase) -> list[AssertionSpec]:
+    return [
+        assertion
+        for assertion in case.assertions
+        if assertion.type
+        in {
+            AssertionType.ARTIFACT_FILE_EXISTS,
+            AssertionType.ARTIFACT_FILE_EQUALS,
+            AssertionType.ARTIFACT_FILE_CONTAINS,
+        }
+    ]
+
+
+def _session_assertions(case: EvalCase) -> list[AssertionSpec]:
+    return [
+        assertion
+        for assertion in case.assertions
+        if assertion.type is AssertionType.SESSION_SAME_ACROSS_TURNS
+    ]
+
+
 def _tool_requirements(case: EvalCase) -> list[tuple[str, str | list[str], bool]]:
     requirements = [
         (
@@ -418,8 +459,37 @@ def _response_metric(assertion: AssertionSpec, output: str) -> MetricResult:
 
 def _runtime_metric(assertion: AssertionSpec, target_run: TargetRun) -> MetricResult:
     actual: int | None
+    minimum = assertion.type.value.startswith("runtime.min")
     if assertion.type is AssertionType.RUNTIME_MAX_LATENCY_MS:
         actual = target_run.duration_ms
+    elif assertion.type is AssertionType.RUNTIME_MAX_TERMINAL_EVENTS_PER_SCOPE:
+        actual = _metadata_count(target_run, "maxTerminalEventsPerScope")
+    elif assertion.type is AssertionType.RUNTIME_MAX_RETRIES:
+        actual = _metadata_count(target_run, "retryCount")
+    elif assertion.type is AssertionType.RUNTIME_MAX_COMPACTIONS:
+        actual = _metadata_count(target_run, "compactionCount")
+    elif assertion.type is AssertionType.RUNTIME_MAX_SUBAGENTS:
+        actual = _metadata_count(target_run, "subagentCount")
+    elif assertion.type is AssertionType.RUNTIME_MAX_TOOL_CALLS:
+        actual = _metadata_count(target_run, "toolCallCount")
+    elif assertion.type is AssertionType.RUNTIME_MAX_SKILL_DISCLOSURES:
+        actual = _metadata_count(target_run, "skillDisclosureCount")
+    elif assertion.type is AssertionType.RUNTIME_MAX_MCP_DISCLOSURES:
+        actual = _metadata_count(target_run, "mcpDisclosureCount")
+    elif assertion.type is AssertionType.RUNTIME_MIN_RETRIES:
+        actual = _metadata_count(target_run, "retryCount")
+    elif assertion.type is AssertionType.RUNTIME_MIN_COMPACTIONS:
+        actual = _metadata_count(target_run, "compactionCount")
+    elif assertion.type is AssertionType.RUNTIME_MIN_SUBAGENTS:
+        actual = _metadata_count(target_run, "subagentCount")
+    elif assertion.type is AssertionType.RUNTIME_MIN_MEMORY_RECALLS:
+        actual = _metadata_count(target_run, "memoryRecallCount")
+    elif assertion.type is AssertionType.RUNTIME_MIN_MEMORY_WRITES:
+        actual = _metadata_count(target_run, "memoryWriteCount")
+    elif assertion.type is AssertionType.RUNTIME_MIN_SKILL_DISCLOSURES:
+        actual = _metadata_count(target_run, "skillDisclosureCount")
+    elif assertion.type is AssertionType.RUNTIME_MIN_MCP_DISCLOSURES:
+        actual = _metadata_count(target_run, "mcpDisclosureCount")
     elif not target_run.usage.reported:
         actual = None
     elif assertion.type is AssertionType.RUNTIME_MAX_INPUT_TOKENS:
@@ -442,9 +512,102 @@ def _runtime_metric(assertion: AssertionSpec, target_run: TargetRun) -> MetricRe
     return _metric(
         "runtime_budget",
         assertion,
-        passed=actual <= assertion.value,
+        passed=actual >= assertion.value if minimum else actual <= assertion.value,
         evidence={"actual": actual},
     )
+
+
+def _artifact_metric(assertion: AssertionSpec, target_run: TargetRun) -> MetricResult:
+    if isinstance(assertion.value, str):
+        path = assertion.value
+        expected_digest = None
+    else:
+        path = str(assertion.value["path"])
+        expected_digest = (
+            "sha256:" + hashlib.sha256(str(assertion.value["content"]).encode("utf-8")).hexdigest()
+        )
+    match = next(
+        (
+            check
+            for check in target_run.file_checks
+            if check.assertion_type == assertion.type.value
+            and check.path == path
+            and check.expected_digest == expected_digest
+        ),
+        None,
+    )
+    if match is None or match.status == "UNAVAILABLE":
+        return MetricResult(
+            name="artifact_contract",
+            status=MetricStatus.UNAVAILABLE,
+            required=assertion.required,
+            evidence={
+                "assertion": assertion.type.value,
+                "path": path,
+                "reason": "Target 未提供该工作区文件证据",
+            },
+        )
+    passed = match.status in {"PRESENT", "MATCH"}
+    evidence: dict[str, Any] = {
+        "assertion": assertion.type.value,
+        "path": path,
+        "status": match.status,
+    }
+    if match.size_bytes is not None:
+        evidence["sizeBytes"] = match.size_bytes
+    if match.actual_sha256 is not None:
+        evidence["actualSha256"] = match.actual_sha256
+    return MetricResult(
+        name="artifact_contract",
+        status=MetricStatus.PASS if passed else MetricStatus.FAIL,
+        score=1.0 if passed else 0.0,
+        required=assertion.required,
+        evidence=evidence,
+    )
+
+
+def _session_metric(
+    assertion: AssertionSpec,
+    context: _EvaluationContext,
+) -> MetricResult:
+    expected_turns = len(context.case.turns)
+    trace_refs = context.target_run.trace_refs
+    session_ids = [trace.session_id for trace in trace_refs if trace.session_id]
+    if (
+        expected_turns < 2
+        or len(trace_refs) != expected_turns
+        or len(session_ids) != expected_turns
+    ):
+        return MetricResult(
+            name="session_contract",
+            status=MetricStatus.UNAVAILABLE,
+            required=assertion.required,
+            evidence={
+                "assertion": assertion.type.value,
+                "expectedTurns": expected_turns,
+                "observedTurns": len(session_ids),
+                "reason": "Target 未提供完整的逐轮 Session 证据",
+            },
+        )
+    passed = len(set(session_ids)) == 1
+    return MetricResult(
+        name="session_contract",
+        status=MetricStatus.PASS if passed else MetricStatus.FAIL,
+        score=1.0 if passed else 0.0,
+        required=assertion.required,
+        evidence={
+            "assertion": assertion.type.value,
+            "turnCount": expected_turns,
+            "distinctSessionCount": len(set(session_ids)),
+        },
+    )
+
+
+def _metadata_count(target_run: TargetRun, key: str) -> int | None:
+    value = target_run.metadata.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def _metric(
@@ -620,6 +783,8 @@ _EVALUATORS = (
     _EvaluatorDefinition("response_contract@v1", "response_contract", _evaluate_response_contract),
     _EvaluatorDefinition("runtime_budget@v1", "runtime_budget", _evaluate_runtime_budget),
     _EvaluatorDefinition("tool_trajectory@v1", "tool_trajectory", _evaluate_tool_trajectory),
+    _EvaluatorDefinition("artifact_contract@v1", "artifact_contract", _evaluate_artifact_contract),
+    _EvaluatorDefinition("session_contract@v1", "session_contract", _evaluate_session_contract),
     _EvaluatorDefinition(REFERENCE_MATCH_EVALUATOR, "response_match", _evaluate_reference_match),
     _EvaluatorDefinition(LLM_JUDGE_EVALUATOR, "response_quality", _evaluate_llm_judge),
 )

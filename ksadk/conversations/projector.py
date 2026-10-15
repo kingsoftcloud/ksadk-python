@@ -93,12 +93,24 @@ def project_conversation_item(
         schema = "conversation.item.tool-call/v1"
         payload = _tool_payload(event.initial)
         capability_ref = "tool.inspect"
+    elif isinstance(event, ItemSnapshotReplaced) and event.item_kind == "tool_call":
+        kind = "tool_call"
+        operation = "replace"
+        schema = "conversation.item.tool-call/v1"
+        payload = _tool_payload(event.snapshot)
+        capability_ref = "tool.inspect"
     elif isinstance(event, ItemCompleted) and event.item_kind == "tool_call":
         kind = "tool_call"
         operation = "completed"
         lifecycle = "completed"
         schema = "conversation.item.tool-call/v1"
         payload = _tool_payload(event.snapshot)
+        capability_ref = "tool.inspect"
+    elif isinstance(event, (ItemUpdated, ItemSnapshotReplaced)) and event.item_kind == "tool_call":
+        kind = "tool_call"
+        operation = event.op if isinstance(event, ItemUpdated) else "replace"
+        schema = "conversation.item.tool-call/v1"
+        payload = _tool_payload(_item_snapshot(event))
         capability_ref = "tool.inspect"
     elif (
         isinstance(event, (ItemStarted, ItemUpdated, ItemSnapshotReplaced, ItemCompleted))
@@ -253,6 +265,8 @@ def project_conversation_item(
             "status": "failed" if isinstance(event, RunFailed) else "canceled",
             "error": event.error.message if isinstance(event, RunFailed) else event.reason or "",
         }
+        if isinstance(event, RunFailed):
+            payload["errorCode"] = event.error.code
     elif isinstance(event, (ContinuationCreated, ContinuationResumed)):
         kind = "progress"
         schema = "conversation.item.checkpoint/v1"
@@ -310,6 +324,16 @@ def project_conversation_item(
                 "eventType": event.event_type,
                 "summary": "This content requires a newer renderer.",
             }
+    if isinstance(event, (RunCompleted, RunFailed, RunCanceled, RunInterrupted)):
+        payload.update(_run_outcome_payload(event.source.metadata))
+    if kind == "tool_call" and event.source.metadata.get("engine_kind") == "native":
+        # Native public results contain a sealed execution status, not arbitrary
+        # business output. An approval receipt is nonterminal even in old logs
+        # which incorrectly wrapped it in ItemCompleted. Never rewrite the log.
+        output = payload.get("output")
+        if isinstance(output, dict) and output.get("status") == "approval_required":
+            operation, lifecycle = "replace", "pending"
+            payload["executionStatus"] = "approval_required"
     return ConversationItem(
         item_id=item_id,
         source_event_ids=(event.event_id,),
@@ -328,6 +352,44 @@ def project_conversation_item(
         capability_ref=capability_ref,
         native_ref=_native_ref(event),
     )
+
+
+def _run_outcome_payload(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Project explicit acceptance facts; completion alone does not prove them.
+
+    Provider metadata is not a public payload. Only the terminal outcome contract
+    is admitted here; arbitrary diagnostics, reasoning and report contents stay
+    outside the conversation. Keep legacy terminal events without this contract.
+    """
+    outcome = metadata.get("outcome")
+    if not isinstance(outcome, str) or outcome not in {
+        "verified",
+        "unverified",
+        "partial",
+        "blocked",
+    }:
+        return {}
+    payload: dict[str, Any] = {"outcome": outcome}
+    for source, target in (
+        ("reason", "reason"),
+        ("contract_revision", "contractRevision"),
+        ("verification_report_ref", "verificationReportRef"),
+    ):
+        value = metadata.get(source)
+        if isinstance(value, str) and value:
+            payload[target] = value
+    items = metadata.get("verification_items")
+    if isinstance(items, list):
+        payload["verificationItems"] = [
+            {"acceptanceId": row["acceptance_id"], "status": row["status"]}
+            for row in items
+            if isinstance(row, dict)
+            and isinstance(row.get("acceptance_id"), str)
+            and row["acceptance_id"]
+            and isinstance(row.get("status"), str)
+            and row.get("status") in {"passed", "failed", "not_run", "blocked"}
+        ]
+    return payload
 
 
 def project_interaction_conversation_item(
@@ -604,6 +666,7 @@ def _native_ref(event: RuntimeEvent) -> dict[str, Any]:
             "protocol": source.protocol,
             "eventId": source.native_event_id,
             "cursor": source.native_cursor,
+            "timestamp": event.timestamp,
             "runId": source.native_run_id,
             "itemId": source.native_item_id,
         }.items()

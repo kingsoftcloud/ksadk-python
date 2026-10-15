@@ -6,7 +6,8 @@
     → write 由 rollout 和 write.mode 共同决定
 
   rollout=off → 不提取、不写入
-  rollout=shadow → 生成 Candidate 和审计，不提交 Provider
+  write.mode=off → 不提取、不写入，保留独立的 recall 设置
+  rollout=shadow → 按 write.mode 生成 Candidate 和审计，不提交 Provider
   rollout=enabled + mode=explicit_only → 只保存用户明确要求记住的内容
   rollout=enabled + mode=candidate → 按 Candidate + Policy 判断是否提交
 
@@ -42,7 +43,11 @@ class ResolvedMemoryPolicy:
     @property
     def should_extract_candidates(self) -> bool:
         """是否生成 Candidate（shadow 也生成，但不提交 Provider）。"""
-        return self.enabled and self.write_rollout in ("shadow", "enabled")
+        return (
+            self.enabled
+            and self.write_rollout in ("shadow", "enabled")
+            and self.write_mode in ("explicit_only", "candidate")
+        )
 
     @property
     def should_flush(self) -> bool:
@@ -55,8 +60,8 @@ class ResolvedMemoryPolicy:
 
     @property
     def is_explicit_only(self) -> bool:
-        """是否只保存用户明确要求记住的内容。"""
-        return self.should_flush and self.write_mode == "explicit_only"
+        """是否只提取用户明确要求记住的内容（shadow 同样执行过滤）。"""
+        return self.should_extract_candidates and self.write_mode == "explicit_only"
 
 
 def resolve_memory_policy(
@@ -101,7 +106,7 @@ def resolve_memory_policy(
             provider_ref=provider,
         )
 
-    # rollout 优先于 write_mode
+    # rollout 控制是否提交；显式 write_mode=off 始终关闭提取和写入。
     rollout = str(write_rollout or "").strip().lower()
     mode = str(write_mode or "").strip().lower()
 
@@ -123,13 +128,13 @@ def resolve_memory_policy(
             enabled=True,
             recall_enabled=recall,
             write_rollout="shadow",
-            write_mode=mode if mode in ("explicit_only", "candidate") else "candidate",
+            write_mode=mode if mode in ("off", "explicit_only", "candidate") else "candidate",
             flush_before_compaction=flush_before,
             provider_ref=provider,
         )
 
     # rollout == "enabled"
-    if mode not in ("explicit_only", "candidate"):
+    if mode not in ("off", "explicit_only", "candidate"):
         mode = "candidate"
 
     return ResolvedMemoryPolicy(

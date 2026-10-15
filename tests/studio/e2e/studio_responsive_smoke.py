@@ -31,6 +31,7 @@ from ksadk.events.canonical import (
 )
 from ksadk.events.content import TextContent
 from ksadk.runtime import RunHandle, StartRequest
+from ksadk.studio.contracts import ModelSpec
 from ksadk.studio.service import StudioService
 from tests.studio.runtime_adapter_fixtures import RuntimeFixture
 
@@ -418,6 +419,13 @@ def main() -> None:
                 "codex-cli 0.147.0",
             ),
         )
+        service.catalog.create_model_profile(
+            name="responsive-fixture", display_name="响应式测试模型", version="1.0.0",
+            description="隔离浏览器验证", spec=ModelSpec(
+                model="fixture-model", endpoint_url="https://model.example.com/v1",
+                credential_ref="env://MODEL_API_KEY",
+            ),
+        )
         with (
             studio_server(workspace, service=service) as base_url,
             sync_playwright() as playwright,
@@ -436,9 +444,11 @@ def main() -> None:
                 expect(page.locator("html")).to_have_attribute("data-theme", "light")
                 open_navigation(page)
                 page.get_by_role("button", name="设置", exact=True).click()
-                settings_dialog = page.get_by_role("dialog", name="设置")
-                expect(settings_dialog).to_be_visible()
-                settings_dialog.locator('input[name="studio-theme"][value="dark"]').check()
+                expect(page.locator(".app-shell")).to_have_attribute("data-view", "settings")
+                page.get_by_role("navigation", name="设置分类").get_by_role("button", name="通用", exact=True).click()
+                settings_page = page.locator("#settings-general")
+                expect(settings_page).to_be_visible()
+                settings_page.locator('input[name="studio-theme"][value="dark"]').check()
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
                 assert page.locator("html").evaluate(
                     "element => element.classList.contains('dark')"
@@ -447,24 +457,23 @@ def main() -> None:
                     page.evaluate("getComputedStyle(document.documentElement).colorScheme")
                     == "dark"
                 )
-                page.keyboard.press("Escape")
                 reload_studio(page)
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
 
                 open_navigation(page)
                 page.get_by_role("button", name="设置", exact=True).click()
-                settings_dialog = page.get_by_role("dialog", name="设置")
-                settings_dialog.locator('input[name="studio-theme"][value="system"]').check()
+                page.get_by_role("navigation", name="设置分类").get_by_role("button", name="通用", exact=True).click()
+                settings_page.locator('input[name="studio-theme"][value="system"]').check()
                 page.emulate_media(color_scheme="dark")
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
                 page.emulate_media(color_scheme="light")
                 expect(page.locator("html")).to_have_attribute("data-theme", "light")
-                settings_dialog.locator('input[name="studio-theme"][value="light"]').check()
+                settings_page.locator('input[name="studio-theme"][value="light"]').check()
                 page.emulate_media(color_scheme="dark")
                 expect(page.locator("html")).to_have_attribute("data-theme", "light")
-                settings_dialog.locator('input[name="studio-theme"][value="system"]').check()
+                settings_page.locator('input[name="studio-theme"][value="system"]').check()
                 page.emulate_media(color_scheme="light")
-                page.keyboard.press("Escape")
+                navigate(page, "Agent")
 
                 main_rect = rect(page, ".app-main")
                 assert main_rect["left"] >= 0, main_rect
@@ -590,7 +599,7 @@ def main() -> None:
                 )
                 discovery_trigger = page.get_by_role("button", name="发现 Skill", exact=True)
                 discovery_trigger.click()
-                discovery_dialog = page.get_by_role("dialog", name="发现本地 Skill")
+                discovery_dialog = page.get_by_role("dialog", name="发现 Skill")
                 expect(discovery_dialog).to_be_visible()
                 expect(page.locator(".global-header")).to_have_attribute("inert", "")
                 expect(page.locator(".studio-navigation")).to_have_count(0)
@@ -648,6 +657,11 @@ def main() -> None:
 
                 print("Responsive shell and viewport matrix passed", flush=True)
                 create_test_agent(base_url)
+                # Conversation execution is Build-bound: a draft is authoring
+                # state, never an executable runtime target. The deterministic
+                # fixture therefore seals the same formal Codex Build that the
+                # create workflow would produce before opening chat.
+                service.codex_builder.build("responsive-agent")
                 workbench_context = browser.new_context(
                     viewport={"width": 1024, "height": 768},
                     reduced_motion="reduce",

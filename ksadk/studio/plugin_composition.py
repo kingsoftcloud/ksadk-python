@@ -55,6 +55,8 @@ from ksadk.resource_runtime.plugin_config import resource_plugin_config
 from ksadk.studio.capabilities import canonical_json, sha256_digest
 from ksadk.studio.contracts import AgentDraft, CapabilityBinding
 from ksadk.studio.errors import StudioError
+from ksadk.studio.native_context_registration import StudioNativeContextRegistration
+from ksadk.studio.native_hook_registration import StudioNativeHookRegistration
 from ksadk.studio.resource_build_admission import resource_build_required
 from ksadk.studio.resource_catalog import LocalResourceCatalog
 from ksadk.studio.workspace import Workspace
@@ -92,10 +94,14 @@ class StudioPluginCompositionCompiler:
         catalog: LocalResourceCatalog,
         *,
         provider_manifests: Mapping[str, PluginManifest] | None = None,
+        hook_registrations: tuple[StudioNativeHookRegistration, ...] = (),
+        context_registrations: tuple[StudioNativeContextRegistration, ...] = (),
     ) -> None:
         self._workspace = workspace
         self._catalog = catalog
         self._provider_manifests = dict(provider_manifests or {})
+        self._hook_registrations = tuple(hook_registrations)
+        self._context_registrations = tuple(context_registrations)
 
     def replace_provider_registrations(
         self, provider_manifests: Mapping[str, PluginManifest]
@@ -146,6 +152,16 @@ class StudioPluginCompositionCompiler:
                     field="spec.runtime.type",
                 )
             manifests.append(harness_manifest)
+        hook_registrations = tuple(
+            item for item in self._hook_registrations
+            if runtime.type == "harness" and draft.metadata.id in item.agent_ids
+        )
+        manifests.extend(item.manifest for item in hook_registrations)
+        context_registrations = tuple(
+            item for item in self._context_registrations
+            if runtime.type == "harness" and draft.metadata.id in item.agent_ids
+        )
+        manifests.extend(item.manifest for item in context_registrations)
         providers: dict[str, RuntimePluginSelection] = {}
         if runtime.type == "plugin":
             assert runtime.provider_ref is not None  # RuntimeRef validates this boundary.
@@ -155,6 +171,15 @@ class StudioPluginCompositionCompiler:
                 provider_ref=runtime.provider_ref,
             )
 
+        host_capabilities = [item.selection
+                             for item in (*hook_registrations, *context_registrations)]
+        if requires_platform_resources:
+            host_capabilities.append(PluginCapabilitySelection(
+                ref=PLATFORM_RESOURCE_MCP_REF,
+                definition="mcp.connector/v1",
+                slot="mcp.platform-resources",
+                config={"artifactPath": "platform-resources"},
+            ))
         policy = CompositionPolicy(
             runtimes={"harness": RuntimePluginSelection(provider_ref=harness_ref)},
             providers=providers,
@@ -165,16 +190,7 @@ class StudioPluginCompositionCompiler:
             ),
             resource_materializations=self._resource_materializations(draft),
             memory_providers=self._memory_providers(draft),
-            host_capabilities=(
-                PluginCapabilitySelection(
-                    ref=PLATFORM_RESOURCE_MCP_REF,
-                    definition="mcp.connector/v1",
-                    slot="mcp.platform-resources",
-                    config={"artifactPath": "platform-resources"},
-                ),
-            )
-            if requires_platform_resources
-            else (),
+            host_capabilities=tuple(host_capabilities),
             context_contributors={
                 "workspace_rules": _selection(
                     READ_ONLY_CONTEXT_PLUGIN_ID,

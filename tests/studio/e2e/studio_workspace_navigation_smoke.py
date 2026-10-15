@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -18,6 +19,7 @@ from conversation_items_browser_e2e import (
 from playwright.sync_api import expect, sync_playwright
 from studio_e2e_support import studio_server
 
+from ksadk.studio.contracts import ModelSpec
 from ksadk.studio.service import StudioService
 
 
@@ -32,6 +34,16 @@ def run(output: Path) -> list[dict]:
         )
         with studio_server(workspace, service=service) as base:
             _seed_agent(service)
+            # This scenario starts in an already configured workspace. An
+            # empty catalog intentionally redirects first-time users to model
+            # setup, which would race the navigation assertions below.
+            service.catalog.create_model_profile(
+                name="navigation-fixture", display_name="导航测试模型", version="1.0.0",
+                description="隔离浏览器验证", spec=ModelSpec(
+                    model="model-example", endpoint_url="https://model.example.com/v1",
+                    credential_ref="env://MODEL_API_KEY",
+                ),
+            )
             asyncio.run(
                 service.session_service.create_session(
                     AGENT_ID, "local-user", "existing-before-new-chat"
@@ -53,8 +65,11 @@ def run(output: Path) -> list[dict]:
                     errors = []
 
                     def record_error(error):
-                        errors.append(str(error))
-                        print(f"Navigation page error at {width}px: {error}", flush=True)
+                        # Module-load failures need a location, but Core
+                        # bootstrap query strings can contain private tokens.
+                        diagnostic = re.sub(r"\?[^\s)]*", "?[redacted]", error.stack or str(error))
+                        errors.append(diagnostic)
+                        print(f"Navigation page error at {width}px: {diagnostic}", flush=True)
 
                     page.on("pageerror", record_error)
                     created_sessions = []

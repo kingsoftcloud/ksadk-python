@@ -17,6 +17,7 @@ export interface ChatRun {
   agentId: string;
   sessionId: string;
   status?: string;
+  verificationOutcome?: "verified" | "unverified" | "partial" | "blocked" | null;
   input: string;
   output?: string;
   model?: string;
@@ -295,8 +296,15 @@ function applyConversationProjection(
   conversationItems: ConversationItemReducerState,
   projection: ConversationPresentation,
 ): ChatStreamState {
+  // The canonical timeline coalesces a separate tool result into its call by
+  // callId. Compatibility activities must consume those renderer nodes too;
+  // projection.toolItems intentionally retains every raw item for audit.
+  // ksadk-web 0.3.12 returns a flat ordered timeline, including child runs.
+  const timelineItems = projection.timeline.map(entry => entry.item);
+  const toolItems = timelineItems.filter(item => item.kind === "tool_call");
+  const approvalItems = timelineItems.filter(item => item.kind === "approval");
   const activities: RunActivity[] = [
-    ...projection.toolItems.map(item => ({
+    ...toolItems.map(item => ({
       id: `tool:${item.itemId}`,
       kind: "tool" as const,
       title: String(item.payload.tool || "调用工具"),
@@ -306,7 +314,7 @@ function applyConversationProjection(
       detail: eventDetail(item.payload),
       data: item.payload,
     })),
-    ...projection.approvalItems.map(item => ({
+    ...approvalItems.map(item => ({
       id: `approval:${item.itemId}`,
       kind: "approval" as const,
       title: approvalItemTitle(item.payload, "等待批准"),
@@ -411,6 +419,10 @@ function applyExplicitRunTerminalEvent(
   return null;
 }
 
+function hasCanonicalConversationLane(state: ChatStreamState): boolean {
+  return state.conversationItems.items.length > 0;
+}
+
 export function reduceChatStreamEvent(
   state: ChatStreamState,
   event: ResponseStreamEvent,
@@ -456,12 +468,15 @@ export function reduceChatStreamEvent(
     type === "response.reasoning_summary.delta" ||
     type === "response.reasoning_summary_text.delta"
   ) {
+    if (hasCanonicalConversationLane(state)) return state;
     return { ...state, reasoning: state.reasoning + String(event.delta || event.text || "") };
   }
   if (type === "response.output_text.delta") {
+    if (hasCanonicalConversationLane(state)) return state;
     return { ...state, output: state.output + String(event.delta || "") };
   }
   if (type === "response.output_item.added" || type === "response.output_item.done") {
+    if (hasCanonicalConversationLane(state)) return state;
     const activity = responseItemActivity(recordOf(event.item), type.endsWith(".done"));
     if (!activity) return state;
     const index = state.activities.findIndex(item => item.id === activity.id);
@@ -488,6 +503,7 @@ export function reduceChatStreamEvent(
     };
   }
   if (/^response\.(?:web_search_call|file_search_call|mcp_call)\./.test(type)) {
+    if (hasCanonicalConversationLane(state)) return state;
     const id = String(event.item_id || event.itemId || event.call_id || event.callId || type.split(".")[1]);
     const kind: RunActivity["kind"] = "tool";
     const title = type.includes("web_search") ? "网页搜索"
@@ -917,7 +933,11 @@ export function projectRunActivities(events: RunEvent[]): RunActivityProjection 
         });
       } else {
         const previous = textItems[existingIndex];
-        const nextText = operation === "append" ? previous.text + text : text || previous.text;
+        // An explicit Native retirement supersedes the preview even with an
+        // empty snapshot. Legacy unmarked empty completions keep their behavior.
+        const retired = completed
+          && recordOf(recordOf(runtimeEvent.source).metadata).provisional_retired === true;
+        const nextText = retired ? "" : operation === "append" ? previous.text + text : text || previous.text;
         textItems[existingIndex] = {
           ...previous,
           phase: previous.phase || phase,
@@ -944,6 +964,7 @@ export function projectRunActivities(events: RunEvent[]): RunActivityProjection 
     const existingIndex = byKey.get(`${kind}:${key}`);
     const completed = event.type.endsWith(".completed");
     const failed = event.type.endsWith(".failed") || Boolean(data.error)
+      || ["failed", "error", "uncertain"].includes(String(data.status || "").toLowerCase())
       || Number(data.exitCode ?? data.exit_code ?? 0) !== 0;
     const status: RunActivity["status"] = kind === "approval"
       ? "waiting"
@@ -1057,10 +1078,14 @@ export function projectRunInspectorTimeline(events: RunEvent[]): RunInspectorTim
     if (["run.completed", "run.failed", "run.interrupted", "run.cancelled", "run.canceled"].includes(type)) {
       const failed = type === "run.failed" || type === "run.interrupted";
       const cancelled = type === "run.cancelled" || type === "run.canceled";
+      const runtimeEvent = recordOf(data.runtimeEvent);
+      const nativeOutcome = recordOf(recordOf(runtimeEvent.source).metadata).outcome;
+      const nativeUnverified = type === "run.completed" && nativeOutcome === "unverified";
+      const nativeVerified = type === "run.completed" && nativeOutcome === "verified";
       timeline.push({
         id: `run:${event.id}`,
         kind: "run",
-        title: failed ? (type === "run.interrupted" ? "Run 中断" : "Run 失败") : cancelled ? "Run 取消" : "Run 完成",
+        title: failed ? (type === "run.interrupted" ? "Run 中断" : "Run 失败") : cancelled ? "Run 取消" : nativeUnverified ? "Run 结束 · 未验收" : nativeVerified ? "Run 已验收" : "Run 完成",
         summary: durationSummary(data),
         detail: failed ? String(data.error || data.message || "") : "",
         status: failed ? "failed" : "completed",
@@ -1100,6 +1125,7 @@ export function projectRunInspectorTimeline(events: RunEvent[]): RunInspectorTim
       const previousIndex = indexes.get(key);
       const previous = previousIndex === undefined ? null : timeline[previousIndex];
       const failed = type.endsWith(".failed") || Boolean(data.error)
+        || ["failed", "error", "uncertain"].includes(String(data.status || "").toLowerCase())
         || Number(data.exitCode ?? data.exit_code ?? 0) !== 0;
       const completed = type.endsWith(".completed") || type.endsWith(".resolved");
       const detail = eventDetail(data) || previous?.detail || "";

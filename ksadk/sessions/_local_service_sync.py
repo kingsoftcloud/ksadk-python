@@ -31,8 +31,107 @@ from ksadk.sessions.base import (
     generate_id,
 )
 
+from ksadk.sessions._local_state_sync import _LocalStateSyncMixin
 
-class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
+
+class _LocalServiceSyncMixin(_LocalStateSyncMixin, _LocalToolReceiptMixin):
+    def _get_session_summary_events_sync(self, session_id: str) -> list[SessionEvent]:
+        """Select exact run status with SQL and return only prompt endpoints."""
+        prompts = [
+            SessionEventQuery(session_ids=[session_id], event_types=["user_message"],
+                              limit=1, from_start=True, order_by_seq=True),
+            SessionEventQuery(session_ids=[session_id], event_types=["user_message"],
+                              limit=1, order_by_seq=True),
+        ]
+        selected: dict[str, SessionEvent] = {}
+        for query in prompts:
+            selected.update({event.id: event for event in self._query_events_sync(query, False)})
+        run_id = (
+            "COALESCE(NULLIF(json_extract(metadata_json,'$.run_id'),''), "
+            "NULLIF(json_extract(metadata_json,'$.invocation_id'),''), "
+            "NULLIF(invocation_id,''), '')"
+        )
+        status = (
+            "COALESCE(NULLIF(json_extract(metadata_json,'$.status'),''), "
+            "NULLIF(json_extract(metadata_json,'$.run_status'),''), "
+            "NULLIF(json_extract(content_json,'$.status'),''), "
+            "NULLIF(json_extract(content_json,'$.payload.status'),''), "
+            "CASE event_type WHEN 'run.started' THEN 'in_progress' "
+            "WHEN 'run.progress' THEN 'in_progress' "
+            "WHEN 'run.interrupted' THEN 'interrupted' "
+            "WHEN 'run.completed' THEN 'completed' "
+            "WHEN 'run.failed' THEN 'failed' "
+            "WHEN 'run.canceled' THEN 'cancelled' ELSE '' END)"
+        )
+        with self._connection() as connection:
+            row = connection.execute(
+                f"""WITH facts AS (
+                    SELECT id, seq_id, timestamp, event_type, {run_id} AS run_id,
+                           {status} AS status,
+                           COALESCE(json_extract(metadata_json,'$.run_mode'),'unknown')
+                               AS run_mode,
+                           COALESCE(json_extract(metadata_json,'$.run_trigger'),'unknown')
+                               AS run_trigger
+                    FROM {KSADK_EVENTS_TABLE}
+                    WHERE session_id=? AND event_type IN
+                        ('run_status','run.started','run.progress','run.interrupted',
+                         'run.completed','run.failed','run.canceled')
+                ), latest AS (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY seq_id DESC)
+                        AS run_rank FROM facts
+                ), chosen AS (
+                    SELECT * FROM latest WHERE run_rank=1
+                    ORDER BY CASE WHEN status IN
+                        ('in_progress','running','resuming','starting') THEN 0
+                        WHEN status NOT IN
+                        ('completed','failed','error','cancelled','canceled','aborted',
+                         'interrupted','resume_failed') THEN 1 ELSE 2 END,
+                        seq_id DESC LIMIT 1
+                )
+                SELECT chosen.*,
+                    (SELECT f.run_mode FROM facts f WHERE f.run_id=chosen.run_id AND
+                        (f.run_mode<>'unknown' OR f.run_trigger<>'unknown')
+                     ORDER BY f.seq_id DESC LIMIT 1) AS classified_mode,
+                    (SELECT f.run_trigger FROM facts f WHERE f.run_id=chosen.run_id AND
+                        (f.run_mode<>'unknown' OR f.run_trigger<>'unknown')
+                     ORDER BY f.seq_id DESC LIMIT 1) AS classified_trigger
+                FROM chosen""",
+                (session_id,),
+            ).fetchone()
+        if row is not None:
+            selected[row["id"]] = SessionEvent(
+                id=row["id"], session_id=session_id, event_type=row["event_type"],
+                seq_id=int(row["seq_id"]), timestamp=float(row["timestamp"]),
+                invocation_id=row["run_id"], content={"status": row["status"]},
+                metadata={"run_id": row["run_id"], "status": row["status"],
+                          "run_mode": row["classified_mode"] or row["run_mode"],
+                          "run_trigger": row["classified_trigger"] or row["run_trigger"]},
+            )
+        return sorted(selected.values(), key=lambda event: event.seq_id)
+
+    def _get_session_ids_by_ids_sync(
+        self, session_ids: list[str], agent_id: str | None = None
+    ) -> list[str]:
+        if not session_ids:
+            return []
+        placeholders = ",".join("?" for _ in session_ids)
+        sql = f"SELECT id FROM {KSADK_SESSIONS_TABLE} WHERE id IN ({placeholders})"
+        params: list[object] = list(session_ids)
+        if agent_id is not None:
+            sql += " AND agent_id = ?"
+            params.append(agent_id)
+        with self._connection() as conn:
+            return [str(row[0]) for row in conn.execute(sql, params).fetchall()]
+
+    def _list_session_ids_sync(self, agent_id: str | None = None) -> list[str]:
+        sql = f"SELECT id FROM {KSADK_SESSIONS_TABLE}"
+        params: list[object] = []
+        if agent_id is not None:
+            sql += " WHERE agent_id = ?"
+            params.append(agent_id)
+        with self._connection() as conn:
+            return [str(row[0]) for row in conn.execute(sql, params).fetchall()]
+
     @staticmethod
     def _event_from_query_row(row) -> SessionEvent:
         return SessionEvent(
@@ -73,11 +172,13 @@ class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
             clauses.append("e.invocation_id = ?")
             params.append(query.invocation_id)
         if query.run_id is not None:
-            clauses.append("json_extract(e.metadata_json, '$.run_id') = ?")
-            params.append(query.run_id)
+            clauses.append("(json_extract(e.metadata_json, '$.run_id') = ? OR "
+                           "json_extract(e.metadata_json, '$.tool_receipt.run_id') = ?)")
+            params.extend([query.run_id, query.run_id])
         if query.checkpoint_id is not None:
-            clauses.append("json_extract(e.metadata_json, '$.checkpoint_id') = ?")
-            params.append(query.checkpoint_id)
+            clauses.append("(json_extract(e.metadata_json, '$.checkpoint_id') = ? OR "
+                           "json_extract(e.metadata_json, '$.tool_receipt.checkpoint_id') = ?)")
+            params.extend([query.checkpoint_id, query.checkpoint_id])
         if query.checkpoint_ids:
             clauses.append(
                 "json_extract(e.metadata_json, '$.checkpoint_id') IN ("
@@ -85,6 +186,11 @@ class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
                 + ")"
             )
             params.extend(query.checkpoint_ids)
+        if query.receipt_only:
+            clauses.append("e.event_type = 'tool_result' AND "
+                           "json_type(e.metadata_json, '$.tool_receipt') = 'object' AND "
+                           "TRIM(COALESCE(NULLIF(json_extract(e.metadata_json, '$.tool_receipt.tool_name'), ''), "
+                           "json_extract(e.metadata_json, '$.tool_name'), '')) <> ''")
         return " AND ".join(clauses) or "1", params
 
     def _query_events_sync(
@@ -491,11 +597,16 @@ class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
             connection.commit()
             return True
 
-    def _append_event_sync(self, session_id: str, event: SessionEvent) -> SessionEvent:
+    def _append_event_sync(
+        self, session_id: str, event: SessionEvent,
+        expected_session: Session | None = None,
+    ) -> SessionEvent:
         with self._connection() as connection:
+            if expected_session is not None:
+                connection.execute("BEGIN IMMEDIATE")
             session_row = connection.execute(
                 f"""
-                    SELECT agent_id, user_id, state_json, version
+                    SELECT agent_id, user_id, created_at, state_json, version
                     FROM {KSADK_SESSIONS_TABLE}
                     WHERE id = ?
                     """,
@@ -503,6 +614,14 @@ class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
             ).fetchone()
             if session_row is None:
                 raise ValueError(f"Session {session_id} not found")
+            if expected_session is not None and (
+                session_row["agent_id"] != expected_session.agent_id
+                or session_row["user_id"] != expected_session.user_id
+                or float(session_row["created_at"]) != expected_session.created_at
+            ):
+                from ksadk.sessions.errors import HistoryReloadRequired
+
+                raise HistoryReloadRequired("Session changed during legacy import")
 
             next_seq = int(
                 connection.execute(
@@ -828,146 +947,5 @@ class _LocalServiceSyncMixin(_LocalToolReceiptMixin):
                 params,
             ).fetchone()
             return int(row["total"] if row else 0)
-
-    def _get_state_sync(
-        self,
-        agent_id: str,
-        user_id: Optional[str],
-        session_id: Optional[str],
-        scope: str,
-    ) -> Optional[SessionState]:
-        with self._connection() as connection:
-            if scope == "session" and session_id:
-                session = self._get_session_sync(session_id, connection=connection)
-                if session is None:
-                    return None
-                return SessionState(
-                    scope="session",
-                    agent_id=session.agent_id,
-                    user_id=session.user_id,
-                    session_id=session.id,
-                    state=dict(session.state),
-                    version=session.version,
-                    updated_at=session.updated_at,
-                )
-
-            row = connection.execute(
-                f"""
-                    SELECT scope, agent_id, user_id, session_id, state_json, version, updated_at
-                    FROM {KSADK_STATES_TABLE}
-                    WHERE scope = ? AND agent_id = ? AND user_id = ? AND session_id = ?
-                    """,
-                (scope, agent_id, user_id or "", session_id or ""),
-            ).fetchone()
-            if row is None:
-                return None
-
-            return SessionState(
-                scope=row["scope"],
-                agent_id=row["agent_id"],
-                user_id=row["user_id"],
-                session_id=row["session_id"],
-                state=json.loads(row["state_json"] or "{}"),
-                version=row["version"],
-                updated_at=row["updated_at"],
-            )
-
-    def _update_state_sync(
-        self,
-        agent_id: str,
-        user_id: Optional[str],
-        session_id: Optional[str],
-        scope: str,
-        state_delta: dict,
-    ) -> SessionState:
-        with self._connection() as connection:
-            updated_at = time.time()
-
-            if scope == "session":
-                if not session_id:
-                    raise ValueError("session_id is required for session scope")
-                session = self._get_session_sync(session_id, connection=connection)
-                if session is None:
-                    raise ValueError(f"Session {session_id} not found")
-
-                next_state = dict(session.state)
-                next_state.update(state_delta)
-                next_version = session.version + 1
-                connection.execute(
-                    f"""
-                        UPDATE {KSADK_SESSIONS_TABLE}
-                        SET state_json = ?, updated_at = ?, version = ?
-                        WHERE id = ?
-                        """,
-                    (json.dumps(next_state), updated_at, next_version, session_id),
-                )
-                connection.execute(
-                    f"""
-                        INSERT OR REPLACE INTO {KSADK_STATES_TABLE} (
-                            scope, agent_id, user_id, session_id, state_json, version, updated_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                    (
-                        "session",
-                        session.agent_id,
-                        session.user_id,
-                        session.id,
-                        json.dumps(next_state),
-                        next_version,
-                        updated_at,
-                    ),
-                )
-                connection.commit()
-                return SessionState(
-                    scope="session",
-                    agent_id=session.agent_id,
-                    user_id=session.user_id,
-                    session_id=session.id,
-                    state=next_state,
-                    version=next_version,
-                    updated_at=updated_at,
-                )
-
-            row = connection.execute(
-                f"""
-                    SELECT state_json, version
-                    FROM {KSADK_STATES_TABLE}
-                    WHERE scope = ? AND agent_id = ? AND user_id = ? AND session_id = ?
-                    """,
-                (scope, agent_id, user_id or "", session_id or ""),
-            ).fetchone()
-            next_state = json.loads(row["state_json"] or "{}") if row else {}
-            next_state.update(state_delta)
-            next_version = (int(row["version"] or 0) + 1) if row else 1
-
-            connection.execute(
-                f"""
-                    INSERT OR REPLACE INTO {KSADK_STATES_TABLE} (
-                        scope, agent_id, user_id, session_id, state_json, version, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                (
-                    scope,
-                    agent_id,
-                    user_id or "",
-                    session_id or "",
-                    json.dumps(next_state),
-                    next_version,
-                    updated_at,
-                ),
-            )
-            connection.commit()
-            return SessionState(
-                scope=scope,
-                agent_id=agent_id,
-                user_id=user_id or "",
-                session_id=session_id or "",
-                state=next_state,
-                version=next_version,
-                updated_at=updated_at,
-            )
-
 
 __all__ = ["_LocalServiceSyncMixin"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from ksadk.sandbox.base import SandboxCommandResult, SandboxInputFile, SandboxSession
@@ -54,6 +55,7 @@ class LocalProcessSandboxSession:
         timeout: int | None = None,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        on_output: Callable[[str, str], None] | None = None,
     ) -> SandboxCommandResult:
         try:
             resolved_cwd = self._resolve_cwd(cwd or (env or {}).get("KSADK_COMMAND_CWD"))
@@ -82,6 +84,7 @@ class LocalProcessSandboxSession:
                 timeout=effective_timeout,
                 settings=self._controls,
                 start_new_session=True,
+                on_output=on_output,
             )
         except (OSError, ValueError) as exc:
             return SandboxCommandResult(
@@ -109,6 +112,13 @@ class LocalProcessSandboxSession:
         elif executed.controls.get("status") == "failed" or executed.cleanup_error:
             exit_code = 125
         return SandboxCommandResult(stdout=executed.stdout, stderr=stderr, exit_code=exit_code)
+
+    def run_command_observed(
+        self, command: str, *, on_output: Callable[[str, str], None],
+        timeout: int | None = None, env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> SandboxCommandResult:
+        return self.run_command(command, timeout=timeout, env=env, cwd=cwd, on_output=on_output)
 
     def get_host(self, port: int) -> str:
         return f"http://127.0.0.1:{int(port)}"

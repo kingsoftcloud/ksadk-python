@@ -22,6 +22,7 @@ from ksadk.runtime.adapter import CancelResult
 from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions.invocation_identity import identity_scope_ref
+from ksadk_runtime_common.http_headers import build_content_disposition
 from ksadk_runtime_common.workspace_files.preview import (
     build_workspace_file_base_href,
     build_workspace_preview_csp,
@@ -149,7 +150,9 @@ async def attachment_content_action(
     return Response(
         content=loaded.data,
         media_type=loaded.mime_type or "application/octet-stream",
-        headers={"Content-Disposition": f'inline; filename="{loaded.display_name}"'},
+        headers={
+            "Content-Disposition": build_content_disposition(loaded.display_name, disposition="inline")
+        },
     )
 
 
@@ -424,7 +427,7 @@ async def export_workspace_zip(
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+        headers={"Content-Disposition": build_content_disposition(zip_name)},
     )
 
 

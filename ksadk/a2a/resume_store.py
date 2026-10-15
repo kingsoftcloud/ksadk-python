@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from ksadk.runtime.adapter import ResumePayload, ResumeTarget, RunHandle
 
 A2AResumePayloadKind: TypeAlias = Literal[
@@ -116,9 +119,7 @@ class SQLiteA2AResumeStateStore(A2AResumeStateStore):
             return A2AResumeState(
                 handle=RunHandle.model_validate(raw["handle"]),
                 target=ResumeTarget.model_validate(raw["target"]),
-                payload_kind=ResumePayload.model_validate(
-                    {"kind": raw["payload_kind"]}
-                ).kind,
+                payload_kind=ResumePayload.model_validate({"kind": raw["payload_kind"]}).kind,
                 call_id=str(raw["call_id"]) if raw.get("call_id") is not None else None,
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -192,10 +193,99 @@ class SQLiteA2AResumeStateStore(A2AResumeStateStore):
             connection.close()
 
 
+def _serialize_state(state: A2AResumeState) -> str:
+    return json.dumps(
+        {
+            "handle": state.handle.model_dump(mode="json"),
+            "target": state.target.model_dump(mode="json"),
+            "payload_kind": state.payload_kind,
+            "call_id": state.call_id,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _deserialize_state(payload: str) -> A2AResumeState:
+    try:
+        raw = json.loads(payload)
+        return A2AResumeState(
+            handle=RunHandle.model_validate(raw["handle"]),
+            target=ResumeTarget.model_validate(raw["target"]),
+            payload_kind=ResumePayload.model_validate({"kind": raw["payload_kind"]}).kind,
+            call_id=str(raw["call_id"]) if raw.get("call_id") is not None else None,
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("A2A resume state is invalid") from exc
+
+
+class PostgresA2AResumeStateStore(A2AResumeStateStore):
+    """Shared opaque resume state for managed Runtime restart recovery."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    @staticmethod
+    def _hash(key: str) -> str:
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+    async def initialize(self) -> None:
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS ksadk_a2a_resume_states (
+                        resume_key_sha256 TEXT PRIMARY KEY,
+                        state_json TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            )
+
+    async def put(self, key: str, state: A2AResumeState) -> None:
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO ksadk_a2a_resume_states(resume_key_sha256, state_json)
+                    VALUES (:key, :payload)
+                    ON CONFLICT(resume_key_sha256) DO UPDATE SET
+                        state_json = EXCLUDED.state_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """
+                ),
+                {"key": self._hash(key), "payload": _serialize_state(state)},
+            )
+
+    async def get(self, key: str) -> A2AResumeState | None:
+        async with self._engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT state_json FROM ksadk_a2a_resume_states "
+                    "WHERE resume_key_sha256 = :key"
+                ),
+                {"key": self._hash(key)},
+            )
+            payload = result.scalar_one_or_none()
+        return _deserialize_state(str(payload)) if payload is not None else None
+
+    async def delete(self, key: str) -> None:
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM ksadk_a2a_resume_states "
+                    "WHERE resume_key_sha256 = :key"
+                ),
+                {"key": self._hash(key)},
+            )
+
+
 __all__ = [
     "A2AResumeState",
     "A2AResumePayloadKind",
     "A2AResumeStateStore",
     "InMemoryA2AResumeStateStore",
+    "PostgresA2AResumeStateStore",
     "SQLiteA2AResumeStateStore",
 ]

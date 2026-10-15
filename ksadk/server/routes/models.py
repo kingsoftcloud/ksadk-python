@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Literal, Mapping, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -78,6 +78,10 @@ class ListSessionEventsActionRequest(BaseModel):
     Limit: int = Field(200, ge=1, le=2000)
     AfterSeqId: Optional[int] = Field(None, ge=0)
     BeforeSeqId: Optional[int] = Field(None, ge=1)
+    EventOrder: Optional[Literal["session_seq"]] = None
+    CursorSource: Optional[Literal["runtime", "control"]] = None
+    HistoryEpoch: Optional[str] = None
+    SnapshotSeqId: Optional[int] = Field(None, ge=0)
 
     @field_validator("CheckpointIds", "EventTypes", mode="before")
     @classmethod
@@ -92,6 +96,11 @@ class ListSessionEventsActionRequest(BaseModel):
     def validate_cursor_scope(self):
         if self.SessionId is None and (self.AfterSeqId is not None or self.BeforeSeqId is not None):
             raise ValueError("Seq cursors require SessionId")
+        if self.EventOrder == "session_seq":
+            if not str(self.SessionId or "").strip() or self.Offset not in (None, 0):
+                raise ValueError("EventOrder=session_seq requires SessionId and no Offset")
+            if self.CursorSource == "control":
+                raise ValueError("Runtime cannot continue a control cursor")
         return self
 
 
@@ -105,6 +114,9 @@ class ListSessionMessagesActionRequest(BaseModel):
     IncludeReasoning: bool = False
     IncludeToolEvents: bool = False
     IncludeAttachments: bool = True
+    HistoryEpoch: Optional[str] = None
+    CursorSource: Optional[Literal["runtime", "control"]] = None
+    SnapshotSeqId: Optional[int] = Field(None, ge=0)
 
 
 class ListSessionCheckpointsActionRequest(BaseModel):

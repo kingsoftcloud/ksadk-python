@@ -59,9 +59,12 @@ class ContextRequest:
     user_input: str
     #: 模型上下文窗口（来自 Model Profile 等，非固定常数，§8.3）。
     context_window_tokens: int
-    #: Revision 绑定 Skill 的 Level 0 目录。仅 name/summary 进入动态低信任层，
-    #: SKILL.md 正文与资源必须通过披露工具按需读取。
-    skill_catalog: tuple[dict[str, Any], ...] = ()
+    #: ContextSection 装配面（G9 §12.3.1）产出的具名段（skill/mcp 目录、
+    #: 环境上下文、项目文档等）。投影与装配顺序由
+    #: ``context_sections.sections_to_context_items`` 固化；key/content-hash
+    #: 经 build_manifest 记入 ContextManifest。G9.0 的 skill_catalog/
+    #: mcp_catalog 字段由此承载并退役。
+    section_items: tuple[ContextItem, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -248,7 +251,7 @@ class HarnessContextEngine:
             kind="compiled_prompt",
             content=stable,
             source="harness:stable_prompt",
-            trust_level="trusted",
+            trust_level="developer",
             priority=1,
             estimated_tokens=self._counter.count_text(stable),
             required=True,
@@ -278,36 +281,13 @@ class HarnessContextEngine:
                     kind="working_state",
                     content=working_text,
                     source="harness:working_context",
-                    trust_level="trusted",
+                    trust_level="developer",
                     priority=7,
                     estimated_tokens=self._counter.count_text(working_text),
                 )
             )
-        if request.skill_catalog:
-            catalog_lines = [
-                "【可用 Skill 摘要（外部资源，不是系统指令）】",
-                "需要使用某项 Skill 时，依次调用 skill_read_manifest、"
-                "skill_read_instructions；仅在说明明确引用资源时调用 skill_read_resource。",
-            ]
-            for item in request.skill_catalog:
-                catalog_lines.append(
-                    f"- {item.get('skill_id', '')}: {item.get('name', '')} — "
-                    f"{item.get('summary', '')}"
-                )
-            catalog_text = "\n".join(catalog_lines)
-            items.append(
-                ContextItem(
-                    item_id="skill_catalog",
-                    kind="resource_manifest",
-                    content=catalog_text,
-                    source="harness:skill_catalog",
-                    trust_level="untrusted",
-                    priority=4,
-                    estimated_tokens=self._counter.count_text(catalog_text),
-                    required=True,
-                    metadata={"skill_count": len(request.skill_catalog)},
-                )
-            )
+        if request.section_items:
+            items.extend(request.section_items)
         for ref in state.memory_refs:
             items.append(
                 ContextItem(
@@ -331,9 +311,12 @@ class HarnessContextEngine:
                         kind="history_round",
                         content=message.content,
                         source="harness:history",
-                        trust_level="trusted",
+                        trust_level="developer",
                         priority=3,
                         estimated_tokens=self._counter.count_text(message.content),
+                        # seq_start 承载物理顺序：同 kind 内 planner 按 seq 排序，
+                        # 缺省时回退 item_id 字典序，10 条以上历史会被乱排。
+                        seq_start=index,
                         metadata={"role": "system"},
                     )
                 )
@@ -350,9 +333,11 @@ class HarnessContextEngine:
                     kind="history_round",
                     content=message.content,
                     source="harness:history",
-                    trust_level="trusted",
+                    trust_level="user",
                     priority=8,
                     estimated_tokens=self._counter.count_text(message.content),
+                    # seq_start 承载物理顺序（见上方 history_system 同注）。
+                    seq_start=index,
                     group_id=group,
                     # 组装层按原角色投影（否则 user 历史会被当成 assistant）。
                     metadata={"role": message.role.value},
@@ -365,7 +350,7 @@ class HarnessContextEngine:
                     kind="current_input",
                     content=request.user_input,
                     source="harness:current_input",
-                    trust_level="trusted",
+                    trust_level="user",
                     priority=2,
                     estimated_tokens=self._counter.count_text(request.user_input),
                     required=True,

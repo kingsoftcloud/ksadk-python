@@ -1,15 +1,13 @@
-"""HostedTurnFinalizer —— 统一 Studio 与 canonical Runtime 的 turn 收尾（方案 §11.1 / P0）。
+"""HostedTurnFinalizer —— 可显式调用的 hosted turn 收尾组件（方案 §11.1 / P0）。
 
-之前 Studio `StudioRunService` 和 canonical `conversation_execution._finalize_hosted_turn`
-各自维护一套收尾逻辑（usage 回填、Context evidence、Memory Candidate、Trace），导致两条路径
-漂移（如 scope_id 硬编码 local-user、Memory 重复写）。本组件统一负责：
+本组件提供以下共用策略，但当前 Studio 和 canonical Runtime 尚未自动调用它：
 
 - actual usage 回填进 ContextPlan（planned vs actual 偏差可观测）。
 - capability mismatch 证据检测（方案 §6.1）。
-- Memory Candidate 抽取 + flush（据 MemoryPolicy，同一 Turn 不重复写）。
+- Memory Candidate 抽取 + flush（据 MemoryPolicy）。
 - 失败降级（best-effort，绝不阻断主链路，方案 §10.8）。
 
-Studio 与 canonical Runtime 都调用本组件，不再各自实现收尾。
+组件测试通过不能证明产品接线或跨调用幂等；调用方仍须负责运行时事实与写入回执。
 """
 
 from __future__ import annotations

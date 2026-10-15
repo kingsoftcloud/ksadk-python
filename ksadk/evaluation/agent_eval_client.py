@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from ksadk.common.cloud_headers import build_cloud_headers
 from ksadk.common.kop_client import KOPClient, KOPError
 
 from .cloud_converter import CloudDatasetColumn, CloudDatasetRow, CloudDatasetSnapshot
@@ -317,7 +318,7 @@ class AgentEvalCloudDatasetClient:
                 )
             return data
 
-        headers = {"Content-Type": "application/json"}
+        headers = build_cloud_headers({"Content-Type": "application/json"})
         if self._api_token:
             headers["Authorization"] = f"Bearer {self._api_token}"
         if self._account_id:

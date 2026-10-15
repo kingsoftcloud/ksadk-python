@@ -10,6 +10,7 @@ import httpx
 import requests
 
 from ksadk.common.auth import AWSV4Auth
+from ksadk.common.cloud_headers import build_cloud_headers, resolve_traffic_source
 from ksadk.skills.models import SkillListResponse, SkillRef
 
 _KOP_HOSTS = frozenset(
@@ -43,8 +44,12 @@ class SkillServiceClient:
         timeout: float = 60.0,
         transport: httpx.BaseTransport | None = None,
         allow_env_fallback: bool = True,
+        traffic_source: str | None = None,
     ):
         self.allow_env_fallback = allow_env_fallback
+        self.traffic_source = resolve_traffic_source(
+            traffic_source if traffic_source is not None or allow_env_fallback else ""
+        )
         resolve_env = _env if allow_env_fallback else lambda *names: ""
         self.base_url = _normalize_base_url(base_url)
         self.token = token
@@ -311,7 +316,7 @@ class SkillServiceClient:
                 headers["X-Action"] = action
                 headers["X-Version"] = self.api_version
         headers.update(self.extra_headers)
-        return headers
+        return build_cloud_headers(headers, traffic_source=self.traffic_source)
 
     def _get_json_kop(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         query = {"Action": action, "Version": self.api_version, **params}

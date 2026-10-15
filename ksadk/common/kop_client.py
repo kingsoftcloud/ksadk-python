@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import requests
 
 from ksadk.common.auth import AWSV4Auth
+from ksadk.common.cloud_headers import build_cloud_headers
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class KOPClient:
             if action:
                 headers["X-Action"] = action
                 headers["X-Version"] = self.api_version
-        return headers
+        return build_cloud_headers(headers)
 
     def _build_url(self, action: str) -> str:
         if self._kop_mode:

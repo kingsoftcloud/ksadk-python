@@ -19,8 +19,9 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 from pydantic import Field, model_validator
 
-from ksadk.knowledge_base.client import KnowledgeBaseClient
+from ksadk.common.cloud_headers import build_cloud_headers
 from ksadk.identity.resolver import iam_endpoint_candidates, is_inner_account_error
+from ksadk.knowledge_base.client import KnowledgeBaseClient
 from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
 from ksadk.plugins.contracts import PluginContractModel
 from ksadk.resource_runtime.contracts import Identifier, ResourceConfig, ResourceRef
@@ -40,6 +41,7 @@ _KSYUN_INTERNAL_HTTP_HOSTS = frozenset(
         "iam.internal.api.ksyun.com",
         "aicp.inner.api.ksyun.com",
         "aicp.internal.api.ksyun.com",
+        "agent-api-pre.kspmas-internal.ksyun.com",
     }
 )
 
@@ -184,7 +186,7 @@ class _HardenedSdkTransport:
                 method=request.method,
                 url=url,
                 data=request.data,
-                headers=dict(request.header),
+                headers=build_cloud_headers(request.header),
                 auth=request.auth,
                 timeout=self.timeout,
                 verify=True,
@@ -602,7 +604,13 @@ def resource_allowed_operations(config: ResourceConfig) -> tuple[ResourceOperati
     if kind == "knowledge-base":
         return ("search_knowledge_base",)
     if kind == "memory-instance":
-        return ("load_memory", "save_memory", "memory_status")
+        return (
+            "load_memory",
+            "save_memory",
+            "update_memory",
+            "delete_memory",
+            "memory_status",
+        )
     return ("list_skills", "search_skills", "load_skill", "read_skill_resource")
 
 

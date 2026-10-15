@@ -7,6 +7,7 @@ import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import urlopen
 
 from playwright.sync_api import Page, Response, expect, sync_playwright
@@ -455,7 +456,13 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
 
     approval_tray = page.locator('[data-ui="interaction-tray"]')
     expect(approval_tray).to_contain_text("echo safe")
-    second_page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
+    # A bare conversations entry starts a new local draft. A second window
+    # must explicitly open the confirmed conversation to replay its approval.
+    conversation_url = page.url
+    selection = parse_qs(urlsplit(conversation_url).fragment.partition("?")[2])
+    assert selection.get("agentId") == [AGENT_ID]
+    assert selection.get("sessionId"), "The active conversation must have a shareable session URL"
+    second_page.goto(conversation_url, wait_until="domcontentloaded")
     second_approval_tray = second_page.locator('[data-ui="interaction-tray"]')
     expect(second_approval_tray).to_contain_text("echo safe", timeout=15_000)
     second_page.get_by_role("button", name="已思考").first.click(timeout=90_000)

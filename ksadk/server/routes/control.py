@@ -109,7 +109,7 @@ async def get_checkpoint_resume_preview_action(
 ):
     invocation_identity = coerce_trusted_invocation_identity(invocation_identity)
     service = deps.resolve_session_service()
-    await _require_control_session(
+    session = await _require_control_session(
         service,
         session_id=request.SessionId,
         agent_id=request.AgentId,
@@ -122,6 +122,7 @@ async def get_checkpoint_resume_preview_action(
         session_id=request.SessionId,
         run_id=str(request.RunId),
         checkpoint_id=str(request.CheckpointId),
+        expected_session=session,
     )
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Checkpoint not found")
@@ -185,6 +186,7 @@ async def resume_run_action(
         session_id=request.SessionId,
         run_id=str(request.RunId),
         checkpoint_id=str(request.CheckpointId),
+        expected_session=session,
     )
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Checkpoint not found")
@@ -525,12 +527,16 @@ async def subscribe_run_events_action(
     if not session_id or not invocation_id:
         raise HTTPException(status_code=400, detail="SessionId and InvocationId are required")
     service = deps.resolve_session_service()
-    await _require_control_session(
+    # Subscription authorizes a read; it must not restore the full Agent
+    # context before opening a stream. Other control actions retain replay.
+    from .sessions import _require_identity_action_session
+    await _require_identity_action_session(
         service,
         session_id=session_id,
         agent_id=AgentId,
         user_id=UserId,
         invocation_identity=invocation_identity,
+        history_only=True,
     )
     if not await _session_contains_invocation(service, session_id, invocation_id):
         raise HTTPException(
@@ -554,6 +560,7 @@ async def subscribe_run_events_action(
                 service,
                 session_id,
                 after_seq_id=last_seq_id,
+                invocation_id=invocation_id,
             )
             for event in events:
                 last_seq_id = max(last_seq_id, event.seq_id)

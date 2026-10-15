@@ -6,8 +6,9 @@ import os
 import re
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
+from ksadk.common.cloud_headers import build_cloud_headers, resolve_traffic_source
 from ksadk.sandbox.base import SandboxError
 
 
@@ -17,6 +18,12 @@ class ExplicitE2BConnection(BaseModel):
     api_url: str = Field(strict=True)
     domain: str = Field(strict=True)
     api_key: SecretStr = Field(min_length=1, repr=False)
+    traffic_source: str = Field(default_factory=resolve_traffic_source)
+
+    @field_validator("traffic_source")
+    @classmethod
+    def validate_traffic_source(cls, value):
+        return resolve_traffic_source(value)
 
     @model_validator(mode="after")
     def validate_target(self):
@@ -63,4 +70,5 @@ class ExplicitE2BConnection(BaseModel):
             "domain": self.domain,
             "debug": False,
             "request_timeout": 30,
+            "headers": build_cloud_headers(traffic_source=self.traffic_source),
         }

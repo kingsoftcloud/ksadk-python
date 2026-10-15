@@ -94,7 +94,9 @@ def looks_like_textual_attachment(mime_type: str, display_name: str) -> bool:
     return is_textual_mime(mime_type) or suffix in _TEXT_FILE_EXTENSIONS
 
 
-def extract_pdf_text(raw: bytes) -> str:
+def extract_pdf_text(
+    raw: bytes, *, max_pages: int | None = 10, extraction_metadata: dict | None = None,
+) -> str:
     try:
         from pypdf import PdfReader
     except Exception:
@@ -106,13 +108,28 @@ def extract_pdf_text(raw: bytes) -> str:
         return ""
 
     segments: List[str] = []
-    for page in reader.pages[:10]:
+    total, failed, empty, text_bytes = len(reader.pages), 0, 0, 0
+    pages = reader.pages if max_pages is None else reader.pages[:max_pages]
+    for page in pages:
         try:
             page_text = page.extract_text() or ""
         except Exception:
             page_text = ""
+            failed += 1
         if page_text:
+            text_bytes += len(page_text.encode("utf-8")) + 1
+            if text_bytes > _MAX_PROCESS_BYTES:
+                raise ValueError("document_extraction_text_limit")
             segments.append(page_text)
+        else:
+            empty += 1
+
+    if extraction_metadata is not None:
+        extraction_metadata.update(
+            total_pages=total, extracted_pages=len(pages), failed_page_count=failed,
+            pages_without_text=empty,
+            text_extraction_complete=len(pages) == total and not failed and not empty,
+        )
 
     return "\n".join(segments).strip()
 
@@ -234,7 +251,9 @@ def build_attachment_results(attachments: List[Dict[str, Any]]) -> list[dict[str
     return [build_attachment_result(attachment) for attachment in attachments or []]
 
 
-def build_attachment_result(attachment: Mapping[str, Any]) -> dict[str, Any]:
+def build_attachment_result(
+    attachment: Mapping[str, Any], *, capture_full_text: bool = False,
+) -> dict[str, Any]:
     display_name = str(attachment.get("display_name") or "uploaded_file")
     mime_type = str(attachment.get("mime_type") or "application/octet-stream")
     transport = str(attachment.get("transport") or "")
@@ -252,6 +271,7 @@ def build_attachment_result(attachment: Mapping[str, Any]) -> dict[str, Any]:
         size_bytes=size_bytes,
         raw=raw,
         allow_archive=True,
+        capture_full_text=capture_full_text,
     )
 
 
@@ -344,6 +364,7 @@ def _build_attachment_result_from_raw(
     size_bytes: Any,
     raw: bytes | None,
     allow_archive: bool,
+    capture_full_text: bool = False,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "display_name": display_name,
@@ -370,9 +391,9 @@ def _build_attachment_result_from_raw(
         return result
 
     if result["kind"] == "text":
-        return _extract_text_attachment(result, raw)
+        return _extract_text_attachment(result, raw, capture_full_text=capture_full_text)
     if result["kind"] == "document":
-        return _extract_document_attachment(result, raw)
+        return _extract_document_attachment(result, raw, capture_full_text=capture_full_text)
     if result["kind"] == "image":
         return _extract_image_attachment(result, raw)
     if result["kind"] == "archive" and allow_archive:
@@ -383,7 +404,9 @@ def _build_attachment_result_from_raw(
     return result
 
 
-def _extract_text_attachment(result: dict[str, Any], raw: bytes) -> dict[str, Any]:
+def _extract_text_attachment(
+    result: dict[str, Any], raw: bytes, *, capture_full_text: bool = False,
+) -> dict[str, Any]:
     text = _decode_text_bytes(raw)
     if not text:
         result["status"] = "failed"
@@ -391,24 +414,31 @@ def _extract_text_attachment(result: dict[str, Any], raw: bytes) -> dict[str, An
         result["extraction_method"] = "text_decode"
         return result
 
-    return _with_text(result, text=text, extraction_method="text_decode")
+    return _with_text(result, text=text, extraction_method="text_decode",
+                      capture_full_text=capture_full_text)
 
 
-def _extract_document_attachment(result: dict[str, Any], raw: bytes) -> dict[str, Any]:
+def _extract_document_attachment(
+    result: dict[str, Any], raw: bytes, *, capture_full_text: bool = False,
+) -> dict[str, Any]:
     suffix = Path(str(result.get("display_name") or "")).suffix.lower()
     mime_type = str(result.get("mime_type") or "")
 
     if suffix == ".pdf" or mime_type == "application/pdf":
-        native_text = extract_pdf_text(raw)
+        metadata = {}
+        native_text = (extract_pdf_text(raw, max_pages=None, extraction_metadata=metadata)
+                       if capture_full_text else extract_pdf_text(raw))
         if native_text and not _pdf_text_quality_is_poor(native_text):
-            result["document"] = {"format": "pdf"}
-            return _with_text(result, text=native_text, extraction_method="pdf_native")
+            result["document"] = {"format": "pdf", **metadata}
+            return _with_text(result, text=native_text, extraction_method="pdf_native",
+                              capture_full_text=capture_full_text)
 
         ocr = perform_ocr(raw, mime_type, str(result.get("display_name") or ""))
         if ocr.get("text"):
             result["document"] = {"format": "pdf", "ocr_engine": ocr.get("engine") or ""}
             result["warnings"] = ["PDF 原生文本抽取为空或质量较差，已回退到 OCR。"]
-            return _with_text(result, text=ocr["text"], extraction_method="pdf_ocr")
+            return _with_text(result, text=ocr["text"], extraction_method="pdf_ocr",
+                              capture_full_text=capture_full_text)
 
         result["status"] = "failed"
         result["document"] = {"format": "pdf"}
@@ -428,7 +458,8 @@ def _extract_document_attachment(result: dict[str, Any], raw: bytes) -> dict[str
         text = extractor[0](raw)
         result["document"] = dict(extractor[2])
         if text:
-            return _with_text(result, text=text, extraction_method=extractor[1])
+            return _with_text(result, text=text, extraction_method=extractor[1],
+                              capture_full_text=capture_full_text)
         result["status"] = "failed"
         result["warnings"] = [
             f"{suffix.lstrip('.').upper()} 文档抽取失败，请检查文件是否损坏或重新导出后重试。"
@@ -438,7 +469,7 @@ def _extract_document_attachment(result: dict[str, Any], raw: bytes) -> dict[str
 
     if suffix in _TEXT_FILE_EXTENSIONS:
         result["document"] = {"format": suffix.lstrip(".")}
-        return _extract_text_attachment(result, raw)
+        return _extract_text_attachment(result, raw, capture_full_text=capture_full_text)
 
     result["status"] = "partial"
     result["document"] = {"format": suffix.lstrip(".") or "document"}
@@ -570,14 +601,21 @@ def _with_text(
     text: str,
     extraction_method: str,
     status: str = "ok",
+    capture_full_text: bool = False,
 ) -> dict[str, Any]:
     normalized = _normalize_text(text)
     if not normalized:
         return result
+    if capture_full_text and len(normalized.encode("utf-8")) > _MAX_PROCESS_BYTES:
+        raise ValueError("document_extraction_text_limit")
     result["status"] = status
     result["extraction_method"] = extraction_method
+    result["original_text_chars"] = len(normalized)
+    result["text_truncated"] = len(normalized) > _MAX_INLINE_TEXT_CHARS
     result["text"] = _truncate_text(normalized, _MAX_INLINE_TEXT_CHARS)
     result["text_excerpt"] = _truncate_text(normalized, _MAX_TEXT_EXCERPT_CHARS)
+    if capture_full_text and result["text_truncated"]:
+        result["full_text"] = normalized
     return result
 
 
@@ -730,7 +768,7 @@ def _truncate_text(text: str, limit: int) -> str:
 
 def _pdf_text_quality_is_poor(text: str) -> bool:
     normalized = "".join(ch for ch in text if not ch.isspace())
-    if len(normalized) < 20:
+    if not normalized:
         return True
     readable = sum(1 for ch in normalized if ch.isalnum() or ("\u4e00" <= ch <= "\u9fff"))
     return readable / max(len(normalized), 1) < 0.5

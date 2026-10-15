@@ -29,7 +29,7 @@ class _PostgresSchemaMixin:
             if self._schema_ready:
                 return
             await self._ensure_pool()
-            async with self._pool.acquire() as connection:
+            async with self._connection(write=True) as connection:
                 # A new service instance normally points at an already-current
                 # shared schema.  Avoid taking any DDL lock in that hot path;
                 # otherwise a cold initializer can deadlock with a ready pod's

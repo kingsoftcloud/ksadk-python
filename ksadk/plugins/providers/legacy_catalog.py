@@ -46,7 +46,7 @@ def _provider_manifest(
         "compatibility": {
             "kernelApi": ">=1,<2",
             "runtimeProtocols": ["agentkit.runtime/v1"],
-            "python": ">=3.10,<3.15" if runtime == "python" else None,
+            "python": ">=3.12,<3.15" if runtime == "python" else None,
         },
         "healthContract": "plugin.health/v1",
         "provenance": {

@@ -13,6 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from ksadk_runtime_common.http_headers import build_content_disposition
 from ksadk_runtime_common.workspace_files.bootstrap import (
     workspace_files_enabled,
     workspace_files_max_upload_bytes,
@@ -159,7 +160,7 @@ def create_workspace_files_router(
         return StreamingResponse(
             buf,
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+            headers={"Content-Disposition": build_content_disposition(zip_name)},
         )
 
     @router.head("/files/{file_path:path}")

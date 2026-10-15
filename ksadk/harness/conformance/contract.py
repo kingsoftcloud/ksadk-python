@@ -269,9 +269,7 @@ def verify_tool_failure_honesty(events: list[RuntimeEvent], report: ConformanceR
             )
 
 
-def verify_tool_reliability_honesty(
-    events: list[RuntimeEvent], report: ConformanceReport
-) -> None:
+def verify_tool_reliability_honesty(events: list[RuntimeEvent], report: ConformanceReport) -> None:
     """Tool 可靠性声明必须与 Receipt/Transport 事实一致。
 
     旧 Runner 没有该 metadata 时保持兼容；一旦声明，就不允许把只有 Receipt 的
@@ -293,9 +291,7 @@ def verify_tool_reliability_honesty(
         side_effect = str(reliability.get("side_effect") or "unknown")
         if semantics not in valid_semantics:
             report.fail("tool-reliability", f"{call_id} 交付语义非法: {semantics!r}")
-        if semantics == "effectively_once" and not (
-            receipt_enabled and transport_idempotent
-        ):
+        if semantics == "effectively_once" and not (receipt_enabled and transport_idempotent):
             report.fail(
                 "tool-reliability",
                 f"{call_id} effectively_once 缺少 Receipt 或 Transport 幂等",
@@ -317,10 +313,11 @@ def verify_tool_reliability_honesty(
 
 
 def verify_approval_flow(events: list[RuntimeEvent], report: ConformanceReport) -> None:
-    """approval.requested → run.interrupted(审批) → approval.resolved → run.resumed 顺序守恒。"""
+    """Approval needs its own interrupt; any resume needs a prior interrupt."""
     requested: set[str] = set()
     resolved: set[str] = set()
     seen_interrupt = False
+    seen_approval_interrupt = False
     for event in events:
         if event.event_type == EventType.APPROVAL_REQUESTED:
             approval_id = str(_payload(event).get("approval_id", ""))
@@ -328,8 +325,9 @@ def verify_approval_flow(events: list[RuntimeEvent], report: ConformanceReport) 
                 report.fail("approval-idempotency", f"approval_id 重复 requested: {approval_id}")
             requested.add(approval_id)
         elif event.event_type == EventType.RUN_INTERRUPTED:
+            seen_interrupt = True
             if str(_payload(event).get("reason", "")) == "tool_approval":
-                seen_interrupt = True
+                seen_approval_interrupt = True
         elif event.event_type == EventType.APPROVAL_RESOLVED:
             approval_id = str(_payload(event).get("approval_id", ""))
             if approval_id and approval_id not in requested:
@@ -337,12 +335,13 @@ def verify_approval_flow(events: list[RuntimeEvent], report: ConformanceReport) 
             if approval_id in resolved:
                 report.fail("approval-idempotency", f"approval_id 重复 resolved: {approval_id}")
             resolved.add(approval_id)
-            if not seen_interrupt:
+            if not seen_approval_interrupt:
                 report.fail("approval-flow", "approval.resolved 出现在 run.interrupted 之前")
         elif event.event_type == EventType.RUN_RESUMED:
             if not seen_interrupt:
                 report.fail("recovery", "run.resumed 必须出现在 run.interrupted 之后")
             seen_interrupt = False
+            seen_approval_interrupt = False
 
 
 def verify_checkpoint_honesty(events: list[RuntimeEvent], report: ConformanceReport) -> None:
@@ -471,8 +470,7 @@ def run_conformance_suite(
     # model/tool call namespace. Validate every native run independently.
     streams: dict[str, list[RuntimeEvent]] = {}
     for event in events:
-        native_run = str(getattr(event, "run_id", None) or
-                         getattr(event, "invocation_id", ""))
+        native_run = str(getattr(event, "run_id", None) or getattr(event, "invocation_id", ""))
         streams.setdefault(native_run, []).append(event)
     for stream in streams.values() or [events]:
         verify_start_and_terminal_event(stream, report)

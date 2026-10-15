@@ -127,7 +127,7 @@ jobs:
         # make invocation produces the full signed .app bundle.
         run: make studio-app-package
         env:
-          KSADK_WEB_VERSION: "0.3.12"
+          KSADK_WEB_VERSION: "0.3.13"
           KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_CODESIGN_IDENTITY: ${{ env.STUDIO_APP_CODESIGN_IDENTITY }}
@@ -231,7 +231,7 @@ jobs:
           make build-studio-static
           make build-wheel
         env:
-          KSADK_WEB_VERSION: "0.3.12"
+          KSADK_WEB_VERSION: "0.3.13"
           KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
 
       - name: Prepare DSH toolchain (win32-x64 prebuilds)
@@ -261,7 +261,7 @@ jobs:
         shell: bash
         run: make studio-app-package-windows
         env:
-          KSADK_WEB_VERSION: "0.3.12"
+          KSADK_WEB_VERSION: "0.3.13"
           KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_PYTHON_VERSION: "3.13.1"

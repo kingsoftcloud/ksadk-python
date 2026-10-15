@@ -15,7 +15,7 @@ import { useWorkspaceContributions } from "./plugins/workspaceSlots";
 import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
-import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
+import { SettingsPage, SETTINGS_SECTION_IDS, type SettingsSection } from "./pages/SettingsPage";
 import { MoreActionsMenu } from "./components/MoreActionsMenu";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
@@ -56,6 +56,7 @@ const VIEW_TITLE: Record<View, string> = {
   "runtime-resources": "运行资源",
   plugins: "已安装插件",
   automations: "自动化",
+  settings: "设置",
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
@@ -110,6 +111,7 @@ export function parseStudioLocationHash(hash: string): {
   editingAgentId: string;
   detailAgentId: string;
   evaluationRunId: string;
+  settingsSection: SettingsSection | "";
   conversationAgentId?: string;
   sessionId?: string;
 } {
@@ -136,8 +138,19 @@ export function parseStudioLocationHash(hash: string): {
   const resourceKind = view === "resources" && RESOURCE_KINDS.includes(parts[1] as ResourceKind)
     ? parts[1] as ResourceKind
     : "model";
+  const settingsSection = view === "settings" && SETTINGS_SECTION_IDS.includes(parts[1] as SettingsSection)
+    ? parts[1] as SettingsSection
+    : "";
   const params = new URLSearchParams(search);
-  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId, ...(view === "conversations" && params.has("agentId") ? { conversationAgentId: params.get("agentId") || "", sessionId: params.get("sessionId") || "" } : {}) };
+  return {
+    view,
+    resourceKind,
+    editingAgentId,
+    detailAgentId,
+    evaluationRunId,
+    settingsSection,
+    ...(view === "conversations" && params.has("agentId") ? { conversationAgentId: params.get("agentId") || "", sessionId: params.get("sessionId") || "" } : {}),
+  };
 }
 
 export function parseChatTargetValue(value: string): {
@@ -212,8 +225,7 @@ export default function App() {
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [runtimeChecked, setRuntimeChecked] = useState(false);
   const workspaceDiscoveryEpoch = useRef(0);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>(initialRoute.settingsSection || "models");
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>(() => readDiscoveryCache("cloudDeployments") || []);
   const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(() => Boolean(readDiscoveryCache("cloudDeployments")));
@@ -250,6 +262,9 @@ export default function App() {
         setCloudDeploymentId("");
       }
       setRequestedSessionId(route.sessionId || "");
+      if (route.view === "settings") {
+        setSettingsSection(route.settingsSection || "models");
+      }
       if (route.editingAgentId || route.detailAgentId) {
         setCurrentAgentId(route.editingAgentId || route.detailAgentId);
       }
@@ -264,13 +279,22 @@ export default function App() {
   }, []);
 
   // hash 深链：#/agents 等，便于刷新定位
-  function setView(v: View) {
+  function setView(v: View, sub?: string) {
     setViewState(v);
     if (v === "conversations") setChatMounted(true);
     if (v !== "create") setEditingAgentId("");
     setEvaluationRunId("");
-    const nextHash = v === "resources" ? `#/resources/${resourceKind}` : v.startsWith("plugin:") ? `#/workspace/${encodeURIComponent(v.slice(7))}` : `#/${v}`;
+    const nextHash = v === "resources" ? `#/resources/${resourceKind}`
+      : v === "settings" && sub ? `#/settings/${sub}`
+      : v.startsWith("plugin:") ? `#/workspace/${encodeURIComponent(v.slice(7))}`
+      : `#/${v}`;
     if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
+  }
+
+  function openSettings(section: SettingsSection = "models") {
+    setMobileNavOpen(false);
+    setSettingsSection(section);
+    setView("settings", section);
   }
 
   function openEvaluationRun(runId: string) {
@@ -372,14 +396,18 @@ export default function App() {
 
   useEffect(() => {
     const requestEpoch = ++workspaceDiscoveryEpoch.current;
-    apiFetch("/api/v1/system/bootstrap").then(r => r.json()).then(d => {
+    apiFetch("/api/v1/system/bootstrap").then(r => {
+      if (!r.ok) throw new Error("Workspace bootstrap unavailable");
+      return r.json();
+    }).then(d => {
       if (requestEpoch !== workspaceDiscoveryEpoch.current) return;
       setWorkspace(d.workspace || null);
       setOperationScope(d.operationScope || null);
       setRuntimeReady(Boolean(d.workspace));
     }).catch(() => {
       if (requestEpoch === workspaceDiscoveryEpoch.current) {
-        setOperationScope(null);
+        // Keep the last confirmed owner on a failed refresh. Replacing only
+        // its credential scope would move a live conversation to a new store.
         setRuntimeReady(false);
       }
     }).finally(() => {
@@ -405,8 +433,13 @@ export default function App() {
   function switchAgent(id: string) {
     if (!id) return;
     setCurrentAgentId(id);
+    setRequestedSessionId("");
+    setConversationSessionId("");
     if (view === "automations" && automationAgentScopeId) setAutomationAgentScopeId(id);
-    if (view === "conversations") setChatMounted(true);
+    if (view === "conversations") {
+      setChatMounted(true);
+      window.history.replaceState(null, "", `#/conversations?agentId=${encodeURIComponent(id)}`);
+    }
   }
 
   const studioCloudDeployments = cloudDeployments.filter(
@@ -415,6 +448,35 @@ export default function App() {
   );
   const selectedCloudDeployment = studioCloudDeployments.find(item => item.id === cloudDeploymentId);
   const isCloudChat = view === "conversations" && Boolean(selectedCloudDeployment);
+  const conversationSelection = useRef({ agentId: currentAgentId, local: !isCloudChat, requestedSessionId, newChatRequest });
+  conversationSelection.current = { agentId: currentAgentId, local: !isCloudChat, requestedSessionId, newChatRequest };
+  const confirmedConversation = useRef<{ agentId: string; sessionId: string } | null>(null);
+  const onConversationSessionChanged = useCallback((sessionId: string, ownerAgentId?: string, reason?: "cleanup") => {
+    const selected = conversationSelection.current;
+    if (reason === "cleanup" || !selected.local || ownerAgentId !== selected.agentId) return;
+    setConversationSessionId(sessionId);
+    const route = parseStudioLocationHash(window.location.hash);
+    if (route.view !== "conversations"
+      || (route.conversationAgentId && route.conversationAgentId !== ownerAgentId)) return;
+    if (!sessionId) {
+      const confirmed = confirmedConversation.current;
+      // A cleared selection (for example after deletion) retires only the
+      // confirmed session. An unresolved explicit deep link is still pending.
+      if (!confirmed || confirmed.agentId !== ownerAgentId
+        || (selected.requestedSessionId && selected.requestedSessionId !== confirmed.sessionId)) return;
+      confirmedConversation.current = null;
+      setRequestedSessionId("");
+      window.history.replaceState(null, "", `#/conversations?agentId=${encodeURIComponent(ownerAgentId)}`);
+      return;
+    }
+    if (selected.newChatRequest || (selected.requestedSessionId && route.sessionId !== sessionId)) return;
+    confirmedConversation.current = { agentId: ownerAgentId, sessionId };
+    // Mirror the confirmed selection without opening/reloading it. A browser
+    // reload can then use the existing explicit-session recovery path.
+    const params = new URLSearchParams({ agentId: ownerAgentId, sessionId });
+    const hash = `#/conversations?${params}`;
+    if (window.location.hash !== hash) window.history.replaceState(null, "", hash);
+  }, []);
 
   useEffect(() => {
     if (view !== "conversations" || !agentsLoaded || !cloudDeploymentsLoaded) return;
@@ -478,6 +540,9 @@ export default function App() {
     if (kind === "cloud" && id) {
       if (!studioCloudDeployments.some(item => item.id === id)) return;
       setCloudDeploymentId(id);
+      setRequestedSessionId("");
+      setConversationSessionId("");
+      window.history.replaceState(null, "", "#/conversations");
       setRunPanelOpen(false);
       setChatMounted(true);
       return;
@@ -488,7 +553,8 @@ export default function App() {
     }
   }
 
-  function enterChat(agentId?: string) {
+  function enterChat(agentId?: string, sessionId?: string) {
+    setRequestedSessionId("");
     const localTarget = currentAgent || agents[0];
     const cloudTarget = selectedCloudDeployment || studioCloudDeployments[0];
     if (agentId) {
@@ -509,12 +575,17 @@ export default function App() {
     }
     setChatMounted(true);
     setView("conversations");
+    if (agentId) {
+      const params = new URLSearchParams({ agentId });
+      if (sessionId) params.set("sessionId", sessionId);
+      window.history.replaceState(null, "", `#/conversations?${params}`);
+    }
   }
 
   // Keep the high frequency desktop actions available without making the
   // user leave the composer. Cmd/Ctrl+N creates a local draft through the
-  // same path as the rail action; Cmd/Ctrl+, opens settings without stealing
-  // focus until the overlay is ready.
+  // same path as the rail action; Cmd/Ctrl+, opens the settings page without
+  // stealing focus.
   useEffect(() => {
     const handleGlobalShortcut = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
@@ -555,7 +626,10 @@ export default function App() {
       } else if (event.key === ",") {
         event.preventDefault();
         setSettingsSection("general");
-        setSettingsOpen(true);
+        setViewState("settings");
+        if (window.location.hash !== "#/settings/general") {
+          window.history.pushState(null, "", "#/settings/general");
+        }
       }
     };
     window.addEventListener("keydown", handleGlobalShortcut);
@@ -620,8 +694,39 @@ export default function App() {
     || view === "observability"
     || Boolean(pluginPageId);
   const railCanExpand = viewportMode !== "compact";
+  // The conversation store is scoped by workspace and credential identity.
+  // Mounting with an empty scope would move a typed draft when bootstrap
+  // returns the actual owner a moment later.
+  const chatScopeReady = Boolean(workspace?.workspaceId || workspace?.path);
   const railExpanded = railCanExpand && (railExpandedPreference ?? true);
   useEffect(() => { setMobileNavOpen(false); }, [view, resourceKind, viewportMode]);
+
+  // 首次使用引导：工作区还没有任何模型配置时，把默认落地页接管到设置-模型分区。
+  // 仅在用户仍停留在 Agent 落地页时触发一次，之后可自由导航不再打扰。
+  const autoOnboardEpoch = useRef(0);
+  const viewRef = useRef(view);
+  useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => {
+    const epoch = ++autoOnboardEpoch.current;
+    let cancelled = false;
+    apiFetch("/api/v1/catalog/resources?limit=200")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (cancelled || epoch !== autoOnboardEpoch.current || !d) return;
+        const hasModel = (d.items || []).some(
+          (item: { kind?: string; source?: string }) =>
+            item.kind === "model" && (item.source === "local" || item.source === "market"),
+        );
+        if (hasModel || viewRef.current !== "agents") return;
+        setSettingsSection("models");
+        setViewState("settings");
+        if (window.location.hash !== "#/settings/models") {
+          window.history.pushState(null, "", "#/settings/models");
+        }
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   function toggleRail() {
     if (!railCanExpand) { setMobileNavOpen(open => !open); return; }
@@ -661,11 +766,7 @@ export default function App() {
         runtimeReady={runtimeReady}
         workspaceRunCount={workspaceRunCount}
         onNavigate={navigateFromRail}
-        onOpenSettings={() => {
-          setMobileNavOpen(false);
-          setSettingsSection("general");
-          setSettingsOpen(true);
-        }}
+        onOpenSettings={() => openSettings("models")}
         onWorkspaceSwitch={async () => {
           setMobileNavOpen(false);
           try {
@@ -774,7 +875,14 @@ export default function App() {
           {/* 会话页常驻挂载（display 切换），来回切换不重建工作台 */}
           <div className="chat-wrap" data-layout="workbench" style={{ display: view === "conversations" ? "flex" : "none" }}>
             <div className="chat-host">
-              {chatMounted && isCloudChat && selectedCloudDeployment && (
+              {chatMounted && !chatScopeReady && (
+                <div className="chat-target-loading" role={runtimeChecked ? "alert" : "status"}
+                  aria-label={runtimeChecked ? "工作区暂不可用" : "正在连接工作区"}>
+                  {!runtimeChecked && <i />}
+                  <span>{runtimeChecked ? "工作区暂不可用，请刷新后重试。" : "正在连接工作区…"}</span>
+                </div>
+              )}
+              {chatMounted && chatScopeReady && isCloudChat && selectedCloudDeployment && (
                 <ChatWorkspace
                   newChatRequest={newChatRequest}
                   onNewChatStarted={onNewChatStarted}
@@ -782,6 +890,8 @@ export default function App() {
                   historyHost={historyHost}
                   headerHost={conversationHeaderHost}
                   onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
+                  cloudTarget
+                  key={selectedCloudDeployment.id}
                   agentId={selectedCloudDeployment.agentId || "Agent"}
                   agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
                   workspacePath={workspace?.path}
@@ -792,14 +902,14 @@ export default function App() {
                   refreshTick={refreshTick}
                 />
               )}
-              {chatMounted && !isCloudChat && currentAgentId && (
+              {chatMounted && chatScopeReady && !isCloudChat && currentAgentId && (
                 <ChatWorkspace
                   newChatRequest={newChatRequest}
                   onNewChatStarted={onNewChatStarted}
                   integratedHistory
                   historyHost={historyHost}
                   headerHost={conversationHeaderHost}
-                  onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
+                  onSelectConversation={sessionId => { enterChat(currentAgentId, sessionId); setMobileNavOpen(false); }}
                   agentId={currentAgentId}
                   workspacePath={workspace?.path}
                   workspaceId={workspace?.workspaceId}
@@ -810,15 +920,12 @@ export default function App() {
                   agentAppearance={currentAgent?.metadata.appearance}
                   active={view === "conversations"}
                   refreshTick={refreshTick}
-                  onSessionChanged={setConversationSessionId}
+                  onSessionChanged={onConversationSessionChanged}
                   onConfigureAgent={() => openEdit(currentAgentId)}
-                  onOpenSettings={() => {
-                    setSettingsSection("credentials");
-                    setSettingsOpen(true);
-                  }}
+                  onOpenSettings={() => openSettings("models")}
                 />
               )}
-              {chatMounted && !isCloudChat && !currentAgentId && (
+              {chatMounted && chatScopeReady && !isCloudChat && !currentAgentId && (
                 agentsLoaded && cloudDeploymentsLoaded ? (
                   <div className="empty-state chat-agent-empty" role="status">
                     <span className="empty-icon"><KingIcon name="cpu" size={24} /></span>
@@ -886,7 +993,7 @@ export default function App() {
                 onChanged={loadAgents}
               />
             )}
-            {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={openResources} refreshTick={refreshTick} />}
+            {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={openResources} refreshTick={refreshTick} onOpenModelSetup={() => openSettings("models")} />}
             {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={() => openCreate()} refreshTick={refreshTick} />}
             {view === "deployments" && (
               <DeploymentsPage
@@ -908,18 +1015,23 @@ export default function App() {
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
             {view === "plugins" && <PluginsPage refreshTick={refreshTick} />}
             {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} refreshTick={refreshTick} />}
+            {view === "settings" && (
+              <SettingsPage
+                themePreference={studioTheme.preference}
+                onThemePreferenceChange={studioTheme.setPreference}
+                initialSection={settingsSection}
+                onSectionChange={section => {
+                  setSettingsSection(section);
+                  if (view === "settings" && window.location.hash !== `#/settings/${section}`) {
+                    window.history.replaceState(null, "", `#/settings/${section}`);
+                  }
+                }}
+              />
+            )}
           </div>
         </main>
       </div>
 
-        {settingsOpen && (
-          <SettingsOverlay
-            themePreference={studioTheme.preference}
-            onThemePreferenceChange={studioTheme.setPreference}
-            initialSection={settingsSection}
-            onClose={() => setSettingsOpen(false)}
-          />
-        )}
         <ToastRegion />
       </div>
     </>

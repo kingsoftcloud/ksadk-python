@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 ENV_A2A_EVENT_OUTBOX_PATH = "KSADK_A2A_EVENT_OUTBOX_PATH"
 DEFAULT_A2A_EVENT_OUTBOX_PATH = ".agentengine/a2a_event_outbox.sqlite3"
 
@@ -57,6 +60,12 @@ class A2ATaskEventOutbox(ABC):
     async def record_failure(self, batch_id: str, error: str) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    async def dead_letter(self, batch_id: str, error: str) -> None:
+        """Preserve a permanently rejected batch outside the live FIFO."""
+
+        raise NotImplementedError
+
 
 def _serialize_events(events: list[dict[str, Any]]) -> str:
     return json.dumps(events, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -72,6 +81,7 @@ class InMemoryA2ATaskEventOutbox(A2ATaskEventOutbox):
 
     def __init__(self) -> None:
         self._batches: dict[str, A2ATaskEventBatch] = {}
+        self._dead_letters: dict[str, tuple[A2ATaskEventBatch, str]] = {}
         self._lock = asyncio.Lock()
         self._next_sequence = 0
 
@@ -119,6 +129,12 @@ class InMemoryA2ATaskEventOutbox(A2ATaskEventOutbox):
                     events=batch.events,
                     attempt_count=batch.attempt_count + 1,
                 )
+
+    async def dead_letter(self, batch_id: str, error: str) -> None:
+        async with self._lock:
+            batch = self._batches.pop(batch_id, None)
+            if batch is not None:
+                self._dead_letters[batch_id] = (batch, error[:512])
 
 
 class SQLiteA2ATaskEventOutbox(A2ATaskEventOutbox):
@@ -175,6 +191,20 @@ class SQLiteA2ATaskEventOutbox(A2ATaskEventOutbox):
                 """
                 CREATE TABLE IF NOT EXISTS a2a_task_event_outbox_sequence (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS a2a_task_event_dead_letters (
+                    sequence INTEGER NOT NULL,
+                    batch_id TEXT PRIMARY KEY,
+                    platform_task_id TEXT NOT NULL,
+                    events_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL,
+                    last_error TEXT NOT NULL,
+                    dead_lettered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -250,6 +280,10 @@ class SQLiteA2ATaskEventOutbox(A2ATaskEventOutbox):
             (error[:512], batch_id),
         )
 
+    async def dead_letter(self, batch_id: str, error: str) -> None:
+        await self.initialize()
+        await asyncio.to_thread(self._dead_letter_sync, batch_id, error[:512])
+
     def _execute(self, statement: str, params: tuple[Any, ...]) -> None:
         connection = sqlite3.connect(self._path, timeout=5)
         try:
@@ -298,6 +332,35 @@ class SQLiteA2ATaskEventOutbox(A2ATaskEventOutbox):
         finally:
             connection.close()
 
+    def _dead_letter_sync(self, batch_id: str, error: str) -> None:
+        connection = sqlite3.connect(self._path, timeout=5, isolation_level=None)
+        try:
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO a2a_task_event_dead_letters(
+                    sequence, batch_id, platform_task_id, events_json, created_at,
+                    attempt_count, last_error
+                )
+                SELECT sequence, batch_id, platform_task_id, events_json, created_at,
+                       attempt_count, ?
+                FROM a2a_task_event_outbox
+                WHERE batch_id = ?
+                """,
+                (error, batch_id),
+            )
+            connection.execute(
+                "DELETE FROM a2a_task_event_outbox WHERE batch_id = ?",
+                (batch_id,),
+            )
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _pending_sync(self, limit: int) -> list[tuple[Any, ...]]:
         connection = sqlite3.connect(self._path, timeout=5)
         try:
@@ -316,11 +379,163 @@ class SQLiteA2ATaskEventOutbox(A2ATaskEventOutbox):
             connection.close()
 
 
+class PostgresA2ATaskEventOutbox(A2ATaskEventOutbox):
+    """Shared ordered outbox for multi-replica managed Runtimes."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def initialize(self) -> None:
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS ksadk_a2a_task_event_outbox (
+                        sequence BIGSERIAL PRIMARY KEY,
+                        batch_id TEXT NOT NULL UNIQUE,
+                        platform_task_id TEXT NOT NULL,
+                        events_json TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        last_error TEXT
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS ksadk_a2a_task_event_dead_letters (
+                        sequence BIGINT NOT NULL,
+                        batch_id TEXT PRIMARY KEY,
+                        platform_task_id TEXT NOT NULL,
+                        events_json TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        attempt_count INTEGER NOT NULL,
+                        last_error TEXT NOT NULL,
+                        dead_lettered_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_ksadk_a2a_outbox_created "
+                    "ON ksadk_a2a_task_event_outbox(sequence)"
+                )
+            )
+
+    async def ensure_writable(self) -> None:
+        await self.initialize()
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text("LOCK TABLE ksadk_a2a_task_event_outbox IN ROW EXCLUSIVE MODE")
+            )
+
+    async def enqueue(
+        self,
+        *,
+        platform_task_id: str,
+        events: list[dict[str, Any]],
+    ) -> str:
+        events_json = _serialize_events(events)
+        batch_id = _batch_id(platform_task_id, events_json)
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO ksadk_a2a_task_event_outbox(
+                        batch_id, platform_task_id, events_json
+                    ) VALUES (:batch_id, :platform_task_id, :events_json)
+                    ON CONFLICT(batch_id) DO NOTHING
+                    """
+                ),
+                {
+                    "batch_id": batch_id,
+                    "platform_task_id": platform_task_id,
+                    "events_json": events_json,
+                },
+            )
+        return batch_id
+
+    async def pending(self, *, limit: int = 100) -> list[A2ATaskEventBatch]:
+        async with self._engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT sequence, batch_id, platform_task_id, events_json, attempt_count
+                    FROM ksadk_a2a_task_event_outbox
+                    ORDER BY sequence
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+            rows = result.fetchall()
+        return [
+            A2ATaskEventBatch(
+                sequence=int(row[0]),
+                batch_id=str(row[1]),
+                platform_task_id=str(row[2]),
+                events=list(json.loads(str(row[3]))),
+                attempt_count=int(row[4]),
+            )
+            for row in rows
+        ]
+
+    async def acknowledge(self, batch_id: str) -> None:
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM ksadk_a2a_task_event_outbox WHERE batch_id = :batch_id"),
+                {"batch_id": batch_id},
+            )
+
+    async def record_failure(self, batch_id: str, error: str) -> None:
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE ksadk_a2a_task_event_outbox
+                    SET attempt_count = attempt_count + 1, last_error = :error
+                    WHERE batch_id = :batch_id
+                    """
+                ),
+                {"batch_id": batch_id, "error": error[:512]},
+            )
+
+    async def dead_letter(self, batch_id: str, error: str) -> None:
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO ksadk_a2a_task_event_dead_letters(
+                        sequence, batch_id, platform_task_id, events_json, created_at,
+                        attempt_count, last_error
+                    )
+                    SELECT sequence, batch_id, platform_task_id, events_json, created_at,
+                           attempt_count, :error
+                    FROM ksadk_a2a_task_event_outbox
+                    WHERE batch_id = :batch_id
+                    ON CONFLICT(batch_id) DO NOTHING
+                    """
+                ),
+                {"batch_id": batch_id, "error": error[:512]},
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM ksadk_a2a_task_event_outbox "
+                    "WHERE batch_id = :batch_id"
+                ),
+                {"batch_id": batch_id},
+            )
+
+
 __all__ = [
     "A2ATaskEventBatch",
     "A2ATaskEventOutbox",
     "DEFAULT_A2A_EVENT_OUTBOX_PATH",
     "ENV_A2A_EVENT_OUTBOX_PATH",
     "InMemoryA2ATaskEventOutbox",
+    "PostgresA2ATaskEventOutbox",
     "SQLiteA2ATaskEventOutbox",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from collections.abc import AsyncIterator, Mapping
@@ -11,6 +12,7 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
+from ksadk.common.diagnostics import safe_exception_detail
 from ksadk.conversations.runtime_persistence import append_run_status_event
 from ksadk.server.factory import get_state
 
@@ -18,6 +20,15 @@ from .models import _RUN_TERMINAL_STATUSES
 from .projection import _latest_invocation_status
 
 logger = logging.getLogger(__name__)
+_TERMINAL_SSE_EVENTS = frozenset(
+    {
+        "response.completed",
+        "response.failed",
+        "response.cancelled",
+        "response.canceled",
+        "response.incomplete",
+    }
+)
 SSE_HEARTBEAT_INTERVAL_SECONDS = max(
     0.01,
     float(os.getenv("AGENTENGINE_SSE_HEARTBEAT_SECONDS", "15")),
@@ -66,6 +77,7 @@ class _DetachedSSEStream:
         self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._backlog: list[str] = []
         self._done = False
+        self._terminal_event_sent = False
         # 后台 task 脱离请求上下文,创建时捕获 per-app registry(goal-01)。
         self._registry = get_state().stream_registry
         self._task = asyncio.create_task(self._consume())
@@ -90,28 +102,66 @@ class _DetachedSSEStream:
         )
         return status in _RUN_TERMINAL_STATUSES
 
+    async def _broadcast(self, chunk: str) -> None:
+        """Backlog 追加 + 扇出给所有订阅者（与正常 chunk 同一条路径）。"""
+        self._backlog.append(chunk)
+        if any(
+            line.removeprefix("event:").strip() in _TERMINAL_SSE_EVENTS
+            for line in chunk.splitlines()
+            if line.startswith("event:")
+        ):
+            self._terminal_event_sent = True
+        if len(self._backlog) > self._MAX_BACKLOG_CHUNKS:
+            self._backlog = self._backlog[-self._MAX_BACKLOG_CHUNKS :]
+        subscribers = list(self._subscribers)
+        if not subscribers:
+            return
+        await asyncio.gather(
+            *(subscriber.put(chunk) for subscriber in subscribers),
+            return_exceptions=True,
+        )
+
+    def _failed_sse_chunk(self, detail: str | None) -> str:
+        """异常穿透 runner 时补发的 response.failed（与 runtime_streaming 同形）。"""
+        payload = {
+            "type": "response.failed",
+            "status": "failed",
+            "session_id": self.session_id or "",
+            "ksadk_invocation_id": self.invocation_id or "",
+            "invocation_id": self.invocation_id or "",
+            "error": {"code": "runtime_stream_failed", "message": detail or "Agent 运行失败"},
+        }
+        return f"event: response.failed\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
     async def _consume(self) -> None:
         terminal_fallback_status: str | None = None
         terminal_fallback_detail: str | None = None
         try:
             async for chunk in self._source:
-                self._backlog.append(chunk)
-                if len(self._backlog) > self._MAX_BACKLOG_CHUNKS:
-                    self._backlog = self._backlog[-self._MAX_BACKLOG_CHUNKS :]
-                subscribers = list(self._subscribers)
-                if not subscribers:
-                    continue
-                await asyncio.gather(
-                    *(subscriber.put(chunk) for subscriber in subscribers),
-                    return_exceptions=True,
-                )
+                await self._broadcast(chunk)
         except asyncio.CancelledError:
             terminal_fallback_status = "cancelled"
             raise
         except Exception as exc:
-            terminal_fallback_status = "failed"
-            terminal_fallback_detail = f"{type(exc).__name__}: {exc}"[:2048]
-            logger.exception("Detached SSE stream failed")
+            terminal_fallback_detail = safe_exception_detail(exc)
+            logger.error(
+                "Detached SSE stream error (terminal_sent=%s): %s",
+                self._terminal_event_sent,
+                terminal_fallback_detail,
+            )
+            # 异常在 runner 层不经过 "error" 事件路径，若不在这里补发，
+            # 订阅者只会看到干净的流结束，无法区分失败与正常完成。
+            if not self._terminal_event_sent:
+                terminal_fallback_status = "failed"
+                try:
+                    await self._broadcast(self._failed_sse_chunk(
+                        "Agent execution failed; inspect run status before retrying."
+                    ))
+                except Exception as broadcast_error:
+                    logger.error(
+                        "failed to broadcast response.failed fallback: %s",
+                        safe_exception_detail(broadcast_error),
+                    )
             raise
         finally:
             self._done = True
@@ -138,8 +188,11 @@ class _DetachedSSEStream:
                             run_mode=self._run_mode,
                             run_trigger=self._run_trigger,
                         )
-                except Exception:
-                    logger.exception("failed to write background terminal status fallback")
+                except Exception as persistence_error:
+                    logger.error(
+                        "failed to write background terminal status fallback: %s",
+                        safe_exception_detail(persistence_error),
+                    )
 
     def subscribe(self) -> asyncio.Queue[str | None]:
         queue: asyncio.Queue[str | None] = asyncio.Queue()

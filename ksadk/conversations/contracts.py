@@ -30,6 +30,7 @@ _CAPABILITY = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 APPROVAL_MODE_EXTENSION = "ksadk.approval"
 COLLABORATION_MODE_EXTENSION = "ksadk.collaboration"
 GOAL_OBJECTIVE_EXTENSION = "ksadk.goal"
+PRESENTATION_EXTENSION = "ksadk.presentation"
 
 
 class ConversationCapability(ConversationContractModel):
@@ -65,9 +66,7 @@ class ConversationSurface(ConversationContractModel):
         for capabilities, direction in ((self.inputs, "input"), (self.outputs, "output")):
             names = [capability.name for capability in capabilities]
             if len(names) != len(set(names)):
-                raise ValueError(
-                    f"conversation surface must not repeat an {direction} capability"
-                )
+                raise ValueError(f"conversation surface must not repeat an {direction} capability")
         return self
 
     def permits_input(self, field: str) -> bool:
@@ -116,6 +115,15 @@ class ConversationInput(ConversationContractModel):
     def validate_extensions(cls, value: dict[str, Any]) -> dict[str, Any]:
         if any(not _CAPABILITY.fullmatch(key) or "." not in key for key in value):
             raise ValueError("extensions must use namespaced capability keys")
+        if PRESENTATION_EXTENSION in value:
+            presentation = value[PRESENTATION_EXTENSION]
+            if (
+                not isinstance(presentation, dict)
+                or set(presentation) != {"profile"}
+                or not isinstance(presentation["profile"], str)
+                or presentation["profile"] not in {"flat-v1", "agent-block-v1"}
+            ):
+                raise ValueError("ksadk.presentation requires a supported profile only")
         approval = value.get(APPROVAL_MODE_EXTENSION)
         if approval is not None and approval not in {"ask", "risk", "full"}:
             raise ValueError("ksadk.approval must be ask, risk, or full")
@@ -123,9 +131,7 @@ class ConversationInput(ConversationContractModel):
         if collaboration is not None and collaboration not in {"default", "plan"}:
             raise ValueError("ksadk.collaboration must be default or plan")
         goal = value.get(GOAL_OBJECTIVE_EXTENSION)
-        if goal is not None and (
-            not isinstance(goal, str) or not goal.strip() or len(goal) > 4096
-        ):
+        if goal is not None and (not isinstance(goal, str) or not goal.strip() or len(goal) > 4096):
             raise ValueError("ksadk.goal must be a non-empty string up to 4096 characters")
         return value
 
@@ -168,9 +174,7 @@ class ConversationInput(ConversationContractModel):
             required.append("goal")
         extension_capabilities = {
             APPROVAL_MODE_EXTENSION: "approval",
-            COLLABORATION_MODE_EXTENSION: "plan"
-            if self.collaboration_mode == "plan"
-            else None,
+            COLLABORATION_MODE_EXTENSION: "plan" if self.collaboration_mode == "plan" else None,
             GOAL_OBJECTIVE_EXTENSION: "goal",
         }
         required.extend(
@@ -194,11 +198,13 @@ class ConversationItem(ConversationContractModel):
         "assistant_text",
         "reasoning",
         "tool_call",
+        "tool_result",
         "approval",
         "progress",
         "plan",
         "goal",
         "artifact",
+        "agent",
         "a2ui",
         "error",
         "unknown",
@@ -222,6 +228,19 @@ class ConversationItem(ConversationContractModel):
     def validate_lifecycle(self) -> "ConversationItem":
         if self.operation == "completed" and self.lifecycle not in {"completed", "failed"}:
             raise ValueError("completed operation requires a terminal lifecycle")
+        if self.kind == "agent":
+            from ksadk.a2a.presentation import ExecutionScopeDescriptor
+
+            descriptor = ExecutionScopeDescriptor.model_validate(self.payload)
+            if self.payload_schema_ref != "conversation.item.agent/v1":
+                raise ValueError("agent item requires conversation.item.agent/v1")
+            if self.capability_ref != "agent.block" or not self.parent_item_id:
+                raise ValueError("agent item requires agent.block and a triggering parent item")
+            if self.native_ref.get("scopeId") != descriptor.scope_id:
+                raise ValueError("agent item scope does not match descriptor")
+            terminal = descriptor.status in {"completed", "failed", "cancelled"}
+            if terminal != (self.lifecycle in {"completed", "failed"}):
+                raise ValueError("agent item lifecycle does not match descriptor")
         return self
 
 

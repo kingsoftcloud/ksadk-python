@@ -9,8 +9,10 @@ from urllib.parse import urlparse
 
 import httpx
 
-from ksadk.studio.contracts import ModelSpec, NetworkPolicy
+from ksadk.studio.contracts import ANTHROPIC_VERSION, ModelSpec, NetworkPolicy
 from ksadk.studio.errors import StudioError
+
+_ANTHROPIC_VERSION = ANTHROPIC_VERSION
 
 
 async def test_model_profile_connection(
@@ -65,7 +67,8 @@ def _probe_candidates(raw_url: str) -> tuple[str, list[tuple[str, str]]]:
     支持三种输入形态：
     - https://host/v1/chat/completions → 直接候选
     - https://host/v1/responses → 直接候选
-    - https://host 或 https://host/v1 → 推导 chat / responses 候选
+    - https://host/v1/messages → 直接候选（Anthropic Messages wire）
+    - https://host 或 https://host/v1 → 推导 chat / responses / anthropic 候选
     """
     url = raw_url.strip().rstrip("/")
     if url.endswith("/chat/completions"):
@@ -74,13 +77,22 @@ def _probe_candidates(raw_url: str) -> tuple[str, list[tuple[str, str]]]:
     if url.endswith("/responses"):
         base = url[: -len("/responses")]
         return base, [("responses", url)]
+    if url.endswith("/messages"):
+        base = url[: -len("/messages")]
+        return base, [("anthropic", url)]
     if url.endswith("/v1"):
-        return url, [("chat", f"{url}/chat/completions"), ("responses", f"{url}/responses")]
+        return url, [
+            ("chat", f"{url}/chat/completions"),
+            ("responses", f"{url}/responses"),
+            ("anthropic", f"{url}/messages"),
+        ]
     return url, [
         ("chat", f"{url}/v1/chat/completions"),
         ("responses", f"{url}/v1/responses"),
+        ("anthropic", f"{url}/v1/messages"),
         ("chat", f"{url}/chat/completions"),
         ("responses", f"{url}/responses"),
+        ("anthropic", f"{url}/messages"),
     ]
 
 
@@ -102,7 +114,7 @@ def _recommended_probe(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
     Responses is preferred for a generic URL when both endpoints are usable;
     an explicitly supplied endpoint still produces a single eligible result.
     """
-    protocol_priority = {"responses": 0, "chat": 1}
+    protocol_priority = {"responses": 0, "chat": 1, "anthropic": 2}
     for wanted in ("ok", "auth_required", "recognized"):
         eligible = [a for a in attempts if a.get("status") == wanted]
         hit = min(
@@ -114,7 +126,7 @@ def _recommended_probe(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
             protocol = str(hit["protocol"])
             return {
                 "protocol": protocol,
-                "wireApi": "responses" if protocol == "responses" else "chat",
+                "wireApi": protocol if protocol in {"responses", "anthropic"} else "chat",
                 "endpointUrl": hit["endpointUrl"],
                 "status": hit["status"],
             }
@@ -128,7 +140,7 @@ async def probe_model_endpoint(
     network_guard: Any = None,
     timeout_seconds: float = 8.0,
 ) -> dict[str, Any]:
-    """智能探测模型端点：识别 chat / responses 协议、可用模型清单并给出推荐配置。"""
+    """智能探测模型端点：识别 chat / responses / anthropic 协议、可用模型清单并给出推荐配置。"""
     base, candidates = _probe_candidates(url)
     host = (urlparse(base).hostname or "").lower().rstrip(".")
     headers = {"Content-Type": "application/json"}
@@ -150,19 +162,28 @@ async def probe_model_endpoint(
                     allow_private_network=False,
                 ),
             )
-        payload: dict[str, Any] = (
-            {
+        request_headers = dict(headers)
+        payload: dict[str, Any]
+        if protocol == "anthropic":
+            request_headers["x-api-key"] = request_headers.pop("Authorization", "").removeprefix("Bearer ")
+            request_headers["anthropic-version"] = _ANTHROPIC_VERSION
+            payload = {
+                "model": probe_model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 16,
+            }
+        elif protocol == "chat":
+            payload = {
                 "model": probe_model,
                 "messages": [{"role": "user", "content": "ping"}],
                 "max_tokens": 1,
                 "stream": False,
             }
-            if protocol == "chat"
-            else {"model": probe_model, "input": "ping", "max_output_tokens": 16}
-        )
+        else:
+            payload = {"model": probe_model, "input": "ping", "max_output_tokens": 16}
         started = time.monotonic()
         try:
-            response = await client.post(endpoint, headers=headers, json=payload)
+            response = await client.post(endpoint, headers=request_headers, json=payload)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             return {
                 "protocol": protocol,
@@ -184,26 +205,39 @@ async def probe_model_endpoint(
             if not base.endswith("/v1")
             else (f"{base}/models",)
         )
+        # Anthropic Messages wire 用 x-api-key 鉴权，模型清单也用它重试一次；
+        # OpenAI 兼容网关大多同时接受 Bearer，因此 Bearer 优先。
+        auth_attempts = [headers]
+        if credential:
+            anthropic_headers = {
+                key: value for key, value in headers.items() if key != "Authorization"
+            }
+            anthropic_headers["x-api-key"] = credential
+            anthropic_headers["anthropic-version"] = _ANTHROPIC_VERSION
+            auth_attempts.append(anthropic_headers)
         for models_url in models_urls:
-            try:
-                response = await client.get(models_url, headers=headers)
-            except (httpx.TimeoutException, httpx.TransportError):
-                continue
-            if response.status_code != 200:
-                continue
-            try:
-                data = response.json()
-            except ValueError:
-                continue
-            items = data.get("data") or data.get("models") or []
-            names = [
-                str(item.get("id") or item.get("name") or "")
-                for item in items
-                if isinstance(item, dict)
-            ]
-            names = [name for name in names if name]
-            if names:
-                return sorted(set(names))[:100]
+            for attempt_headers in auth_attempts:
+                try:
+                    response = await client.get(models_url, headers=attempt_headers)
+                except (httpx.TimeoutException, httpx.TransportError):
+                    break
+                if response.status_code != 200:
+                    if response.status_code in {401, 403}:
+                        continue
+                    break
+                try:
+                    data = response.json()
+                except ValueError:
+                    continue
+                items = data.get("data") or data.get("models") or []
+                names = [
+                    str(item.get("id") or item.get("name") or "")
+                    for item in items
+                    if isinstance(item, dict)
+                ]
+                names = [name for name in names if name]
+                if names:
+                    return sorted(set(names))[:100]
         return []
 
     timeout = httpx.Timeout(timeout_seconds, connect=min(5.0, timeout_seconds))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
 from typing import Any, Optional, cast
@@ -22,6 +23,9 @@ from ksadk.events.canonical import (
 )
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import Session, SessionEvent
+from ksadk.sessions.agent_identity import session_agent_ids
+from ksadk.sessions.errors import HistoryProjectionBudgetExceeded, HistoryReloadRequired
+from ksadk.sessions.history_identity import history_identity as _history_identity  # noqa: F401
 
 from . import dependencies as deps
 from .checkpoint_audit import (  # noqa: F401
@@ -39,7 +43,64 @@ from .models import (
     _truncate_session_text,
 )
 
+from ksadk.server.routes.display_projection import _first_text_part, _first_tool_name, _first_tool_result, _derive_display_text
+
 logger = logging.getLogger(__name__)
+_HISTORY_MAX_EVENTS = 8192
+_HISTORY_MAX_BYTES = 16 * 1024 * 1024
+# A smaller initial page can reduce transfer latency for large tool outputs
+# over a remote database. Invocation completion and total budgets are unchanged.
+try:
+    _HISTORY_INITIAL_EVENTS = max(32, min(256, int(os.getenv("KSADK_HISTORY_INITIAL_EVENTS", "256"))))
+except ValueError:
+    _HISTORY_INITIAL_EVENTS = 256
+_HISTORY_BOUNDARY_EVENTS = 64
+# Completing an invocation uses the same transfer ceiling as its first
+# window; only an indivisible first event may exceed it. Short byte-limited
+# pages still require continuation until the invocation boundary is found.
+_HISTORY_BOUNDARY_BYTES = 64 * 1024
+
+
+class _HistoryProjectionBudget:
+    def __init__(self) -> None:
+        self.events = 0
+        self.bytes = 0
+        self._enriched_ids: set[tuple[str, int]] = set()
+
+    def account(self, events: list[SessionEvent]) -> None:
+        self.events += len(events)
+        self.bytes += sum(len(json.dumps(event.to_dict(), ensure_ascii=False).encode())
+                          for event in events)
+        if self.events > _HISTORY_MAX_EVENTS or self.bytes > _HISTORY_MAX_BYTES:
+            raise HistoryProjectionBudgetExceeded(
+                "History invocation exceeds 8192 events or 16 MiB; reload with a narrower cursor"
+            )
+
+    def account_enrichment(
+        self, originals: list[dict[str, Any]], enriched: list[dict[str, Any]],
+    ) -> None:
+        for original, projected in zip(originals, enriched):
+            if projected is original:
+                continue
+            key = (str(original.get("EventId") or ""), int(original.get("SeqId") or 0))
+            if key in self._enriched_ids:
+                continue
+            self._enriched_ids.add(key)
+            self.bytes += len(json.dumps(projected, ensure_ascii=False).encode())
+        if self.bytes > _HISTORY_MAX_BYTES:
+            raise HistoryProjectionBudgetExceeded(
+                "History projection exceeds 16 MiB after Kernel input enrichment"
+            )
+
+
+def _validate_history_cursor(
+    *, epoch: str, is_live: bool, requested_epoch: str | None,
+    cursor_source: str | None, has_cursor: bool,
+) -> None:
+    if cursor_source == "control" or (requested_epoch is not None and requested_epoch != epoch):
+        raise HistoryReloadRequired("History source changed; reload the first page")
+    if has_cursor and is_live and requested_epoch is None:
+        raise HistoryReloadRequired("Live history cursor has no provable source epoch")
 
 
 async def _require_action_session(
@@ -54,7 +115,7 @@ async def _require_action_session(
     session = await service.get_session_metadata(str(session_id or "").strip())
     if (
         session is None
-        or (agent_id is not None and session.agent_id != agent_id)
+        or (agent_id is not None and session.agent_id not in session_agent_ids(agent_id))
         or (user_id is not None and session.user_id != user_id)
     ):
         logger.warning("Session %s not found, userId %s", session_id, user_id)
@@ -62,14 +123,14 @@ async def _require_action_session(
     return cast(Session, session)
 
 
-async def _session_to_action_payload(session: Session) -> dict[str, Any]:
-    events = list(session.events or [])
-    if not events:
-        try:
-            events = await deps.resolve_session_service().get_events(session.id)
-        except Exception as exc:
-            logger.debug("Failed to hydrate events for session %s: %s", session.id, exc)
-            events = []
+async def _session_to_action_payload(session: Session, service: Any) -> dict[str, Any]:
+    # Metadata actions need only prompt endpoints and lifecycle facts. Keep
+    # their existing active-run/title semantics without loading full history.
+    summary = getattr(service, "get_session_summary_events", None)
+    events: list[SessionEvent] = (
+        await summary(session.id) if callable(summary)
+        else await service.get_events(session.id, limit=256)
+    )
     event_prompts = [
         _session_user_prompt_from_event(event)
         for event in events
@@ -158,151 +219,6 @@ def _runtime_continuity_payload() -> dict[str, Any]:
     }
 
 
-def _first_text_part(parts: list[Any] | None) -> str:
-    """Return the text of the first part with content_type == 'text'."""
-    if not isinstance(parts, list):
-        return ""
-    for part in parts:
-        if isinstance(part, Mapping) and part.get("content_type") == "text":
-            return str(part.get("text") or "")
-    return ""
-
-
-def _first_tool_name(parts: list[Any] | None) -> str:
-    """Return the name from the first tool_call part."""
-    if not isinstance(parts, list) or not parts:
-        return ""
-    part = parts[0]
-    if isinstance(part, Mapping):
-        return str(part.get("name") or "")
-    return ""
-
-
-def _first_tool_result(parts: list[Any] | None) -> str:
-    """Return the result of the first tool_result part as a string."""
-    if not isinstance(parts, list) or not parts:
-        return ""
-    part = parts[0]
-    if not isinstance(part, Mapping):
-        return ""
-    result = part.get("result")
-    if result is None:
-        return ""
-    if isinstance(result, str):
-        return result
-    return json.dumps(result, ensure_ascii=False)
-
-
-def _derive_display_text(content: Mapping[str, Any]) -> str:
-    """Derive a display string for Content.parts[0].text from a canonical runtime event.
-
-    For canonical runtime events (family=runtime/v2) the Content dict carries a
-    ``runtime_event`` payload but no top-level ``parts``.  This helper extracts a
-    short human-readable string so that frontends reading ``Content.parts[0].text``
-    continue to display meaningful text without changes.
-    """
-    runtime_event = content.get("runtime_event")
-    if not isinstance(runtime_event, Mapping):
-        return str(content.get("text") or "")
-
-    event_type = str(runtime_event.get("event_type") or "")
-    item_kind = str(runtime_event.get("item_kind") or "")
-
-    if event_type == "item.updated":
-        update = runtime_event.get("update")
-        if not isinstance(update, Mapping):
-            return ""
-        if item_kind in ("message", "reasoning"):
-            return str(update.get("text") or "")
-        if item_kind == "tool_call":
-            name = str(update.get("name") or "")
-            return f"调用工具：{name}" if name else ""
-        return ""
-
-    if event_type == "item.started":
-        initial = runtime_event.get("initial")
-        parts = initial.get("parts") if isinstance(initial, Mapping) else None
-        if item_kind == "tool_call":
-            name = _first_tool_name(parts)
-            return f"调用工具：{name}" if name else ""
-        if item_kind in ("message", "reasoning"):
-            return _first_text_part(parts)
-        return ""
-
-    if event_type == "item.completed":
-        snapshot = runtime_event.get("snapshot")
-        parts = snapshot.get("parts") if isinstance(snapshot, Mapping) else None
-        if item_kind == "message":
-            return _first_text_part(parts)
-        if item_kind == "tool_result":
-            result = _first_tool_result(parts)
-            return _truncate_session_text(result) if result else ""
-        if item_kind == "tool_call":
-            name = _first_tool_name(parts)
-            return f"工具调用完成：{name}" if name else ""
-        return ""
-
-    if event_type == "item.snapshot_replaced":
-        snapshot = runtime_event.get("snapshot")
-        parts = snapshot.get("parts") if isinstance(snapshot, Mapping) else None
-        if item_kind in ("message", "reasoning"):
-            return _first_text_part(parts)
-        return ""
-
-    if event_type == "item.failed":
-        error = runtime_event.get("error")
-        if isinstance(error, Mapping):
-            return str(error.get("message") or "执行失败")
-        return "执行失败"
-
-    if event_type == "run.started":
-        return "运行开始"
-    if event_type == "run.progress":
-        return str(runtime_event.get("message") or "")
-    if event_type == "run.completed":
-        return "运行完成"
-    if event_type == "run.failed":
-        error = runtime_event.get("error")
-        if isinstance(error, Mapping):
-            return str(error.get("message") or "运行失败")
-        return "运行失败"
-    if event_type == "run.interrupted":
-        return str(runtime_event.get("reason") or "运行已中断")
-    if event_type == "run.canceled":
-        return str(runtime_event.get("reason") or "运行已取消")
-
-    if event_type == "interaction.requested":
-        request = runtime_event.get("request")
-        if isinstance(request, Mapping):
-            kind = str(request.get("kind") or "approval")
-            return f"请求审批：{kind}"
-        return "请求审批"
-
-    if event_type == "interaction.resolved":
-        response = runtime_event.get("response")
-        if isinstance(response, Mapping):
-            return str(response.get("decision") or "")
-        return ""
-
-    if event_type == "continuation.created":
-        return f"创建恢复点：{runtime_event.get('continuation_kind') or ''}"
-    if event_type == "continuation.resumed":
-        return f"恢复执行：{runtime_event.get('continuation_kind') or ''}"
-
-    if event_type == "context.compaction.started":
-        return "上下文压缩开始"
-    if event_type == "context.compaction.completed":
-        return "上下文压缩完成"
-
-    if event_type == "usage.reported":
-        total = runtime_event.get("total_tokens")
-        if total is not None:
-            return f"用量上报：{total} tokens"
-        return "用量上报"
-
-    return ""
-
-
 def _derive_checkpoint_id(event: SessionEvent, content: Mapping[str, Any]) -> str:
     """Surface checkpoint_id to Content top level for checkpoint-bearing events.
 
@@ -339,6 +255,12 @@ def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
     ``Content.checkpoint_id``，与 ``run_checkpoint`` 事件的外层结构对齐，
     内层 ``runtime_event`` 原始结构保持不动。
     """
+    from ksadk.kernel.legacy_history import project_legacy_history_event
+
+    legacy_event = project_legacy_history_event(event)
+    if legacy_event is not None:
+        return legacy_event
+
     content = dict(event.content or {})
     if not isinstance(content.get("parts"), list):
         display_text = _derive_display_text(content)
@@ -877,6 +799,8 @@ async def _extend_invocation_before_window(
     events: list[SessionEvent],
     *,
     after_seq_id: int | None,
+    budget: _HistoryProjectionBudget | None = None,
+    boundary_hint: dict[str, bool] | None = None,
 ) -> list[SessionEvent]:
     if not events:
         return events
@@ -886,25 +810,38 @@ async def _extend_invocation_before_window(
     cursor = int(events[0].seq_id or 0)
     prefix: list[SessionEvent] = []
     while cursor > 0:
-        page = await service.get_events(
+        from ksadk.sessions.history_budget import CURRENT_HISTORY_READ_BUDGET
+        window = getattr(service, 'get_message_event_window', None)
+        use_window = callable(window) and CURRENT_HISTORY_READ_BUDGET.get() is not None
+        page = await (window if use_window else service.get_events)(
             session_id,
-            limit=_EVENT_SCAN_PAGE_SIZE,
+            limit=_HISTORY_BOUNDARY_EVENTS,
             after_seq_id=after_seq_id,
             before_seq_id=cursor,
+            **({'byte_limit': _HISTORY_BOUNDARY_BYTES} if use_window else {}),
         )
         if not page:
+            if boundary_hint is not None:
+                boundary_hint['has_more'] = False
             break
+        if budget is not None:
+            budget.account(page)
         matching_suffix: list[SessionEvent] = []
         for event in reversed(page):
             if _event_invocation_id(event) != invocation_id:
                 break
             matching_suffix.append(event)
         if not matching_suffix:
+            if boundary_hint is not None:
+                boundary_hint['has_more'] = True
             break
         matching_suffix.reverse()
         prefix[0:0] = matching_suffix
         cursor = int(matching_suffix[0].seq_id or 0)
-        if len(matching_suffix) < len(page):
+        exhausted = getattr(page, 'source_exhausted', len(page) < _HISTORY_BOUNDARY_EVENTS)
+        if len(matching_suffix) < len(page) or exhausted:
+            if boundary_hint is not None:
+                boundary_hint['has_more'] = len(matching_suffix) < len(page)
             break
     return [*prefix, *events]
 
@@ -915,6 +852,7 @@ async def _extend_invocation_after_window(
     events: list[SessionEvent],
     *,
     before_seq_id: int | None,
+    budget: _HistoryProjectionBudget | None = None,
 ) -> list[SessionEvent]:
     if not events:
         return events
@@ -924,23 +862,27 @@ async def _extend_invocation_after_window(
     cursor = int(events[-1].seq_id or 0)
     suffix: list[SessionEvent] = []
     while True:
-        remaining = await service.count_events(
-            session_id,
-            after_seq_id=cursor,
-            before_seq_id=before_seq_id,
-        )
-        if remaining <= 0:
-            break
-        page_size = min(_EVENT_SCAN_PAGE_SIZE, remaining)
-        page = await service.get_events(
-            session_id,
-            offset=remaining - page_size,
-            limit=page_size,
-            after_seq_id=cursor,
-            before_seq_id=before_seq_id,
-        )
+        from ksadk.sessions.base import SessionEventQuery
+        from ksadk.sessions.history_budget import CURRENT_HISTORY_READ_BUDGET
+        window = getattr(service, 'get_message_event_window', None)
+        if callable(window) and CURRENT_HISTORY_READ_BUDGET.get() is not None:
+            page = await window(
+                session_id, limit=_HISTORY_BOUNDARY_EVENTS, from_start=True,
+                after_seq_id=cursor, before_seq_id=before_seq_id,
+                byte_limit=_HISTORY_BOUNDARY_BYTES,
+            )
+        else:
+            page = await service.query_events(
+                SessionEventQuery(
+                    session_ids=[session_id], from_start=True, order_by_seq=True,
+                    limit=_HISTORY_BOUNDARY_EVENTS, after_seq_id=cursor,
+                    before_seq_id=before_seq_id,
+                )
+            )
         if not page:
             break
+        if budget is not None:
+            budget.account(page)
         matching_prefix: list[SessionEvent] = []
         for event in page:
             if _event_invocation_id(event) != invocation_id:
@@ -950,7 +892,8 @@ async def _extend_invocation_after_window(
             break
         suffix.extend(matching_prefix)
         cursor = int(matching_prefix[-1].seq_id or 0)
-        if len(matching_prefix) < len(page):
+        exhausted = getattr(page, 'source_exhausted', len(page) < _HISTORY_BOUNDARY_EVENTS)
+        if len(matching_prefix) < len(page) or exhausted:
             break
     return [*events, *suffix]
 
@@ -996,6 +939,13 @@ async def _session_contains_invocation(
     session_id: str,
     invocation_id: str,
 ) -> bool:
+    query = getattr(service, "query_events", None)
+    if callable(query):
+        from ksadk.sessions.base import SessionEventQuery
+        return bool(await query(SessionEventQuery(
+            session_ids=[session_id], invocation_id=invocation_id,
+            limit=1, order_by_seq=True,
+        )))
     async for page in _iter_session_event_pages(service, session_id):
         if any(event.invocation_id == invocation_id for event in page):
             return True
@@ -1020,6 +970,14 @@ async def _latest_invocation_status(
     session_id: str,
     invocation_id: str,
 ) -> str:
+    query = getattr(service, "query_events", None)
+    if callable(query):
+        from ksadk.sessions.base import SessionEventQuery
+        page = await query(SessionEventQuery(
+            session_ids=[session_id], invocation_id=invocation_id,
+            event_types=["run_status"], limit=1, order_by_seq=True,
+        ))
+        return str((page[-1].content or {}).get("status") or "").strip().lower() if page else ""
     offset = 0
     total = await service.count_events(session_id)
     while offset < total:
@@ -1043,7 +1001,16 @@ async def _oldest_unconsumed_session_events(
     session_id: str,
     *,
     after_seq_id: int,
+    invocation_id: str | None = None,
 ) -> list[SessionEvent]:
+    query = getattr(service, "query_events", None)
+    if callable(query):
+        from ksadk.sessions.base import SessionEventQuery
+        return list(await query(SessionEventQuery(
+            session_ids=[session_id], invocation_id=invocation_id,
+            after_seq_id=after_seq_id, from_start=True, order_by_seq=True,
+            limit=32,
+        )))
     remaining = await service.count_events(session_id, after_seq_id=after_seq_id)
     if remaining <= 0:
         return []

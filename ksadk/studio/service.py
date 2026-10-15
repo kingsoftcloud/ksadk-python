@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -19,6 +20,7 @@ from uuid import uuid4
 
 from ksadk.api import AgentEngineClient
 from ksadk.conversations.contracts import ConversationCapability, ConversationSurface
+from ksadk.conversations.model_context import supports_native_image_input
 from ksadk.evaluation import (
     EvaluationConfig as PublicEvaluationConfig,
 )
@@ -43,15 +45,29 @@ from ksadk.evaluation.studio_build_adapter import (
     StudioBuildTargetError,
 )
 from ksadk.events.store import RuntimeEventStore
+from ksadk.harness.diagnostic_adapters.contracts import LanguageServerProfile
+from ksadk.harness.native.delivery_review_contract import DeliveryReviewPolicy
+from ksadk.harness.native.hook_executor import HookAuthorizer
+from ksadk.harness.native.ports import ChildRecoveryPolicy
+from ksadk.model_gateway import ModelGatewayClient
 from ksadk.observability.session_log import SessionLogError, export_session_log
 from ksadk.observability.trajectory import encode_sse, project_trajectory_event
 from ksadk.plugins.bundle_security import BundleSecurityError
 from ksadk.plugins.contracts import PluginManifest
+from ksadk.plugins.providers.harness import (
+    HarnessEngineSelector,
+    HarnessNativeAdapterBuilder,
+)
 from ksadk.plugins.providers.legacy import LegacyHarnessSource
 from ksadk.plugins.providers.legacy_catalog import (
     KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID,
 )
-from ksadk.runtime import RuntimeExecutor, build_default_runtime_registry
+from ksadk.runtime import (
+    RuntimeAdapter,
+    RuntimeExecutor,
+    RuntimeLaunchContext,
+    build_default_runtime_registry,
+)
 from ksadk.scheduler.contracts import (
     ScheduleCommandTemplate,
     ScheduledTask,
@@ -59,6 +75,7 @@ from ksadk.scheduler.contracts import (
     ScheduleSpec,
 )
 from ksadk.sessions.local_service import LocalSessionService
+from ksadk.studio.a2a_bindings import A2ACatalogService
 from ksadk.studio.agent_avatar_assets import AgentAvatarAssetStore
 from ksadk.studio.agent_lifecycle import delete_framework_agent
 from ksadk.studio.attachment_store import ConversationAttachmentStore
@@ -77,9 +94,6 @@ from ksadk.studio.codex_builder import (
     CodexBuildRepository,
     CodexStudioBuilder,
     RuntimeInspector,
-    current_proxy_mode,
-    normalize_proxy_mode,
-    proxy_mode_env_value,
 )
 from ksadk.studio.codex_manifest import (
     CodexAgentManifest,
@@ -89,7 +103,7 @@ from ksadk.studio.codex_plugin_store import CodexPluginSnapshotStore
 from ksadk.studio.codex_provider_build import CodexProviderBuildManager
 from ksadk.studio.codex_run import CodexRunSpecResolver
 from ksadk.studio.compiler import AgentCompiler
-from ksadk.studio.configuration import SETTINGS_ENV, WorkspaceConfiguration
+from ksadk.studio.configuration import WorkspaceConfiguration
 from ksadk.studio.contracts import (
     AgentAppearance,
     AgentBindings,
@@ -105,8 +119,10 @@ from ksadk.studio.contracts import (
     Operation,
     OperationKind,
     OperationStatus,
+    RemoteAgentBinding,
     RunEvent,
     RunStatus,
+    RunSubmissionRef,
     RuntimeRef,
     ToolContract,
 )
@@ -123,6 +139,14 @@ from ksadk.studio.framework_run import FrameworkRunSpecResolver
 from ksadk.studio.mcp_runtime import MCPRuntimeAdapter
 from ksadk.studio.model_client import CredentialResolver, OpenAICompatibleModelClient
 from ksadk.studio.model_profile_service import test_model_profile_connection
+from ksadk.studio.native_acceptance import StudioNativeAcceptanceExtension
+from ksadk.studio.native_context_registration import StudioNativeContextRegistration
+from ksadk.studio.native_hook_registration import (
+    StudioNativeHookRegistration,
+    validate_hook_authorization_policy,
+)
+from ksadk.studio.native_model_recovery import StudioModelTakeoverDeclaration
+from ksadk.studio.native_options import validate_native_options
 from ksadk.studio.operations import OperationManager
 from ksadk.studio.plugin_composition import StudioPluginCompositionCompiler
 from ksadk.studio.plugin_runtime import StudioPluginRuntime
@@ -146,6 +170,7 @@ from ksadk.studio.scheduler_runtime import (
     StudioSchedulerRuntimeError,
 )
 from ksadk.studio.scheduler_service import StudioSchedulerService
+from ksadk.studio.service_settings import StudioSettingsMixin
 from ksadk.studio.soul import soul_digest
 from ksadk.studio.templates import (
     compose_blank_agent,
@@ -174,7 +199,7 @@ class _OperationResource:
     id: str
 
 
-class StudioService:
+class StudioService(StudioSettingsMixin):
     def __init__(
         self,
         root: Path | str,
@@ -184,7 +209,29 @@ class StudioService:
         cloud_gateway: CloudDeploymentGateway | None = None,
         codex_runtime_inspector: RuntimeInspector | None = None,
         runtime_executor: RuntimeExecutor | None = None,
+        harness_runtime_factory: Callable[[RuntimeLaunchContext], RuntimeAdapter] | None = None,
         harness_reasoner: Any | None = None,
+        harness_engine_selector: HarnessEngineSelector | None = None,
+        harness_native_adapter_builder: HarnessNativeAdapterBuilder | None = None,
+        native_harness_agent_ids: Sequence[str] | None = None,
+        native_harness_default: bool | None = None,
+        native_harness_durable: bool | None = None,
+        native_harness_session_context_read: bool = False,
+        native_harness_browser_reobserve: bool = False,
+        native_harness_terminal_child_reconcile: bool = False,
+        native_harness_prepared_child_recovery: bool = False,
+        native_harness_child_recovery_policy: ChildRecoveryPolicy | None = None,
+        native_harness_model_recovery_policy: Literal["pure-inference-takeover/v1"] | None = None,
+        native_harness_model_recovery_host: StudioModelTakeoverDeclaration | None = None,
+        native_acceptance_extension: StudioNativeAcceptanceExtension | None = None,
+        native_delivery_review_policy: DeliveryReviewPolicy | None = None,
+        native_harness_hook_registrations: Sequence[StudioNativeHookRegistration] = (),
+        native_harness_context_registrations: Sequence[StudioNativeContextRegistration] = (),
+        native_harness_hook_authorizer: HookAuthorizer | None = None,
+        native_harness_hook_authorization_version: str | None = None,
+        native_harness_diagnostic_profiles: Mapping[
+            str, tuple[LanguageServerProfile, ...]
+        ] | None = None,
         plugin_provider_manifests: Mapping[str, PluginManifest] | None = None,
         plugin_provider_factories: Mapping[str, Any] | None = None,
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
@@ -199,6 +246,101 @@ class StudioService:
             raise ValueError(
                 "plugin provider manifests and factories must use the same exact references"
             )
+        if (harness_engine_selector is None) != (harness_native_adapter_builder is None) or (
+            harness_engine_selector is not None
+            and (
+                not callable(harness_engine_selector)
+                or not callable(harness_native_adapter_builder)
+            )
+        ):
+            raise ValueError("Native Harness requires a host selector and adapter builder")
+        selected_native_agents = tuple(
+            native_harness_agent_ids
+            if native_harness_agent_ids is not None
+            else os.environ.get("KSADK_STUDIO_NATIVE_AGENT_IDS", "").split(",")
+        )
+        selected_native_agents = tuple(
+            item.strip() for item in selected_native_agents if item.strip()
+        )
+        if native_harness_default is None:
+            default_flag = os.environ.get("KSADK_STUDIO_NATIVE_DEFAULT")
+            if default_flag is not None:
+                if default_flag not in {"0", "1"}:
+                    raise ValueError("KSADK_STUDIO_NATIVE_DEFAULT must be 0 or 1")
+                native_harness_default = default_flag == "1"
+            else:
+                # Exact Agent selection and injected execution hosts remain
+                # explicit compatibility modes. Ordinary Studio uses Native.
+                native_harness_default = (
+                    native_harness_agent_ids is None
+                    and "KSADK_STUDIO_NATIVE_AGENT_IDS" not in os.environ
+                    and harness_engine_selector is None
+                    and harness_runtime_factory is None
+                    and harness_reasoner is None
+                )
+        elif type(native_harness_default) is not bool:
+            raise ValueError("Native Studio default must be a boolean")
+        native_enabled = native_harness_default or bool(selected_native_agents)
+        self._native_harness_default = native_harness_default
+        self._native_harness_agent_ids = frozenset(selected_native_agents)
+        if native_harness_durable is None:
+            # A normal desktop conversation must retain its committed ledger
+            # across app restarts. Explicit compatibility hosts keep their
+            # opt-in storage policy; either setting can still select memory.
+            durable_flag = os.environ.get(
+                "KSADK_STUDIO_NATIVE_DURABLE", "1" if native_harness_default else "0",
+            )
+            if durable_flag not in {"0", "1"}:
+                raise ValueError("KSADK_STUDIO_NATIVE_DURABLE must be 0 or 1")
+            native_harness_durable = durable_flag == "1"
+        elif type(native_harness_durable) is not bool:
+            raise ValueError("Native Studio durability must be a boolean")
+        self._native_harness_durable = native_harness_durable
+        validate_native_options(
+            selected_native_agents=selected_native_agents,
+            native_harness_default=native_harness_default,
+            native_harness_durable=native_harness_durable,
+            native_harness_session_context_read=native_harness_session_context_read,
+            native_harness_browser_reobserve=native_harness_browser_reobserve,
+            native_harness_terminal_child_reconcile=native_harness_terminal_child_reconcile,
+            native_harness_prepared_child_recovery=native_harness_prepared_child_recovery,
+            native_harness_child_recovery_policy=native_harness_child_recovery_policy,
+            native_harness_model_recovery_policy=native_harness_model_recovery_policy,
+            native_harness_model_recovery_host=native_harness_model_recovery_host,
+            harness_engine_selector=harness_engine_selector,
+            native_acceptance_extension=native_acceptance_extension,
+            native_delivery_review_policy=native_delivery_review_policy,
+        )
+        diagnostic_profiles = native_harness_diagnostic_profiles or {}
+        if any(agent not in selected_native_agents for agent in diagnostic_profiles):
+            raise ValueError("Native diagnostics require explicitly selected Studio Agents")
+        hook_registrations = tuple(native_harness_hook_registrations)
+        if any(
+            not isinstance(item, StudioNativeHookRegistration)
+            or not item.agent_ids.issubset(selected_native_agents) for item in hook_registrations
+        ):
+            raise ValueError("Native Hooks require registered, explicitly selected Studio Agents")
+        hook_ids = [item.manifest.metadata.id for item in hook_registrations]
+        if len(set(hook_ids)) != len(hook_ids):
+            raise ValueError("Native Hook plugin IDs must be unique")
+        context_registrations = tuple(native_harness_context_registrations)
+        if any(not isinstance(item, StudioNativeContextRegistration)
+               or not item.agent_ids.issubset(selected_native_agents)
+               for item in context_registrations):
+            raise ValueError(
+                "Native Context requires registered, explicitly selected Studio Agents",
+            )
+        context_ids = [item.manifest.metadata.id for item in context_registrations]
+        if len(set(context_ids)) != len(context_ids) or set(context_ids) & set(hook_ids):
+            raise ValueError("Native Context plugin IDs must be unique across host capabilities")
+        validate_hook_authorization_policy(
+            native_harness_hook_authorizer, native_harness_hook_authorization_version,
+        )
+        if native_harness_hook_authorizer is not None and not hook_registrations:
+            raise ValueError(
+                "Native Hook authorization requires registrations and a policy version",
+            )
+        self._native_product_composer = None
         self.workspace = Workspace(root)
         self.workspace.initialize()
         self.workspace_registry = WorkspaceRegistry()
@@ -238,6 +380,7 @@ class StudioService:
         self._dsh_startup_task: asyncio.Task[None] | None = None
         self._dsh_ready = False
         self._closed = False
+        self._profile_maintenance = False
         self.configuration = WorkspaceConfiguration(
             self.workspace, overrides=configuration_overrides
         )
@@ -278,6 +421,8 @@ class StudioService:
             self.workspace,
             self.catalog,
             provider_manifests=provider_manifests,
+            hook_registrations=hook_registrations,
+            context_registrations=context_registrations,
         )
         self.event_store = RunEventStore(self.workspace)
         self.session_service = LocalSessionService(project_dir=str(self.workspace.root))
@@ -302,8 +447,10 @@ class StudioService:
             provider_validate=self.codex_provider_builds.bundle_root,
             **codex_builder_kwargs,
         )
+        if runtime_executor is not None and harness_runtime_factory is not None:
+            raise ValueError("provide either runtime_executor or harness_runtime_factory")
         self.runtime_executor = runtime_executor or RuntimeExecutor(
-            build_default_runtime_registry()
+            build_default_runtime_registry(harness_factory=harness_runtime_factory)
         )
         self.run_service = StudioRunService(
             self.workspace,
@@ -311,6 +458,7 @@ class StudioService:
             event_store=self.event_store,
             session_service=self.session_service,
             runtime_events=self.runtime_events,
+            native_harness_ingress=harness_runtime_factory is not None,
         )
         self.codex_runs = CodexRunSpecResolver(
             self.workspace,
@@ -326,10 +474,37 @@ class StudioService:
             self.workspace,
             build_repository=self.builds,
         )
-        runtime_model_client = model_client or OpenAICompatibleModelClient(
+        runtime_model_client = model_client or ModelGatewayClient(
             credential_resolver=self.credentials
         )
         self.model_client = runtime_model_client
+        if native_enabled:
+            from ksadk.studio.native_product import StudioNativeProductComposer
+
+            self._native_product_composer = StudioNativeProductComposer(
+                model_client=self.model_client,
+                workspace_root=self.workspace.root,
+                acceptance_extension=native_acceptance_extension,
+                delivery_review_policy=native_delivery_review_policy,
+                hook_authorizer=native_harness_hook_authorizer,
+                hook_authorization_version=native_harness_hook_authorization_version,
+                durable=native_harness_durable,
+                session_context_read=native_harness_session_context_read,
+                browser_reobserve=native_harness_browser_reobserve,
+                terminal_child_reconcile=native_harness_terminal_child_reconcile,
+                prepared_child_recovery=native_harness_prepared_child_recovery,
+                child_recovery_policy=native_harness_child_recovery_policy,
+                diagnostic_profiles=diagnostic_profiles,
+                model_recovery_policy=native_harness_model_recovery_policy,
+                model_recovery_host=native_harness_model_recovery_host,
+            )
+            def select_native_engine(context):  # type: ignore[no-untyped-def]
+                if self._native_session_enabled(context.agent_name, context.activation_key):
+                    return "native"
+                return "legacy"
+
+            harness_engine_selector = select_native_engine
+            harness_native_adapter_builder = self._native_product_composer
         self.plugin_runs = StudioPluginRuntime(
             self.workspace,
             build_repository=self.builds,
@@ -339,14 +514,22 @@ class StudioService:
             codex_local_launch_resolver=self.codex_provider_builds.native_launch,
             runtime_executor=self.runtime_executor,
             harness_reasoner=harness_reasoner,
+            harness_engine_selector=harness_engine_selector,
+            harness_native_session_enabled=(
+                self._native_session_enabled if native_enabled else None
+            ),
+            harness_native_adapter_builder=harness_native_adapter_builder,
             provider_manifests=provider_manifests,
             provider_factories=provider_factories,
+            hook_registrations=hook_registrations,
+            context_registrations=context_registrations,
             legacy_harness_sources=legacy_harness_sources,
             dsh_capability_service=self.dsh_capabilities,
             resource_dsh_capability_service=self.resource_dsh_capabilities,
             resource_authority=self.resource_authority,
             resource_connections=self.resource_connections,
             resource_actor_ref="local-user",
+            native_workspace_id=self.workspace_record.workspace_id,
         )
         self.run_service.plugin_runtime = self.plugin_runs
         self.scheduler_runtimes = StudioScheduledKernelRegistry(
@@ -385,11 +568,15 @@ class StudioService:
             gateway=cloud_gateway or self._configured_cloud_gateway(),
             build_repository=self.builds,
         )
+        self.a2a_catalog = A2ACatalogService(lambda: self.cloud.gateway)
         self.operations = OperationManager(self.workspace)
         self.evaluation_storage = EvaluationStorage(self.workspace.resolve(".agentkit/evaluations"))
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
         self._current_codex_builds: dict[str, CodexBuildRecord] = {}
+        from ksadk.studio.build_singleflight import BuildSingleFlight
+
+        self._build_singleflight = BuildSingleFlight()
         # agent_detail 进程内 TTL 缓存：bootstrap/list_models/list_sessions 等
         # 转发接口在会话切换时反复调用 agent_detail，每次都重做 builds 全扫 +
         # validator.validate（100-300ms）。5s TTL 把切换/刷新的重复读折叠掉；
@@ -777,11 +964,32 @@ class StudioService:
         }
 
     def runtime_catalog(self) -> list[dict]:
-        return inspect_runtime_catalog(self.runtime_executor)
+        return inspect_runtime_catalog(
+            self.runtime_executor,
+            native_harness_default=self._native_harness_default,
+            native_harness_durable=self._native_harness_durable,
+        )
 
     def _scheduler_adapter_provider(self, spec: StudioRunSpec):  # type: ignore[no-untyped-def]
         if spec.plugin_bundle_root is not None:
-            return self.plugin_runs.kernel_adapter_provider(spec)
+            provider = self.plugin_runs.kernel_adapter_provider(spec)
+
+            def create_adapter():  # type: ignore[no-untyped-def]
+                from ksadk.studio.native_kernel_admission import admit_native_kernel_start
+                from ksadk.studio.plugin_kernel_adapter import StudioPluginKernelAdapter
+
+                adapter = provider()
+                if isinstance(adapter, StudioPluginKernelAdapter):
+                    adapter.bind_native_admission(
+                        lambda native, request: admit_native_kernel_start(
+                            spec=spec, request=request, native=native,
+                            runtime=self.scheduler_runtimes.runtime_for_build(spec.build_id),
+                            run_events=self.run_service.event_store,
+                        )
+                    )
+                return adapter
+
+            return create_adapter
         return lambda: self.runtime_executor.create_adapter(spec.launch_context)
 
     def resolve_run_spec(
@@ -899,6 +1107,16 @@ class StudioService:
         if spec.model:
             inputs.append(ConversationCapability(name="model.select", mode=runtime_mode))
         inputs.append(ConversationCapability(name="approval", mode=runtime_mode))
+        if runtime_type == "harness" and self._native_session_enabled(spec.agent_id, session_id):
+            inputs.append(ConversationCapability(name="attachment.file", mode="translated"))
+        if (
+            runtime_type in {"harness", "adk", "langgraph"}
+            and supports_native_image_input(spec.model_metadata)
+        ):
+            # Non-Codex runtimes receive the normalized Runtime image part.
+            # The capability is taken from the immutable Build snapshot, so a
+            # text-only model is never offered an image composer by name guess.
+            inputs.append(ConversationCapability(name="attachment.image", mode="translated"))
         if runtime_type == "codex":
             inputs.extend(
                 (
@@ -918,6 +1136,9 @@ class StudioService:
             ConversationCapability(name="text", mode="native"),
             ConversationCapability(name="streaming", mode=runtime_mode),
         ]
+        if runtime_type == "adk":
+            inputs.append(ConversationCapability(name="ksadk.presentation", mode="native"))
+            outputs.append(ConversationCapability(name="agent.block", mode="native"))
         if runtime_type == "codex":
             outputs.extend(
                 (
@@ -938,70 +1159,24 @@ class StudioService:
         )
 
     async def ensure_current_build(self, agent_id: str):
-        """Return the Build that is eligible for a local Studio turn.
+        from ksadk.studio.build_resolution import resolve_current_build
 
-        This is deliberately one shared resolver for Web chat and Scheduler
-        authoring.  A Scheduler must never select a mutable Draft or a stale
-        Codex manifest merely because a UI happened to show it as an Agent.
-        """
+        return await self._build_singleflight.run(
+            agent_id, lambda: resolve_current_build(self, agent_id),
+            identity=lambda: (
+                ("codex", self.codex_manifests.load(agent_id).manifest_sha256)
+                if self.is_codex_agent(agent_id)
+                else ("draft", self.drafts.get(agent_id).metadata.revision)
+            ),
+        )
 
-        await self.start()
-        if self.is_codex_agent(agent_id):
-            self.codex_agent_detail(agent_id)
-            manifest_snapshot = self.codex_manifests.load(agent_id)
-            cached = self._current_codex_builds.get(agent_id)
-            if cached is not None and cached.manifest_sha256 == manifest_snapshot.manifest_sha256:
-                try:
-                    return self.codex_builds.get(cached.id)
-                except StudioError:
-                    self._current_codex_builds.pop(agent_id, None)
-            builds = [
-                record
-                for record in self.codex_builds.list()
-                if record.agent_name == agent_id and self.codex_builder.is_current(record)
-            ]
-            if builds:
-                self._current_codex_builds[agent_id] = builds[0]
-                return builds[0]
-            built = await asyncio.to_thread(self.codex_builder.build, agent_id)
-            self._current_codex_builds[agent_id] = built
-            return built
-        draft = self.drafts.get(agent_id)
-        composition_required = self.plugin_compositions.required_for(draft)
-        resources_required = resource_build_required(draft)
-        for record in self.builds.list_for_agent(agent_id):
-            if record.status == BuildStatus.SUCCEEDED:
-                if (composition_required or resources_required) and (
-                    record.source_revision != draft.metadata.revision
-                    or (composition_required and not self._build_has_composition(record))
-                    or (resources_required and not self._build_has_resources(record))
-                ):
-                    continue
-                if composition_required:
-                    composition = self.plugin_compositions.compile_if_required(draft)
-                    if composition is None:  # pragma: no cover - guarded by required_for
-                        raise StudioError(
-                            "PLUGIN_COMPOSITION_REQUIRED",
-                            "当前 Agent 需要插件组合，但无法生成 Composition",
-                            status_code=409,
-                        )
-                    if not self._build_has_composition(record, composition=composition):
-                        continue
-                    self.plugin_compositions.bind_build(
-                        composition,
-                        agent_id=draft.metadata.id,
-                        build_id=record.id,
-                    )
-                return record
-        if draft.spec.model is None and not draft.spec.bindings.model_profile_id:
-            raise StudioError(
-                "AGENT_MODEL_REQUIRED",
-                "当前 Agent 未绑定 Model Profile，请先在 Agent 配置中选择模型；"
-                "API Key 只提供访问凭证，不会自动绑定模型。",
-                status_code=422,
-                field="spec.bindings.modelProfileId",
-            )
-        return await asyncio.to_thread(self._build_agent_bundle, draft)
+    def _native_session_enabled(self, agent_id: str, session_id: str) -> bool:
+        from ksadk.studio.native_session_engine import native_session_enabled
+
+        return native_session_enabled(
+            self.event_store, agent_id, session_id,
+            selected=self._native_harness_default or agent_id in self._native_harness_agent_ids,
+        )
 
     def _build_agent_bundle(self, draft: AgentDraft):
         composition = self.plugin_compositions.compile_if_required(draft)
@@ -1347,6 +1522,7 @@ class StudioService:
         runtime_input: Any = None,
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
+        submission_ref: RunSubmissionRef | None = None,
     ) -> Operation:
         self._require_direct_session(session_id)
         return self.codex_agents.submit_run(
@@ -1362,6 +1538,7 @@ class StudioService:
             runtime_input=runtime_input,
             idempotency_key=idempotency_key,
             on_event=on_event,
+            submission_ref=submission_ref,
         )
 
     async def delete_session(self, session_id: str) -> None:
@@ -1372,6 +1549,13 @@ class StudioService:
         session = await self.session_service.get_session_metadata(session_id)
         if not runs and session is None:
             raise not_found("session", session_id)
+        if self.run_service.has_pending_session_turns(session_id):
+            raise StudioError(
+                "SESSION_RUN_ACTIVE",
+                "会话仍有运行或排队中的消息，请先停止或撤销后再删除",
+                status_code=409,
+                details={"sessionId": session_id},
+            )
         # 磁盘停在 RUNNING 的 run 只有仍在本进程内执行时才阻止删除；
         # 崩溃/重启遗留的僵尸 RUNNING 一律回收为 canceled 后放行删除。
         for run in runs:
@@ -1425,6 +1609,8 @@ class StudioService:
             owned.append(close_model_client)
         if self.resource_dsh_capabilities is not self.dsh_capabilities:
             owned.append(self.resource_dsh_capabilities.aclose)
+        if self._native_product_composer is not None:
+            owned.append(self._native_product_composer.aclose)
         if self._dsh_provider_registration_manager is not None:
             owned.append(self._dsh_provider_registration_manager.aclose)
         if self._resource_dsh_provider_registration_manager is not None:
@@ -2308,7 +2494,9 @@ class StudioService:
         goal_objective: str | None = None,
         reasoning_effort: str | None = None,
         runtime_input: Any = None,
+        presentation_profile: Literal["flat-v1", "agent-block-v1"] = "flat-v1",
         on_event: Callable[[RunEvent], None] | None = None,
+        submission_ref: RunSubmissionRef | None = None,
     ) -> Operation:
         self._require_direct_session(session_id)
         try:
@@ -2330,6 +2518,7 @@ class StudioService:
                 runtime_input=runtime_input,
                 idempotency_key=idempotency_key,
                 on_event=on_event,
+                submission_ref=submission_ref,
             )
         return self.submit_run(
             build_id,
@@ -2342,8 +2531,10 @@ class StudioService:
             goal_objective=goal_objective,
             reasoning_effort=reasoning_effort,
             runtime_input=runtime_input,
+            presentation_profile=presentation_profile,
             idempotency_key=idempotency_key,
             on_event=on_event,
+            submission_ref=submission_ref,
         )
 
     def _draft_exists(self, agent_id: str) -> bool:
@@ -2598,6 +2789,7 @@ class StudioService:
         snapshot = draft.model_copy(deep=True)
 
         async def runner(_operation_id: str):
+            await self.a2a_catalog.validate_bindings(snapshot.spec.bindings.remote_agents)
             return await asyncio.to_thread(self._build_agent_bundle, snapshot)
 
         return self.operations.submit(
@@ -2620,10 +2812,14 @@ class StudioService:
         goal_objective: str | None = None,
         reasoning_effort: str | None = None,
         runtime_input: Any = None,
+        presentation_profile: Literal["flat-v1", "agent-block-v1"] = "flat-v1",
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
+        submission_ref: RunSubmissionRef | None = None,
     ) -> Operation:
         self._require_direct_session(session_id)
+        runtime_input = copy.deepcopy(runtime_input)
+        submission_ref = submission_ref.model_copy(deep=True) if submission_ref else None
         async def runner(_operation_id: str):
             return await self.run_build(
                 build_id,
@@ -2636,14 +2832,22 @@ class StudioService:
                 goal_objective=goal_objective,
                 reasoning_effort=reasoning_effort,
                 runtime_input=runtime_input,
+                presentation_profile=presentation_profile,
                 on_event=on_event,
+                submission_ref=submission_ref,
+                queue_if_active=True,
+                on_admitted=lambda: self.operations.mark_started(_operation_id),
             )
 
         return self.operations.submit(
             kind=OperationKind.RUN,
             resource_id=build_id,
             idempotency_key=idempotency_key,
+            metadata=(
+                {"submission_ref": submission_ref.model_dump()} if submission_ref else None
+            ),
             runner=runner,
+            deferred_start=True,
         )
 
     async def run_build(
@@ -2659,19 +2863,29 @@ class StudioService:
         goal_objective: str | None = None,
         reasoning_effort: str | None = None,
         runtime_input: Any = None,
+        presentation_profile: Literal["flat-v1", "agent-block-v1"] = "flat-v1",
         on_event: Callable[[RunEvent], None] | None = None,
+        submission_ref: RunSubmissionRef | None = None,
+        queue_if_active: bool = False,
+        on_admitted: Callable[[], None] | None = None,
     ):
         """Execute any immutable Studio Build through the canonical executor."""
 
         await self.start()
         self._require_direct_session(session_id)
+        await self.a2a_catalog.validate_bindings(self._remote_bindings_for_build(build_id))
         spec = self.resolve_run_spec(
             build_id,
             model=model,
             sandbox=sandbox,
             approval_mode=approval_mode,
         )
-        if collaboration_mode or goal_objective or reasoning_effort:
+        if submission_ref is not None:
+            from dataclasses import replace
+
+            spec = replace(spec, submission_ref=submission_ref)
+        if (collaboration_mode or goal_objective or reasoning_effort
+                or presentation_profile != "flat-v1"):
             from dataclasses import replace
 
             request_config = dict(spec.request_config)
@@ -2682,13 +2896,17 @@ class StudioService:
                 request_config["ephemeral"] = False
             if reasoning_effort:
                 request_config["effort"] = reasoning_effort
-            spec = replace(spec, request_config=request_config)
+            spec = replace(
+                spec, request_config=request_config, presentation_profile=presentation_profile
+            )
         return await self.run_service.run(
             spec,
             user_input,
             runtime_input=runtime_input,
             session_id=session_id,
             on_event=on_event,
+            queue_if_active=queue_if_active,
+            on_admitted=on_admitted,
         )
 
     def submit_public_evaluation(
@@ -2868,7 +3086,7 @@ class StudioService:
         try:
             return self.drafts.get(agent_id).metadata.name
         except StudioError as exc:
-            if exc.status_code != 404:
+            if exc.status_code not in {404, 422}:
                 raise
             return agent_id
 
@@ -2980,12 +3198,16 @@ class StudioService:
         evidence_store = EvidenceStore(request.report_dir) if request.report_dir else None
         return StudioBuildTargetAdapter(
             timeout_seconds=request.config.timeout_seconds,
-            resolve_build=self._resolve_evaluation_build,
+            resolve_build=lambda build_id: self._resolve_evaluation_build(
+                build_id, request.config.tool_approval_mode
+            ),
             run_service=self.run_service,
             evidence_store=evidence_store,
         )
 
-    def _resolve_evaluation_build(self, build_id: str) -> StudioBuildResolution:
+    def _resolve_evaluation_build(
+        self, build_id: str, approval_mode: str | None = None
+    ) -> StudioBuildResolution:
         try:
             self.codex_builds.get(build_id)
         except Exception as exc:
@@ -3004,7 +3226,7 @@ class StudioService:
                 "STUDIO_BUILD_NOT_READY",
                 "Studio Build must be SUCCEEDED before evaluation",
             )
-        run_spec = self.framework_runs.resolve(build_id)
+        run_spec = self.resolve_run_spec(build_id, approval_mode=approval_mode)
         revision_digest = str(build.bundle_digest or build.resolved_digest).strip()
         if not revision_digest:
             raise StudioBuildTargetError(
@@ -3024,6 +3246,15 @@ class StudioService:
                 "sourceDigest": build.source_digest,
                 "sourceRevision": build.source_revision,
             },
+            # Artifact assertions follow the runtime's admitted workspace
+            # tools, not the repository root.  Harness runs use the isolated
+            # tool workspace also exposed by run_documents; framework tools
+            # use the local AgentEngine session workspace.
+            verification_root=(
+                self.workspace.root / ".harness-tools" / "workspace"
+                if build.runtime_type in {"harness", "plugin"}
+                else self.workspace.root / ".agentengine" / "ui" / "workspace"
+            ),
         )
 
     def _validate_evaluation_build(self, build_id: str) -> None:
@@ -3109,6 +3340,7 @@ class StudioService:
             )
 
             async def managed_runtime_runner(_operation_id: str):
+                await self.a2a_catalog.validate_bindings(self._remote_bindings_for_build(build_id))
                 return await self.cloud.deploy_managed_runtime(
                     build_id=build_id,
                     agent_name=codex_build.agent_name,
@@ -3137,6 +3369,7 @@ class StudioService:
         self.builds.get(build_id)
 
         async def runner(_operation_id: str):
+            await self.a2a_catalog.validate_bindings(self._remote_bindings_for_build(build_id))
             return await self.cloud.deploy(build_id, request)
 
         return self.operations.submit(
@@ -3171,6 +3404,9 @@ class StudioService:
             request = self.cloud.request_for(deployment_id)
 
             async def managed_runtime_runner(_operation_id: str):
+                await self.a2a_catalog.validate_bindings(
+                    self._remote_bindings_for_build(target_build.id)
+                )
                 return await self.cloud.deploy_managed_runtime(
                     build_id=target_build.id,
                     agent_name=target_build.agent_name,
@@ -3203,6 +3439,9 @@ class StudioService:
             )
 
         async def runner(_operation_id: str):
+            await self.a2a_catalog.validate_bindings(
+                self._remote_bindings_for_build(target_build_id)
+            )
             return await self.cloud.rollback(
                 deployment_id,
                 target_build_id=target_build_id,
@@ -3214,6 +3453,45 @@ class StudioService:
             idempotency_key=idempotency_key,
             runner=runner,
         )
+
+    def _remote_bindings_for_build(
+        self,
+        build_id: str,
+    ) -> list[RemoteAgentBinding]:
+        try:
+            codex_build = self.codex_builds.get(build_id)
+        except StudioError as exc:
+            if exc.status_code != 404:
+                raise
+        else:
+            import yaml
+
+            from ksadk.studio.codex_manifest import CodexAgentManifest
+
+            # Read digest-verified immutable bytes, never today's editable YAML.
+            text = self.codex_builds.manifest_text(codex_build)
+            manifest = CodexAgentManifest.model_validate(yaml.safe_load(text))
+            return list(manifest.remote_agents or [])
+        build = self.builds.get(build_id)
+        if not build.artifact_path:
+            return []
+        archive = self.workspace.resolve(build.artifact_path, must_exist=True)
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                payload = json.loads(bundle.read("resolved-agent-spec.json"))
+            if not isinstance(payload, dict):
+                raise ValueError("resolved-agent-spec must be an object")
+            raw_bindings = payload.get("remoteAgents", [])
+            if not isinstance(raw_bindings, list):
+                raise ValueError("remoteAgents must be a list")
+            return [RemoteAgentBinding.model_validate(item) for item in raw_bindings]
+        except (KeyError, OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
+            raise StudioError(
+                "A2A_BINDING_BUNDLE_INVALID",
+                "Build 中的远端 Agent binding 无法验证",
+                status_code=422,
+                details={"buildId": build_id},
+            ) from exc
 
     def submit_account_agent_version_rollback(
         self,
@@ -3295,214 +3573,10 @@ class StudioService:
         )
         return {"entryAssets": [Path(asset).name for asset in assets]}
 
-    def get_settings(self) -> dict[str, Any]:
-        data = self.configuration.settings()
-        environment = self.configuration.environment()
-        defaults = {
-            "sandbox": environment.get("KSADK_CODEX_SANDBOX", "workspace-write-auto"),
-            "buildAfterCreate": True,
-            "codexProxy": current_proxy_mode(),
-            "cloudRegion": environment.get(
-                "AGENTENGINE_REGION", environment.get("KSYUN_REGION", "cn-beijing-6")
-            ),
-            "cloudServerUrl": environment.get("AGENTENGINE_SERVER_URL", ""),
-            "cloudBucket": environment.get("KS3_BUCKET", ""),
-            "cloudAccountId": (environment.get("KSYUN_ACCOUNT_ID", "").strip()),
-            # AK/SK 不回显(避免本地 UI 回传 secret);只暴露配置状态。
-            # 已配置 = 启动环境或已持久化 settings 里 AK+SK 齐全。
-            "cloudAccountConfigured": bool(
-                (
-                    environment.get("KSYUN_ACCESS_KEY") or environment.get("KS3_ACCESS_KEY", "")
-                ).strip()
-                and (
-                    environment.get("KSYUN_SECRET_KEY") or environment.get("KS3_SECRET_KEY", "")
-                ).strip()
-            ),
-            "cloudSignedAccountConfigured": bool(
-                (
-                    environment.get("KSYUN_ACCESS_KEY") or environment.get("KS3_ACCESS_KEY", "")
-                ).strip()
-                and (
-                    environment.get("KSYUN_SECRET_KEY") or environment.get("KS3_SECRET_KEY", "")
-                ).strip()
-            ),
-            "traceContent": environment.get("KSADK_STUDIO_TRACE_CONTENT", "1") != "0",
-        }
-        defaults.update({k: v for k, v in data.items() if k in defaults and v is not None})
-        for key, name in SETTINGS_ENV.items():
-            if key in defaults:
-                value, _source = self.configuration.resolve(name)
-                if value is not None:
-                    defaults[key] = value
-        defaults["configurationSources"] = {
-            key: self.configuration.resolve(name)[1] for key, name in SETTINGS_ENV.items()
-        }
-        defaults["platformResourceMissingFields"] = [
-            key
-            for key in ("cloudAccessKey", "cloudSecretKey", "cloudServerUrl")
-            if not self.configuration.resolve(SETTINGS_ENV[key])[0]
-        ]
-        defaults["platformResourcesConfigured"] = self.resource_authority is not None
-        defaults["codexProxy"] = normalize_proxy_mode(environment.get("KSADK_CODEX_USE_PROXY"))
-        return defaults
 
-    def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        allowed = {
-            "sandbox",
-            "buildAfterCreate",
-            "codexProxy",
-            "cloudRegion",
-            "cloudBucket",
-            "cloudServerUrl",
-            "traceContent",
-            # 云账号:AK/SK 留空 = 不修改(保留已存值);AccountID 可单独更新。
-            "cloudAccessKey",
-            "cloudSecretKey",
-            "cloudAccountId",
-        }
-        data = {k: payload[k] for k in allowed if k in payload}
-        if "cloudAccessKey" in data and not str(data["cloudAccessKey"]).strip():
-            data.pop("cloudAccessKey")
-        if "cloudSecretKey" in data and not str(data["cloudSecretKey"]).strip():
-            data.pop("cloudSecretKey")
-        if "cloudAccountId" in data:
-            data["cloudAccountId"] = str(data["cloudAccountId"]).strip()
-            if not data["cloudAccountId"]:
-                data.pop("cloudAccountId")
-        if data.get("sandbox") and data["sandbox"] not in {
-            "read-only",
-            "workspace-write",
-            "workspace-write-auto",
-            "full-access",
-            "read_only",
-            "workspace_write",
-            "workspace_write_auto",
-            "full_access",
-        }:
-            raise StudioError("SETTINGS_INVALID", "sandbox 取值非法", status_code=422)
-        if "codexProxy" in data and data["codexProxy"] not in {"auto", "forced", "direct"}:
-            raise StudioError("SETTINGS_INVALID", "codexProxy 取值非法", status_code=422)
-        for key in (
-            "cloudAccessKey",
-            "cloudSecretKey",
-            "cloudAccountId",
-            "cloudRegion",
-            "cloudBucket",
-            "cloudServerUrl",
-        ):
-            if key in data:
-                if (
-                    not isinstance(data[key], str)
-                    or len(data[key]) > 2048
-                    or any(ord(c) < 32 for c in data[key])
-                ):
-                    raise StudioError(
-                        "SETTINGS_INVALID", "配置值格式无效", status_code=422, field=key
-                    )
-                data[key] = data[key].strip()
-        if data.get("cloudServerUrl"):
-            from ksadk.studio.resource_authority import _canonical_endpoint
 
-            try:
-                data["cloudServerUrl"] = _canonical_endpoint(
-                    data["cloudServerUrl"],
-                    allow_loopback_http=False,
-                    allow_ksyun_internal_http=True,
-                )
-            except ValueError as error:
-                raise StudioError(
-                    "SETTINGS_INVALID",
-                    "控制面地址必须是有效的 HTTPS 服务地址",
-                    status_code=422,
-                    field="cloudServerUrl",
-                ) from error
-        if (
-            "cloudAccessKey" in data
-            and data["cloudAccessKey"] != self.configuration.resolve("KSYUN_ACCESS_KEY")[0]
-        ):
-            if not data.get("cloudSecretKey"):
-                raise StudioError(
-                    "SETTINGS_INVALID",
-                    "切换 Access Key 时请同时填写对应的 Secret Key",
-                    status_code=422,
-                    field="cloudSecretKey",
-                )
-            data.setdefault("cloudAccountId", "")
-        candidate_environment = self.configuration.environment()
-        for key, name in SETTINGS_ENV.items():
-            if key in data and name not in self.configuration.overrides:
-                candidate_environment[name] = str(data[key])
-        try:
-            candidate_policy = (
-                self._resource_authority_policy_override
-                or resource_authority_policy_from_environment(candidate_environment)
-            )
-        except ValueError as error:
-            raise StudioError(
-                "SETTINGS_INVALID", "云端连接配置无效，请检查控制面地址和区域", status_code=422
-            ) from error
-        self.plugin_runs.check_configuration_mutable()
-        self.configuration.update_settings(data)
-        self._apply_persisted_settings()
-        self.resource_authority = (
-            SignedKnowledgeResourceAuthority(self.resource_connections, candidate_policy)
-            if candidate_policy is not None
-            else None
-        )
-        self.plugin_runs.replace_resource_authority(self.resource_authority)
-        if self._cloud_gateway_override is None:
-            self.cloud.gateway = self._configured_cloud_gateway()
-        return self.get_settings()
 
-    async def apply_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Drain old credentials/leases before making a new account visible."""
-        async with self._start_lock:
-            if self.run_service.has_active_runs():
-                raise StudioError(
-                    "SETTINGS_RUNTIME_BUSY", "请等待当前运行结束后再保存设置", status_code=409
-                )
-            try:
-                await self.plugin_runs.suspend_admission()
-                return self.update_settings(payload)
-            finally:
-                await self.plugin_runs.resume_admission()
 
-    def _apply_persisted_settings(self) -> None:
-        data = self.configuration.settings()
-        environment = self.configuration.environment()
-        self._apply_settings_to_env(data)
-        for name in (
-            *SETTINGS_ENV.values(),
-            *self.configuration.dotenv,
-            *self.configuration.overrides,
-        ):
-            if name in environment:
-                os.environ[name] = environment[name]
-
-    @staticmethod
-    def _apply_settings_to_env(data: dict[str, Any]) -> None:
-        if data.get("sandbox"):
-            os.environ["KSADK_CODEX_SANDBOX"] = data["sandbox"]
-        if "codexProxy" in data:
-            proxy_env = proxy_mode_env_value(data["codexProxy"])
-            if proxy_env is None:
-                os.environ.pop("KSADK_CODEX_USE_PROXY", None)
-            else:
-                os.environ["KSADK_CODEX_USE_PROXY"] = proxy_env
-        if data.get("cloudRegion"):
-            os.environ["AGENTENGINE_REGION"] = data["cloudRegion"]
-        if data.get("cloudBucket"):
-            os.environ["KS3_BUCKET"] = data["cloudBucket"]
-        if "traceContent" in data:
-            os.environ["KSADK_STUDIO_TRACE_CONTENT"] = "1" if data["traceContent"] else "0"
-        # 云账号凭证:桥接到 KSYUN_* env(AgentEngineClient 的 V4 签名与
-        # X-Ksc-Account-Id 注入都从这里取值)。
-        if data.get("cloudAccessKey"):
-            os.environ["KSYUN_ACCESS_KEY"] = str(data["cloudAccessKey"])
-        if data.get("cloudSecretKey"):
-            os.environ["KSYUN_SECRET_KEY"] = str(data["cloudSecretKey"])
-        if data.get("cloudAccountId"):
-            os.environ["KSYUN_ACCOUNT_ID"] = str(data["cloudAccountId"])
 
     def _configured_cloud_gateway(self) -> CloudDeploymentGateway:
         """Compose the existing signed Code deployment path from process-only credentials."""

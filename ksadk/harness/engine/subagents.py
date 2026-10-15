@@ -94,6 +94,11 @@ async def open_child(*, engine, parent_run, sub, task, call_id):
         mcp_runtime=engine._mcp_runtime if sub.inherit_mcp else None,
         artifact_store=artifact_store,
         mcp_offload_policy=engine._mcp_disclosure._offload_policy,
+        # G5 §5.2：子 Agent 引擎继承父引擎钩子链——子 Run 的 on_context /
+        # on_tool_result / provider 请求钩子与父 Run 同语义生效；Reasoner 包装
+        # 经 bind_hooked_reasoner 的 rebind 分支重绑定到子引擎（见
+        # hooked_reasoner.bind_hooked_reasoner）。
+        hooks=engine._hooks,
         max_reasoning_turns=min(sub.max_turns, engine._max_reasoning_turns),
     )
     child_engine._inherited_policy_tool_names = parent_run.policy_tool_names & set(sub.tools)
@@ -268,7 +273,19 @@ async def execute_subagent(*, engine, parent_run, sub, task, call_id):
             if not active:
                 engine._active_subagent_runs.pop(parent_run.handle.run_id, None)
     if child_run.state.status is RunStatus.CANCELED and not failure:
-        failure, category = "child run canceled", "canceled"
+        # 不要只报 "child run canceled"（2026-09-18 实测）：父 Agent 只会看到
+        # "委派被取消"，既不知道是谁取消的、也不知道是预算耗尽还是外部取消，
+        # 于是只能放弃委派自己硬做——这条模糊信息直接导致交付链路断开。
+        consumed = ""
+        try:
+            usage = getattr(child_run, "budget_usage", None)
+            if usage:
+                consumed = f"; consumed={dict(usage)}"
+            elif getattr(child_run, "execution_elapsed_seconds", None) is not None:
+                consumed = f"; elapsed={child_run.execution_elapsed_seconds:.0f}s"
+        except Exception:  # noqa: BLE001 - 诊断信息尽力而为
+            consumed = ""
+        failure, category = f"child run canceled{consumed}", "canceled"
     if child_run.state.status is RunStatus.FAILED and not failure:
         failure, category = "child run failed", "child_failed"
     if (

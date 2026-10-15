@@ -32,8 +32,8 @@ Studio source is included in the public export. Static assets are generated at b
 # Default: pull the verified npm version
 make sync-ksadk-web-static
 
-# Pin the concrete 0.8.5 candidate version
-make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.12
+# Pin the concrete 0.8.6 candidate version
+make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.13
 ```
 
 <Callout type="warning" title="Do not pull GitHub latest release at wheel build time">
@@ -50,7 +50,7 @@ audited tarball.
 `make build` and `make build-wheel` consume pinned `ksadk-web` assets, build React Studio from its dependency lock, and then build the wheel. Internal and public Git trees use the same path:
 
 ```bash
-make build-wheel KSADK_WEB_VERSION=0.3.12
+make build-wheel KSADK_WEB_VERSION=0.3.13
 ```
 
 Wheel users do not need to compile the frontend. The universal wheel does not include framework dependencies or native toolchains; fully disconnected installation also needs an appropriate dependency wheelhouse.
@@ -59,29 +59,30 @@ Wheel users do not need to compile the frontend. The universal wheel does not in
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `KSADK_WEB_VERSION` | `0.3.12` | published npm package version; release candidates must pin a concrete version |
+| `KSADK_WEB_VERSION` | `0.3.13` | target npm package version; publication must verify registry visibility |
 | `KSADK_WEB_PACKAGE` | `@kingsoftcloud/ksadk-web` | npm package name |
 | `KSADK_WEB_TARBALL_NAME` | `kingsoftcloud-ksadk-web-<version>.tgz` | Tarball filename, derived from the version |
+| `KSADK_WEB_TARBALL` | empty | Reviewed local tarball for candidate validation |
 | `KSADK_WEB_RELEASE_URL` | empty | Explicit tarball URL fallback; takes precedence over `npm pack` |
 | `KSADK_WEB_CACHE_DIR` | `.cache/ksadk-web` | Local cache directory for extraction |
 | `KSADK_WEB_REGISTRY` | `https://registry.npmjs.org` | npm registry; used to resolve the tarball URL only when no `npm` CLI is available |
 
-Sync precedence: `KSADK_WEB_RELEASE_URL` explicit tarball > `npm pack` > registry
-resolution. Regardless of the path taken, the `dist-ksadk` directory is verified
+Sync precedence: `KSADK_WEB_TARBALL` > cached version tarball >
+`KSADK_WEB_RELEASE_URL` > `npm pack` > registry resolution. Regardless of the path taken, the `dist-ksadk` directory is verified
 to exist before it is copied over `ksadk/server/static`.
 
 ## Release Record
 
 Each `ksadk-python` release note should record:
 
-- The `ksadk-python` version (e.g. `0.8.5`).
-- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.5` maps to `@kingsoftcloud/ksadk-web@0.3.12`).
-- The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.12`).
+- The `ksadk-python` version (e.g. `0.8.6`).
+- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.6` maps to `@kingsoftcloud/ksadk-web@0.3.13`).
+- The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.13`).
 - The wheel / sdist audit result (`make public-build-check` / `twine check dist/*`).
 
-<Callout type="info" title="0.8.5 candidate record example">
-- `ksadk-python`: `0.8.5`
-- npm package: `@kingsoftcloud/ksadk-web@0.3.12`
-- frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.12`
-- audit: `make public-build-check` passed, `twine check dist/*` passed
+<Callout type="info" title="0.8.6 candidate record example">
+- `ksadk-python`: `0.8.6`
+- npm package: `@kingsoftcloud/ksadk-web@0.3.13`
+- frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.13`
+- audit: record actual command results and artifact hashes after validation; an example is not a passing release record
 </Callout>

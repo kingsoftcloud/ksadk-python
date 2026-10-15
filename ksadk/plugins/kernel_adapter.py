@@ -47,17 +47,20 @@ class PluginKernelAdapter(RuntimeAdapter):
         runtime_type: str,
         bind_delegate: BindDelegate,
         release_binding: ReleaseBinding,
+        release_failed_binding: ReleaseBinding | None = None,
     ) -> None:
         super().__init__(_PluginKernelRuntime(runtime_type))
         self._runtime_type = runtime_type
         self._bind_delegate_callback = bind_delegate
         self._release_binding_callback = release_binding
+        self._release_failed_binding_callback = release_failed_binding or release_binding
         self._delegate: RuntimeAdapter | None = None
         self._native_handle: RunHandle | None = None
 
     async def start(self, request: StartRequest) -> RunHandle:
         try:
             delegate = await self._bind_delegate(request.session_id)
+            request = await self._prepare_start_request(delegate, request)
             metadata = dict(request.metadata)
             if not metadata.get("invocation_id") and metadata.get("run_id"):
                 metadata["invocation_id"] = metadata["run_id"]
@@ -69,6 +72,12 @@ class PluginKernelAdapter(RuntimeAdapter):
         except BaseException:
             await self._release_failed_binding(request.session_id)
             raise
+
+    async def _prepare_start_request(
+        self, delegate: RuntimeAdapter, request: StartRequest
+    ) -> StartRequest:
+        """Let a product host admit a bound delegate before its first effect."""
+        return request
 
     def stream(self, handle: RunHandle):  # type: ignore[no-untyped-def]
         return self._require_delegate().stream(self._provider_handle(handle))
@@ -97,6 +106,7 @@ class PluginKernelAdapter(RuntimeAdapter):
     async def attach(self, handle: RunHandle) -> RunHandle:
         try:
             delegate = await self._bind_delegate(handle.session_id)
+            handle = await self._prepare_restore_handle(delegate, handle)
             native_handle = await delegate.attach(self._provider_handle(handle))
             self._native_handle = native_handle
             return self._outer_handle(native_handle)
@@ -107,8 +117,34 @@ class PluginKernelAdapter(RuntimeAdapter):
     async def steer(self, handle: RunHandle, payload: SteerPayload) -> None:
         await self._require_delegate().steer(self._provider_handle(handle), payload)
 
+    async def guide(self, handle: RunHandle, payload: SteerPayload) -> object | None:
+        return await self._require_delegate().guide(self._provider_handle(handle), payload)
+
+    async def child_tasks(self, handle: RunHandle) -> tuple[dict, ...]:
+        return await self._require_delegate().child_tasks(self._provider_handle(handle))
+
+    async def child_execution_view(self, handle: RunHandle, child_run_id: str) -> dict:
+        return await self._require_delegate().child_execution_view(self._provider_handle(handle), child_run_id)
+
+    async def cancel_child(self, handle: RunHandle, *, child_run_id: str, command_id: str):
+        return await self._require_delegate().cancel_child(
+            self._provider_handle(handle), child_run_id=child_run_id, command_id=command_id,
+        )
+
+    async def promote_child(self, handle: RunHandle, *, child_run_id: str, command_id: str):
+        return await self._require_delegate().promote_child(
+            self._provider_handle(handle), child_run_id=child_run_id, command_id=command_id,
+        )
+
     async def inject(self, handle: RunHandle, payload: InjectPayload) -> None:
         await self._require_delegate().inject(self._provider_handle(handle), payload)
+
+    async def send_child_input(self, handle: RunHandle, *, child_run_id: str, text: str,
+                               command_id: str, expected_goal_revision: int):
+        return await self._require_delegate().send_child_input(
+            self._provider_handle(handle), child_run_id=child_run_id, text=text,
+            command_id=command_id, expected_goal_revision=expected_goal_revision,
+        )
 
     async def checkpoint(self, handle: RunHandle) -> CheckpointDescriptor:
         return await self._require_delegate().checkpoint(self._provider_handle(handle))
@@ -116,6 +152,7 @@ class PluginKernelAdapter(RuntimeAdapter):
     async def durable_restore(self, handle: RunHandle) -> RunHandle:
         try:
             delegate = await self._bind_delegate(handle.session_id)
+            handle = await self._prepare_restore_handle(delegate, handle)
             native_handle = await delegate.durable_restore(
                 self._provider_handle(handle)
             )
@@ -124,6 +161,12 @@ class PluginKernelAdapter(RuntimeAdapter):
         except BaseException:
             await self._release_failed_binding(handle.session_id)
             raise
+
+    async def _prepare_restore_handle(
+        self, delegate: RuntimeAdapter, handle: RunHandle
+    ) -> RunHandle:
+        """Let the product host recheck immutable pins before reattaching effects."""
+        return handle
 
     def is_handle_attached(self, handle: RunHandle) -> bool:
         return self._delegate is not None and self._delegate.is_handle_attached(
@@ -185,7 +228,7 @@ class PluginKernelAdapter(RuntimeAdapter):
 
         self._delegate = None
         self._native_handle = None
-        cleanup = asyncio.create_task(self._release_binding_callback(session_id))
+        cleanup = asyncio.create_task(self._release_failed_binding_callback(session_id))
         interrupted = False
         while not cleanup.done():
             try:

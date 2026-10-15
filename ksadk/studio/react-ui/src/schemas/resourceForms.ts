@@ -79,6 +79,9 @@ export const credentialValueSchema = z.object({
 
 export const settingsSchema = z.object({
   sandbox: z.enum(["read-only", "read_only", "workspace-write", "workspace-write-auto", "full-access"]),
+  // G7 UI：Harness 通用智能体的默认沙箱（隔离强度语义，后端自动按平台/部署定；
+  // 不暴露 local-subprocess 与 OS 机制细节，用户只选本地/远程强度）。
+  harnessSandbox: z.enum(["read-only", "workspace-write-local", "workspace-write-remote", "full-access"]).default("workspace-write-local"),
   buildAfterCreate: z.boolean(),
   codexProxy: z.enum(["auto", "forced", "direct"]),
   cloudRegion: z.string().trim().max(128, "Region 不能超过 128 个字符").default(""),

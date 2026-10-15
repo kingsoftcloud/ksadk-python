@@ -321,9 +321,24 @@ def run(output: Path | None = None) -> list[dict]:
                     )
                     open_resource("tool", "添加 Python Tool")
                     page.locator("#ptDisplayName").fill("放弃工具")
-                    count = len(requests)
+                    # Resource-list refreshes may finish an unrelated write
+                    # after this drawer opens.  The behavior under test is
+                    # narrower: cancelling this Tool form must not create or
+                    # commit a Tool.  Count only those authoritative mutation
+                    # endpoints instead of racing every background request.
+                    def tool_mutation_count() -> int:
+                        return sum(
+                            item["path"] == "/api/v1/catalog/tools"
+                            or (
+                                item["path"].startswith("/api/v1/catalog/python-tools/")
+                                and item["path"].endswith(":commit")
+                            )
+                            for item in requests
+                        )
+
+                    count = tool_mutation_count()
                     page.get_by_role("button", name="取消", exact=True).click()
-                    assert len(requests) == count
+                    assert tool_mutation_count() == count
                     capture("tool-saved-and-cancelled", actualLocalApi=True)
 
                     open_resource("mcp", "连接 MCP")
@@ -358,26 +373,31 @@ def run(output: Path | None = None) -> list[dict]:
                     page.get_by_role("option", name="STDIO（本地命令）", exact=True).click()
                     page.locator("#mcpCommand").fill("fixture-command")
                     page.locator("#mcpArgs").fill("--preview")
-                    count = len(requests)
+                    def mcp_mutation_count() -> int:
+                        return sum(
+                            item["path"] == "/api/v1/catalog/mcp-servers" for item in requests
+                        )
+
+                    count = mcp_mutation_count()
                     page.get_by_role("button", name="取消", exact=True).click()
-                    assert len(requests) == count
+                    assert mcp_mutation_count() == count
                     capture("mcp-saved-and-cancelled", actualLocalApi=True, externalProbe="mocked")
 
                     open_resource("mcp", "连接 MCP")
-                    count = len(requests)
+                    count = mcp_mutation_count()
                     paste_mcp("null")
                     expect(page.get_by_text("配置解析失败", exact=True)).to_be_visible()
                     expect(page.locator("#mcpName")).to_have_value("")
                     assert not page_errors, page_errors
-                    assert len(requests) == count
+                    assert mcp_mutation_count() == count
                     paste_mcp("{invalid JSON")
                     expect(page.get_by_text("请粘贴有效的 JSON", exact=True)).to_be_visible()
                     expect(page.locator("#mcpName")).to_have_value("")
-                    assert len(requests) == count
+                    assert mcp_mutation_count() == count
                     paste_mcp('{"mcpServers":{"broken":null}}')
                     expect(page.get_by_text("未找到 MCP server 定义", exact=True)).to_be_visible()
                     expect(page.locator("#mcpName")).to_have_value("")
-                    assert len(requests) == count
+                    assert mcp_mutation_count() == count
                     capture("mcp-invalid-paste", rootSyntaxAndServerShapeValidated=True)
 
                     sse_name = f"layout-sse-{width}"
@@ -411,7 +431,7 @@ def run(output: Path | None = None) -> list[dict]:
                     form_frame("保存并探测")
                     capture("mcp-valid-paste-cancel")
                     page.get_by_role("button", name="取消", exact=True).click()
-                    assert len(requests) == count
+                    assert mcp_mutation_count() == count
                     open_resource("mcp", "连接 MCP")
                     expect(page.locator("#mcpName")).to_have_value("")
                     expect(page.locator("#mcpPaste")).to_have_value("")
@@ -529,7 +549,14 @@ def run(output: Path | None = None) -> list[dict]:
                     page.locator("#editExecutionMaxSteps").fill("42")
                     page.get_by_role("button", name="能力绑定", exact=True).click()
                     page.get_by_role("button", name=f"移除 {model_label}", exact=True).click()
-                    count = len(requests)
+                    def agent_update_count() -> int:
+                        return sum(
+                            item["path"] == "/api/v1/agents/conversation-items-agent"
+                            and item["method"] == "PUT"
+                            for item in requests
+                        )
+
+                    count = agent_update_count()
                     page.get_by_role("button", name="取消", exact=True).scroll_into_view_if_needed()
                     visible_control(page, page.get_by_role("button", name="取消", exact=True))
                     page.get_by_role("button", name="取消", exact=True).click()
@@ -547,7 +574,7 @@ def run(output: Path | None = None) -> list[dict]:
                     expect(
                         page.get_by_role("button", name=f"移除 {model_label}", exact=True)
                     ).to_be_visible()
-                    assert len(requests) == count
+                    assert agent_update_count() == count
                     capture(
                         "agent-cancel-discards-three-sections",
                         actualLocalApi=True,

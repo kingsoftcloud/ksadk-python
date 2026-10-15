@@ -25,7 +25,7 @@ def test_make_exports_web_version_to_desktop_manifest(tmp_path, script_name, ove
         command.append(f"KSADK_WEB_VERSION={override}")
     result = subprocess.run(command, cwd=ROOT, env=environment,
                             capture_output=True, text=True, check=True)
-    assert result.stdout == (override or "0.3.12")
+    assert result.stdout == (override or "0.3.13")
 
 
 @pytest.mark.parametrize("image_exit", [0, 17])

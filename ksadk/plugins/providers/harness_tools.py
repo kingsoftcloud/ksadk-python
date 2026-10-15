@@ -14,7 +14,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from ksadk.harness.tool_output import publish_tool_output
 from ksadk.harness.tools import HarnessTool
+
+LOCKED_PYTHON_EXECUTION_POLICY_DIGEST = (
+    "sha256:" + hashlib.sha256(b"ksadk.python-source-bytes/v1").hexdigest()
+)
 
 
 def python_tool_bundle_path(digest: str) -> Path:
@@ -24,45 +29,99 @@ def python_tool_bundle_path(digest: str) -> Path:
 
 
 _EXECUTE = """
-import asyncio, contextlib, importlib.util, inspect, json, sys
-path, name = sys.argv[1:]
+import asyncio, contextlib, hashlib, importlib.util, inspect, json, sys
+from pathlib import Path
+path, name, expected_digest = sys.argv[1:]
 with contextlib.redirect_stdout(sys.stderr):
-    spec = importlib.util.spec_from_file_location('locked_tool', path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    value = getattr(module, name)(**json.load(sys.stdin))
-    if inspect.isawaitable(value):
-        value = asyncio.run(value)
-print(json.dumps(value, ensure_ascii=False))
+    arguments = json.load(sys.stdin)
+    source = None
+    try:
+        pinned_path = Path(path)
+        if pinned_path.resolve(strict=True) == pinned_path:
+            source = pinned_path.read_bytes()
+    except (OSError, ValueError):
+        pass
+    if source is None or 'sha256:' + hashlib.sha256(source).hexdigest() != expected_digest:
+        result = {'version': 'ksadk.python-source-bytes/v1', 'status': 'source_rejected'}
+    else:
+        spec = importlib.util.spec_from_file_location('locked_tool', path)
+        module = importlib.util.module_from_spec(spec)
+        # Compile exactly the verified bytes. SourceFileLoader may read a .pyc
+        # even with -B, or reopen a changed path after the digest check.
+        exec(compile(source, path, 'exec'), module.__dict__)
+        value = getattr(module, name)(**arguments)
+        if inspect.isawaitable(value):
+            value = asyncio.run(value)
+        result = {'version': 'ksadk.python-source-bytes/v1', 'status': 'ok', 'value': value}
+print(json.dumps(result, ensure_ascii=False))
 """
 
 _EXECUTE_BUILTIN = """
-import contextlib, json, sqlite3, sys
+import contextlib, json, sqlite3, sys, threading
 from dataclasses import asdict
+wire_stdout = sys.stdout
+output_bytes = 0
+output_lock = threading.Lock()
 sys.path.insert(0, sys.argv[1])
 with contextlib.redirect_stdout(sys.stderr):
     from pathlib import Path
     from ksadk.toolsets import get_agentengine_tools
+    import ksadk.toolsets.platform as platform
+    import ksadk.toolsets.sandbox as sandbox
     import ksadk.toolsets.workspace as workspace
     import ksadk.toolsets.workspace_state as state
-    workspace.workspace_root = lambda: Path(sys.argv[2])
+    from ksadk.toolsets.workspace_read_budget import SourceReadBudget, source_read_budget_scope
+    from ksadk.harness.tool_output import tool_output_scope
+    resolved_workspace_root = lambda: Path(sys.argv[2])
+    # Builtin modules import workspace_root by value. Patch every consumer so
+    # file tools, status tools, and command execution share the exact policy
+    # root passed by the managed provider.
+    workspace.workspace_root = resolved_workspace_root
+    platform.workspace_root = resolved_workspace_root
+    sandbox.workspace_root = resolved_workspace_root
     tool = get_agentengine_tools(include=[sys.argv[3]], mode='direct')[0]
     arguments = json.load(sys.stdin)
-    # Keep read-before-edit protection across short-lived executor processes.
-    # The DB is outside the tool-visible workspace and scoped by session.
-    db_path = Path(sys.argv[4])
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path, timeout=10) as db:
-        db.execute('CREATE TABLE IF NOT EXISTS reads (session TEXT PRIMARY KEY, data TEXT)')
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT data FROM reads WHERE session=?', (sys.argv[5],)).fetchone()
-        if row:
-            for item in json.loads(row[0]):
-                state.record_read_state(state.WorkspaceReadState(**item))
-        value = tool.invoke(arguments) if hasattr(tool, 'invoke') else tool(**arguments)
-        snapshot = [asdict(item) for item in state._READ_STATE.values()]
-        db.execute('INSERT OR REPLACE INTO reads VALUES (?, ?)',
-                   (sys.argv[5], json.dumps(snapshot)))
+    source_budget = SourceReadBudget.from_transport(json.loads(sys.argv[6]))
+
+    def public_output(channel, text):
+        global output_bytes
+        if sys.argv[3] != 'run_command' or channel not in {'stdout', 'stderr'}:
+            return
+        with output_lock:
+            text = str(text)[:max(0, 32768 - output_bytes)]
+            output_bytes += len(text)
+            for offset in range(0, len(text), 4096):
+                print('KSADK_PUBLIC_OUTPUT:' + json.dumps(
+                    {'channel': channel, 'text': text[offset:offset + 4096]},
+                    ensure_ascii=False), file=wire_stdout, flush=True)
+
+    def invoke_builtin():
+        with source_read_budget_scope(source_budget), tool_output_scope(public_output):
+            return tool.invoke(arguments) if hasattr(tool, 'invoke') else tool(**arguments)
+
+    # File observations and mutations share the persistent revision guard.
+    # Commands, searches, listings and unrelated tools do not consume it and
+    # must not hold its write transaction throughout their execution.
+    stateful = sys.argv[3] in {
+        'read_workspace_file', 'write_workspace_file', 'write_workspace_files',
+        'edit_workspace_file', 'multi_edit_workspace_file', 'delete_workspace_file',
+    }
+    if stateful:
+        db_path = Path(sys.argv[4])
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(db_path, timeout=10) as db:
+            db.execute('CREATE TABLE IF NOT EXISTS reads (session TEXT PRIMARY KEY, data TEXT)')
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT data FROM reads WHERE session=?', (sys.argv[5],)).fetchone()
+            if row:
+                for item in json.loads(row[0]):
+                    state.record_read_state(state.WorkspaceReadState(**item))
+            value = invoke_builtin()
+            snapshot = [asdict(item) for item in state._READ_STATE.values()]
+            db.execute('INSERT OR REPLACE INTO reads VALUES (?, ?)',
+                       (sys.argv[5], json.dumps(snapshot)))
+    else:
+        value = invoke_builtin()
 print(json.dumps(value, ensure_ascii=False))
 """
 
@@ -123,6 +182,22 @@ def _plain(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_plain(item) for item in value]
     return value
+
+
+def _resolved_agent_id(resolved: Mapping[str, Any]) -> str:
+    """Read the canonical Agent id from a compiled resolved spec.
+
+    Current bundles store it as the top-level ``agentId``.  Keep the legacy
+    metadata fallback for older hand-authored fixtures and bundles, but never
+    assume that a source-draft metadata object survives compilation.
+    """
+    direct = str(resolved.get("agentId") or "").strip()
+    if direct:
+        return direct
+    metadata = resolved.get("metadata")
+    if isinstance(metadata, Mapping):
+        return str(metadata.get("id") or "").strip()
+    return ""
 
 
 def _reserve_tool_call(
@@ -230,10 +305,15 @@ def assemble_python_tools(
             policy = current_execution_policy()
             policy_root = policy.workspace_root if policy is not None else None
             writable_root = policy_root or workspace_root or root
+            state_root = (
+                policy.tool_state_root
+                if policy is not None and policy.tool_state_root is not None
+                else writable_root
+            )
             max_calls = contract.get("maxCallsPerRun")
             if max_calls is not None:
                 _reserve_tool_call(
-                    database=writable_root
+                    database=state_root
                     / ".harness-tools"
                     / "state"
                     / "tool-call-quotas.sqlite",
@@ -242,7 +322,7 @@ def assemble_python_tools(
                     limit=int(max_calls),
                 )
             if descriptor is None:
-                command = [_EXECUTE, str(path), contract["callableName"]]
+                command = [_EXECUTE, str(path), contract["callableName"], contract["sourceSha256"]]
             else:
                 from ksadk.toolsets.workspace_identity import identity_workspace_root
 
@@ -253,23 +333,31 @@ def assemble_python_tools(
                 env = dict(
                     os.environ, KSADK_TOOL_APPROVAL_MODE="full",
                     KSADK_PROJECT_DIR=str(execution_root),
-                    AGENTENGINE_UI_DIR=str(execution_root / ".harness-tools" / "ui"),
+                    KSADK_STUDIO_AGENT_ID=_resolved_agent_id(resolved),
+                    AGENTENGINE_UI_DIR=str(state_root / ".harness-tools" / "ui"),
                 )
                 scoped_root = policy_root or identity_workspace_root(
                     (workspace_root or root) / ".harness-tools" / "workspace"
                 ).resolve()
+                from ksadk.toolsets.workspace_read_budget import current_source_read_budget
+
+                source_budget = (
+                    current_source_read_budget()
+                    if contract["name"] == "read_workspace_file" else None
+                )
                 command = [
                     _EXECUTE_BUILTIN,
                     str(Path(__file__).resolve().parents[3]),
                     str(scoped_root),
                     contract["name"],
                     str(
-                        writable_root
+                        state_root
                         / ".harness-tools"
                         / "state"
                         / (hashlib.sha256(str(scoped_root).encode()).hexdigest() + ".sqlite")
                     ),
                     tool_context.session_id or "default",
+                    json.dumps(source_budget.transport() if source_budget is not None else None),
                 ]
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
@@ -290,23 +378,64 @@ def assemble_python_tools(
                     await process.stdin.drain()
                     process.stdin.close()
                     output = bytearray()
+                    pending = bytearray()
+                    allow_progress = descriptor is not None and contract["name"] == "run_command"
+                    prefix = b'KSADK_PUBLIC_OUTPUT:'
                     while chunk := await process.stdout.read(65536):
-                        output.extend(chunk)
-                        if len(output) > 1_048_576:
+                        pending.extend(chunk)
+                        while b'\n' in pending:
+                            line, _, tail = pending.partition(b'\n')
+                            pending = bytearray(tail)
+                            if allow_progress and line.startswith(prefix):
+                                progress = json.loads(line[len(prefix):])
+                                publish_tool_output(progress.get('channel'), progress.get('text'))
+                            else:
+                                output.extend(line + b'\n')
+                        if len(output) + len(pending) > 1_048_576:
                             raise ValueError("Tool 输出超过 1 MiB 限制")
+                    output.extend(pending)
                     await process.wait()
                     if process.returncode:
                         raise RuntimeError(
                             f"Tool {contract['name']} 执行失败，请检查参数与运行环境"
                         )
-                    return json.loads(output)
+                    value = json.loads(output)
+                    if descriptor is None:
+                        if (
+                            not isinstance(value, dict)
+                            or value.get("version") != "ksadk.python-source-bytes/v1"
+                        ):
+                            raise RuntimeError("Locked Python worker returned an invalid protocol")
+                        if value.get("status") == "source_rejected":
+                            return {
+                                "ok": False,
+                                "error_type": "tool_source_integrity",
+                                "error_message": (
+                                    "Locked Python Tool source is unavailable or changed"
+                                ),
+                            }
+                        if value.get("status") != "ok" or "value" not in value:
+                            raise RuntimeError("Locked Python worker returned an invalid protocol")
+                        return value["value"]
+                    return value
+            completed = False
             try:
-                return await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     consume_output(), timeout=contract.get("timeoutSeconds", 20)
                 )
+                completed = True
+                return result
             finally:
-                if process.returncode is None:
-                    os.killpg(process.pid, signal.SIGKILL)
+                # An exited group leader can leave descendants holding stdout
+                # and performing writes. A failed/cancelled foreground call
+                # retains cleanup ownership until its group has been stopped.
+                if not completed or process.returncode is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        # Natural exit must not replace the original error or
+                        # cancellation with an unrelated cleanup exception.
+                        pass
                 await process.wait()
 
         tools[name] = HarnessTool(

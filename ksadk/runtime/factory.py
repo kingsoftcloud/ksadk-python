@@ -32,7 +32,12 @@ from ksadk.plugins.providers.codex_native import (
     create_codex_adapter as _create_codex,
 )
 from ksadk.runners.base_runner import BaseRunner
-from ksadk.runtime.adapter import RuntimeAdapter, RuntimeRegistry, StartRequest
+from ksadk.runtime.adapter import (
+    RuntimeAdapter,
+    RuntimeAdapterFactory,
+    RuntimeRegistry,
+    StartRequest,
+)
 from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntimeAdapter
 from ksadk.runtime.launch import RuntimeLaunchContext
 
@@ -43,7 +48,7 @@ def _create_harness(context: RuntimeLaunchContext) -> RuntimeAdapter:
     import re
 
     from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
-    from ksadk.harness.reasoner import LiteLLMHarnessReasoner
+    from ksadk.harness.reasoner import ModelGatewayHarnessReasoner
     from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
 
     config = dict(context.config)
@@ -64,7 +69,7 @@ def _create_harness(context: RuntimeLaunchContext) -> RuntimeAdapter:
     )
     return ManagedHarnessRuntimeAdapter(
         spec,
-        reasoner=LiteLLMHarnessReasoner(
+        reasoner=ModelGatewayHarnessReasoner(
             base_url=str(config.get("base_url") or ""),
         ),
         workspace_root=context.project_dir,
@@ -182,12 +187,14 @@ def _create_langgraph(context: RuntimeLaunchContext) -> RuntimeAdapter:
     return LangGraphRuntimeAdapter(_create_framework_runner(context, "langgraph"))
 
 
-def build_default_runtime_registry() -> RuntimeRegistry:
-    """注册内置 KsADK Harness、Codex、ADK 和 LangGraph Runtime Factory。"""
+def build_default_runtime_registry(
+    *, harness_factory: RuntimeAdapterFactory | None = None
+) -> RuntimeRegistry:
+    """注册内置 Runtime；宿主可为 Harness 注入已授权的 opt-in factory。"""
 
     registry = RuntimeRegistry()
     registry.register("codex", _create_codex)
-    registry.register("harness", _create_harness)
+    registry.register("harness", harness_factory or _create_harness)
     registry.register("adk", _create_adk)
     registry.register("langgraph", _create_langgraph)
     return registry

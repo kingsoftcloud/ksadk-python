@@ -294,7 +294,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
             <div><dt>Revision</dt><dd>r{draft.metadata.revision}</dd></div>
             <div><dt>Runtime</dt><dd>{draft.spec.runtime?.type || labels["agentkit.ksyun.com/framework"] || "adk"}</dd></div>
             <div><dt>策略</dt><dd>{draft.spec.execution?.strategy || "-"}</dd></div>
-            <div><dt>最大步骤</dt><dd>{draft.spec.execution?.maxSteps ?? "-"}</dd></div>
+            <div><dt>步骤提示（兼容）</dt><dd>{draft.spec.execution?.maxSteps ?? "-"}</dd></div>
             <div><dt>超时</dt><dd>{draft.spec.execution?.timeoutSeconds ? `${draft.spec.execution.timeoutSeconds}s` : "-"}</dd></div>
           </dl>
           <div className="aside-divider" />

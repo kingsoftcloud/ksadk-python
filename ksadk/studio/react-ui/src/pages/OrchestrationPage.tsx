@@ -1,3 +1,5 @@
+import type { A2AOrchestration } from "../components/A2AOrchestrationEditor";
+import type { RemoteAgentBinding } from "../components/RemoteAgentBindingsEditor";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ControlButton,
@@ -30,6 +32,8 @@ interface PipelineStep {
   fullTitle?: string;
 }
 interface PipelineNodeData extends Record<string, unknown> {
+  bindingId?: string;
+  designNodeId?: string;
   title: string;
   subtitle: string;
   icon: PipelineIcon;
@@ -90,7 +94,7 @@ function runStatusLabel(value: string): string {
 function PipelineGraphCard({ data }: NodeProps<PipelineGraphNode>) {
   const Icon = pipelineIcons[data.icon];
   return (
-    <div className="pipeline-node-card" title={data.fullTitle || data.title}>
+    <div className="pipeline-node-card" title={data.fullTitle || data.title} data-design-node-id={data.designNodeId} data-a2a-binding-id={data.bindingId}>
       <Handle id="top" type="target" position={Position.Top} />
       <Handle id="top-out" type="source" position={Position.Top} />
       <Handle id="right" type="source" position={Position.Right} />
@@ -177,10 +181,30 @@ function useCanvasWidth() {
   return { containerRef, width };
 }
 
-function PipelineCanvas({ steps }: { steps: PipelineStep[] }) {
+export function layoutA2AOrchestration(plan: A2AOrchestration, bindings: RemoteAgentBinding[], width: number) {
+  const steps: PipelineStep[] = plan.nodes.map(node => {
+    const binding = bindings.find(row => row.bindingId === node.bindingId);
+    return { id: node.nodeId, title: node.nodeId,
+      icon: node.kind === "remote" ? "capabilities" : "runtime",
+      subtitle: node.kind === "remote" ? (binding ? `${binding.localName} · ${shortId(binding.expectedVersionId, 12)}` : "远端绑定已缺失") : "本地节点",
+      fullTitle: node.kind === "remote" ? `${node.nodeId} · ${binding?.bindingId || "绑定缺失"} · ${binding?.expectedVersionId || ""}` : node.nodeId };
+  });
+  const base = layoutPipeline(steps, width);
+  const nodes = base.nodes.map(node => ({ ...node, data: { ...node.data, designNodeId: node.id,
+    bindingId: plan.nodes.find(row => row.nodeId === node.id)?.bindingId } }));
+  const edges: PipelineGraphEdge[] = plan.edges.map((edge, index) => ({
+    id: `a2a-edge-${index}`, source: edge.source, target: edge.target, type: "smoothstep",
+    sourceHandle: "right", targetHandle: "left", label: edge.kind === "handoff" ? "Handoff 工具" : "顺序",
+    markerEnd: { type: MarkerType.ArrowClosed },
+    style: edge.kind === "handoff" ? { strokeDasharray: "6 4" } : {},
+  }));
+  return { nodes, edges };
+}
+
+function PipelineCanvas({ steps, plan, bindings = [] }: { steps: PipelineStep[]; plan?: A2AOrchestration | null; bindings?: RemoteAgentBinding[] }) {
   const { containerRef, width } = useCanvasWidth();
   const [instance, setInstance] = useState<ReactFlowInstance<PipelineGraphNode, PipelineGraphEdge> | null>(null);
-  const graph = useMemo(() => layoutPipeline(steps, width), [steps, width]);
+  const graph = useMemo(() => plan ? layoutA2AOrchestration(plan, bindings, width) : layoutPipeline(steps, width), [steps, width, plan, bindings]);
 
   useEffect(() => {
     if (!instance) return;
@@ -191,7 +215,7 @@ function PipelineCanvas({ steps }: { steps: PipelineStep[] }) {
     <div
       ref={containerRef}
       className="orchestration-graph"
-      style={width < 560 ? { height: steps.length * (NODE_HEIGHT + ROW_GAP) + 40 } : undefined}
+      style={width < 560 ? { height: graph.nodes.length * (NODE_HEIGHT + ROW_GAP) + 40 } : undefined}
       role="application"
       aria-label="执行链路画布"
       data-layout="adaptive-serpentine"
@@ -363,10 +387,10 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
               <AgentAvatar name={draft.metadata?.name || "Agent"} appearance={draft.metadata?.appearance} size="md" />
               <div className="section-heading-copy">
                 <h2 title={draft.metadata?.id}>{draft.metadata?.name}</h2>
-                <p>执行链路预览 · 在编辑配置中调整模型与能力</p>
+                <p>{draft.spec?.a2aOrchestration ? "A2A 设计编排 · 在编辑配置中调整节点与连线；实际调用以运行记录为准" : "执行链路预览 · 在编辑配置中调整模型与能力"}</p>
               </div>
             </div>
-            <PipelineCanvas steps={pipelineSteps} />
+            <PipelineCanvas steps={pipelineSteps} plan={draft.spec?.a2aOrchestration} bindings={bindings.remoteAgents || []} />
           </section>
           <aside className="orchestration-aside block">
             <details className="orchestration-aside-section">
@@ -376,7 +400,7 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
                 <div><dt>执行位置</dt><dd>Edge · Local</dd></div>
                 <div><dt>Runtime</dt><dd>{runtimeType}</dd></div>
                 <div><dt>策略</dt><dd>{strategy}</dd></div>
-                <div><dt>最大步骤</dt><dd>{draft.spec?.execution?.maxSteps || "-"}</dd></div>
+                <div><dt>步骤提示（兼容）</dt><dd>{draft.spec?.execution?.maxSteps || "-"}</dd></div>
               </dl>
             </details>
             <div className="aside-divider" />

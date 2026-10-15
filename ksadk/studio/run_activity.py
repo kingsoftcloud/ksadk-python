@@ -1,324 +1,99 @@
-"""Human-readable activity drilldown derived from durable execution evidence.
-
-This projection never reads model reasoning or tool arguments/results. Old
-records retain honest action counts; richer records may attach an explicitly
-public action description. Neither path rewrites the canonical event log.
-"""
+"""Human-readable activity projection and local HTTP routes."""
 
 from __future__ import annotations
 
-import ipaddress
 import json
-import re
 import time
 from collections import OrderedDict
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
-_TERMINAL = {"completed", "failed", "cancelled", "interrupted", "timed_out"}
-_STATUS = {
-    "accepted": "running",
-    "started": "running",
-    "running": "running",
-    "in_progress": "running",
-    "succeeded": "completed",
-    "completed": "completed",
-    "done": "completed",
-    "failed": "failed",
-    "error": "failed",
-    "canceled": "cancelled",
-    "cancelled": "cancelled",
-    "interrupted": "unknown",
-}
-_ACTIONS = {
-    "web_search": ("search", "搜索资料"),
-    "web_fetch": ("fetch", "查看资料"),
-    "read_workspace_file": ("read", "读取文件"),
-    "list_workspace_files": ("read", "查看工作区"),
-    "write_workspace_file": ("write", "编辑并保存文件"),
-    "execute_command": ("command", "运行命令"),
-    "run_command": ("command", "运行命令"),
-    "exec_command": ("command", "运行命令"),
-    "run_workspace_command": ("command", "运行命令"),
-    "edit_workspace_file": ("write", "编辑并保存文件"),
-    # Codex native item kinds share the same activity vocabulary.
-    "commandExecution": ("command", "运行命令"),
-    "mcpToolCall": ("tool", "调用工具"),
-    "dynamicToolCall": ("tool", "调用工具"),
-    "webSearch": ("search", "搜索资料"),
-    "fileChange": ("write", "编辑并保存文件"),
-}
-# Codex canonical items keep their native kind only in source metadata; the
-# projection reads the kind and timestamps, never item content (no tool
-# arguments, no results, no reasoning text).
-_CODEX_TOOL_ITEMS = frozenset(
-    {"commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "fileChange"}
+from ksadk.studio.activity_records import (
+    _ACTIONS as _ACTIONS,
 )
-_TOOL_GROUP_KEYS = frozenset({"search", "fetch", "read", "write", "command", "tool"})
-_SECRET = re.compile(
-    r"(?i)\b(?:[\w-]*(?:api[_-]?key|token|secret|password|authorization|cookie)[\w-]*)"
-    r"\s*(?:[:=]\s*|\s+)(?:[\"'][^\"'\n]*[\"']|[^\s,;]+)"
+from ksadk.studio.activity_records import (
+    _ACTIVITY_CLOCKS as _ACTIVITY_CLOCKS,
 )
-_BEARER = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
-_KEY = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{12,}|[A-Za-z0-9_-]{40,})\b")
-
-
-def _retry_summary(detail: dict[str, Any]) -> str:
-    def number(key: str) -> int | None:
-        value = detail.get(key)
-        return (
-            value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-        )
-
-    attempt = number("next_attempt")
-    previous_attempt = number("model_attempt")
-    if attempt is None and previous_attempt is not None:
-        attempt = previous_attempt + 1
-    maximum = number("max_attempts")
-    delay = number("delay_ms") or number("retry_delay_ms")
-    wait = f"，{delay / 1000:g} 秒后" if delay else "，即将"
-    if attempt is not None and maximum is not None:
-        suffix = f"（第 {attempt}/{max(attempt, maximum)} 次）"
-    else:
-        suffix = f"（第 {attempt} 次）" if attempt is not None else ""
-    return f"模型服务繁忙{wait}自动重试{suffix}"
-
-
-def safe_activity_url(value: Any) -> str | None:
-    """Keep public HTTP links, without credentials, fragments or query secrets."""
-    if not isinstance(value, str) or len(value) > 2048:
-        return None
-    try:
-        parsed = urlsplit(value)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not host
-            or "." not in host
-            or parsed.username
-            or parsed.password
-            or host.endswith((".localhost", ".local", ".internal", ".lan"))
-            or host == "localhost"
-        ):
-            return None
-        try:
-            if not ipaddress.ip_address(host).is_global:
-                return None
-        except ValueError:
-            pass
-        # Validate the port too; malformed netlocs must not survive rendering.
-        port = parsed.port
-        authority = host if port is None else f"{host}:{port}"
-        return urlunsplit((parsed.scheme, authority, parsed.path, "", ""))
-    except ValueError:
-        return None
-
-
-def _safe_text(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    text = " ".join(value.split())
-    text = re.sub(
-        r"https?://[^\s<>]+",
-        lambda match: safe_activity_url(match.group()) or "[链接已隐藏]",
-        text,
-    )
-    text = _SECRET.sub("[敏感信息已隐藏]", text)
-    text = _BEARER.sub("Bearer [已隐藏]", text)
-    return _KEY.sub("[已隐藏]", text)[:280]
-
-
-def _safe_commentary_text(value: Any) -> str:
-    """Sanitize public progress and drop empty streaming fragments.
-
-    Older persisted runs can contain a punctuation-only trailing chunk even
-    after the runtime-side filter is tightened.  The activity projection is
-    intentionally defensive so both old and new sessions render cleanly.
-    """
-    text = _safe_text(value)
-    return text if re.search(r"[A-Za-z0-9\u3400-\u9fff]", text) else ""
-
-
-def _records(events: list[Any]) -> list[dict[str, Any]]:
-    records = []
-    seen = set()
-    for event in events:
-        data = event.get("data", {}) if isinstance(event, dict) else event.data
-        if not isinstance(data, dict):
-            continue
-        native = data.get("runtimeEvent") or data.get("runtime_event") or {}
-        if not isinstance(native, dict):
-            continue
-        source = native.get("source") or {}
-        source = source if isinstance(source, dict) else {}
-        metadata = source.get("metadata") or {}
-        metadata = metadata if isinstance(metadata, dict) else {}
-        native_run = str(source.get("native_run_id") or native.get("run_id") or "")
-        # The same rich event can produce started/updated/completed canonical
-        # items. A retry must be shown once, not as three separate attempts.
-        identity = str(
-            source.get("native_event_id") or native.get("event_id") or f"row-{len(records)}"
-        )
-        seen_key = (native_run, identity)
-        if seen_key in seen:
-            continue
-        base = {
-            "run": native_run,
-            "scope": native.get("scope_id") or "",
-            "id": identity,
-            "session": metadata.get("session_id"),
-            "framework": str(source.get("framework") or ""),
-            "ts": native.get("timestamp")
-            if isinstance(native.get("timestamp"), (int, float))
-            else None,
-        }
-        parts = []
-        for field in ("snapshot", "initial"):
-            content = native.get(field)
-            if isinstance(content, dict) and isinstance(content.get("parts"), list):
-                parts.extend(content["parts"])
-        if isinstance(native.get("update"), dict):
-            parts.append(native["update"])
-        if native.get("item_kind") in {"message", "reasoning"}:
-            if (
-                native.get("item_kind") == "message"
-                and metadata.get("native_event_type") == "text.completed"
-                and metadata.get("phase") == "commentary"
-            ):
-                for part in parts:
-                    text = _safe_commentary_text(
-                        part.get("text") if isinstance(part, dict) else None
-                    )
-                    if text:
-                        records.append(
-                            {
-                                **base,
-                                "type": "public.commentary",
-                                "details": {"text": text},
-                            }
-                        )
-                        seen.add(seen_key)
-                        break
-                continue
-            if metadata.get("native_event_type") not in {"model.call.failed", "run.progress"}:
-                continue
-            for part in parts:
-                text = part.get("text") if isinstance(part, dict) else None
-                # This is the fixed public retry summary, never provider
-                # reasoning, error bodies, payloads or arbitrary output text.
-                if isinstance(text, str) and re.fullmatch(
-                    r"模型服务繁忙(?:（[^\n]{0,120}）)?(?:，[\d.]+ 秒后)?"
-                    r"自动重试（第 \d+/\d+ 次）",
-                    text,
-                ):
-                    records.append(
-                        {
-                            **base,
-                            "type": "provider.retry",
-                            "details": {"text": _safe_text(text)},
-                        }
-                    )
-                    seen.add(seen_key)
-                    break
-            continue
-        if native.get("item_kind") in {"tool_call", "data"}:
-            # Non-harness runtimes (Codex) publish execution facts as canonical
-            # tool/data items; their native kind survives in source metadata.
-            # Translate them into the same record vocabulary as Harness so the
-            # projection below stays runtime-agnostic.
-            native_kind = str(metadata.get("native_item_kind") or "")
-            native_event = str(native.get("event_type") or "")
-            native_item = str(source.get("native_item_id") or identity)
-            if native_kind in _CODEX_TOOL_ITEMS:
-                if native_event == "item.started":
-                    status = "running"
-                elif native_event == "item.completed":
-                    status = "succeeded"
-                elif native_event in {"item.failed", "item.updated"}:
-                    status = "failed" if native_event == "item.failed" else None
-                else:
-                    status = None
-                if status is not None:
-                    records.append(
-                        {
-                            **base,
-                            "type": "tool.call.begin" if status == "running" else "tool.call.end",
-                            "details": {
-                                "name": native_kind,
-                                "call_id": native_item,
-                                "status": status,
-                            },
-                        }
-                    )
-                    seen.add(seen_key)
-                continue
-            if native_kind == "contextCompaction":
-                if native_event == "item.started":
-                    records.append({**base, "type": "context.compaction.started", "details": {}})
-                    seen.add(seen_key)
-                elif native_event == "item.completed":
-                    records.append({**base, "type": "context.compaction.completed", "details": {}})
-                    seen.add(seen_key)
-                continue
-            continue
-        if native.get("item_kind") != "status":
-            continue
-        for part in parts:
-            if not isinstance(part, dict) or not isinstance(part.get("text"), str):
-                continue
-            try:
-                payload = json.loads(part["text"])
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(payload, dict) or not isinstance(payload.get("details"), dict):
-                continue
-            if payload.get("event") not in {
-                "tool.call.begin",
-                "tool.call.end",
-                "model.call.started",
-                "model.call.completed",
-                "model.call.failed",
-                "agent.started",
-                "agent.completed",
-                "context.compaction.started",
-                "context.compaction.completed",
-                "run.progress",
-                "text.completed",
-            }:
-                continue
-            event_type, detail = payload["event"], payload["details"]
-            if event_type == "text.completed":
-                text = _safe_commentary_text(detail.get("text"))
-                if metadata.get("phase") == "commentary" and text:
-                    records.append(
-                        {
-                            **base,
-                            "type": "public.commentary",
-                            "details": {"text": text},
-                        }
-                    )
-                    seen.add(seen_key)
-                break
-            if (event_type == "run.progress" and detail.get("kind") == "provider.retry") or (
-                event_type == "model.call.failed" and detail.get("action") == "retry_same_model"
-            ):
-                event_type, detail = "provider.retry", {"text": _retry_summary(detail)}
-            records.append(
-                {
-                    **base,
-                    "type": event_type,
-                    "details": detail,
-                }
-            )
-            seen.add(seen_key)
-            break
-    return records
+from ksadk.studio.activity_records import (
+    _BEARER as _BEARER,
+)
+from ksadk.studio.activity_records import (
+    _CODEX_TOOL_ITEMS as _CODEX_TOOL_ITEMS,
+)
+from ksadk.studio.activity_records import (
+    _KEY as _KEY,
+)
+from ksadk.studio.activity_records import (
+    _SECRET as _SECRET,
+)
+from ksadk.studio.activity_records import (
+    _STATUS as _STATUS,
+)
+from ksadk.studio.activity_records import (
+    _TERMINAL as _TERMINAL,
+)
+from ksadk.studio.activity_records import (
+    _TOOL_GROUP_KEYS as _TOOL_GROUP_KEYS,
+)
+from ksadk.studio.activity_records import (
+    _activity_duration as _activity_duration,
+)
+from ksadk.studio.activity_records import (
+    _activity_start as _activity_start,
+)
+from ksadk.studio.activity_records import (
+    _failover_summary as _failover_summary,
+)
+from ksadk.studio.activity_records import (
+    _finite_seconds as _finite_seconds,
+)
+from ksadk.studio.activity_records import (
+    _is_tool_group_key as _is_tool_group_key,
+)
+from ksadk.studio.activity_records import (
+    _observed_timestamp as _observed_timestamp,
+)
+from ksadk.studio.activity_records import (
+    _record_activity_time as _record_activity_time,
+)
+from ksadk.studio.activity_records import (
+    _records as _records,
+)
+from ksadk.studio.activity_records import (
+    _retry_summary as _retry_summary,
+)
+from ksadk.studio.activity_records import (
+    _safe_commentary_text as _safe_commentary_text,
+)
+from ksadk.studio.activity_records import (
+    _safe_text as _safe_text,
+)
+from ksadk.studio.activity_records import (
+    safe_activity_url as safe_activity_url,
+)
 
 
 def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
     status = str(getattr(run.status, "value", run.status)).lower()
     observed_at = time.time()
     result = {"runId": run.id, "status": status, "activities": []}
+    from ksadk.studio.shared_web_response_events import _APPROVAL_DECISIONS
+
+    approvals = {}
+    for event in events:
+        event_type = event.get("type") if isinstance(event, dict) else event.type
+        data = event.get("data", {}) if isinstance(event, dict) else event.data
+        if event_type != "approval.resolved" or not isinstance(data, dict):
+            continue
+        native_response = (data.get("runtimeEvent") or {}).get("response") or {}
+        raw = str(data.get("decision") or native_response.get("decision")
+                  or data.get("outcome") or data.get("name") or "").strip().lower()
+        approval_id = str(data.get("approvalId")
+                          or (data.get("runtimeEvent") or {}).get("interaction_id") or "unknown")
+        approvals[approval_id] = _APPROVAL_DECISIONS.get(raw, "unknown")
+    result["approvalAlerts"] = [
+        {"id": identity, "status": decision}
+        for identity, decision in approvals.items() if decision == "unknown"
+    ]
     records = _records(events)
     handle = getattr(run, "runtime_handle", {})
     handle = handle if isinstance(handle, dict) else {}
@@ -356,10 +131,7 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
             label = _safe_text(detail.get("label"))
             if label:
                 child["label"] = label
-            if record.get("ts") is not None:
-                if child.get("ts_begin") is None:
-                    child["ts_begin"] = record["ts"]
-                child["ts_last"] = record["ts"]
+            _record_activity_time(child, record, boundary="begin")
             provider_ref = str(detail.get("provider_ref") or "")
             if provider_ref:
                 child["provider"] = "Codex" if "codex" in provider_ref else "Harness"
@@ -368,7 +140,7 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
                 if child.get("status") not in {"completed", "failed", "cancelled"}:
                     child["status"] = next_status
                     if next_status in {"completed", "failed", "cancelled"}:
-                        child["ts_end"] = record.get("ts")
+                        _record_activity_time(child, record, boundary="end")
             elif detail.get("kind") == "delegation.route":
                 child.setdefault("status", "running")
             summary = _safe_text(detail.get("public_summary"))
@@ -385,8 +157,7 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
         detail, event_type = record["details"], record["type"]
         owner_id = owner_of(record)
         owner = owners.setdefault(owner_id, {"groups": OrderedDict()})
-        if record.get("ts") is not None:
-            owner["ts_last"] = max(record["ts"], owner.get("ts_last") or record["ts"])
+        _record_activity_time(owner, record)
         if event_type == "agent.started":
             owner["status"] = "running"
         if event_type == "agent.completed":
@@ -408,6 +179,20 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
             if active_model and model_group:
                 model_group["calls"][active_model]["status"] = "failed"
             continue
+        if event_type == "provider.failover":
+            group = owner["groups"].setdefault(
+                "model.failover", {"label": "已切换模型", "calls": OrderedDict()}
+            )
+            group["calls"][record["id"]] = {
+                "status": "completed",
+                "label": "已切换模型",
+                "text": detail["text"],
+            }
+            active_model = owner.setdefault("active_phases", {}).pop("model", None)
+            model_group = owner["groups"].get("model")
+            if active_model and model_group:
+                model_group["calls"][active_model]["status"] = "failed"
+            continue
         if event_type == "public.commentary":
             commentary = {
                 "id": f"{run.id}:commentary:{record['id']}",
@@ -417,8 +202,8 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
                 "text": detail["text"],
                 "details": [],
                 "_sortTs": (
-                    record["ts"]
-                    if isinstance(record.get("ts"), (int, float))
+                    record["ts"] if record["ts"] is not None else record["observed_ts"]
+                    if record["observed_ts"] is not None
                     else float("inf")
                 ),
             }
@@ -431,6 +216,30 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
             else:
                 result["activities"].append(commentary)
             continue
+        if event_type == "sandbox.executed":
+            # G7 UI ③：沙箱执行投影成 activity（会话页沙箱徽标消费）
+            backend_id = str(detail.get("backend_id") or "unknown")
+            rejected = bool(detail.get("rejected"))
+            sandbox_act = {
+                "id": f"{run.id}:sandbox:{record['id']}",
+                "kind": "sandbox",
+                "label": f"沙箱执行 · {backend_id}",
+                "status": "failed" if rejected else "completed",
+                "backend_id": backend_id,
+                "capabilities": detail.get("capabilities") or {},
+                "rejected": rejected,
+                "details": [],
+                "_sortTs": (
+                    record["ts"] if record["ts"] is not None else record["observed_ts"]
+                    if record["observed_ts"] is not None
+                    else float("inf")
+                ),
+            }
+            if owner_id:
+                owner.setdefault("sandbox", []).append(sandbox_act)
+            else:
+                result["activities"].append(sandbox_act)
+            continue
         phase = {
             "model.call.started": ("model", "running"),
             "model.call.completed": ("model", "completed"),
@@ -440,18 +249,21 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
         }.get(event_type)
         if phase:
             base_key, phase_status = phase
-            # Deterministic phase titles derived from observed execution
-            # order: a model phase before any tool work is task analysis;
-            # after tool work it is result synthesis. The model never
-            # invents its own status labels.
+            # 模型回合一律显示为"思考"——对齐 Claude Code 的展示标准：
+            # 它把工具调用显示成事实单行（`⏺ Bash(npm test)` / "Searched for 13
+            # patterns, read 6 files"），而模型回合就是 thinking，**不发明
+            # "分析任务 / 汇总结果 / 整理已完成的执行结果"这类语义标签**。
+            # 2026-09-18 实测：把"工具之后的模型回合"命名成"整理已完成的执行结果"，
+            # 会让流程看起来"一直在汇总却零产出"，用户据此判断流程不对——标签本身
+            # 在制造误解。工具步骤仍保留真实工具名（那是事实）。
             if base_key == "model" and (
                 owner.get("tool_seen")
-                or any(group_key in owner["groups"] for group_key in _TOOL_GROUP_KEYS)
+                or any(_is_tool_group_key(group_key) for group_key in owner["groups"])
             ):
-                key, label = "model:summary", "汇总结果"
+                key, label = "model:summary", "思考"
             else:
                 key = base_key
-                label = "分析任务" if base_key == "model" else "压缩上下文"
+                label = "思考" if base_key == "model" else "压缩上下文"
             group = owner["groups"].setdefault(key, {"label": label, "calls": OrderedDict()})
             active = owner.setdefault("active_phases", {})
             if phase_status == "running" or key not in active:
@@ -462,16 +274,13 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
             # thought.  They give the expandable row a useful human-facing
             # explanation without exposing prompts, parameters or outputs.
             call["text"] = {
-                "model": "理解任务并确定执行步骤",
-                "model:summary": "整理已完成的执行结果",
+                "model": "模型正在思考",
+                "model:summary": "模型正在思考下一步（此前已有工具执行）",
                 "context": "整理并压缩较早的上下文，关键执行状态继续保留",
             }[key]
-            if record.get("ts") is not None:
-                if phase_status == "running":
-                    call["ts_begin"] = record["ts"]
-                else:
-                    call["ts_end"] = record["ts"]
-                    call.setdefault("ts_begin", record["ts"])
+            _record_activity_time(
+                call, record, boundary="begin" if phase_status == "running" else "end"
+            )
             if phase_status != "running":
                 active.pop(key, None)
             if base_key == "model" and phase_status in {"completed", "failed"}:
@@ -482,7 +291,7 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
                             "重试后已恢复" if phase_status == "completed" else "重试后仍未成功"
                         )
             continue
-        if event_type not in {"tool.call.begin", "tool.call.end"}:
+        if event_type not in {"tool.call.begin", "tool.call.end", "tool.call.progress"}:
             continue
         name = str(detail.get("name") or "tool")
         # Delegation is rendered as a sub-agent row instead of a generic tool
@@ -491,18 +300,37 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
         owner["tool_seen"] = True
         if name == "delegate_task":
             continue
-        key, label = _ACTIONS.get(name, ("tool", "使用工具处理任务"))
+        base_key, label = _ACTIONS.get(name, ("tool", "使用工具处理任务"))
+        # Do not merge every read-like action under the first label observed.
+        # A run that reads a Skill, checks the workspace and validates files
+        # used to become one misleading “读取 Skill 清单 22 次” row.  Group by
+        # human-facing action while retaining the broad category for outcome
+        # and recovery rules below.
+        key = f"{base_key}:{label}"
         group = owner["groups"].setdefault(key, {"label": label, "calls": OrderedDict()})
         call_id = f"{record['scope']}:{detail.get('call_id') or record['id']}"
-        call = group["calls"].setdefault(call_id, {"status": "unknown", "label": label})
+        call = group["calls"].setdefault(call_id, {
+            "status": "unknown", "label": label,
+            "callId": str(detail.get("call_id") or record["id"]),
+        })
         call["status"] = _STATUS.get(str(detail.get("status")), "unknown")
-        if record.get("ts") is not None:
-            if record["type"] == "tool.call.begin":
-                call.setdefault("ts_begin", record["ts"])
-            else:
-                call["ts_end"] = record["ts"]
-                call.setdefault("ts_begin", record["ts"])
+        _record_activity_time(
+            call, record, boundary=("begin" if record["type"] == "tool.call.begin"
+                                    else "end" if record["type"] == "tool.call.end" else None)
+        )
         action = detail.get("public_action")
+        from ksadk.harness.tool_display import safe_tool_display
+
+        display = safe_tool_display(detail.get("tool_display"))
+        if display:
+            # A completion-only managed event may have no original arguments;
+            # preserve start metadata rather than replacing it with an empty view.
+            previous_display = call.get("display", {})
+            call["display"] = {**previous_display, **{k: v for k, v in display.items()
+                                                       if v not in ("", None)}}
+            if (event_type == "tool.call.end" and display.get("category") == "terminal"
+                    and type(display.get("exit_code")) is int and display["exit_code"] != 0):
+                call["status"] = "failed"
         if isinstance(action, dict):
             text = _safe_text(action.get("text"))
             if text:
@@ -531,17 +359,17 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
                     if call.get("href")
                     else (("text", call["text"]) if call.get("text") else None)
                 )
-                if key in _TOOL_GROUP_KEYS and call["status"] == "completed" and target:
+                if _is_tool_group_key(key) and call["status"] == "completed" and target:
                     completed_targets.add(target)
                 elif (
-                    key in _TOOL_GROUP_KEYS
+                    _is_tool_group_key(key)
                     and call["status"] == "failed"
                     and target in completed_targets
                 ):
                     recovered_failures.add(call_id)
             calls_in_order = list(group["calls"].items())
             if (
-                key == "write"
+                key.partition(":")[0] == "write"
                 and calls_in_order
                 and calls_in_order[-1][1]["status"] == "completed"
             ):
@@ -652,6 +480,7 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
                 prefix = {
                     "running": "正在",
                     "completed": "已完成",
+                    "partial": "部分完成",
                     "failed": "未完成",
                     "cancelled": "已取消",
                     "unknown": "未确认完成",
@@ -662,43 +491,51 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
                         "text": f"{prefix}：{description}",
                     }
                 ]
-            begins = [
-                call["ts_begin"]
-                for call in group["calls"].values()
-                if isinstance(call.get("ts_begin"), (int, float))
-            ]
-            ends = [
-                call["ts_end"]
-                for call in group["calls"].values()
-                if isinstance(call.get("ts_end"), (int, float))
-            ]
-            duration_ms = None
-            if begins:
-                owner_status = children.get(owner_id, {}).get("status") or owner.get("status")
-                still_running = (
+            calls = list(group["calls"].values())
+            owner_status = children.get(owner_id, {}).get("status") or owner.get("status")
+            duration = _activity_duration(
+                calls,
+                owner,
+                running=(
                     "running" in statuses
                     and status not in _TERMINAL
                     and owner_status not in _TERMINAL
-                )
-                latest_end = (
-                    observed_at if still_running else (max(ends) if ends else owner.get("ts_last"))
-                )
-                if isinstance(latest_end, (int, float)) and latest_end >= min(begins):
-                    duration_ms = int((latest_end - min(begins)) * 1000)
+                ),
+                ended=status in _TERMINAL or owner_status in _TERMINAL,
+                now=observed_at,
+            )
             groups.append(
                 {
                     "id": f"{run.id}:{owner_id or 'parent'}:{key}",
                     "kind": "step",
+                    "category": (
+                        "reasoning"
+                        if key in {"model", "model:summary"}
+                        else "context"
+                        if key == "context"
+                        else "recovery"
+                        if key in {"retry", "model.failover"}
+                        else "tool"
+                    ),
                     "label": group["label"],
                     "status": group_status,
                     "details": details,
+                    "tools": [
+                        {"id": call_id, "callId": call.get("callId", call_id),
+                         "status": ("cancelled" if status == "cancelled" else "unknown")
+                         if call["status"] == "running" and (
+                             status in _TERMINAL or owner_status in _TERMINAL
+                         ) else call["status"],
+                         "display": call["display"]}
+                        for call_id, call in group["calls"].items() if call.get("display")
+                    ],
                     **(
                         {}
                         if key in {"model", "model:summary", "context"}
                         else {"count": len(group["calls"])}
                     ),
-                    **({"durationMs": duration_ms} if duration_ms is not None else {}),
-                    "_sortTs": min(begins) if begins else float("inf"),
+                    **duration,
+                    "_sortTs": min((_activity_start(call) for call in calls), default=float("inf")),
                 }
             )
         return groups
@@ -715,21 +552,21 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
         if child_status == "running" and status in _TERMINAL:
             child_status = "cancelled" if status == "cancelled" else "unknown"
         groups = render_groups(child_id, owner)
+        # ``_sortTs`` is an internal ordering sentinel and may be ``inf`` when
+        # legacy child events have no timestamp. Nested groups are not part of
+        # the top-level cleanup loop below, so remove it before JSON encoding.
+        for group in groups:
+            group.pop("_sortTs", None)
         summaries = (
             [] if groups else [{"id": f"{child_id}:no-detail", "text": "暂未记录可展示的操作步骤"}]
         )
-        duration_ms = None
-        ts_begin, ts_end = metadata.get("ts_begin"), metadata.get("ts_end")
-        if isinstance(ts_begin, (int, float)):
-            latest = (
-                observed_at
-                if child_status == "running" and status not in _TERMINAL
-                else ts_end
-                if isinstance(ts_end, (int, float))
-                else owner.get("ts_last")
-            )
-            if isinstance(latest, (int, float)) and latest >= ts_begin:
-                duration_ms = int((latest - ts_begin) * 1000)
+        duration = _activity_duration(
+            [metadata],
+            owner,
+            running=child_status == "running" and status not in _TERMINAL,
+            ended=status in _TERMINAL or child_status in _TERMINAL,
+            now=observed_at,
+        )
         entry: dict[str, Any] = {
             "id": f"{run.id}:child:{child_id}",
             "kind": "subagent",
@@ -738,14 +575,9 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
             "details": summaries,
             "children": groups,
             "callId": child_id,
-            "_sortTs": (
-                ts_begin
-                if isinstance(ts_begin, (int, float))
-                else owner.get("ts_last", float("inf"))
-            ),
+            **duration,
+            "_sortTs": _activity_start(metadata),
         }
-        if duration_ms is not None:
-            entry["durationMs"] = duration_ms
         if metadata.get("provider"):
             entry["provider"] = metadata["provider"]
         result["activities"].append(entry)
@@ -824,14 +656,73 @@ def _subagent_detail(run: Any, events: list[Any], call_id: str) -> dict[str, Any
         "facts": [*child_progress, *execution_facts],
         "parentStatus": projection["status"],
     }
-    for key in ("durationMs", "provider"):
+    for key in ("durationMs", "durationSource", "provider"):
         if entry.get(key) is not None:
             detail[key] = entry[key]
     if models:
         detail["models"] = models
     if child_sessions:
         detail["sessionId"] = child_sessions[0]
+    detail["messages"] = _public_child_messages(
+        events, lambda native_run: native_run.endswith(f":sub:{call_id}")
+    )
     return detail
+
+
+def _public_child_messages(events: list[Any], matches: Any) -> list[dict]:
+    from ksadk.harness.public_activity import public_commentary_text
+
+    # Explicit public assistant message channel, never reasoning/status/tool
+    # snapshots. Ordered item identity handles append, replace and retirement.
+    messages = OrderedDict()
+    for event in events:
+        data = event.get("data", {}) if isinstance(event, dict) else event.data
+        native = (data.get("runtimeEvent") or {}) if isinstance(data, dict) else {}
+        source = native.get("source") or {}
+        native_run = source.get("native_run_id") or native.get("run_id") or ""
+        if not matches(str(native_run)) or native.get("item_kind") != "message":
+            continue
+        identity = native.get("item_id")
+        if not identity:
+            continue
+        snapshot = native.get("snapshot") or native.get("initial") or {}
+        parts = snapshot.get("parts", [])
+        update = native.get("update") or {}
+        text = "".join(part.get("text", "") for part in parts if isinstance(part, dict)
+                       and isinstance(part.get("text", ""), str))
+        if native.get("event_type") == "item.updated":
+            delta = update.get("text", "")
+            if isinstance(delta, str):
+                previous_text = (messages.get(identity, {}).get("text", "")
+                                 if native.get("op") == "append" else "")
+                text = previous_text + delta
+        if text:
+            safe = public_commentary_text(text, limit=3000)
+            if safe:
+                messages[identity] = {"id": identity, "text": safe,
+                                      "streaming": native.get("event_type") != "item.completed"}
+        elif native.get("event_type") == "item.completed":
+            messages.pop(identity, None)
+    return list(messages.values())[-20:]
+
+
+def project_child_execution(view: dict, parent_run_id: str) -> dict:
+    """Normalize a scoped Native child read to the same detail-panel contract."""
+    from types import SimpleNamespace
+
+    child_id = str(view["child_run_id"])
+    phase = view.get("phase")
+    status = {
+        "completed": "completed", "failed": "failed", "canceled": "cancelled",
+        "interrupted": "unknown", "paused": "paused", "awaiting_interaction": "paused",
+    }.get(phase, "running")
+    events = [{"data": {"runtimeEvent": event}} for event in view.get("events", [])]
+    projection = project_run_activities(SimpleNamespace(id=child_id, status=status), events)
+    return {"runId": parent_run_id, "callId": child_id,
+            "label": _safe_text(view.get("role")) or "子智能体",
+            "status": status, "childRunId": child_id,
+            "facts": projection["activities"],
+            "messages": _public_child_messages(events, lambda native_run: native_run == child_id)}
 
 
 def owner_of_record_run(record: dict[str, Any]) -> str:
@@ -847,6 +738,22 @@ def owner_of_record_run(record: dict[str, Any]) -> str:
 def register_activity_routes(app: Any, studio: Any, *, resolve_run_id: Any = None) -> None:
     """Use the Studio app's existing session/CSRF security middleware."""
 
+    @app.get("/api/v1/runs/{run_id}/activities/stream")
+    async def run_activity_stream(run_id: str):
+        from fastapi.responses import StreamingResponse
+
+        from ksadk.studio.errors import not_found
+
+        resolved_id = resolve_run_id(run_id) if resolve_run_id else run_id
+        resolve_owner = getattr(studio, "runtime_for_run", None)
+        owner = resolve_owner(resolved_id) if callable(resolve_owner) else studio
+        if owner is None:
+            raise not_found("run", resolved_id)
+        owner.event_store.get(resolved_id)  # Validate before sending SSE headers.
+        return StreamingResponse(stream_activity_snapshots(owner, resolved_id),
+                                 media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
     @app.get("/api/v1/runs/{run_id}/activities")
     async def run_activities(run_id: str):
         from fastapi.responses import JSONResponse
@@ -860,8 +767,17 @@ def register_activity_routes(app: Any, studio: Any, *, resolve_run_id: Any = Non
             raise not_found("run", resolved_id)
         run = owner.event_store.get(resolved_id)
         events = await owner.run_service.events(resolved_id)
+        projection = project_run_activities(run, events)
+        child_reader = getattr(owner.run_service, "execution_children", None)
+        if callable(child_reader):
+            for child in await child_reader(resolved_id):
+                projection["activities"].append({
+                    "id": f"{resolved_id}:native-child:{child['callId']}", "kind": "subagent",
+                    "callId": child["callId"], "label": child["label"], "status": child["status"],
+                    "details": [],
+                })
         return JSONResponse(
-            project_run_activities(run, events), headers={"Cache-Control": "no-store"}
+            projection, headers={"Cache-Control": "no-store"}
         )
 
     @app.get("/api/v1/runs/{run_id}/subagents/{call_id}")
@@ -879,6 +795,12 @@ def register_activity_routes(app: Any, studio: Any, *, resolve_run_id: Any = Non
             run = owner.event_store.get(resolved_id)
             events = await owner.run_service.events(resolved_id)
             detail = _subagent_detail(run, events, call_id)
+            if not detail:
+                reader = getattr(owner.run_service, "execution_children", None)
+                if callable(reader):
+                    children = await reader(resolved_id, child_run_id=call_id)
+                    detail = next((child for child in children
+                                   if child["callId"] == call_id), {})
             if detail:
                 return JSONResponse(detail, headers={"Cache-Control": "no-store"})
             error = not_found("subagent", call_id)
@@ -893,3 +815,34 @@ def register_activity_routes(app: Any, studio: Any, *, resolve_run_id: Any = Non
             status_code=error.status_code,
             headers={"Cache-Control": "no-store"},
         )
+
+
+async def stream_activity_snapshots(owner: Any, run_id: str):
+    """Disposable observer. Disconnecting never stops or approves a run.
+
+    Reconnection sends a full idempotent snapshot. Runtime records are cached;
+    project only when an event/state changes, or once a second for live clocks.
+    """
+    import asyncio
+
+    previous = None
+    while True:
+        run = owner.event_store.get(run_id)
+        events = await owner.run_service.events(run_id)
+        status = str(getattr(run.status, "value", run.status)).lower()
+        marker = (len(events), status, int(time.monotonic()) if status not in _TERMINAL else 0)
+        if marker != previous:
+            payload = project_run_activities(run, events)
+            child_reader = getattr(owner.run_service, "execution_children", None)
+            if callable(child_reader):
+                for child in await child_reader(run_id):
+                    payload["activities"].append({
+                        "id": f"{run_id}:native-child:{child['callId']}", "kind": "subagent",
+                        "callId": child["callId"], "label": child["label"],
+                        "status": child["status"], "details": [],
+                    })
+            yield f"event: snapshot\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            previous = marker
+        if status in _TERMINAL:
+            return
+        await asyncio.sleep(0.1)

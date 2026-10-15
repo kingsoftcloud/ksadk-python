@@ -35,7 +35,7 @@ from ksadk.events.session_event import SessionServiceEventStore
 from ksadk.kernel.authorization import AgentControlPermitVerifier, InMemoryNonceStore
 from ksadk.kernel.contract_fingerprints import (
     AGENT_KERNEL_V1_AGGREGATE_DIGEST,
-    runtime_capability_matrix_digest,
+    runtime_capability_admission_digest,
     runtime_capability_matrix_wire_value,
 )
 from ksadk.kernel.contracts import RuntimeCapabilityMatrix
@@ -47,10 +47,13 @@ from ksadk.kernel.store import AgentKernelStore, now_utc
 from ksadk.kernel.worker import AgentKernelWorker
 from ksadk.runtime.adapter import RuntimeAdapter
 
+from ksadk.kernel.readiness import AgentKernelReadiness
+
 AuthorityMode = Literal["local", "hosted"]
 DurabilityTier = Literal["durable", "ephemeral"]
 
 logger = logging.getLogger(__name__)
+MAX_CONCURRENT_KERNEL_SESSIONS = 64
 
 
 @dataclass
@@ -181,110 +184,6 @@ class LeaseHeartbeat:
 
 
 @dataclass
-class AgentKernelReadiness:
-    """truthful readiness probe：每个维度都是真实查询，不是配置回显。"""
-
-    runtime: "AgentKernelRuntime"
-
-    async def check(self) -> dict[str, Any]:
-        config = self.runtime.config
-        store_ok = False
-        try:
-            # 真实 store 查询（PG driver 即真实 SQL round-trip）。
-            await self.runtime.kernel_store.list_messages(config.agent_instance_id)
-            store_ok = True
-        except Exception:
-            store_ok = False
-
-        lease_healthy = True
-        activation_id: str | None = None
-        for session_id in self.runtime.heartbeat_sessions():
-            try:
-                lease = await self.runtime.kernel_store.current_lease(
-                    config.agent_instance_id, session_id
-                )
-            except Exception:
-                lease = None
-            if lease is None:
-                lease_healthy = False
-                continue
-            if not self.runtime.lease_heartbeat.owns_lease(session_id, lease):
-                # lease 存在但已被其它 activation 接管：对本 runtime 而言
-                # 等价于丢失，必须如实上报 not-ready。
-                lease_healthy = False
-                continue
-            activation_id = activation_id or lease.activation_id
-            expires = getattr(lease, "lease_expires_at", "")
-            try:
-                from datetime import datetime
-
-                expires_at = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
-                if expires_at <= datetime.now(expires_at.tzinfo):
-                    lease_healthy = False
-            except ValueError:
-                lease_healthy = False
-
-        worker_running = self.runtime.worker_running
-        degraded = self.runtime.degraded
-        quarantined = self.runtime.quarantined_sessions()
-        capability = self.runtime.kernel.capabilities()
-        capability_matrix = runtime_capability_matrix_wire_value(capability)
-        computed_capability_digest = runtime_capability_matrix_digest(capability)
-        # The control plane compares all three digests before declaring an
-        # AgentInstance ready.  Reporting ready with only a contract digest
-        # would conceal a missing bundle/capability projection and make the
-        # runtime's health endpoint more optimistic than Server readiness.
-        digests_match = all(
-            (
-                config.contract_digest == AGENT_KERNEL_V1_AGGREGATE_DIGEST,
-                config.capability_digest == computed_capability_digest,
-                config.bundle_digest,
-            )
-        )
-        ready = store_ok and worker_running and lease_healthy and digests_match and not degraded
-        health = {
-            "ready": ready,
-            "store_ok": store_ok,
-            "worker_running": worker_running,
-            "degraded": degraded,
-            # additive：被隔离（恢复失败）的 session 数量；隔离本身不影响
-            # ready，其余 session 照常服务。
-            "quarantined_sessions": len(quarantined),
-            "lease_healthy": lease_healthy,
-            "activation_id": activation_id,
-            # Contract support is packaged with this KsADK image; never echo
-            # an unverified control-plane environment value as evidence.
-            "contract_digest": AGENT_KERNEL_V1_AGGREGATE_DIGEST,
-            # Likewise derive capabilities from the actual Adapter matrix,
-            # rather than trusting the requested deployment digest.
-            "capability_digest": computed_capability_digest,
-            # Runtime/Operator/Server readiness chain must carry the actual
-            # typed capability facts, not merely a digest supplied at deploy
-            # time. Server admission uses these to reject unsupported control
-            # operations before they enter the durable inbox.
-            "capabilities": capability_matrix,
-            "bundle_digest": config.bundle_digest,
-            "durability_tier": config.durability_tier,
-            # Identity is derived from the KsADK source Python imported, not
-            # ``importlib.metadata`` for the base image distribution.
-            "runtime_identity": runtime_identity(),
-        }
-        # 诊断字段（additive，runtime 内部端点非 wire 冻结合同）：
-        # degraded 时必须能从 health 直接回答 "为什么降级、何时降级"，
-        # 出问题的 session 明细同样可见，运维不必再对着布尔值猜。
-        teams_descriptor = getattr(self.runtime, "teams_host_descriptor", None)
-        if teams_descriptor is not None:
-            health["teams_host"] = await teams_descriptor()
-        if quarantined:
-            health["quarantined_session_ids"] = sorted(quarantined)
-        if degraded:
-            health["degradation_reason"] = self.runtime._degradation_reason
-            health["degraded_at"] = self.runtime._degraded_at
-            health["degradation_last_error"] = self.runtime._degraded_last_error
-        return health
-
-
-@dataclass
 class AgentKernelRuntime:
     """生产 kernel runtime：start() 启动后台 worker/lease loop，close() 全停。"""
 
@@ -302,7 +201,10 @@ class AgentKernelRuntime:
 
     def __post_init__(self) -> None:
         self._tasks: list[asyncio.Task] = []
+        self._session_tasks: dict[str, asyncio.Task[bool]] = {}
         self._worker_running = False
+        self._last_scheduler_poll = 0.0
+        self._session_capacity_exhausted = False
         self._heartbeat_sessions: set[str] = set()
         self._last_renewed: dict[str, float] = {}
         self._degraded = False
@@ -344,7 +246,13 @@ class AgentKernelRuntime:
 
     @property
     def worker_running(self) -> bool:
-        return self._worker_running
+        return (
+            self._worker_running
+            and not self._degraded
+            and not self._session_capacity_exhausted
+            and time.monotonic() - self._last_scheduler_poll
+            <= max(10.0, self.config.poll_interval * 20)
+        )
 
     @property
     def degraded(self) -> bool:
@@ -362,7 +270,7 @@ class AgentKernelRuntime:
 
     @property
     def background_tasks(self) -> list[asyncio.Task]:
-        return list(self._tasks)
+        return [*self._tasks, *self._session_tasks.values()]
 
     # ------------------------------------------------------------- lifecycle
 
@@ -372,6 +280,7 @@ class AgentKernelRuntime:
         if hasattr(self.kernel_store, "ensure_schema"):
             await self.kernel_store.ensure_schema()  # type: ignore[attr-defined]
         self._worker_running = True
+        self._last_scheduler_poll = time.monotonic()
         self._tasks.append(asyncio.create_task(self._run_loop(), name="kernel-runtime"))
         # 心跳续约必须是独立任务：run loop 可能长时间阻塞在某个 session 的
         # adapter.start()（hosted pod 上 codex 握手可超过 lease TTL），内联
@@ -379,15 +288,17 @@ class AgentKernelRuntime:
         self._tasks.append(asyncio.create_task(self._heartbeat_loop(), name="kernel-heartbeat"))
 
     async def close(self) -> None:
-        for task in self._tasks:
+        all_tasks = self.background_tasks
+        for task in all_tasks:
             if not task.done():
                 task.cancel()
-        for task in self._tasks:
+        for task in all_tasks:
             try:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
         self._tasks.clear()
+        self._session_tasks.clear()
         self._worker_running = False
         # best-effort 释放持有的 activation（不阻塞关闭）。
         for session_id in list(self._heartbeat_sessions | self._quarantined):
@@ -424,56 +335,49 @@ class AgentKernelRuntime:
                 if self._degraded:
                     return
                 progressed = False
+                task_failed = False
                 try:
-                    sessions = await self._pending_sessions()
-                    for session_id in sorted(sessions):
-                        if session_id in self._quarantined:
-                            # 隔离中的 session：不 claim inbox、不恢复、
-                            # 不写任何 canonical 事件（等待人工清理）。
+                    for session_id, task in list(self._session_tasks.items()):
+                        if not task.done():
                             continue
-                        lease, took_over = await self.lease_heartbeat.ensure_lease(session_id)
-                        if lease is None:
-                            continue
-                        self._heartbeat_sessions.add(session_id)
-                        self._last_renewed[session_id] = time.monotonic()
-                        if took_over:
-                            # takeover：对 open run 做确定性收口（attach /
-                            # resume / interrupted），再继续消费 inbox。
-                            # P0-1：recover 抛错不得静默吞掉——先尝试
-                            # durable 兜底收口；连收口都失败则隔离该
-                            # session 并上报，其余 session 继续服务；只有
-                            # 全局性故障（store 不可达或失败扩散到阈值）
-                            # 才进程级 degraded。
-                            failure = await self._recover_safely(lease, session_id)
-                            if failure is not None:
-                                if not await self._quarantine_session(session_id, failure):
-                                    return
-                                continue
-                        result = await self.worker.run_once(
-                            self.config.agent_instance_id,
-                            lease,
-                            session_id=session_id,
-                        )
-                        if result.outcome in {"claimed", "completed"}:
-                            progressed = True
-                        elif result.outcome == "terminal_failure":
-                            if isinstance(result.error, StaleFenceError):
-                                # 当前 activation 已失去 fence，不能继续触碰该
-                                # session，也不应把正常 takeover 误判为坏数据。
-                                self._heartbeat_sessions.discard(session_id)
-                                self._last_renewed.pop(session_id, None)
-                                self.lease_heartbeat.forget(session_id)
-                                continue
-                            failure = result.error or RuntimeError(
-                                "agent kernel command failed without an error detail"
-                            )
-                            if not await self._quarantine_session(
+                        del self._session_tasks[session_id]
+                        try:
+                            progressed = task.result() or progressed
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            task_failed = True
+                            self._store_failures += 1
+                            logger.exception(
+                                "agent kernel session poll failed: "
+                                "agent_instance_id=%s session_id=%s "
+                                "consecutive_failures=%d",
+                                self.config.agent_instance_id,
                                 session_id,
-                                failure,
-                                context="command execution",
+                                self._store_failures,
+                                exc_info=exc,
+                            )
+                            if (
+                                self._store_failures >= self.config.store_failure_degrade_threshold
+                                and not await self._store_reachable()
                             ):
+                                self._mark_degraded("store_unreachable", exc)
                                 return
-                    self._store_failures = 0
+                    sessions = await self._pending_sessions()
+                    self._last_scheduler_poll = time.monotonic()
+                    self._session_capacity_exhausted = False
+                    for session_id in sorted(sessions):
+                        if session_id in self._quarantined or session_id in self._session_tasks:
+                            continue
+                        if len(self._session_tasks) >= MAX_CONCURRENT_KERNEL_SESSIONS:
+                            self._session_capacity_exhausted = True
+                            break
+                        self._session_tasks[session_id] = asyncio.create_task(
+                            self._run_session_once(session_id),
+                            name=f"kernel-session:{session_id}",
+                        )
+                    if not task_failed:
+                        self._store_failures = 0
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -493,10 +397,61 @@ class AgentKernelRuntime:
                         return
                     await asyncio.sleep(self.config.poll_interval * 4)
                     continue
-                if not progressed:
-                    await asyncio.sleep(self.config.poll_interval)
+                await asyncio.sleep(0 if progressed else self.config.poll_interval)
         finally:
             self._worker_running = False
+
+    async def _run_session_once(self, session_id: str) -> bool:
+        """Process one session without stalling admission for other sessions."""
+
+        lease, took_over = await self.lease_heartbeat.ensure_lease(session_id)
+        if lease is None:
+            return False
+        self._heartbeat_sessions.add(session_id)
+        self._last_renewed[session_id] = time.monotonic()
+        if took_over:
+            failure = await self._recover_safely(lease, session_id)
+            if failure is not None:
+                await self._quarantine_session(session_id, failure)
+                return False
+        active = await self.kernel_store.find_active_run(
+            self.config.agent_instance_id, session_id
+        )
+        if active is not None and self.worker.take_stream_failure(
+            active.run_id, lease
+        ) is not None:
+            try:
+                await self.recovery.settle_interrupted(
+                    self.config.agent_instance_id, lease,
+                    session_id=session_id, reason="runtime_stream_failed",
+                )
+                return True
+            except StaleFenceError:
+                self._heartbeat_sessions.discard(session_id)
+                self._last_renewed.pop(session_id, None)
+                self.lease_heartbeat.forget(session_id)
+                return False
+            except Exception as error:
+                await self._quarantine_session(
+                    session_id, error, context="background stream settlement"
+                )
+                return False
+        result = await self.worker.run_once(
+            self.config.agent_instance_id, lease, session_id=session_id
+        )
+        if result.outcome == "terminal_failure":
+            if isinstance(result.error, StaleFenceError):
+                self._heartbeat_sessions.discard(session_id)
+                self._last_renewed.pop(session_id, None)
+                self.lease_heartbeat.forget(session_id)
+            else:
+                failure = result.error or RuntimeError(
+                    "agent kernel command failed without an error detail"
+                )
+                await self._quarantine_session(
+                    session_id, failure, context="command execution"
+                )
+        return result.outcome in {"claimed", "completed"}
 
     async def _heartbeat_loop(self) -> None:
         """独立心跳任务：按 TTL/3 节奏续约所有已持有的 lease。"""
@@ -555,9 +510,11 @@ class AgentKernelRuntime:
         """
 
         try:
-            await self.recovery.recover(
+            report = await self.recovery.recover(
                 self.config.agent_instance_id, lease, session_id=session_id
             )
+            if getattr(report, "outcome", None) == "failed":
+                raise RuntimeError(f"runtime recovery failed: {report.reason}")
             return None
         except Exception as exc:
             first_failure = exc
@@ -846,11 +803,14 @@ def build_agent_kernel_runtime(
             raise RuntimeError(
                 "hosted agent kernel runtime cannot determine adapter capabilities"
             ) from exc
-        computed_capability_digest = runtime_capability_matrix_digest(capability_snapshot)
+        computed_capability_digest = runtime_capability_admission_digest(
+            capability_snapshot, config.capability_digest
+        )
         if config.capability_digest != computed_capability_digest:
             raise RuntimeError(
                 "capability_digest_mismatch: hosted adapter capabilities do not "
-                "match the control-plane deployment digest"
+                "match the control-plane deployment digest "
+                f"(expected={config.capability_digest}, actual={computed_capability_digest})"
             )
 
         def capabilities() -> RuntimeCapabilityMatrix:  # type: ignore[misc]
@@ -887,9 +847,11 @@ def build_agent_kernel_runtime(
         executor=config.runtime_executor,
         launch_context=config.launch_context,
         adapter_factory=adapter_provider,
+        session_service=session_service,
         # takeover 重建的 live execution 交还 worker（ActiveExecution 归
         # 当前 activation 持有，Interaction 回包才能打到同一 client 实例）。
         execution_sink=worker.adopt_execution,
+        recovery_stream_sink=worker.recover_stream,
     )
     heartbeat = LeaseHeartbeat(
         store,
@@ -897,9 +859,11 @@ def build_agent_kernel_runtime(
         activation_id=config.activation_id or f"{config.agent_instance_id}:kernel-runtime",
         runtime_type=config.runtime_type,
         bundle_digest=config.bundle_digest,
-        # Lease metadata must represent the exact matrix this owner executes,
-        # not an unverified environment projection.
-        capability_digest=runtime_capability_matrix_digest(capabilities()),
+        # The lease carries the verified admission policy; command admission
+        # continues to read the adapter's complete capability matrix.
+        capability_digest=runtime_capability_admission_digest(
+            capabilities(), config.capability_digest
+        ),
         lease_ttl_seconds=config.lease_ttl_seconds,
     )
     runtime = AgentKernelRuntime(
@@ -979,6 +943,15 @@ async def bootstrap_agent_kernel_runtime_from_env(
             "does not support the control-plane contract digest"
         )
 
+    # Lazy framework adapters learn their native checkpoint capabilities during
+    # preflight. Snapshotting before it permanently disables cold recovery even
+    # when the deployment has configured durable native sessions.
+    capabilities = None
+    if adapter_provider is not None:
+        capability_adapter = adapter_provider()
+        await capability_adapter.preflight()
+        capabilities = capability_adapter.capabilities
+
     pool = None
     owns_pool = False
     if driver == "postgres":
@@ -1044,6 +1017,7 @@ async def bootstrap_agent_kernel_runtime_from_env(
         permit_issuer=os.environ.get("AGENT_CONTROL_PERMIT_ISSUER", ""),
         nonce_store=nonce_store,
         adapter_provider=adapter_provider,
+        capabilities=capabilities,
         start_request_defaults=dict(start_request_defaults or {}),
         contract_digest=(
             AGENT_KERNEL_V1_AGGREGATE_DIGEST if mode == "hosted" else injected_contract_digest

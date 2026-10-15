@@ -57,12 +57,27 @@ class _SpaceClientEventMixin:
             wire_position=wire_position,
             invocation_id=platform_task_id,
         )
-        platform_events = self._platform_events(
-            item,
-            platform_task_id,
-            operation_instance_id=operation_instance_id,
-            wire_position=wire_position,
-        )
+        if getattr(self._backend, "task_event_format", "legacy") == "canonical_v2":
+            from ksadk.events.canonical import dump_runtime_event
+
+            # A new authorized query is a new observation, even for the same
+            # remote snapshot. Its timestamp may differ after client restart.
+            # Keep outbox retries stable without reusing an earlier query's ID.
+            runtime_events = [
+                event.model_copy(update={"event_id": uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"ksadk:a2a-observation:{platform_task_id}:{operation_instance_id}:{wire_position}:{event.event_id}",
+                ).hex})
+                for event in runtime_events
+            ]
+            platform_events = [dump_runtime_event(event) for event in runtime_events]
+        else:
+            platform_events = self._platform_events(
+                item,
+                platform_task_id,
+                operation_instance_id=operation_instance_id,
+                wire_position=wire_position,
+            )
         if platform_events:
             await self._event_dispatcher.enqueue(
                 platform_task_id=platform_task_id,
@@ -271,11 +286,8 @@ class _SpaceClientEventMixin:
                 TaskState.TASK_STATE_REJECTED,
             }
             if not task_is_terminal:
-                events.append(
-                    self._event_adapter.task_status_to_event(
-                        task.status,
-                        **ctx("task", task),
-                    )
+                events.extend(
+                    self._event_adapter.task_status_to_events(task.status, **ctx("task", task))
                 )
             if task_status_text:
                 events.append(
@@ -286,11 +298,8 @@ class _SpaceClientEventMixin:
                     )
                 )
             if task_is_terminal:
-                events.append(
-                    self._event_adapter.task_status_to_event(
-                        task.status,
-                        **ctx("task", task),
-                    )
+                events.extend(
+                    self._event_adapter.task_status_to_events(task.status, **ctx("task", task))
                 )
         if status_update is not None and getattr(status_update, "status", None) is not None:
             status_message = _present_message_field(status_update.status, "message")
@@ -303,8 +312,8 @@ class _SpaceClientEventMixin:
             }
             is_terminal = status_update.status.state in terminal_states
             if not is_terminal:
-                events.append(
-                    self._event_adapter.task_status_to_event(
+                events.extend(
+                    self._event_adapter.task_status_to_events(
                         status_update.status, **ctx("status", status_update)
                     )
                 )
@@ -317,15 +326,17 @@ class _SpaceClientEventMixin:
                     )
                 )
             if is_terminal:
-                events.append(
-                    self._event_adapter.task_status_to_event(
+                events.extend(
+                    self._event_adapter.task_status_to_events(
                         status_update.status, **ctx("status", status_update)
                     )
                 )
         if artifact_update is not None and getattr(artifact_update, "artifact", None) is not None:
             artifact = artifact_update.artifact
-            events.append(
-                self._event_adapter.artifact_to_event(artifact, **ctx("artifact", artifact_update))
+            events.extend(
+                self._event_adapter.artifact_to_events(
+                    artifact, **ctx("artifact", artifact_update)
+                )
             )
             artifact_text = A2AEventAdapter._parts_text(getattr(artifact, "parts", None))
             if artifact_text and str(getattr(artifact, "name", "") or "") == "response":

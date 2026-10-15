@@ -167,11 +167,29 @@ def _codex_home_key(
     return value
 
 
+def _codex_a2a_experts(config, bootstrap):
+    """Validate immutable fixed targets before client or home creation."""
+    raw = config.get("a2a_experts", [])
+    if not isinstance(raw, list):
+        raise ValueError("A2A_CODEX_EXPERT_CONFIG_INVALID")
+    if not raw:
+        return ()
+    from ksadk.a2a.codex import compile_codex_experts
+    from ksadk.a2a.invocation_types import RemoteAgentSpec
+
+    specs = tuple(RemoteAgentSpec.model_validate(value) for value in raw)
+    compile_codex_experts(specs)
+    if bootstrap is None or not bootstrap.outbound_enabled:
+        raise ValueError("A2A_MANAGED_BOOTSTRAP_REQUIRED")
+    return specs
+
+
 def create_codex_adapter(context: RuntimeLaunchContext) -> RuntimeAdapter:
     from ksadk.codex.runtime import CodexRuntimeAdapter
 
     client_factory = context.services.codex_client_factory or AsyncCodexClient
     config = dict(context.config)
+    a2a_specs = _codex_a2a_experts(config, context.services.managed_a2a_bootstrap)
     plugin_bootstrap = _codex_plugin_bootstrap(config)
     codex_home_key = _codex_home_key(config, plugin_bootstrap)
     bound_skill_paths: dict[str, str] = {}
@@ -241,6 +259,8 @@ def create_codex_adapter(context: RuntimeLaunchContext) -> RuntimeAdapter:
             enforce_bound_skills=bool(config.get("enforce_bound_skills")),
         ),
         plugin_bootstrap=plugin_bootstrap,
+        a2a_experts=a2a_specs,
+        managed_a2a_bootstrap=context.services.managed_a2a_bootstrap,
     )
 
 

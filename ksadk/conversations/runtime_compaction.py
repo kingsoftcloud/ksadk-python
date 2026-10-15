@@ -231,7 +231,10 @@ async def preview_auto_compaction(
 
     provider = session_service_provider or resolve_session_service
     service = provider()
-    existing_session = await service.get_session(session_id)
+    # Attachment context lives in state; authorization/preview do not need a
+    # second complete transcript before the explicit get_events below.
+    read_metadata = getattr(service, "get_session_metadata", None) or service.get_session
+    existing_session = await read_metadata(session_id)
     if not existing_session:
         return CompactionPlan(
             should_compact=False,
@@ -378,7 +381,9 @@ async def compact_conversation_history(
     provider = session_service_provider or resolve_session_service
     service = provider()
     events = await service.get_events(session_id)
-    session = await service.get_session(session_id)
+    header_reader = getattr(service, "get_session_header", None) or getattr(
+        service, "get_session_metadata", None) or service.get_session
+    session = await header_reader(session_id)
     memory_user_id = str(getattr(session, "user_id", "") or "")
     plan = _plan_compaction(
         events,

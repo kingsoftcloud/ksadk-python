@@ -30,6 +30,11 @@ class HarnessTool:
     parameters: dict[str, Any]
     handler: ToolHandler
     source: str
+    #: 结果治理元数据（G10 §13.2）：超限外置/截断与外部来源定界（G16）。
+    max_result_bytes: int = 65_536
+    truncate: str = "middle"
+    offload_to_artifact: bool = True
+    external: bool = False
 
     @property
     def openai_schema(self) -> dict[str, Any]:
@@ -44,6 +49,52 @@ class HarnessTool:
 
     async def call(self, arguments: dict[str, Any], *, call_id: str | None = None) -> Any:
         return await self.handler(arguments, call_id)
+
+
+def artifact_read_tool(artifact_store: Any, *, max_read_bytes: int = 16_384) -> HarnessTool:
+    """G10 §13.2：artifact 取回工具面。
+
+    出参限单次读取配额（超限截断可见）；内容本是外部/工具来源，按 G16
+    external=True 走定界渲染；读取失败结构化返回，不静默。
+    """
+
+    async def _read(arguments: dict[str, Any], call_id: str | None) -> Any:
+        del call_id
+        uri = str(arguments.get("uri") or "").strip()
+        if not uri:
+            return {"ok": False, "error": "missing required field: uri"}
+        try:
+            content = artifact_store.read_uri(uri)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            return {"ok": False, "error": f"artifact 读取失败: {exc}"}
+        size = len(content)
+        truncated = size > max_read_bytes
+        text = content[:max_read_bytes].decode("utf-8", errors="ignore")
+        return {
+            "ok": True,
+            "uri": uri,
+            "size_bytes": size,
+            "truncated": truncated,
+            "content": text + ("\n…[已达单次读取配额，剩余内容未返回]" if truncated else ""),
+        }
+
+    return HarnessTool(
+        name="artifact_read",
+        description=(
+            "Read the full content of an offloaded tool-result artifact by URI. "
+            "A single read is capped; the response marks truncation explicitly."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"uri": {"type": "string"}},
+            "required": ["uri"],
+            "additionalProperties": False,
+        },
+        handler=_read,
+        source="artifact",
+        max_result_bytes=max_read_bytes,
+        external=True,
+    )
 
 
 def sandbox_tools(sandbox: HarnessSandboxExecutor) -> list[HarnessTool]:
@@ -241,6 +292,7 @@ def _normalize_json_schema(value: Any) -> Any:
 __all__ = [
     "HARNESS_SANDBOX_TOOL_NAMES",
     "HarnessTool",
+    "artifact_read_tool",
     "load_mcp_tools",
     "sandbox_tools",
     "tool_result_text",
