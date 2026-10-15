@@ -100,9 +100,9 @@ try {
   const baseline = resolve(process.env.STUDIO_BASELINE_DMG);
   assert.equal(await shaFile(baseline), '7aa7accacd1382c2443d614c90140fe866ad4592d4d814417db9530b86c769f2');
   const candidate = resolve(process.env.STUDIO_CANDIDATE_DIR);
-  const feed = YAML.parse(await readFile(join(candidate, 'preview-mac.yml'), 'utf8'));
+  let feed = YAML.parse(await readFile(join(candidate, 'preview-mac.yml'), 'utf8'));
   assert.equal(feed.version, report.targetVersion);
-  const zipName = basename(feed.files[0].url); const zip = join(candidate, zipName);
+  let zipName = basename(feed.files[0].url); let zip = join(candidate, zipName);
   assert.equal(await shaFile(zip, 'sha512', 'base64'), feed.files[0].sha512);
   assert.equal((await stat(zip)).size, feed.files[0].size);
   const mount = join(scratch, 'mount'); await mkdir(mount);
@@ -141,7 +141,7 @@ try {
     if (req.url !== '/v1/chat/completions') { res.writeHead(404); res.end(); return; }
     const body = JSON.parse(Buffer.concat(chunks)); const messages = body.messages || [];
     const userMessages = messages.filter(message => message.role === 'user');
-    const continuationTurn = userMessages.some(message => JSON.stringify(message.content).includes('Turn 2.')) ? 2 : undefined;
+    const continuationTurn = [3, 2].find(turn => userMessages.some(message => JSON.stringify(message.content).includes(`Turn ${turn}.`)));
     const priorAssistantMarker = messages.some(message => message.role === 'assistant' && JSON.stringify(message.content).includes(marker));
     // Native request context can contain additional user-role environment messages;
     // that count is not a conversation turn. Validate retained assistant context separately.
@@ -235,10 +235,8 @@ try {
   await until('actual bundle version replacement', async () => (await version()).version === report.targetVersion, 300000);
   await until('native installer requested the original application exit', async () =>
     (await journalEvents()).some(event => event.pid === initialPid && event.event === 'quit-requested'));
-  // Playwright's main-process debugger otherwise holds Node at "Waiting for
-  // the debugger to disconnect" after the native updater has requested quit.
-  // Its public close API detaches that debugger. Only do this after the native
-  // installer has replaced the bundle and the original App has requested quit.
+  // Release the automation connection after native installation and quit.
+  // Cache the ChildProcess: Electron's dispatcher can already be disposed.
   const initialProcess = electronProcess;
   await checkpoint('detaching-automation-after-native-quit-request');
   let detachTimer;
@@ -295,6 +293,106 @@ try {
   report.sessionContinuationMethod = 'separate cold restart after independently observing the native automatic successor';
   report.passed = true; report.dataRetained = true; report.nativeContextContinuedAfterUpdate = true;
   await checkpoint('native-update-accepted-rollback-still-separate');
+  if (process.env.STUDIO_ROLLBACK_CANDIDATE_DIR) {
+    report.passed = false;
+    const rollback = report.forwardRollback = {
+      passed: false, baselineVersion: report.targetVersion, targetVersion: '0.2.0-rc.2.20261016.39',
+      deliveryRun: 38770609458, restoredStudioCommit: '9b20aee585956c30239ab1775098cdab25ada9cb',
+      originalAcceptedPackage: 'signed .10 package frozen from its actual ASAR; packaging hygiene retained in Host',
+      lowerVersionDowngrade: false, signatureChecksDisabled: false,
+    };
+    const rollbackDirectory = resolve(process.env.STUDIO_ROLLBACK_CANDIDATE_DIR);
+    feed = YAML.parse(await readFile(join(rollbackDirectory, 'preview-mac.yml'), 'utf8'));
+    assert.equal(feed.version, rollback.targetVersion);
+    zipName = basename(feed.files[0].url); zip = join(rollbackDirectory, zipName);
+    assert.equal(await shaFile(zip, 'sha512', 'base64'), feed.files[0].sha512);
+    assert.equal((await stat(zip)).size, feed.files[0].size);
+    rollback.zipSha512 = feed.files[0].sha512; rollback.zipBytes = feed.files[0].size;
+    rollback.before = await version(); assert.equal(rollback.before.version, report.targetVersion);
+    const rollbackRetained = await Promise.all(selected.map(async path => ({ path, bytes: await readFile(path) })));
+    rollback.retainedFiles = rollbackRetained.map(item => ({ relativePath: item.path.replace(homedir(), '~'), bytesBefore: item.bytes.length, sha256Before: digest(item.bytes) }));
+    const rollbackInitialPid = electronProcess.pid;
+    rollback.initialPid = rollbackInitialPid;
+    await checkpoint('checking-real-higher-version-forward-rollback');
+    await electron.evaluate(({ app }, url) => {
+      const require = process.getBuiltinModule('module').createRequire(app.getAppPath() + '/package.json');
+      require('electron-updater').autoUpdater.setFeedURL({ provider: 'generic', url, channel: 'preview', useMultipleRangeRequest: false });
+    }, deliveryOrigin);
+    await electron.evaluate(({ Menu }) => {
+      const find = menu => {
+        for (const item of menu?.items || []) {
+          if (/^(检查更新|Check for [Uu]pdates)(?:…|\.\.\.)?$/.test(item.label)) return item;
+          const child = find(item.submenu); if (child) return child;
+        }
+      };
+      const item = find(Menu.getApplicationMenu());
+      if (!item?.enabled) throw Error('Native rollback update menu is unavailable');
+      item.click(item);
+    });
+    const rollbackDialog = await until('native rollback download confirmation', async () => electron.windows().find(window => window.url().includes('shell/update-dialog.html')));
+    await expect(rollbackDialog.getByText(rollback.targetVersion, { exact: false }).first()).toBeVisible({ timeout: 90000 });
+    await rollbackDialog.screenshot({ path: join(evidence, 'rollback-download-confirmation.png') });
+    await rollbackDialog.getByRole('button', { name: /^(下载更新|Download update)$/ }).click();
+    const rollbackInstallDialog = await until('native rollback installation confirmation', async () => {
+      for (const window of electron.windows()) if (!window.isClosed() && window.url().includes('shell/update-dialog.html')
+        && await window.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ }).isVisible()) return window;
+      return false;
+    }, 300000);
+    await rollbackInstallDialog.screenshot({ path: join(evidence, 'rollback-install-confirmation.png') });
+    await checkpoint('installing-real-forward-rollback-through-native-squirrel');
+    await rollbackInstallDialog.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ }).click();
+    await until('actual rollback bundle replacement', async () => (await version()).version === rollback.targetVersion, 300000);
+    await until('native rollback original quit request', async () => (await journalEvents()).some(event => event.pid === rollbackInitialPid && event.event === 'quit-requested'));
+    const rollbackInitialProcess = electronProcess;
+    let rollbackDetachTimer;
+    await Promise.race([electron.close(), new Promise((_, reject) => { rollbackDetachTimer = setTimeout(() => reject(Error('Rollback native quit detach deadline')), 30000); })])
+      .finally(() => clearTimeout(rollbackDetachTimer));
+    electron = undefined;
+    const rollbackReadiness = await until('automatic native rollback successor', async () => {
+      if (rollbackInitialProcess.exitCode === null && rollbackInitialProcess.signalCode === null) return false;
+      return (await journalEvents()).find(event => event.version === rollback.targetVersion && event.event === 'workspace-ready'
+        && event.pid !== rollbackInitialPid && alive(event.pid));
+    });
+    const rollbackPid = rollbackReadiness.pid; ownedMainPids.add(rollbackPid);
+    rollback.successorReadiness = rollbackReadiness;
+    rollback.originalPidExited = true; rollback.successorLaunchedByHarness = false;
+    rollback.after = await version();
+    assert.equal(rollback.after.studioSourceSha256, 'b9d8a44e2baea87a1b449aba373eae865a6322201d59ac1741f80e532e7221a6');
+    assert.equal(rollback.after.studioPackageSha256, 'a6a80b62e519e57c4095dedb2a83c078ab2fdb4e65745ca7b7035fa55d17986e');
+    for (const [cmd, args] of [['/usr/bin/codesign', ['--verify', '--deep', '--strict', install]], ['/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', install]]]) await exec(cmd, args);
+    rollback.appleVerificationPassed = true;
+    for (let i = 0; i < rollbackRetained.length; i++) {
+      const current = await readFile(rollbackRetained[i].path);
+      assert.ok(current.subarray(0, rollbackRetained[i].bytes.length).equals(rollbackRetained[i].bytes));
+      rollback.retainedFiles[i].originalBytesRetained = true;
+    }
+    await checkpoint('observing-automatic-forward-rollback-native-window');
+    rollback.successorWindow = await observeNativeWindow(rollbackPid, 'rollback-successor-native-window');
+    assert.ok(report.transfers.some(item => item.asset === zipName && item.bytes === feed.files[0].size));
+    await exec('/bin/kill', ['-TERM', String(rollbackPid)]);
+    await until('observed rollback successor exits normally', async () => !alive(rollbackPid), 30000);
+    await checkpoint('cold-restarting-observed-rollback-for-third-native-turn');
+    electron = await _electron.launch({ executablePath: join(install, 'Contents/MacOS/AgentKit Studio'), args: [], cwd: scratch, env, timeout: 120000 });
+    electronProcess = electron.process(); ownedMainPids.add(electronProcess.pid);
+    for (const stream of [electronProcess.stdout, electronProcess.stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
+    const rollbackPage = await electron.firstWindow({ timeout: 120000 }); rollbackPage.setDefaultTimeout(30000);
+    assert.equal(await electron.evaluate(({ app }) => app.getVersion()), rollback.targetVersion);
+    const rollbackRow = rollbackPage.locator('[data-row-key=' + JSON.stringify('session:' + nativeSession) + ']');
+    await expect(rollbackRow).toBeVisible({ timeout: 90000 }); await rollbackRow.locator(':scope > span').nth(1).click();
+    const rollbackConversation = rollbackPage.locator('[data-conversation-session=' + JSON.stringify(nativeSession) + ']');
+    await expect(rollbackConversation.getByText(marker, { exact: true })).toHaveCount(2);
+    const rollbackComposer = rollbackPage.locator('[contenteditable="true"]').first();
+    await rollbackComposer.fill('Repeat the context marker from the earlier assistant responses. Reply only with that marker. Turn 3. Do not use tools.');
+    await rollbackComposer.press('Enter');
+    await expect(rollbackConversation.getByText(marker, { exact: true })).toHaveCount(3, { timeout: 180000 });
+    await expect(rollbackPage.getByRole('button', { name: /^(停止生成|Stop generating)$/ })).toHaveCount(0, { timeout: 180000 });
+    assert.ok(report.modelRequests.some(item => item.continuationTurn === 3 && item.priorAssistantMarker));
+    await rollbackPage.screenshot({ path: join(evidence, 'rollback-native-session-continuation.png'), fullPage: true });
+    rollback.passed = true; rollback.dataRetained = true; rollback.nativeContextContinued = true;
+    rollback.sessionContinuationMethod = 'separate cold restart after independently observing automatic rollback successor';
+    report.passed = true;
+    await checkpoint('native-update-and-forward-rollback-accepted');
+  }
 } catch (error) {
   report.failure = { stage: report.stage, name: error.name, message: String(error.message).split('\n')[0].slice(0, 500),
     detail: String(error.message).replace(/([?&]token=)[^\s"<>]+/g, '$1[redacted]').slice(0, 2000) };
