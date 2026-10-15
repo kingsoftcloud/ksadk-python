@@ -245,7 +245,7 @@ def test_react_chat_uses_shared_protocol_and_asymmetric_messages() -> None:
     assert "useAgentChat" in source
     # Facade ownership and lifecycle cancellation are exercised by the real
     # StudioChatApiFacade and ChatWorkspace behavior suites, not import text.
-    assert '"@kingsoftcloud/ksadk-web": "0.3.12"' in package
+    assert '"@kingsoftcloud/ksadk-web": "0.3.13"' in package
     assert "@kingsoftcloud/ksadk-web" not in vite_config
     # 没有本地 Agent 时仍可从账号目录选择云端 Agent，不再把会话入口
     # 强制重定向到创建页。

@@ -16,7 +16,29 @@ from tests.harness.native.test_kernel import ScriptedModel, config, kernel
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
 @pytest.mark.parametrize("delegated", [False, True])
 @pytest.mark.parametrize("stop", ["cancel", "exception", "timeout"])
-async def test_completed_member_survives_interrupted_batch(tmp_path, backend, delegated, stop):
+async def test_completed_member_survives_interrupted_batch(tmp_path, monkeypatch, backend, delegated, stop):
+    if stop == "timeout":
+        from ksadk.harness.native import effect_control
+
+        class EffectClock:
+            elapsed = 0.0
+
+            def time(self):
+                return self.elapsed
+
+        clock = EffectClock()
+
+        class EffectAsyncio:
+            def get_running_loop(self):
+                return clock
+
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
+        # Expire after member a is committed and b is running. Filesystem
+        # latency before that boundary must not prevent b from ever starting.
+        # Real asyncio waits and cancellation cleanup keep their original limits.
+        monkeypatch.setattr(effect_control, "asyncio", EffectAsyncio())
     store = MemoryRunStore() if backend == "memory" else SQLiteRunStore(tmp_path / "runs.sqlite")
     fixture = tmp_path / "observed.txt"
     fixture.write_text("Actual completed observation.")
@@ -70,6 +92,8 @@ async def test_completed_member_survives_interrupted_batch(tmp_path, backend, de
             runtime.submit(run.run_id, RunCommand(command_id="stop", kind="cancel"))
         elif stop == "exception":
             fail.set()
+        elif stop == "timeout":
+            clock.elapsed = cfg.limits.effect_timeout_seconds
         ended = await asyncio.wait_for(driver, 3)
         assert ended.phase == (RunPhase.CANCELED if stop == "cancel" else RunPhase.INTERRUPTED)
         assert ended.tool_calls == 2 and ended.model_calls == 1
