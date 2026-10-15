@@ -19,6 +19,7 @@ import secrets as secrets  # Public-module injection seam for scoped token tests
 import shutil
 import signal
 import struct
+import sys
 import tempfile
 import time as time  # Shared clock seam remains available at the original module.
 from collections import deque
@@ -1162,8 +1163,10 @@ class DshProfileCapabilityHost:
                 if remaining <= 0:
                     break
                 await asyncio.sleep(min(0.05, remaining))
-            if self._process_group_exists(process.pid):
-                self._signal_process_group(process.pid, signal.SIGKILL)
+            # Always seal the owned group after the liveness snapshot. A
+            # descendant can fork between /proc enumeration and becoming a
+            # zombie; the new child must not escape a zombie-only fast exit.
+            self._signal_process_group(process.pid, signal.SIGKILL)
         elif process.returncode is None:
             process.kill()
 
@@ -1185,6 +1188,10 @@ class DshProfileCapabilityHost:
             return False
         except PermissionError:
             return True
+        if sys.platform == "linux":
+            from ksadk.plugins.providers._process_group import linux_group_has_live_members
+
+            return linux_group_has_live_members(process_group)
         return True
 
     def _record_process_failure(self) -> None:
