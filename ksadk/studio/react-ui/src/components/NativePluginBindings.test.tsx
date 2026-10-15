@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
 import { NativePluginBindings, type NativePluginBinding } from "./NativePluginBindings";
 vi.mock("../api", () => ({ apiFetch: vi.fn() }));
@@ -9,6 +9,15 @@ const bound: NativePluginBinding = { ecosystem: "codex", pluginRef: "plugin://co
 const response = (data: unknown, ok = true) => ({ ok, json: async () => data }) as Response;
 beforeEach(() => fetchMock.mockReset());
 describe("native plugin bindings", () => {
+  afterEach(async () => {
+    // Selecting an item leaves the multi-select open. Wait for Radix's
+    // deferred focus restoration before the test's jsdom realm is removed.
+    const picker = screen.queryByRole("button", { name: "选择绑定插件" });
+    if (picker?.getAttribute("aria-expanded") === "true") {
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(picker).toHaveFocus());
+    }
+  });
   it("keeps existing bindings and exits the pending state when snapshot admission fails", async () => {
     fetchMock.mockImplementation(async (url, init) => {
       if (init?.method === "POST") return response({ error: { message: "快照校验失败" } }, false);
