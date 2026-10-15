@@ -164,6 +164,24 @@ jobs:
           $env:DSH_DESKTOP_PRODUCT_TRAY_ICON = Join-Path $PWD $env:STUDIO_PRODUCT_TRAY_ICON
           pnpm exec node scripts/package-desktop.mjs @options 2>&1 | ForEach-Object { "$_" -replace '([?&]token=)[^\s"<>]+', '$1[redacted]' } | Tee-Object -FilePath .artifacts/windows-package.log
           if ($LASTEXITCODE) { throw 'Unsigned Windows packaging failed' }
+      - name: Verify assembled Desktop profile activation and shutdown
+        shell: pwsh
+        run: |
+          pnpm exec playwright install chromium
+          if ($LASTEXITCODE) { throw 'Profile acceptance browser installation failed' }
+          $roots = @(Get-ChildItem "$env:RUNNER_TEMP/studio-build/desktop-checkouts" -Directory)
+          if ($roots.Count -ne 1) { throw 'Expected exactly one isolated checkout' }
+          $source = Join-Path $roots[0].FullName 'source'
+          $target = Join-Path $source 'apps/desktop/.desktop-build/targets/win-x64'
+          $runtime = Join-Path $target 'dsh'
+          $node = Join-Path $target 'unsigned-artifacts/win-unpacked/AgentKit Studio.exe'
+          node scripts/verify-studio-product-profiles.mjs --source $source --runtime $runtime --node $node --report .artifacts/windows-profile-acceptance.json
+          if ($LASTEXITCODE) { throw 'Assembled Desktop profile acceptance failed' }
+          $profileReport = Get-Content .artifacts/windows-profile-acceptance.json -Raw | ConvertFrom-Json
+          if (-not $profileReport.passed -or @($profileReport.cases).Count -ne 4) { throw 'All four Profile cases must complete' }
+          foreach ($case in $profileReport.cases) {
+            if (-not $case.passed -or @($case.checks).Count -ne 2) { throw 'Each Profile must pass two process restarts' }
+          }
       - name: Check actual packaged Studio imports and record hashes
         shell: pwsh
         env:
@@ -178,7 +196,7 @@ jobs:
           node scripts/verify-desktop-module-graph.mjs $archives[0].FullName --studio > .artifacts/windows-studio-module-graph.json
           if ($LASTEXITCODE) { throw 'Packaged Studio module graph failed' }
           $hashes = @(Get-ChildItem $artifacts -File | ForEach-Object { @{name=$_.Name; bytes=$_.Length; sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()} })
-          $report = @{sourceCommit=$env:SOURCE_SHA; dshCommit='639ed015397290b3745d163aafe02ffee4aa3f84'; buildVersion=$env:BUILD_VERSION; unsigned=$true; packagedSmokePassed=$true; studioModuleGraphPassed=$true; artifacts=$hashes; passed=$true}
+          $report = @{sourceCommit=$env:SOURCE_SHA; dshCommit='639ed015397290b3745d163aafe02ffee4aa3f84'; buildVersion=$env:BUILD_VERSION; unsigned=$true; packagedSmokePassed=$true; studioModuleGraphPassed=$true; assembledProfileAcceptancePassed=$true; artifacts=$hashes; passed=$true}
           $report | ConvertTo-Json -Depth 10 | Out-File .artifacts/windows-package-acceptance.json -Encoding utf8
       - name: Collect redacted package diagnostics
         if: always()
@@ -205,6 +223,8 @@ jobs:
             .artifacts/windows-package.log
             .artifacts/windows-studio-module-graph.json
             .artifacts/windows-package-acceptance.json
+            .artifacts/windows-profile-acceptance.json
+            .artifacts/profile-diagnostics/
             .artifacts/windows-diagnostics/
           if-no-files-found: error
           retention-days: 7
