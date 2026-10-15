@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { _electron, expect } from '@playwright/test';
 import { createServer } from 'node:http';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, normalize, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import asar from '@electron/asar';
@@ -47,7 +47,7 @@ try {
   const archive = join(dirname(executablePath), 'resources/app.asar');
   report.packagedFiles = {};
   for (const file of ['src/index.mjs', 'dist/client.js']) {
-    const bytes = asar.extractFile(archive, `dsh/node_modules/@kingsoftcloud/agentkit-studio/${file}`);
+    const bytes = asar.extractFile(archive, normalize(`dsh/node_modules/@kingsoftcloud/agentkit-studio/${file}`));
     assert.ok(bytes.equals(await readFile(file)), `Installed ${file} must match the verified source`);
     report.packagedFiles[file] = createHash('sha256').update(bytes).digest('hex');
   }
