@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, stat, writeFile, rm } from 'node:fs/promises';
 import { createServer as httpServer } from 'node:http';
 import { createServer as httpsServer } from 'node:https';
 import { homedir, tmpdir } from 'node:os';
@@ -61,8 +61,18 @@ async function version() {
 }
 async function processIds() {
   const executable = join(install, 'Contents/MacOS/AgentKit Studio');
+  const paths = new Set([executable, await realpath(executable)]);
   const lines = (await exec('/bin/ps', ['-ax', '-o', 'pid=,command='])).stdout.split('\n');
-  return lines.flatMap(line => { const m = line.trim().match(/^(\d+)\s+(.+)$/); return m && (m[2] === executable || m[2].startsWith(executable + ' ')) ? [Number(m[1])] : []; });
+  return lines.flatMap(line => { const m = line.trim().match(/^(\d+)\s+(.+)$/); return m && [...paths].some(path => m[2] === path || m[2].startsWith(path + ' ')) ? [Number(m[1])] : []; });
+}
+function alive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+}
+async function journalEvents() {
+  const files = await walk(join(evidence, 'journals'));
+  return (await Promise.all(files.map(file => readFile(file, 'utf8'))))
+    .flatMap(text => text.trim().split('\n').filter(Boolean).map(line => JSON.parse(line)));
 }
 async function until(name, operation, timeout = 180000) {
   const end = Date.now() + timeout; let last;
@@ -70,6 +80,7 @@ async function until(name, operation, timeout = 180000) {
   throw new Error(`${name} timed out${last ? ': ' + String(last.message).split('\n')[0].slice(0, 160) : ''}`);
 }
 let electron, model, delivery, trustedFingerprint, initialPid, nativeSession, retained = [];
+const ownedMainPids = new Set();
 const nativeHome = join(homedir(), '.dsh');
 const productHome = join(homedir(), '.agentkit');
 async function observeNativeWindow(pid, name) {
@@ -147,6 +158,7 @@ try {
   await checkpoint('launching-real-signed-baseline');
   electron = await _electron.launch({ executablePath: join(install, 'Contents/MacOS/AgentKit Studio'), args: [], cwd: scratch, env, timeout: 120000 });
   initialPid = electron.process().pid;
+  ownedMainPids.add(initialPid);
   assert.ok((await processIds()).includes(initialPid), 'Owned initial main process must be observable with its automation arguments');
   await electron.evaluate(({ app }) => { app.accessibilitySupportEnabled = true; });
   for (const stream of [electron.process().stdout, electron.process().stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
@@ -220,9 +232,16 @@ try {
   await checkpoint('installing-through-native-squirrel');
   await installationDialog.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ }).click();
   await until('actual bundle version replacement', async () => (await version()).version === report.targetVersion, 300000);
-  const successorPid = await until('automatic native successor', async () => {
-    const pids = await processIds(); return pids.length === 1 && !pids.includes(initialPid) ? pids[0] : false;
+  const successorReadiness = await until('automatic native successor', async () => {
+    if (electron.process().exitCode === null && electron.process().signalCode === null) return false;
+    const events = await journalEvents();
+    const ready = events.find(event => event.version === report.targetVersion && event.event === 'workspace-ready'
+      && event.pid !== initialPid && alive(event.pid));
+    return ready || false;
   });
+  const successorPid = successorReadiness.pid;
+  ownedMainPids.add(successorPid);
+  report.successorReadiness = successorReadiness;
   report.successorPid = successorPid; report.originalPidExited = true; report.successorLaunchedByHarness = false;
   report.after = await version();
   assert.equal(report.after.studioSourceSha256, 'a930296e5caab1eba7adf093f80be6724295da0edee15a19dadab67577a68b56');
@@ -233,17 +252,17 @@ try {
   }
   await checkpoint('observing-actual-successor-native-ui');
   report.successorWindow = await observeNativeWindow(successorPid, 'successor-native-window');
-  const journalFiles = await walk(join(evidence, 'journals'));
-  const events = (await Promise.all(journalFiles.map(file => readFile(file, 'utf8')))).flatMap(text => text.trim().split('\n').filter(Boolean).map(line => JSON.parse(line)));
+  const events = await journalEvents();
   for (const event of ['started', 'check-requested', 'download-requested', 'install-confirmed']) assert.ok(events.some(item => item.event === event));
-  assert.ok(events.some(item => item.version === report.targetVersion && item.event === 'workspace-ready'));
+  assert.ok(events.some(item => item.version === report.targetVersion && item.pid === successorPid && item.event === 'workspace-ready'));
   assert.ok(report.transfers.some(item => item.bytes === feed.files[0].size), 'A fresh DMG profile must actually download the signed ZIP');
   // The existing automatic successor has already been independently observed.
   // A separate cold restart then verifies native Session use through visible UI.
   await checkpoint('cold-restarting-observed-updated-app-for-session-continuation');
   await exec('/bin/kill', ['-TERM', String(successorPid)]);
-  await until('observed automatic successor exits normally', async () => (await processIds()).length === 0, 30000);
+  await until('observed automatic successor exits normally', async () => !alive(successorPid), 30000);
   electron = await _electron.launch({ executablePath: join(install, 'Contents/MacOS/AgentKit Studio'), args: [], cwd: scratch, env, timeout: 120000 });
+  ownedMainPids.add(electron.process().pid);
   for (const stream of [electron.process().stdout, electron.process().stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
   const continued = await electron.firstWindow({ timeout: 120000 }); continued.setDefaultTimeout(30000);
   assert.equal(await electron.evaluate(({ app }) => app.getVersion()), report.targetVersion);
@@ -269,14 +288,14 @@ try {
   if (electron) for (const [index, page] of electron.windows().entries()) await page.screenshot({ path: join(evidence, `failure-${index}.png`), timeout: 10000 }).catch(() => {});
   await checkpoint('failed');
 } finally {
-  if (electron && (await processIds()).includes(electron.process().pid)) {
+  if (electron && electron.process().exitCode === null && electron.process().signalCode === null) {
     let timer;
     await Promise.race([electron.close(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Baseline close deadline')), 30000); })])
       .catch(() => { report.cleanupFailure = true; process.exitCode = 1; electron.process().kill('SIGKILL'); })
       .finally(() => clearTimeout(timer));
   }
-  for (const pid of await processIds()) await exec('/bin/kill', ['-TERM', String(pid)]).catch(() => {});
-  await until('owned native processes exit', async () => (await processIds()).length === 0, 30000).catch(() => { report.cleanupFailure = true; process.exitCode = 1; });
+  for (const pid of new Set([...ownedMainPids, ...await processIds()])) if (alive(pid)) await exec('/bin/kill', ['-TERM', String(pid)]).catch(() => {});
+  await until('owned native processes exit', async () => [...ownedMainPids].every(pid => !alive(pid)) && (await processIds()).length === 0, 30000).catch(() => { report.cleanupFailure = true; process.exitCode = 1; });
   for (const server of [model, delivery]) if (server) { server.closeAllConnections(); await new Promise(done => server.close(done)); }
   await exec('/bin/launchctl', ['unsetenv', 'DSH_DESKTOP_UPDATE_JOURNAL_DIR']).catch(() => { report.cleanupFailure = true; process.exitCode = 1; });
   if (trustedFingerprint) await exec('sudo', ['security', 'delete-certificate', '-Z', trustedFingerprint, '/Library/Keychains/System.keychain']).catch(() => { report.cleanupFailure = true; process.exitCode = 1; });
