@@ -194,6 +194,8 @@ jobs:
     environment: studio-signing
     timeout-minutes: 35
     steps:
+      - name: Preserve source line endings
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           repository: kingsoftcloud/agentkit-studio
@@ -210,6 +212,7 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_SHA" HEAD
           git checkout --detach "$SOURCE_SHA"
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        shell: bash
       - uses: actions/checkout@v4
         with:
           repository: deepseek-ai/deepseek-harness
