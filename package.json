@@ -1,0 +1,19 @@
+{
+  "name": "agentkit-studio",
+  "version": "0.8.5",
+  "private": true,
+  "description": "AgentKit Studio — local runtime for AI agents",
+  "main": "electron-main.js",
+  "scripts": {
+    "build:assets": "STUDIO_APP_VERSION=0.8.5 STUDIO_APP_PYTHON=3.13 sh scripts/prepare_studio_assets.sh",
+    "build:mac": "npm run build:assets && npx electron-builder --config electron-builder.config.cjs --mac --arm64",
+    "build:win": "npm run build:assets && npx electron-builder --config electron-builder.config.cjs --win --x64"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3"
+  }
+}

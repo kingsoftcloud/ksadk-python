@@ -26,8 +26,9 @@ import time
 import uuid
 from typing import Any, List, Set
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator
 
+from ksadk.common.cloud_headers import build_cloud_headers, resolve_traffic_source
 from ksadk.memory.adk.backends.base_ltm_backend import (
     CAP_ADD,
     CAP_DELETE,
@@ -91,6 +92,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
     access_key: str = ""
     secret_key: str = ""
     session_token: str = ""
+    traffic_source: str = Field(default_factory=resolve_traffic_source)
     region: str = "cn-beijing-6"
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
@@ -106,6 +108,11 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
     _aicp_client: Any = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator("traffic_source")
+    @classmethod
+    def validate_traffic_source(cls, value):
+        return resolve_traffic_source(value)
 
     def model_post_init(self, __context) -> None:
         if not self.access_key or not self.secret_key:
@@ -181,6 +188,13 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         owner = self
 
         class ObservedAicpClient(aicp_module.AicpClient):
+            def call(self, action, params, options=None):
+                options = dict(options or {})
+                options["CustomHeaders"] = build_cloud_headers(
+                    options.get("CustomHeaders"), traffic_source=owner.traffic_source
+                )
+                return super().call(action, params, options)
+
             def _check_status(self, response):
                 # Preserve the status that the upstream SDK's generic exception
                 # otherwise discards. No response content is used as authority.

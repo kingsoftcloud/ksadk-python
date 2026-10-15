@@ -158,3 +158,53 @@ async def test_langgraph_binding_does_not_persist_checkpoint_ns(
 
     assert "checkpoint_ns" not in binding
     assert binding["thread_id"].startswith("lgt_")
+
+
+def test_get_config_carries_explicit_recursion_limit(tmp_path, monkeypatch) -> None:
+    """astream_events 用 LangChain 库默认 25 填充调用 config，Pregel.astream 的
+    合并里这个显式 25 会按序覆盖图实例 with_config 设置的图级默认值——业务侧
+    recursion_limit 在流式路径上因此失效（生产 GraphRecursionError 根因）。
+    runner 的调用 config 必须显式携带非默认值，优先级：图自身 config >
+    KSADK_LANGGRAPH_RECURSION_LIMIT > 兜底 50。"""
+    monkeypatch.delenv("KSADK_LANGGRAPH_RECURSION_LIMIT", raising=False)
+
+    # 图自身 with_config 的设置优先（业务侧显式设置）。
+    runner = _runner(tmp_path, graph=SimpleNamespace(config={"recursion_limit": 50}))
+    config = runner._get_config("session-1")
+    assert config["recursion_limit"] == 50
+    assert config["configurable"]["thread_id"] == "session-1"
+
+    # 图未设置时读环境变量。
+    monkeypatch.setenv("KSADK_LANGGRAPH_RECURSION_LIMIT", "80")
+    runner = _runner(tmp_path, graph=SimpleNamespace(config={}))
+    assert runner._get_config("session-1")["recursion_limit"] == 80
+
+    # 都没有时兜底 50，不再回落 LangChain 默认 25；图未加载同样兜底。
+    monkeypatch.delenv("KSADK_LANGGRAPH_RECURSION_LIMIT")
+    runner = _runner(tmp_path, graph=SimpleNamespace(config={}))
+    assert runner._get_config("session-1")["recursion_limit"] == 50
+    runner = _runner(tmp_path, graph=SimpleNamespace())
+    assert runner._get_config("session-1")["recursion_limit"] == 50
+
+
+def test_get_config_recursion_limit_rejects_invalid_values(tmp_path, monkeypatch) -> None:
+    """非法环境值与图级非法值都必须安全回落，绝不让 25 之类的坏值进入 config。"""
+    monkeypatch.setenv("KSADK_LANGGRAPH_RECURSION_LIMIT", "not-a-number")
+    runner = _runner(tmp_path, graph=SimpleNamespace(config={"recursion_limit": "bogus"}))
+    assert runner._get_config("session-1")["recursion_limit"] == 50
+
+    monkeypatch.setenv("KSADK_LANGGRAPH_RECURSION_LIMIT", "-3")
+    assert runner._get_config("session-1")["recursion_limit"] == 50
+
+
+def test_checkpoint_resume_config_preserves_recursion_limit(tmp_path) -> None:
+    """checkpoint 恢复路径重建 configurable，但顶层 recursion_limit 必须保留。"""
+    runner = _runner(tmp_path, graph=SimpleNamespace(config={"recursion_limit": 50}))
+    config = runner._get_config("session-1")
+    resumed = runner._apply_checkpoint_resume_config(
+        config,
+        session_id="session-1",
+        checkpoint_ref={"checkpoint_id": "ckpt-1", "thread_id": "lgt-owned"},
+    )
+    assert resumed["recursion_limit"] == 50
+    assert resumed["configurable"]["checkpoint_id"] == "ckpt-1"

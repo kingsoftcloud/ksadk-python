@@ -106,6 +106,75 @@ test("accumulates reasoning from all four delta event name variants", async () =
   }
 });
 
+test("does not re-add a generic running tool after the canonical Conversation lane starts", async () => {
+  const chat = await loadChatProtocol();
+  const toolItem = ({
+    itemId,
+    sourceEventId,
+    operation = "append",
+    lifecycle = "streaming",
+    payload,
+  }) => ({
+    apiVersion: "conversation.ksadk.io/v1",
+    kindVersion: 1,
+    itemId,
+    sourceEventIds: [sourceEventId],
+    sessionId: "session-1",
+    runId: "run-1",
+    kind: "tool_call",
+    operation,
+    lifecycle,
+    visibility: "public",
+    payloadSchemaRef: "conversation.item.tool-call/v1",
+    payload,
+    nativeRef: {},
+  });
+
+  const events = [
+    {
+      type: "response.output_item.added",
+      item: { type: "function_call", status: "in_progress" },
+    },
+    {
+      type: "tool.started",
+      conversationItem: toolItem({
+        itemId: "tool-call-item",
+        sourceEventId: "event-tool-call",
+        payload: { callId: "call-1", tool: "lookup", args: { value: 42 } },
+      }),
+    },
+    {
+      type: "response.output_item.added",
+      item: { type: "function_call", status: "in_progress" },
+    },
+    {
+      type: "tool.completed",
+      conversationItem: toolItem({
+        itemId: "tool-result-item",
+        sourceEventId: "event-tool-result",
+        operation: "completed",
+        lifecycle: "completed",
+        payload: { callId: "call-1", output: { value: 42 }, isError: false },
+      }),
+    },
+    {
+      type: "response.completed",
+      response: { metadata: { runtime_run_id: "run-1" } },
+    },
+  ];
+
+  const state = events.reduce(
+    chat.reduceChatStreamEvent,
+    chat.createChatStreamState("local", "session-1"),
+  );
+
+  assert.equal(state.status, "completed");
+  assert.equal(state.runId, "run-1");
+  assert.deepEqual(state.activities.map(item => [item.id, item.title, item.status]), [
+    ["tool:tool-call-item", "lookup", "completed"],
+  ]);
+});
+
 test("keeps Studio Conversation decoding aligned with the frozen defaults and safe projection", async () => {
   const conversation = await loadConversationProtocol();
   const minimalSurface = {
@@ -508,6 +577,25 @@ test("projects command, tool, and approval events into readable activity cards",
   assert.equal(cards.output, "恢复后的流式正文");
 });
 
+test("keeps status-only tool failures visible in activity cards and the inspector", async () => {
+  const chat = await loadChatProtocol();
+  for (const kind of ["tool", "command"]) {
+    for (const status of ["failed", "error", "uncertain", "ok"]) {
+      const events = [
+        { id: 1, type: `${kind}.started`, data: { callId: "call", name: "read_file" } },
+        { id: 2, type: `${kind}.completed`, data: { callId: "call", status, error: "" } },
+      ];
+      const expected = status === "ok" ? "completed" : "failed";
+      const activities = chat.projectRunActivities(events).activities;
+      const timeline = chat.projectRunInspectorTimeline(events);
+      assert.equal(activities.length, 1);
+      assert.equal(timeline.length, 1);
+      assert.equal(activities[0].status, expected, `activity ${kind}: ${status}`);
+      assert.equal(timeline[0].status, expected, `inspector ${kind}: ${status}`);
+    }
+  }
+});
+
 test("compacts persisted run events into a restrained inspector timeline", async () => {
   const chat = await loadChatProtocol();
   assert.equal(typeof chat.projectRunInspectorTimeline, "function");
@@ -539,6 +627,22 @@ test("compacts persisted run events into a restrained inspector timeline", async
   assert.equal(timeline[3].detail, "连接成功");
   assert.equal(timeline[4].summary, "4,487 tokens");
   assert.equal(timeline.some(item => item.title === "Run 创建"), false);
+});
+
+test("shows Native unverified completion as execution ended rather than task accepted", async () => {
+  const chat = await loadChatProtocol();
+  const timeline = chat.projectRunInspectorTimeline([
+    {
+      id: 1,
+      type: "run.completed",
+      data: {
+        runtimeEvent: {
+          source: { metadata: { engine_kind: "native", outcome: "unverified" } },
+        },
+      },
+    },
+  ]);
+  assert.equal(timeline[0].title, "Run 结束 · 未验收");
 });
 
 test("projects two completed message items without replacing the first item", async () => {
@@ -629,4 +733,27 @@ test("replays the cross-language golden projection fixture into item-aware text 
   assert.equal(reasoning.text, "Analyzing the question...");
   // Aggregate output comes from the terminal output_refs order.
   assert.equal(projection.output, "The answer is 42.\n\nThe answer is 42.");
+});
+
+
+test("retires only explicitly abandoned provisional message items", async () => {
+  const chat = await loadChatProtocol();
+  for (const retired of [true, false]) {
+    const identity = { runId: "r1", scopeId: "s1", itemId: "old", partId: "text" };
+    const projection = chat.projectRunActivities([
+      { id: 1, type: "message.delta", data: { ...identity, text: "abandoned prefix" } },
+      { id: 2, type: "message.completed", data: {
+        ...identity, text: "", runtimeEvent: { source: { metadata: {
+          provisional: true, ...(retired ? { provisional_retired: true } : {}),
+        } } },
+      } },
+      { id: 3, type: "message.completed", data: {
+        ...identity, itemId: "successor", text: "successor final",
+      } },
+    ]);
+    assert.deepEqual(projection.textItems.map(item => item.text),
+      [retired ? "" : "abandoned prefix", "successor final"]);
+    assert.deepEqual(projection.textItems.map(item => item.itemId), ["old", "successor"]);
+    assert.ok(projection.textItems.every(item => item.completed));
+  }
 });

@@ -363,14 +363,46 @@ class RuntimeAdapter(ABC):
     async def steer(self, handle: RunHandle, payload: SteerPayload) -> None:
         """Mid-turn steering: adjust an in-flight run without ending the turn.
 
-        No runtime exposes a native steer channel today; start/stream never
-        implies steer.  Fails closed until a real implementation overrides it.
+        Native implementations exist on managed harness runtimes:
+        ``ManagedHarnessRuntimeAdapter`` (see ``managed_runtime.py``, delegating
+        to ``ManagedLangGraphEngine.steer``) exposes a real mid-turn steer /
+        follow-up channel.  The default below stays fail-closed for runtimes
+        without such a channel; start/stream never implies steer.
         """
 
         raise UnsupportedControlError(
             f"{type(self).__name__} does not support steer: "
             "runtime has no native mid-turn steering channel"
         )
+
+    async def guide(self, handle: RunHandle, payload: SteerPayload) -> object | None:
+        """Continue the current task at a sealed boundary without replacing it."""
+        raise UnsupportedControlError(
+            f"{type(self).__name__} does not support current-turn guidance"
+        )
+
+    async def child_tasks(self, handle: RunHandle) -> tuple[dict[str, Any], ...]:
+        """List authorized children of this attached Run when supported."""
+        raise UnsupportedControlError(f"{type(self).__name__} does not support child task control")
+
+    async def child_execution_view(self, handle: RunHandle, child_run_id: str) -> dict[str, Any]:
+        """Read a scoped child's public canonical execution view, when available."""
+        raise UnsupportedControlError(f"{type(self).__name__} does not support child execution views")
+
+    async def cancel_child(self, handle: RunHandle, *, child_run_id: str, command_id: str):
+        """Request cancellation of one original owned child, without stopping its parent."""
+        raise UnsupportedControlError(f"{type(self).__name__} does not support child cancellation")
+
+    async def promote_child(
+        self, handle: RunHandle, *, child_run_id: str, command_id: str,
+    ) -> object:
+        """Queue delivery control of the same child; do not launch a new child."""
+        raise UnsupportedControlError(f"{type(self).__name__} does not support child promotion")
+
+    async def send_child_input(self, handle: RunHandle, *, child_run_id: str, text: str,
+                               command_id: str, expected_goal_revision: int) -> object:
+        """Queue user guidance on an existing child without restarting it."""
+        raise UnsupportedControlError(f"{type(self).__name__} does not support child input")
 
     async def inject(self, handle: RunHandle, payload: InjectPayload) -> None:
         """Inject ambient context into an in-flight run without a user turn."""
@@ -442,7 +474,12 @@ class RuntimeAdapter(ABC):
             "checkpoint",
             "durable_restore",
         )
-        return {name: getattr(matrix, name).supported for name in names}
+        mirrored = {name: getattr(matrix, name).supported for name in names}
+        if matrix.guide is not None:
+            mirrored["guide"] = matrix.guide.supported
+        if matrix.child_input is not None:
+            mirrored["child_input"] = matrix.child_input.supported
+        return mirrored
 
     def is_handle_attached(self, handle: RunHandle) -> bool:
         """Return whether ``handle`` is already attached to this adapter process."""

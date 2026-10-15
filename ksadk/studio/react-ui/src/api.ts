@@ -39,6 +39,41 @@ export async function apiFetch(
     credentials: init.credentials || "same-origin",
   };
   const response = await nativeFetch(input, requestInit);
+
+  // A Studio process restart rotates the local-session cookie while an
+  // already-open tab can keep issuing requests with the previous value. Do
+  // one silent local re-entry before surfacing the 401. Without this, the
+  // shared chat controller has already inserted its optimistic assistant row,
+  // so the page can look as if it is "正在思考" although no Run was created.
+  if (
+    response.status === 401
+    && url.origin === window.location.origin
+    && isProtectedStudioPath(url.pathname)
+  ) {
+    let errorCode = "";
+    try {
+      errorCode = (await response.clone().json())?.error?.code || "";
+    } catch {
+      return response;
+    }
+    if (errorCode === "LOCAL_SESSION_REQUIRED") {
+      await nativeFetch("/", { credentials: "same-origin" }).catch(() => undefined);
+      const bootstrap = await nativeFetch("/api/v1/system/bootstrap", {
+        credentials: "same-origin",
+      });
+      if (!bootstrap.ok) return response;
+      const payload = await bootstrap.json();
+      csrfToken = payload.csrfToken || "";
+      if (
+        csrfToken
+        && !["GET", "HEAD", "OPTIONS"].includes(method)
+      ) {
+        headers.set("X-CSRF-Token", csrfToken);
+      }
+      return nativeFetch(retryInput, { ...requestInit, headers });
+    }
+  }
+
   if (
     response.status !== 403
     || ["GET", "HEAD", "OPTIONS"].includes(method)

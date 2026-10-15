@@ -108,8 +108,9 @@ def kernel_stream_response(
                 continue
             kind, payload = projected
             yield _sse_chunk(payload, event=kind, seq=seq)
-            if kind == "response.output_item.done" and (
-                (payload.get("item") or {}).get("type") == "mcp_approval_request"
+            if kind == "interaction.requested" or (
+                kind == "response.output_item.done"
+                and (payload.get("item") or {}).get("type") == "mcp_approval_request"
             ):
                 yield _sse_chunk(
                     {"type": "response.incomplete"},
@@ -133,7 +134,21 @@ def _responses_projector(envelope: Any) -> tuple[str, dict[str, Any]] | None:
     payload = envelope.payload or {}
     event_type = envelope.event_type
     if event_type == "interaction.requested":
+        # Runtime facts precede the authoritative Kernel interaction record.
+        # Projecting them as approvals closes the foreground stream before
+        # the durable request schema and submission identity become available.
+        if getattr(envelope, "family", None) == "runtime":
+            return None
         request = payload.get("request") or {}
+        if (payload.get("kind") or request.get("kind")) == "structured_input":
+            return "interaction.requested", {
+                "event_type": "interaction.requested",
+                "family": "interaction",
+                "session_id": str(getattr(envelope, "session_id", "") or payload.get("session_id") or ""),
+                "run_id": str(getattr(envelope, "run_id", "") or payload.get("run_id") or ""),
+                "seq": getattr(envelope, "seq", 0),
+                "payload": payload,
+            }
         presentation = request.get("presentation") or {}
         description = presentation.get("description") or ""
         try:

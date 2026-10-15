@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import sqlite3
+import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -31,6 +33,12 @@ from ksadk.sessions.base import (
     SessionEventQuery,
     SessionState,
     ToolReceiptClaim,
+)
+from ksadk.sessions.db_budget import session_db_budget
+from ksadk.sessions.errors import (
+    CheckpointLookupTimeout,
+    HistoryProjectionBudgetExceeded,
+    SessionBackendUnavailable,
 )
 
 
@@ -58,6 +66,150 @@ def resolve_local_session_path(project_dir: Optional[str] = None) -> Path:
 class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
     storage_capabilities = CANONICAL_EVENT_STORAGE_CAPABILITIES
 
+    def _resume_related_pages_sync(
+        self, session_id: str, page_size: int,
+        cancelled: threading.Event,
+        active_connection: list[sqlite3.Connection | None],
+        expected_session: Session | None,
+    ) -> list[list[SessionEvent]]:
+        pages: list[list[SessionEvent]] = []
+        event_types = ("run_checkpoint", "run_resume", "runtime_resume", "continuation.created", "continuation.resumed")
+        with self._connection() as connection:
+            active_connection[0] = connection
+            budget = session_db_budget()
+            deadline = time.monotonic() + budget.write_operation_seconds
+            # SQLite interrupt() cannot stop a busy-lock wait. Keep each wait
+            # shorter than the cancellation cleanup window.
+            busy_ms = max(1, int(1000 * min(
+                budget.lock_seconds, budget.cleanup_seconds,
+                max(0.001, deadline - time.monotonic()),
+            )))
+            connection.execute(f"PRAGMA busy_timeout = {busy_ms}")
+            connection.set_progress_handler(
+                lambda: int(cancelled.is_set() or time.monotonic() >= deadline), 1000
+            )
+            try:
+                connection.execute("BEGIN")
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() or "interrupted" in str(exc).lower():
+                    raise CheckpointLookupTimeout("Checkpoint lookup deadline exceeded") from exc
+                raise
+            if expected_session is not None:
+                from ksadk.sessions.errors import HistoryReloadRequired
+
+                owner = connection.execute(
+                    f"SELECT agent_id,user_id,created_at FROM {KSADK_SESSIONS_TABLE} WHERE id=?",
+                    (session_id,),
+                ).fetchone()
+                if (owner is None or owner["agent_id"] != expected_session.agent_id
+                        or owner["user_id"] != expected_session.user_id
+                        or float(owner["created_at"]) != expected_session.created_at):
+                    raise HistoryReloadRequired("Checkpoint session changed during lookup")
+            upper = int(connection.execute(
+                f"SELECT COALESCE(MAX(seq_id),0) FROM {KSADK_EVENTS_TABLE} WHERE session_id=?",
+                (session_id,),
+            ).fetchone()[0])
+            count = int(connection.execute(
+                f"SELECT COUNT(*) FROM {KSADK_EVENTS_TABLE} WHERE session_id=? "
+                "AND event_type IN (?,?,?,?,?) AND seq_id<=?",
+                (session_id, *event_types, upper),
+            ).fetchone()[0])
+            if count > 8192:
+                raise HistoryProjectionBudgetExceeded(
+                    "Checkpoint lookup exceeds 8192 related events"
+                )
+            cursor = 0
+            used = 0
+            while True:
+                if cancelled.is_set() or time.monotonic() >= deadline:
+                    raise CheckpointLookupTimeout("Checkpoint lookup deadline exceeded")
+                candidate = (
+                    f"FROM {KSADK_EVENTS_TABLE} WHERE session_id=? "
+                    "AND event_type IN (?,?,?,?,?) AND seq_id>? AND seq_id<=? "
+                    "ORDER BY seq_id,id LIMIT ?"
+                )
+                params = (session_id, *event_types, cursor, upper, page_size)
+                size = int(connection.execute(
+                    "SELECT COALESCE(SUM(LENGTH(CAST(content_json AS BLOB))+"
+                    "LENGTH(CAST(state_delta_json AS BLOB))+"
+                    "LENGTH(CAST(metadata_json AS BLOB))+"
+                    "LENGTH(CAST(json_quote(id) AS BLOB))+"
+                    "LENGTH(CAST(json_quote(session_id) AS BLOB))+"
+                    "LENGTH(CAST(json_quote(author) AS BLOB))+"
+                    "LENGTH(CAST(json_quote(event_type) AS BLOB))+"
+                    "LENGTH(CAST(json_quote(invocation_id) AS BLOB))+256),0) "
+                    "FROM (SELECT id,session_id,author,event_type,invocation_id,"
+                    "content_json,state_delta_json,metadata_json "
+                    + candidate + ")", params,
+                ).fetchone()[0])
+                if used + size > 16 * 1024 * 1024:
+                    raise HistoryProjectionBudgetExceeded(
+                        "Checkpoint lookup exceeds 16 MiB of related events"
+                    )
+                rows = connection.execute(
+                    "SELECT id,session_id,author,event_type,content_json,timestamp,"
+                    "state_delta_json,seq_id,invocation_id,metadata_json "
+                    + candidate, params,
+                ).fetchall()
+                if not rows:
+                    break
+                pages.append([self._event_from_query_row(row) for row in rows])
+                used += size
+                cursor = int(rows[-1]["seq_id"])
+                if len(rows) < page_size:
+                    break
+        active_connection[0] = None
+        return pages
+
+    async def iter_resume_related_event_pages(
+        self, session_id: str, *, page_size: int = 256,
+        expected_session: Session | None = None,
+    ) -> AsyncIterator[list[SessionEvent]]:
+        async with self._lock:
+            cancelled = threading.Event()
+            active_connection: list[sqlite3.Connection | None] = [None]
+            task = asyncio.create_task(asyncio.to_thread(
+                self._resume_related_pages_sync, session_id, page_size,
+                cancelled, active_connection, expected_session,
+            ))
+            try:
+                pages = await asyncio.shield(task)
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() or "interrupted" in str(exc).lower():
+                    raise CheckpointLookupTimeout("Checkpoint lookup deadline exceeded") from exc
+                raise
+            except asyncio.CancelledError:
+                cancelled.set()
+                if active_connection[0] is not None:
+                    try:
+                        active_connection[0].interrupt()
+                    except sqlite3.ProgrammingError:
+                        pass  # Worker closed its connection during cancellation.
+                # Join the interrupted SQLite worker before releasing _lock.
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+                except (Exception, asyncio.CancelledError):
+                    pass
+                if not task.done():
+                    task.add_done_callback(
+                        lambda done: done.exception() if not done.cancelled() else None
+                    )
+                raise
+        for page in pages:
+            yield page
+
+    async def get_session_ids_by_ids(
+        self, session_ids: list[str], agent_id: str | None = None
+    ) -> list[str]:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._get_session_ids_by_ids_sync, session_ids, agent_id
+            )
+
+    async def list_session_ids(self, agent_id: str | None = None) -> list[str]:
+        async with self._lock:
+            return await asyncio.to_thread(self._list_session_ids_sync, agent_id)
+
     def __init__(self, db_path: Optional[Path] = None, *, project_dir: Optional[str] = None):
         self.db_path = (
             Path(db_path).expanduser().resolve()
@@ -83,6 +235,26 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
         async with self._lock:
             return await asyncio.to_thread(self._get_session_sync, session_id)
 
+    async def get_adk_session_snapshot(
+        self, session_id: str, expected_session: Session | None = None
+    ) -> Optional[Session]:
+        def read() -> Optional[Session]:
+            with self._connection() as connection:
+                connection.execute("BEGIN")
+                session = self._get_session_sync(session_id, connection=connection)
+                if expected_session is not None and (
+                    session is None or session.agent_id != expected_session.agent_id
+                    or session.user_id != expected_session.user_id
+                    or session.created_at != expected_session.created_at
+                ):
+                    from ksadk.sessions.errors import HistoryReloadRequired
+
+                    raise HistoryReloadRequired("Session changed during legacy read")
+                return session
+
+        async with self._lock:
+            return await asyncio.to_thread(read)
+
     async def get_session_metadata(self, session_id: str) -> Optional[Session]:
         async with self._lock:
             return await asyncio.to_thread(
@@ -90,6 +262,71 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
                 session_id,
                 include_events=False,
             )
+
+    async def get_session_header(self, session_id: str) -> Optional[Session]:
+        def read_header() -> Optional[Session]:
+            with self._connection() as connection:
+                row = connection.execute(
+                    f"SELECT id,agent_id,user_id,title,title_source,summary,"
+                    f"first_prompt,last_prompt,created_at,updated_at,version "
+                    f"FROM {KSADK_SESSIONS_TABLE} WHERE id=?",
+                    (session_id,),
+                ).fetchone()
+            if row is None:
+                return None
+            return Session(
+                id=row["id"], agent_id=row["agent_id"], user_id=row["user_id"],
+                title=row["title"], title_source=row["title_source"],
+                summary=row["summary"], first_prompt=row["first_prompt"],
+                last_prompt=row["last_prompt"], created_at=row["created_at"],
+                updated_at=row["updated_at"], version=row["version"],
+            )
+
+        async with self._lock:
+            return await asyncio.to_thread(read_header)
+
+    async def ensure_session_header(
+        self, agent_id: str, user_id: str, session_id: str
+    ) -> Session:
+        def ensure() -> Session:
+            now = time.time()
+            with self._connection() as connection:
+                inserted = connection.execute(
+                    f"INSERT OR IGNORE INTO {KSADK_SESSIONS_TABLE} ("
+                    "id,agent_id,user_id,title,title_source,summary,first_prompt,"
+                    "last_prompt,state_json,created_at,updated_at,version) "
+                    "VALUES (?,?,?,'','','','','','{}',?,?,0)",
+                    (session_id, agent_id, user_id, now, now),
+                ).rowcount
+                row = connection.execute(
+                    f"SELECT id,agent_id,user_id,title,title_source,summary,"
+                    f"first_prompt,last_prompt,created_at,updated_at,version "
+                    f"FROM {KSADK_SESSIONS_TABLE} WHERE id=?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("Canonical AG-UI session creation was not visible")
+                if inserted:
+                    connection.execute(
+                        f"INSERT OR IGNORE INTO {KSADK_STATES_TABLE} ("
+                        "scope,agent_id,user_id,session_id,state_json,version,updated_at) "
+                        "VALUES ('session',?,?,?,'{}',0,?)",
+                        (row["agent_id"], row["user_id"], session_id, now),
+                    )
+            return Session(
+                id=row["id"], agent_id=row["agent_id"], user_id=row["user_id"],
+                title=row["title"], title_source=row["title_source"],
+                summary=row["summary"], first_prompt=row["first_prompt"],
+                last_prompt=row["last_prompt"], created_at=row["created_at"],
+                updated_at=row["updated_at"], version=row["version"],
+            )
+
+        async with self._lock:
+            return await asyncio.to_thread(ensure)
+
+    async def get_session_summary_events(self, session_id: str) -> list[SessionEvent]:
+        async with self._lock:
+            return await asyncio.to_thread(self._get_session_summary_events_sync, session_id)
 
     async def list_sessions(
         self,
@@ -144,6 +381,14 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
         async with self._lock:
             return await asyncio.to_thread(self._append_event_sync, session_id, event)
 
+    async def append_event_if_session_matches(
+        self, session_id: str, event: SessionEvent, expected_session: Session
+    ) -> SessionEvent:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._append_event_sync, session_id, event, expected_session
+            )
+
     async def claim_tool_receipt(self, session_id: str, **kwargs) -> ToolReceiptClaim:
         async with self._lock:
             return await asyncio.to_thread(
@@ -169,6 +414,33 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
     async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
         async with self._lock:
             return await asyncio.to_thread(self._get_event_by_id_sync, session_id, event_id)
+
+    async def get_event_by_id_if_session_matches(
+        self, session_id: str, event_id: str, expected_session: Session
+    ) -> Optional[SessionEvent]:
+        def read() -> Optional[SessionEvent]:
+            with self._connection() as connection:
+                connection.execute("BEGIN")
+                owner = connection.execute(
+                    f"SELECT agent_id,user_id,created_at FROM {KSADK_SESSIONS_TABLE} "
+                    "WHERE id=?", (session_id,),
+                ).fetchone()
+                if (owner is None or owner["agent_id"] != expected_session.agent_id
+                        or owner["user_id"] != expected_session.user_id
+                        or float(owner["created_at"]) != expected_session.created_at):
+                    from ksadk.sessions.errors import HistoryReloadRequired
+
+                    raise HistoryReloadRequired("Session changed during legacy import")
+                row = connection.execute(
+                    f"SELECT id,session_id,author,event_type,content_json,timestamp,"
+                    f"state_delta_json,seq_id,invocation_id,metadata_json "
+                    f"FROM {KSADK_EVENTS_TABLE} WHERE session_id=? AND id=?",
+                    (session_id, event_id),
+                ).fetchone()
+                return self._event_from_query_row(row) if row is not None else None
+
+        async with self._lock:
+            return await asyncio.to_thread(read)
 
     async def get_events_by_invocation_id(
         self,

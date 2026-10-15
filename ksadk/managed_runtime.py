@@ -112,13 +112,33 @@ def installed_runtime_version(runtime_name: str) -> str:
         return ""
 
 
+def native_package_version(catalog_version: str) -> str:
+    """Keep a qualified image identity while pinning its native public version.
+
+    PEP 440 local labels distinguish platform image builds in the catalog.
+    Manifest, lock and control-plane comparisons still use the full identity.
+    Unqualified versions retain their existing exact-string semantics.
+    """
+    if "+" not in catalog_version:
+        return catalog_version
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        parsed = Version(catalog_version)
+    except InvalidVersion as exc:
+        raise ManagedRuntimeError("Invalid qualified runtime version") from exc
+    if not parsed.local:
+        raise ManagedRuntimeError("Qualified runtime version requires a local label")
+    return parsed.public
+
+
 def validate_installed_runtime(resolved: ResolvedRuntime) -> str:
     installed = installed_runtime_version(resolved.name)
     if not installed:
         raise ManagedRuntimeError(
             f"本地缺少 {resolved.name} runtime；请安装 `pip install 'ksadk[{resolved.name}]'`"
         )
-    if resolved.version and installed != resolved.version:
+    if resolved.version and installed != native_package_version(resolved.version):
         raise ManagedRuntimeError(
             f"本地 {resolved.name} runtime 版本为 {installed}，"
             f"配置要求 {resolved.version}；请安装匹配版本后重试"
@@ -149,7 +169,14 @@ def validate_runtime_binary(resolved: ResolvedRuntime) -> str:
             "'ksadk[codex]'`"
         ) from exc
     output = f"{completed.stdout}\n{completed.stderr}".strip()
-    if resolved.version and resolved.version not in output:
+    expected = native_package_version(resolved.version)
+    if "+" in resolved.version:
+        import re
+        match = re.search(r"^codex-cli ([^\s]+)(?:\s|$)", output)
+        binary_matches = match is not None and match.group(1) == expected
+    else:
+        binary_matches = expected in output
+    if resolved.version and not binary_matches:
         raise ManagedRuntimeError(
             f"Codex CLI 版本输出为 {output or '(empty)'}，配置要求 {resolved.version}"
         )

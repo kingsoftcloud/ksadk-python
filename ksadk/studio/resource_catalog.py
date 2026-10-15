@@ -48,7 +48,7 @@ from ksadk.studio.python_tool_inspection import PythonToolInspector
 from ksadk.studio.repository import load_yaml_file
 from ksadk.studio.skill_discovery import SkillDiscoveryService
 from ksadk.studio.workspace import Workspace
-from ksadk.toolsets import describe_agentengine_tools, get_agentengine_tools
+from ksadk.toolsets import describe_agentengine_tools
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 _MAX_SKILL_ARCHIVE_BYTES = 50 * 1024 * 1024
@@ -1128,10 +1128,6 @@ class LocalResourceCatalog:
     def _build_builtin_tools(self) -> Iterable[ResourceDescriptor]:
         from ksadk.toolsets import META_DISPATCHER_TOOL_NAMES
 
-        runtime_tools = {
-            str(getattr(tool, "name", None) or getattr(tool, "__name__", "")): tool
-            for tool in get_agentengine_tools(profile="coding", mode="direct")
-        }
         for descriptor in describe_agentengine_tools(profile="coding", mode="direct"):
             name = str(descriptor["name"])
             if name in META_DISPATCHER_TOOL_NAMES:
@@ -1148,18 +1144,18 @@ class LocalResourceCatalog:
                 )
                 if workspace_permission not in permissions:
                     permissions.append(workspace_permission)
-            runtime_tool = runtime_tools.get(name)
-            args_schema = getattr(runtime_tool, "args_schema", None)
-            input_schema = (
-                args_schema.model_json_schema()
-                if args_schema is not None and hasattr(args_schema, "model_json_schema")
-                else {"type": "object", "properties": {}}
-            )
+            input_schema = descriptor.get("input_schema")
+            if not isinstance(input_schema, dict):
+                raise ValueError(f"Builtin tool {name} has no argument contract")
             tool = ToolContract(
                 name=name,
                 version="1.0.0",
                 description=str(descriptor.get("description") or ""),
                 input_schema=input_schema,
+                # Browser inspection may spend 30 s loading and another 30 s
+                # capturing a busy page. The generic 20 s Python Tool lease
+                # killed it before Playwright could return a repairable error.
+                timeout_seconds=90 if name == "browser_inspect_workspace" else 20,
                 permissions=permissions,
                 side_effect=cast(Any, side_effect),
                 approval="always" if descriptor.get("requires_approval") else "never",

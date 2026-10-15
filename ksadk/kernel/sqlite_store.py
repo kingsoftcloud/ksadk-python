@@ -78,103 +78,7 @@ from ksadk.sessions._local_tables import KSADK_EVENTS_TABLE, KSADK_SESSIONS_TABL
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.local_service import LocalSessionService
 
-SCHEMA_VERSION = 4
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS kernel_inbox (
-  message_id TEXT PRIMARY KEY,
-  agent_instance_id TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  idempotency_key TEXT NOT NULL,
-  request_digest TEXT NOT NULL,
-  accepted_seq INTEGER NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('accepted','claimed','completed','discarded')),
-  claimed_fence INTEGER,
-  payload_json TEXT NOT NULL,
-  UNIQUE(session_id, idempotency_key)
-);
-CREATE INDEX IF NOT EXISTS idx_kernel_inbox_claim
-  ON kernel_inbox (agent_instance_id, session_id, status, accepted_seq);
-CREATE INDEX IF NOT EXISTS idx_kernel_inbox_idempotency
-  ON kernel_inbox (session_id, idempotency_key);
-
-CREATE TABLE IF NOT EXISTS kernel_runs (
-  run_id TEXT PRIMARY KEY,
-  agent_instance_id TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN (
-    'pending','running','paused','waiting','completed','failed','cancelled','interrupted'
-  )),
-  activation_fence INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  metadata_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_kernel_runs_session_state
-  ON kernel_runs (session_id, state);
-
-CREATE TABLE IF NOT EXISTS kernel_activations (
-  agent_instance_id TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  activation_id TEXT NOT NULL,
-  fencing_token INTEGER NOT NULL,
-  lease_expires_at REAL NOT NULL,
-  lease_expires_at_iso TEXT NOT NULL,
-  released INTEGER NOT NULL DEFAULT 0,
-  runtime_type TEXT NOT NULL DEFAULT 'ksadk',
-  bundle_digest TEXT NOT NULL DEFAULT '',
-  capability_digest TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (agent_instance_id, session_id)
-);
-CREATE INDEX IF NOT EXISTS idx_kernel_activations_expiry
-  ON kernel_activations (lease_expires_at);
-
-CREATE TABLE IF NOT EXISTS kernel_accepted_seq (
-  session_id TEXT PRIMARY KEY,
-  last_seq INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS kernel_interactions (
-  interaction_id TEXT NOT NULL,
-  tenant_id TEXT NOT NULL,
-  agent_instance_id TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  run_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('approval','structured_input','plan_review','custom')),
-  request_schema_json TEXT NOT NULL,
-  presentation_json TEXT,
-  revision INTEGER NOT NULL,
-  status TEXT NOT NULL CHECK (status IN (
-    'pending','resolving','resolved','cancelled','expired'
-  )),
-  created_at TEXT NOT NULL,
-  expires_at TEXT,
-  provider_id TEXT NOT NULL DEFAULT '',
-  native_target_json TEXT,
-  continuation_json TEXT,
-  request_digest TEXT NOT NULL,
-  response_json TEXT,
-  outcome TEXT,
-  actor TEXT,
-  event_id TEXT,
-  accepted_seq INTEGER,
-  fencing_token INTEGER,
-  updated_at TEXT,
-  PRIMARY KEY (tenant_id, interaction_id)
-);
-CREATE INDEX IF NOT EXISTS idx_kernel_interactions_pending
-  ON kernel_interactions (tenant_id, session_id, status);
-
-CREATE TABLE IF NOT EXISTS kernel_interaction_submissions (
-  tenant_id TEXT NOT NULL,
-  interaction_id TEXT NOT NULL,
-  idempotency_key TEXT NOT NULL,
-  submission_digest TEXT NOT NULL,
-  receipt_json TEXT NOT NULL,
-  PRIMARY KEY (tenant_id, interaction_id, idempotency_key)
-);
-"""
-
+from ksadk.kernel.sqlite_schema import SCHEMA_VERSION, _SCHEMA
 
 class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
     def __init__(
@@ -590,6 +494,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                     message = await self.load_message(message_id)
                     assert message is not None
                     return message
+                await self._sqlite_require_claim_grant(connection, row)
                 if row["status"] not in (
                     InboxState.ACCEPTED.value,
                     InboxState.CLAIMED.value,
@@ -1586,6 +1491,19 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
 
     # -------------------------------------------------------------------- runs
 
+    async def find_command_run(
+        self, agent_instance_id: str, session_id: str, command_id: str
+    ) -> RunRecord | None:
+        connection = await self._connect()
+        rows = await connection.execute_fetchall(
+            "SELECT run_id FROM kernel_runs WHERE agent_instance_id=? AND session_id=? "
+            "AND json_extract(metadata_json, '$.command_id')=? LIMIT 2",
+            (agent_instance_id, session_id, command_id),
+        )
+        if len(rows) > 1:
+            raise InvalidCommandError("ambiguous runs for the same command")
+        return await self.load_run(rows[0]["run_id"]) if rows else None
+
     async def load_run(self, run_id: str) -> RunRecord | None:
         row = await self._fetchone(
             await self._connect(), "SELECT * FROM kernel_runs WHERE run_id=?", (run_id,)
@@ -1619,6 +1537,35 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         row = await self._fetchone(connection, sql, params)
         return await self.load_run(row["run_id"]) if row is not None else None
 
+    async def save_runtime_checkpoint(
+        self, run_id: str, checkpoint: dict, *, agent_instance_id: str,
+        session_id: str, guard: ActivationWriteGuard,
+    ) -> None:
+        from ksadk.kernel.runtime_checkpoint import checkpoint_copy, require_checkpoint_owner
+
+        checkpoint = checkpoint_copy(checkpoint)
+        async with self._write_lock:
+            connection = await self._begin()
+            try:
+                activation = await self._check_fence(
+                    connection, agent_instance_id, session_id, guard.fencing_token,
+                )
+                if activation["activation_id"] != guard.activation_id:
+                    raise StaleFenceError("runtime checkpoint activation mismatch")
+                run = await self.load_run(run_id)
+                require_checkpoint_owner(
+                    run, agent_instance_id=agent_instance_id, session_id=session_id,
+                )
+                metadata = dict(run.metadata, runtime_checkpoint=checkpoint)
+                await connection.execute(
+                    "UPDATE kernel_runs SET metadata_json=?, updated_at=? WHERE run_id=?",
+                    (json.dumps(metadata, ensure_ascii=False), now_iso(), run_id),
+                )
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+
     async def save_run_transition(self, run: RunRecord, *, expected_fence: int) -> RunRecord:
         async with self._write_lock:
             connection = await self._begin()
@@ -1627,6 +1574,11 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                     connection, run.agent_instance_id, run.session_id, expected_fence
                 )
                 existing = await self.load_run(run.run_id)
+                from ksadk.kernel.runtime_checkpoint import preserve_runtime_checkpoint
+
+                run = run.model_copy(update={"metadata": preserve_runtime_checkpoint(
+                    run.metadata, existing.metadata if existing else None,
+                )})
                 assert_run_transition(existing.state if existing else None, run.state)
                 if is_active_run(run.state):
                     cursor = await connection.execute(

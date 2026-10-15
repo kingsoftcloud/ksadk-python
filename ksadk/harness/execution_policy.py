@@ -31,6 +31,9 @@ class ExecutionPolicy:
     # A trusted host may replace the entire tool surface for this invocation.
     # Default remains additive for existing non-Teams integrations.
     exclusive_tools: bool = False
+    # Host-owned worker state is separate from files a child may edit. None
+    # retains the existing storage location for ordinary invocations.
+    tool_state_root: Path | None = None
 
     def __post_init__(self) -> None:
         if type(self.exclusive_tools) is not bool:
@@ -51,6 +54,8 @@ class ExecutionPolicy:
         object.__setattr__(self, "approval_required", frozenset(self.approval_required))
         if self.workspace_root is not None:
             object.__setattr__(self, "workspace_root", Path(self.workspace_root).resolve())
+        if self.tool_state_root is not None:
+            object.__setattr__(self, "tool_state_root", Path(self.tool_state_root).resolve())
 
 
 class ExecutionPolicyResolver(Protocol):

@@ -40,23 +40,9 @@ from ksadk.deployment.env_forward import should_forward_process_env
 from ksadk.deployment.registry import DeployProviderRegistry
 from ksadk.deployment.ui_config import resolve_ui_config, ui_config_to_state_fields
 
+from ksadk.deployment.providers.serverless_payloads import _ServerlessPayloadMixin
+
 logger = logging.getLogger(__name__)
-
-# CodeBuilder archives put the runnable application below ``runtime/``.  The
-# command and checksum travel together: sending the command for an arbitrary
-# legacy ``--ks3-path`` archive could change its launch semantics, while a
-# fresh locally built archive can be attested and safely admitted as v1.
-_HOSTED_CODE_COMMAND = (
-    "ksadk",
-    "web",
-    "/app/code",
-    "--port",
-    "8080",
-    "--host",
-    "0.0.0.0",
-    "--no-open",
-)
-
 
 # 转发规则已迁移至 ksadk.deployment.env_forward（hermes/openclaw deploy 共用）；
 # 保留私有别名以兼容既有调用与测试。
@@ -81,7 +67,7 @@ _CONTROL_PLANE_ONLY_ENV_KEYS = frozenset(
 @DeployProviderRegistry.register("serverless")
 @DeployProviderRegistry.register("kcf")
 @DeployProviderRegistry.register("kce")
-class ServerlessProvider(BaseDeployProvider):
+class ServerlessProvider(_ServerlessPayloadMixin, BaseDeployProvider):
     """金山云 Serverless 计算引擎 (AgentEngine Server 托管)
 
     重构后直接继承 BaseDeployProvider，不再依赖 DockerProvider。
@@ -98,68 +84,6 @@ class ServerlessProvider(BaseDeployProvider):
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
-
-    @staticmethod
-    def _image_credential_from_env(image_ref: str) -> Optional[Dict[str, str]]:
-        username, password, registry_kind = resolve_registry_credentials(image_ref)
-        if username and password:
-            return {
-                "endpoint": image_ref.split("/", 1)[0],
-                "username": username,
-                "password": password,
-            }
-
-        if password and not username and registry_kind != "personal_kcr":
-            click.secho(
-                f"   ⚠️  检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，"
-                f"已忽略{registry_kind_label(registry_kind)}镜像凭证；"
-                "企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD",
-                fg="yellow",
-            )
-        elif registry_kind == "personal_kcr":
-            click.secho(
-                "   ⚠️  未配置个人版 KCR 镜像凭证 "
-                "(KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取",
-                fg="yellow",
-            )
-        else:
-            click.secho(
-                f"   ⚠️  未配置{registry_kind_label(registry_kind)}镜像凭证 "
-                "(KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取",
-                fg="yellow",
-            )
-        return None
-
-    @staticmethod
-    def _parse_code_artifact_path(artifact_path: str) -> tuple[Optional[str], Optional[str]]:
-        """解析代码包路径，返回 (bucket, object_key)。"""
-        if not artifact_path:
-            return None, None
-
-        path = artifact_path.strip()
-        if not path:
-            return None, None
-
-        if path.startswith("ks3://"):
-            raw = path[6:]
-            parts = raw.split("/", 1)
-            bucket = parts[0].strip() if parts else ""
-            object_key = parts[1].strip() if len(parts) > 1 else ""
-            return bucket or None, object_key or None
-
-        if path.startswith("http://") or path.startswith("https://"):
-            from urllib.parse import urlparse
-
-            parsed = urlparse(path)
-            bucket = (parsed.netloc.split(".", 1)[0] if parsed.netloc else "").strip()
-            object_key = parsed.path.lstrip("/").strip()
-            return bucket or None, object_key or None
-
-        if "/" in path:
-            bucket, object_key = path.split("/", 1)
-            return bucket.strip() or None, object_key.strip() or None
-
-        return None, None
 
     @staticmethod
     def _load_project_env_vars(env_file: Path) -> Dict[str, str]:
@@ -302,54 +226,6 @@ class ServerlessProvider(BaseDeployProvider):
         return len(value) == 64 and all(char in "0123456789abcdef" for char in value.lower())
 
     @staticmethod
-    def _serialize_network_config(
-        target: DeployTarget, *, is_update: bool = False
-    ) -> Optional[Dict[str, Any]]:
-        network = getattr(target, "network", None)
-        if network is None:
-            return None
-
-        public_access = getattr(network, "enable_public_access", None)
-        # 三态：None=未指定。create 默认开公网；update 未指定则不发 network 字段。
-        if public_access is None:
-            public_value: Optional[bool] = None if is_update else True
-        else:
-            public_value = bool(public_access)
-
-        payload: Dict[str, Any] = {}
-        if public_value is not None:
-            payload["enable_public_access"] = public_value
-        if bool(getattr(network, "enable_vpc_access", False)):
-            payload["enable_vpc_access"] = True
-
-        for field in ("vpc_id", "subnet_id", "security_group_id", "availability_zone"):
-            value = str(getattr(network, field, "") or "").strip()
-            if value:
-                payload[field] = value
-
-        if not payload:
-            return None
-        return payload
-
-    @staticmethod
-    def _serialize_storage_config(target: DeployTarget) -> Optional[Dict[str, Any]]:
-        storage = getattr(target, "storage", None)
-        if storage is None:
-            return None
-
-        mount_path = str(getattr(storage, "mount_path", "") or "").strip()
-        size_gi = getattr(storage, "size_gi", None)
-        if not mount_path and size_gi is None:
-            return None
-
-        payload: Dict[str, Any] = {}
-        if mount_path:
-            payload["mount_path"] = mount_path
-        if size_gi is not None:
-            payload["size_gi"] = int(size_gi)
-        return payload
-
-    @staticmethod
     def _format_elapsed(started_at: float) -> str:
         elapsed = max(0.0, time.monotonic() - started_at)
         if elapsed < 60:
@@ -446,6 +322,10 @@ class ServerlessProvider(BaseDeployProvider):
             # 如果显式传入了 ks3-path，直接使用
             if cli_ks3_path:
                 package_info.metadata["ks3_path"] = cli_ks3_path
+                # A caller-provided URI may point at an old SDK ZIP.  Cached
+                # metadata belongs to the previous locally built object.
+                for field in ("code_checksum", "code_command", "code_kernel_contract_digest"):
+                    package_info.metadata.pop(field, None)
                 return package_info
 
             # 如果没有 no_cache 且有缓存，才使用缓存
@@ -498,6 +378,15 @@ class ServerlessProvider(BaseDeployProvider):
                 raise RuntimeError("代码构建成功但未生成 artifact_path")
             package_info.metadata.update(build_result.metadata)
             package_info.metadata["code_checksum"] = self._sha256_file(zip_path)
+            from ksadk.builders.code_builder import read_code_deployment_contract
+
+            declaration = read_code_deployment_contract(zip_path)
+            if declaration and declaration.get("schema") == "ksadk-code-deployment/v1":
+                package_info.metadata["code_command"] = declaration.get("command")
+                package_info.metadata["code_kernel_contract_digest"] = declaration.get("agentKernelContractDigest")
+            else:
+                package_info.metadata.pop("code_command", None)
+                package_info.metadata.pop("code_kernel_contract_digest", None)
             if build_result.metadata.get("manifest_sha256"):
                 target.extra["manifest_sha256"] = build_result.metadata["manifest_sha256"]
             # click.echo(f"   ✅ ZIP 已生成: {zip_path}")
@@ -753,7 +642,10 @@ class ServerlessProvider(BaseDeployProvider):
         code_checksum = str(package_info.metadata.get("code_checksum") or "").strip()
         if not self._is_sha256_digest(code_checksum):
             code_checksum = ""
-        code_command = list(_HOSTED_CODE_COMMAND) if code_backed and code_checksum else None
+        code_command = package_info.metadata.get("code_command") if code_backed and code_checksum else None
+        code_kernel_contract_digest = (
+            package_info.metadata.get("code_kernel_contract_digest") if code_backed and code_checksum else None
+        )
 
         try:
             # 获取 dry_run 标识
@@ -891,6 +783,8 @@ class ServerlessProvider(BaseDeployProvider):
                         if code_checksum:
                             update_data["code_checksum"] = code_checksum
                             update_data["code_command"] = code_command
+                            if code_kernel_contract_digest:
+                                update_data["agent_kernel_contract_digest"] = code_kernel_contract_digest
                         elif artifact_type == "Container":
                             image_credential = self._image_credential_from_env(artifact_path)
                             if image_credential:
@@ -900,6 +794,13 @@ class ServerlessProvider(BaseDeployProvider):
                                     f"{image_credential['endpoint']}"
                                 )
                                 click.echo(f"   🔑 镜像凭证: {credential_target}")
+
+                        if target.extra.get("a2a_space_id"):
+                            update_data["component_config"] = {
+                                "A2ASpace": {"Id": target.extra["a2a_space_id"],
+                                    **({"RuntimeProfile": target.extra["a2a_runtime_profile"]}
+                                       if target.extra.get("a2a_runtime_profile") else {})}
+                            }
 
                         # 加载全局配置 + 本地 .env，并通过部署参数注入到运行时环境变量。
                         env_vars, env_file_exists, project_env_count = self._load_deploy_env_vars(
@@ -913,6 +814,12 @@ class ServerlessProvider(BaseDeployProvider):
                         env_vars = self._inject_ui_runtime_env(env_vars, ui_state, local_state)
                         if env_vars:
                             update_data["env_vars"] = env_vars
+                            # Hot updates must not replace platform-managed runtime
+                            # settings (for example durable session/A2A database
+                            # bindings) that are intentionally absent from the local
+                            # project environment.  The public client translates this
+                            # marker to UpdateAgent.EnvironmentVariablePatch.
+                            update_data["environment_variables_is_patch"] = True
                             if env_file_exists:
                                 click.echo(
                                     f"   📦 更新环境变量: {len(env_vars)} 项 "
@@ -980,7 +887,9 @@ class ServerlessProvider(BaseDeployProvider):
                             agent_id=existing_agent_id,
                             agent_name=res.get("name"),
                             endpoint=res.get("endpoint"),
-                            message=f"✅ Agent 已更新: {existing_agent_id}",
+                            message=(f"Agent 更新请求已提交，服务端将在后台执行: {existing_agent_id}"
+                                     if code_backed else f"✅ Agent 已更新: {existing_agent_id}"),
+                            metadata={"update_accepted": True} if code_backed else {},
                         )
                     # else: agent_exists = False，继续执行创建逻辑
 
@@ -1021,6 +930,8 @@ class ServerlessProvider(BaseDeployProvider):
                     if code_checksum:
                         request_data["code_checksum"] = code_checksum
                         request_data["code_command"] = code_command
+                        if code_kernel_contract_digest:
+                            request_data["agent_kernel_contract_digest"] = code_kernel_contract_digest
 
                     # Container 模式: 传递镜像凭证
                     if artifact_type == "Container":
@@ -1053,6 +964,13 @@ class ServerlessProvider(BaseDeployProvider):
 
                     if env_vars:
                         request_data["env_vars"] = env_vars
+
+                    if target.extra.get("a2a_space_id"):
+                        request_data["component_config"] = {
+                            "A2ASpace": {"Id": target.extra["a2a_space_id"],
+                                    **({"RuntimeProfile": target.extra["a2a_runtime_profile"]}
+                                       if target.extra.get("a2a_runtime_profile") else {})}
+                        }
 
                     network_config = self._serialize_network_config(target, is_update=False)
                     if network_config:
@@ -1181,8 +1099,16 @@ class ServerlessProvider(BaseDeployProvider):
         except Exception as e:
             logger.error(f"Deploy failed: {e}")
 
-            # 检测名称冲突
             err_msg = str(e)
+            # UpdateAgent also uses 409 when another update holds the Agent lock.
+            # Keep that response visible instead of suggesting a name change.
+            if "该 Agent 正在更新，请稍后重试" in err_msg:
+                return DeployResult(
+                    status=DeployStatus.FAILED,
+                    message="❌ 部署失败: 该 Agent 正在更新，请稍后重试",
+                )
+
+            # 检测名称冲突
             if "Conflict" in err_msg or "409" in err_msg or "already exists" in err_msg:
                 return DeployResult(
                     status=DeployStatus.FAILED,
@@ -1200,6 +1126,10 @@ class ServerlessProvider(BaseDeployProvider):
         try:
             async with AgentEngineClient(region=target.region, dry_run=dry_run) as client:
                 res = await client.get_agent(agent_id)
+                basic = res.get("basic") if isinstance(res.get("basic"), dict) else res
+                deployment = (
+                    res.get("deployment") if isinstance(res.get("deployment"), dict) else {}
+                )
 
                 status_map = {
                     "running": DeployStatus.RUNNING,
@@ -1214,13 +1144,23 @@ class ServerlessProvider(BaseDeployProvider):
                 }
 
                 # 使状态匹配不区分大小写，以兼容服务端的改动 (Creating -> CREATING)
-                current_status = (res.get("status") or "").lower()
+                current_status = (basic.get("status") or "").lower()
+                status = status_map.get(current_status, DeployStatus.UNKNOWN)
+                kernel_phase = deployment.get("deployment_phase")
+                if (
+                    status == DeployStatus.RUNNING
+                    and kernel_phase
+                    and deployment.get("agent_kernel_ready") is not True
+                ):
+                    status = DeployStatus.DEPLOYING
                 return DeployResult(
-                    status=status_map.get(current_status, DeployStatus.UNKNOWN),
-                    agent_id=res.get("agent_id"),
-                    agent_name=res.get("name"),
-                    endpoint=res.get("endpoint"),
-                    message=f"Status: {res.get('status')} ({res.get('phase')})",
+                    status=status,
+                    agent_id=basic.get("agent_id"),
+                    agent_name=basic.get("name"),
+                    endpoint=(res.get("quick_access") or {}).get("public_endpoint")
+                    or (res.get("quick_access") or {}).get("private_endpoint")
+                    or res.get("endpoint"),
+                    message=f"Status: {basic.get('status')} ({kernel_phase or basic.get('phase')})",
                 )
         except DryRunExit:
             return DeployResult(status=DeployStatus.SKIPPED, message="Dry Run executed.")

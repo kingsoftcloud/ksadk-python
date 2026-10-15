@@ -38,7 +38,20 @@ def test_dead_server_thread_fails_without_waiting_for_deadline(monkeypatch, tmp_
 
 def _fake_server(monkeypatch, *, startup_seconds, thread_alive=True):
     clock = [0.0]
-    server = SimpleNamespace(started=False, should_exit=False, run=lambda: None)
+    original_thread, original_event = support.threading.Thread, support.threading.Event
+    running, stopped = original_event(), original_event()
+    server = SimpleNamespace(
+        started=False,
+        should_exit=False,
+        lifespan=SimpleNamespace(startup_failed=False, shutdown_failed=False),
+    )
+
+    def run():
+        running.set()
+        if thread_alive:
+            stopped.wait()
+
+    server.run = run
     monkeypatch.setattr(support.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
         support.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
@@ -46,15 +59,34 @@ def _fake_server(monkeypatch, *, startup_seconds, thread_alive=True):
     monkeypatch.setattr(support, "create_studio_app", lambda *args, **kwargs: object())
     monkeypatch.setattr(support.uvicorn, "Config", lambda *args, **kwargs: None)
     monkeypatch.setattr(support.uvicorn, "Server", lambda config: server)
-    monkeypatch.setattr(
-        support.threading,
-        "Thread",
-        lambda **kwargs: SimpleNamespace(
-            start=lambda: None,
-            is_alive=lambda: thread_alive,
-            join=lambda **kwargs: None,
-        ),
-    )
+    class ControlledThread:
+        def __init__(self, **kwargs):
+            self.thread = original_thread(**kwargs)
+
+        def start(self):
+            self.thread.start()
+            try:
+                assert running.wait(timeout=5), "Server target did not reach run()"
+                if not thread_alive:
+                    self.thread.join(timeout=5)
+                    assert not self.thread.is_alive(), "Dead server target did not exit"
+            except BaseException:
+                server.should_exit = True
+                stopped.set()
+                self.thread.join(timeout=5)
+                raise
+
+        def is_alive(self):
+            return self.thread.is_alive()
+
+        def join(self, **kwargs):
+            try:
+                assert server.should_exit, "Host must request shutdown before joining"
+            finally:
+                stopped.set()
+                self.thread.join(**kwargs)
+
+    monkeypatch.setattr(support.threading, "Thread", ControlledThread)
 
     def health(url, *, timeout):
         assert url.endswith("/api/v1/system/health")

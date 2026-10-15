@@ -89,6 +89,8 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
     OCCURRENCE_CACHE_LIMIT = 1024
 
     def __init__(self) -> None:
+        self._tool_activities = {}
+        self._tool_activity_bytes = 0
         self._artifacts: dict[str, _ArtifactState] = {}
         self._messages: dict[str, _MessageState] = {}
         self._seen_occurrences: OrderedDict[str, str] = OrderedDict()
@@ -97,7 +99,19 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
         self._run_started = False
         self._run_interrupted = False
         self._active_interaction: tuple[str, str] | None = None
+        self._active_interaction_kind = "structured_input"
         self._terminal_snapshot_fingerprint: str | None = None
+
+    def checkpoint(self, context: A2AAdapterContext):
+        from ksadk.events.adapters._a2a_checkpoint import export_checkpoint
+
+        return export_checkpoint(self, context)
+
+    @classmethod
+    def restore_checkpoint(cls, payload):
+        from ksadk.events.adapters._a2a_checkpoint import restore_checkpoint
+
+        return restore_checkpoint(cls, payload)
 
     def map_event(
         self,
@@ -134,6 +148,12 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
                 getattr(native_event, payload_name), context, timestamp=timestamp
             )
         if isinstance(native_event, TaskArtifactUpdateEvent):
+            from ksadk.events.adapters._a2a_tool_activity import map_tool_artifact
+
+            self._validate_identity(native_event.context_id, native_event.task_id, context)
+            public = map_tool_artifact(self, native_event.artifact, context, timestamp)
+            if public is not None:
+                return public
             return self._map_artifact_update(native_event, context, timestamp)
         if isinstance(native_event, TaskStatusUpdateEvent):
             return self._map_status_update(native_event, context, timestamp)
@@ -317,9 +337,7 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
                 "artifact.artifact_id",
                 f"A2A artifact {artifact_id!r} is already closed",
             )
-        item_id = stable_item_id(
-            "a2a", context.context_id, context.task_id, "artifact", artifact_id
-        )
+        item_id = stable_item_id("a2a", *context.item_identity, "artifact", artifact_id)
         source = self._source(
             context,
             occurrence,
@@ -460,14 +478,17 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
         events: list[RuntimeEvent] = []
         if self._active_interaction is not None:
             interaction_id, continuation_id = self._active_interaction
-            events.append(
-                InteractionResolved(
-                    **env(interaction_id, "interaction.resolved", "interaction", len(events)),
-                    interaction_id=interaction_id,
-                    interaction_kind="structured_input",
-                    response=StructuredInputResponse(data={"state": TaskState.Name(state)}),
+            # Remote progress is not evidence of a user's approval decision.
+            # The caller's durable interaction ledger owns that resolution.
+            if self._active_interaction_kind == "structured_input":
+                events.append(
+                    InteractionResolved(
+                        **env(interaction_id, "interaction.resolved", "interaction", len(events)),
+                        interaction_id=interaction_id,
+                        interaction_kind="structured_input",
+                        response=StructuredInputResponse(data={"state": TaskState.Name(state)}),
+                    )
                 )
-            )
             events.append(
                 ContinuationResumed(
                     **env(continuation_id, "continuation.resumed", "continuation", len(events)),
@@ -528,18 +549,19 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
         events: list[RuntimeEvent] = []
         if self._active_interaction is not None:
             previous_interaction_id, _ = self._active_interaction
-            events.append(
-                InteractionResolved(
-                    **env(
-                        previous_interaction_id, "interaction.resolved", "interaction", len(events)
-                    ),
-                    interaction_id=previous_interaction_id,
-                    interaction_kind="structured_input",
-                    response=StructuredInputResponse(
-                        data={"state": "SUPERSEDED_BY_NEW_A2A_INTERACTION"}
-                    ),
+            if self._active_interaction_kind == "structured_input":
+                events.append(
+                    InteractionResolved(
+                        **env(
+                            previous_interaction_id, "interaction.resolved", "interaction", len(events)
+                        ),
+                        interaction_id=previous_interaction_id,
+                        interaction_kind="structured_input",
+                        response=StructuredInputResponse(
+                            data={"state": "SUPERSEDED_BY_NEW_A2A_INTERACTION"}
+                        ),
+                    )
                 )
-            )
             self._active_interaction = None
         self._ensure_run_started(events, context, source, timestamp, occurrence)
         interaction_id = stable_item_id(
@@ -553,12 +575,18 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
         schema = message_metadata.get("input_schema")
         if not isinstance(schema, dict):
             schema = {"type": "object" if state == TaskState.TASK_STATE_AUTH_REQUIRED else "string"}
+        from ksadk.a2a.interaction_wire import parse_approval_metadata
+
+        approval = parse_approval_metadata(message_metadata, call_id=interaction_id)
+        if approval is not None and state != TaskState.TASK_STATE_INPUT_REQUIRED:
+            raise ValueError("A2A_INTERACTION_DECLARATION_INVALID")
+        kind = "approval" if approval is not None else "structured_input"
         events.append(
             InteractionRequested(
                 **env(interaction_id, "interaction.requested", "interaction", len(events)),
                 interaction_id=interaction_id,
-                interaction_kind="structured_input",
-                request=StructuredInputRequest(prompt=prompt, schema=schema),
+                interaction_kind=kind,
+                request=approval or StructuredInputRequest(prompt=prompt, schema=schema),
             )
         )
         events.append(
@@ -582,6 +610,7 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
             )
             self._run_interrupted = True
         self._active_interaction = (interaction_id, continuation_id)
+        self._active_interaction_kind = kind
         return tuple(events)
 
     def _map_awaiting_terminal_status(
@@ -684,9 +713,7 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
 
     @staticmethod
     def _message_item_id(context: A2AAdapterContext, message_id: str) -> str:
-        if context.task_id is not None:
-            return stable_item_id("a2a", context.context_id, context.task_id, "message", message_id)
-        return stable_item_id("a2a", context.context_id, "message", message_id)
+        return stable_item_id("a2a", *context.item_identity, "message", message_id)
 
     @staticmethod
     def _require_task_status(task: Task) -> None:
@@ -752,6 +779,7 @@ class A2AEventAdapter(_A2ATaskSnapshotMixin):
             "timestamp": timestamp,
             "run_id": context.run_id,
             "scope_id": context.scope_id,
+            "parent_scope_id": context.parent_scope_id,
             "source": source,
         }
 

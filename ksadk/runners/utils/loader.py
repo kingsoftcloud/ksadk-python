@@ -7,7 +7,10 @@
 import importlib
 import sys
 from pathlib import Path
+from threading import RLock
 from typing import Any
+
+_LOAD_LOCK = RLock()
 
 
 def load_agent_module(
@@ -56,20 +59,31 @@ def load_agent_module(
         # ``agent.py`` 为入口；仅靠 ``import_module("agent")`` 会复用上一个
         # Bundle 的 sys.modules 缓存，进而加载错误的 agentVariable。只复用与
         # 当前 entry 文件一致的缓存，其余情况让 import 从当前 project_path 重载。
-        cached = sys.modules.get(module_name)
-        cached_file = getattr(cached, "__file__", None)
-        cached_matches_entry = bool(
-            cached_file is not None
-            and entry_file is not None
-            and Path(str(cached_file)).resolve() == entry_file
-        )
-        if cached is not None and not cached_matches_entry:
-            sys.modules.pop(module_name, None)
-            importlib.invalidate_caches()
-        if force_reload and module_name in sys.modules:
-            module = importlib.reload(sys.modules[module_name])
-        else:
-            module = importlib.import_module(module_name)
+        # Studio loads immutable Build sources in-process.  A normal import
+        # writes ``__pycache__`` beside the entrypoint, mutating the admitted
+        # Bundle and making the next integrity check fail.  Serialize the
+        # global import/cache mutation and suppress bytecode only for this
+        # immutable load; restore the host interpreter setting afterwards.
+        with _LOAD_LOCK:
+            previous_dont_write_bytecode = sys.dont_write_bytecode
+            sys.dont_write_bytecode = True
+            try:
+                cached = sys.modules.get(module_name)
+                cached_file = getattr(cached, "__file__", None)
+                cached_matches_entry = bool(
+                    cached_file is not None
+                    and entry_file is not None
+                    and Path(str(cached_file)).resolve() == entry_file
+                )
+                if cached is not None and not cached_matches_entry:
+                    sys.modules.pop(module_name, None)
+                    importlib.invalidate_caches()
+                if force_reload and module_name in sys.modules:
+                    module = importlib.reload(sys.modules[module_name])
+                else:
+                    module = importlib.import_module(module_name)
+            finally:
+                sys.dont_write_bytecode = previous_dont_write_bytecode
         agent = getattr(module, agent_variable)
         return agent, module
     except ImportError as e:

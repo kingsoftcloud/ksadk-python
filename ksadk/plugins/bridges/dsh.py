@@ -32,6 +32,11 @@ except ImportError:  # pragma: no cover - DSH production hosts are Unix
 import yaml
 from pydantic import BaseModel, ConfigDict
 
+from ksadk.plugins.bridges.dsh_profile_manifest import (
+    bundle_patch,
+    profile_bundles,
+    profile_dependencies,
+)
 from ksadk.plugins.dsh_installation_digest import (
     DshInstallationDigestError,
     installation_digest,
@@ -217,6 +222,16 @@ def dsh_subprocess_environment(*, dsh_home: Path | None = None) -> dict[str, str
     }
     if "PATH" not in environment:
         environment["PATH"] = os.defpath
+    # DSH invokes pnpm by name for Profile mutations. A verified explicit
+    # binary must govern those children as well as the bootstrap/pack step;
+    # otherwise an unrelated package manager on PATH silently takes over.
+    configured_pnpm = Path(os.environ.get("AGENTENGINE_PNPM_BIN", ""))
+    if (
+        configured_pnpm.is_absolute()
+        and configured_pnpm.name in {"pnpm", "pnpm.cmd", "pnpm.exe"}
+        and configured_pnpm.is_file()
+    ):
+        environment["PATH"] = str(configured_pnpm.parent) + os.pathsep + environment["PATH"]
     if dsh_home is not None:
         environment["DSH_HOME"] = str(dsh_home)
     return environment
@@ -828,32 +843,15 @@ class DshProfilePluginBridge:
 
     @staticmethod
     def _dependencies(manifest: Mapping[str, object]) -> dict[str, str]:
-        raw = manifest.get("dependencies")
-        if raw is None:
-            return {}
-        if not isinstance(raw, dict) or any(
-            not isinstance(name, str) or not isinstance(value, str) for name, value in raw.items()
-        ):
-            raise DshBridgeError("DSH profile dependencies are invalid")
-        return dict(raw)
+        return profile_dependencies(manifest, error_type=DshBridgeError)
 
     @staticmethod
     def _bundles(manifest: Mapping[str, object]) -> list[str]:
-        dsh = manifest.get("dsh")
-        profile = dsh.get("profile") if isinstance(dsh, dict) else None
-        bundles = profile.get("bundles") if isinstance(profile, dict) else None
-        if bundles is None:
-            return []
-        if not isinstance(bundles, list) or any(not isinstance(item, str) for item in bundles):
-            raise DshBridgeError("DSH profile bundle order is invalid")
-        return list(bundles)
+        return profile_bundles(manifest, error_type=DshBridgeError)
 
     @staticmethod
     def _bundle_patch(package: Mapping[str, object]) -> str | None:
-        dsh = package.get("dsh")
-        bundle = dsh.get("bundle") if isinstance(dsh, dict) else None
-        patch = bundle.get("patch") if isinstance(bundle, dict) else None
-        return patch.strip() if isinstance(patch, str) and patch.strip() else None
+        return bundle_patch(package)
 
     def _require_bundle(self, name: str) -> None:
         package = self._read_package(name)

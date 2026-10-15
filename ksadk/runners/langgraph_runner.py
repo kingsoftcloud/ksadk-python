@@ -28,9 +28,12 @@ from ksadk.runtime.skill_eval_result import skill_eval_response_fields
 from ksadk.runtime.timing import extract_timing
 from ksadk.sessions import resolve_persistence_topology
 from ksadk.sessions.continuity import LangGraphSessionAdapter
+from ksadk.sessions.db_budget import session_db_budget
+
+from ksadk.runners._langgraph_tool_projection import _LangGraphToolProjectionMixin
 
 
-class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, BaseRunner):
+class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMixin, _LangGraphStreamMixin, BaseRunner):
     """LangGraph 框架运行时
 
     透传原生 LangGraph 功能，支持任意 State 格式
@@ -334,30 +337,63 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         }
 
     async def _create_managed_postgres_saver(self, dsn: str) -> tuple[Any, Any]:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from psycopg.rows import dict_row
         from psycopg_pool import AsyncConnectionPool
 
-        timeout = max(0.1, float(os.getenv("KSADK_SESSION_CONNECT_TIMEOUT") or "5"))
+        from ksadk.harness.engine.postgres_checkpointer import bounded_postgres_saver_class
+
+        budget = session_db_budget()
+        timeout = budget.connect_seconds
+        # Reserve checkout time for replacing one silent idle socket. Spending
+        # the entire checkout budget on its probe would fail a healthy run
+        # even when a fresh database connection is immediately available.
+        probe_timeout = min(budget.read_acquire_seconds / 2, timeout / 2)
+
+        async def check_connection(connection):
+            # Pool checkout's deadline does not bound its check callback.
+            # A silent idle socket must not hold the saver lock indefinitely.
+            probe = asyncio.create_task(AsyncConnectionPool.check_connection(connection))
+            try:
+                done, _ = await asyncio.wait((probe,), timeout=probe_timeout)
+                if not done:
+                    # Close before cancellation: psycopg's query cancellation
+                    # also needs a responding server and can itself stall.
+                    await connection.close()
+                    raise TimeoutError("checkpoint connection health check timed out")
+                await probe
+            except asyncio.CancelledError:
+                await connection.close()
+                raise
+            finally:
+                if not probe.done():
+                    probe.cancel()
+                await asyncio.gather(probe, return_exceptions=True)
+
         pool = AsyncConnectionPool(
             conninfo=dsn,
             min_size=1,
             max_size=10,
             open=False,
-            timeout=timeout,
+            timeout=budget.write_acquire_seconds,
+            # Discard dead idle sockets before a checkpoint operation starts.
+            # This retries connection checkout, never graph execution or writes.
+            check=check_connection,
             kwargs={
                 "autocommit": True,
                 "prepare_threshold": 0,
                 "row_factory": dict_row,
+                "connect_timeout": max(1, int(budget.connect_seconds + 0.999)),
+                "options": f"-c statement_timeout={max(1, int(budget.write_sql_seconds * 1000))} "
+                           f"-c lock_timeout={max(1, int(budget.lock_seconds * 1000))}",
             },
         )
         try:
             await pool.open(wait=True, timeout=timeout)
-            saver = AsyncPostgresSaver(pool)
+            saver = bounded_postgres_saver_class()(pool, budget=budget)
             await saver.setup()
             return saver, pool
         except Exception:
-            await pool.close()
+            await pool.close(timeout=budget.cleanup_seconds)
             raise
 
     async def prepare_runtime_capabilities(self) -> None:
@@ -605,6 +641,34 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
             await pool.close()
         await super().close()
 
+    def _resolve_recursion_limit(self) -> int:
+        """解析本次运行的 recursion_limit。
+
+        LangChain 的 ``astream_events`` 入口会用库默认值 25 填充调用 config，
+        随后 ``Pregel.astream`` 的合并里这个显式 25 会覆盖图实例
+        ``with_config`` 设置的图级默认值——业务侧的 recursion_limit 在流式
+        路径上因此静默失效（生产 GraphRecursionError 的根因）。所以 runner
+        必须在调用 config 里显式携带非默认值：优先图自身 config（业务
+        ``with_config`` 的设置），其次环境变量，最后 runner 默认 50。
+        """
+        agent_config = getattr(self._agent, "config", None)
+        if isinstance(agent_config, Mapping):
+            try:
+                value = int(agent_config.get("recursion_limit") or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                return value
+        raw = str(os.getenv("KSADK_LANGGRAPH_RECURSION_LIMIT") or "").strip()
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                value = 0
+            if value > 0:
+                return value
+        return 50
+
     def _get_config(self, session_id: str) -> dict:
         """获取运行配置
 
@@ -612,8 +676,14 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         隔离字段。把租户/agent scope 塞进 configurable.checkpoint_ns 会让
         Pregel 的 aget_state 走子图重定向并抛 "Subgraph <scope> not found"，
         静默打掉流式路径的待审批探测。租户隔离由 thread_id 承担。
+
+        recursion_limit 见 ``_resolve_recursion_limit``：astream_events 会用
+        默认 25 覆盖图级设置，必须在这里显式携带非默认值。
         """
-        return {"configurable": {"thread_id": session_id}}
+        return {
+            "configurable": {"thread_id": session_id},
+            "recursion_limit": self._resolve_recursion_limit(),
+        }
 
     @staticmethod
     def _extract_langgraph_checkpoint_ref(payload: Dict[str, Any]) -> dict[str, Any]:
@@ -1202,7 +1272,11 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
             last_usage = self._extract_last_usage(result)
             if last_usage:
                 output.setdefault("metadata", {})["last_usage"] = last_usage
-            metadata = await self._latest_checkpoint_metadata(config)
+            # A resume config names the historical input checkpoint. Read the
+            # newly committed state in the same thread/namespace after execution.
+            metadata = await self._latest_checkpoint_metadata(
+                self._latest_checkpoint_config(config)
+            )
             if metadata:
                 output["metadata"] = {**(output.get("metadata") or {}), **metadata}
             return output
@@ -1333,81 +1407,3 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         metadata = await self._latest_checkpoint_metadata(latest_config)
         if metadata:
             yield {"type": "checkpoint", "metadata": metadata}
-
-    @staticmethod
-    def _tool_events_from_graph_update(
-        node_output: Any,
-        *,
-        tool_names: dict[str, str],
-    ) -> list[dict[str, Any]]:
-        """Preserve LangGraph update-mode tool messages as structured runner events."""
-
-        if isinstance(node_output, Mapping):
-            messages = node_output.get("messages")
-        else:
-            messages = getattr(node_output, "messages", None)
-        if not isinstance(messages, (list, tuple)):
-            return []
-
-        events: list[dict[str, Any]] = []
-        for message in messages:
-            if isinstance(message, Mapping):
-                tool_calls = message.get("tool_calls")
-                tool_call_id = message.get("tool_call_id")
-                message_name = message.get("name")
-                message_content = message.get("content")
-                message_status = message.get("status")
-            else:
-                tool_calls = getattr(message, "tool_calls", None)
-                tool_call_id = getattr(message, "tool_call_id", None)
-                message_name = getattr(message, "name", None)
-                message_content = getattr(message, "content", None)
-                message_status = getattr(message, "status", None)
-
-            if isinstance(tool_calls, (list, tuple)):
-                for tool_call in tool_calls:
-                    if isinstance(tool_call, Mapping):
-                        call_id = str(tool_call.get("id") or tool_call.get("tool_call_id") or "")
-                        name = str(tool_call.get("name") or "tool")
-                        args = tool_call.get("args")
-                    else:
-                        call_id = str(
-                            getattr(tool_call, "id", None)
-                            or getattr(tool_call, "tool_call_id", None)
-                            or ""
-                        )
-                        name = str(getattr(tool_call, "name", None) or "tool")
-                        args = getattr(tool_call, "args", None)
-                    if call_id:
-                        tool_names[call_id] = name
-                    events.append(
-                        {
-                            "type": "tool_call",
-                            "tool_call_id": call_id or name,
-                            "tool_name": name,
-                            "tool_args": args,
-                        }
-                    )
-
-            if tool_call_id:
-                call_id = str(tool_call_id)
-                name = str(message_name or tool_names.get(call_id) or "tool")
-                status = str(message_status or "").lower()
-                events.append(
-                    {
-                        "type": "tool_result",
-                        "tool_call_id": call_id,
-                        "tool_name": name,
-                        "tool_output": message_content,
-                        "error": message_content if status in {"error", "failed"} else None,
-                    }
-                )
-        return events
-
-    def _filter_tool_tags(self, content: str) -> str:
-        """过滤 <tool_call> 标签"""
-        if not isinstance(content, str):
-            return content
-        content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
-        content = re.sub(r"</?(?:tool_call|arg_key|arg_value)>", "", content)
-        return content

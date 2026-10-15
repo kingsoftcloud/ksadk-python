@@ -30,6 +30,7 @@ export type NavigationView =
   | "runtime-resources"
   | "plugins"
   | "automations"
+  | "settings"
   | `plugin:${string}`;
 
 const GROUPS: Array<{

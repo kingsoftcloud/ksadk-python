@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import aclosing
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
@@ -37,6 +38,7 @@ from ksadk.events.canonical import (
     RunCompleted,
     RunFailed,
     RunInterrupted,
+    RunStarted,
     RuntimeEvent,
     SourceRef,
 )
@@ -55,26 +57,11 @@ from ksadk.runtime.adapter import (
     StartRequest,
 )
 
+from ksadk.codex.base_runtime import _CodexAsBaseRuntime
+
 logger = logging.getLogger(__name__)
 
 _INTERRUPT_DRAIN_TIMEOUT_SECONDS = 5.0
-
-
-class _CodexAsBaseRuntime(BaseRuntime):
-    """把 CodexClient 包装为 BaseRuntime(原生能力面)。"""
-
-    def __init__(self, client: CodexClient) -> None:
-        self._client = client
-        self.runtime_type = "codex"
-
-    def native_capabilities(self) -> dict[str, Any]:
-        return {
-            "Framework": "codex",
-            "cancel": "thread",
-            "pause": "interrupt_then_resume_thread",
-            "resume": "thread_id",
-            "live_interaction": True,
-        }
 
 
 @dataclass
@@ -92,6 +79,7 @@ class _CodexThread:
     duration_ms: int | None = None
     goal_mode: bool = False
     continuation_preexisting: bool = False
+    cancel_experts: Any = None
 
 
 class CodexRuntimeAdapter(RuntimeAdapter):
@@ -106,9 +94,17 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         bound_skill_paths: Mapping[str, str] | None = None,
         plugin_bootstrap: CodexPluginBootstrap | None = None,
         turn_projector: CodexTurnProjection | None = None,
+        a2a_experts=(),
+        managed_a2a_bootstrap=None,
     ) -> None:
         super().__init__(_CodexAsBaseRuntime(client))
         self._client = client
+        self._a2a_experts = tuple(a2a_experts)
+        self._managed_a2a_bootstrap = managed_a2a_bootstrap
+        if self._a2a_experts:
+            if managed_a2a_bootstrap is None:
+                raise ValueError("A2A_MANAGED_BOOTSTRAP_REQUIRED")
+            client.configure_a2a_experts(self._a2a_experts)
         self._sandbox_read_only = sandbox_read_only
         self._turn_timeout_seconds = turn_timeout_seconds
         if turn_projector is not None and bound_skill_paths:
@@ -125,6 +121,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         self._plugins_bootstrapped = False
         self._threads: dict[str, _CodexThread] = {}
         self._requests: dict[str, StartRequest] = {}
+        self._canonical_roots: dict[str, RunStarted] = {}
+        self._recovery_records: dict[str, Any] = {}
         self._known_threads: set[str] = set()
         self._pending_cancels: set[str] = set()
         # 被杀/interrupt 的 session 不持久化(goal-09 契约 1)。
@@ -133,29 +131,61 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         self.last_cancel_dropped_approvals: set[str] = set()
         self._seq = 0
         self._closed = False
+        self._owned_by_app = False
+
+    def configure_managed_a2a(self, bootstrap) -> None:
+        if self._managed_a2a_bootstrap is bootstrap:
+            return
+        if self._threads or self._known_threads:
+            raise RuntimeError("cannot change managed A2A after a native thread starts")
+        if self._managed_a2a_bootstrap is not None:
+            raise ValueError("A2A_BOOTSTRAP_IDENTITY_CONFLICT")
+        self._managed_a2a_bootstrap = bootstrap
 
     # ---- capability matrix(v1,诚实声明) ----
 
     def capabilities(self) -> RuntimeCapabilityMatrix:
-        """Codex 真实矩阵:thread 级 cancel/pause/resume + 审批 submit + snapshot
-        checkpoint 均为后端原生能力;attach/durable_restore 未实现(线程表在本进程,
-        attach seam 缺失),steer/inject 无原生通道。
+        """Native controls plus explicitly configured managed-expert recovery.
+
+        Ordinary Codex threads retain their existing process-local declaration.
+        Recovery needs both an explicit native home and durable A2A storage.
         """
 
         def _unavailable(reason: str) -> RuntimeCapability:
             return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
 
+        recovery = False
+        if self._a2a_experts and getattr(self._client, "_checkpoint_home", None):
+            bootstrap = self._managed_a2a_bootstrap
+            try:
+                recovery = bool(bootstrap.outbound_enabled
+                                and bootstrap.invocation_checkpoint_store is not None)
+            except (AttributeError, RuntimeError):
+                recovery = False
+
+        bootstrap = self._managed_a2a_bootstrap
+        scoped_cancel = bool(
+            bootstrap is not None and getattr(bootstrap, "scoped_cancel_available", False)
+        )
         return RuntimeCapabilityMatrix(
+            scoped_cancel=(RuntimeCapability(supported=True, mode="emulated")
+                           if scoped_cancel else None),
             cancel=RuntimeCapability(supported=True, mode="native"),
             pause=RuntimeCapability(supported=True, mode="native"),
             resume=RuntimeCapability(supported=True, mode="native"),
             submit_interaction=RuntimeCapability(supported=True, mode="native"),
-            attach=_unavailable("codex_process_local_thread_table"),
+            attach=(RuntimeCapability(supported=True, mode="native") if recovery
+                    else _unavailable("codex_process_local_thread_table")),
             steer=_unavailable("runtime_no_native_steer"),
             inject=_unavailable("runtime_no_native_inject"),
             checkpoint=RuntimeCapability(supported=True, mode="native"),
-            durable_restore=_unavailable("codex_durable_restore_requires_attach_seam"),
-            goal=RuntimeCapability(supported=True, mode="native"),
+            durable_restore=(RuntimeCapability(supported=True, mode="native") if recovery
+                             else _unavailable("codex_durable_restore_requires_attach_seam")),
+            goal=(
+                _unavailable("a2a_codex_expert_goal_unsupported")
+                if self._a2a_experts
+                else RuntimeCapability(supported=True, mode="native")
+            ),
             loop=_unavailable("codex_loop_requires_run_control_spec"),
             plan=RuntimeCapability(supported=True, mode="native"),
             interaction_mode="live_submit",
@@ -192,14 +222,15 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             cwd = request.config.get("cwd")
             if cwd:
                 thread_config["cwd"] = str(cwd)
-            # AgentKernel creates one adapter/transport per durable turn and
-            # closes it after the canonical terminal event.  The next turn
-            # therefore resumes the native thread from a new app-server
-            # process; an ephemeral Codex thread has no rollout and cannot be
-            # resumed across that transport boundary.
+            # Independently owned adapters close their transport per turn;
+            # app-owned adapters may also cross a process boundary on restart.
+            # An ephemeral thread has no rollout to resume across either
+            # boundary, so retain the native durable thread by default.
             thread_config.setdefault("ephemeral", False)
             thread_id = await self._client.start_thread(thread_config)
+        self._do_not_persist.discard(thread_id)
         self._known_threads.add(thread_id)
+        self._canonical_roots.pop(thread_id, None)
         thread = _CodexThread(
             thread_id=thread_id,
             continuation_preexisting=bool(provided),
@@ -212,6 +243,91 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             session_id=request.session_id,
             runtime_type="codex",
             native_ref={"thread_id": thread_id, "user_id": request.user_id},
+        )
+
+    async def prepare_session_continuation(
+        self, record, request: StartRequest, *, agent_instance_id: str, tenant_id: str,
+    ) -> None:
+        """Only Kernel-loaded completed history can authorize an expert follow-up."""
+        if not self._a2a_experts:
+            return
+        from ksadk.a2a.codex_session_checkpoint import validated_session_checkpoint
+
+        bridge = getattr(self._client, "_a2a_expert_bridge", None)
+        try:
+            handle = RunHandle.model_validate(record.metadata.get("handle"))
+            checkpoint = validated_session_checkpoint(
+                record, handle, request, agent_instance_id=agent_instance_id,
+                tenant_id=tenant_id, experts=bridge.experts,
+            )
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("A2A_CODEX_SESSION_CHECKPOINT_INVALID") from None
+        await self._bootstrap_plugins_once()
+        await self._client.restore_completed_a2a_thread(checkpoint)
+
+    async def prepare_attach_record(self, handle: RunHandle, record) -> None:
+        from ksadk.a2a.codex_recovery import validated_recovery_checkpoint
+
+        if not self._a2a_experts:
+            return
+        if self._managed_a2a_bootstrap is None:
+            raise ValueError("A2A_CODEX_RECOVERY_MANAGED_EXPERTS_REQUIRED")
+        if handle.run_id in self._known_threads or handle.run_id in self._recovery_records:
+            raise ValueError("A2A_CODEX_RECOVERY_THREAD_ALREADY_ATTACHED")
+        bridge = self._client._a2a_expert_bridge
+        if record.metadata.get("runtime_checkpoint", {}).get("schema") == "codex.a2a.session/v1":
+            from ksadk.a2a.codex_session_checkpoint import validated_terminal_recovery_checkpoint
+
+            self._recovery_records[handle.run_id] = validated_terminal_recovery_checkpoint(
+                record, handle, experts=bridge.experts,
+            )
+            return
+        recovery = validated_recovery_checkpoint(record, handle, experts=bridge.experts)
+        if recovery.continuation_started:
+            raise ValueError("A2A_CODEX_RECOVERY_CONTINUATION_UNCERTAIN")
+        self._recovery_records[handle.run_id] = recovery
+
+    async def attach(self, handle: RunHandle) -> RunHandle:
+        if not self._a2a_experts:
+            return await super().attach(handle)
+        recovery = self._recovery_records.pop(handle.run_id, None)
+        if recovery is None:
+            raise ValueError("A2A_CODEX_RECOVERY_RECORD_REQUIRED")
+        # No cached handle alone may authorize native access or a new turn.
+        if (handle.runtime_type != "codex" or handle.session_id != recovery.session_id
+                or handle.native_ref.get("thread_id") != recovery.thread_id
+                or handle.native_ref.get("user_id") != recovery.start_request.user_id):
+            raise ValueError("A2A_CODEX_RECOVERY_HANDLE_CONFLICT")
+        from ksadk.a2a.codex_session_checkpoint import CodexSessionCheckpoint
+
+        if isinstance(recovery, CodexSessionCheckpoint):
+            thread = _CodexThread(thread_id=handle.run_id, continuation_preexisting=True)
+            thread.__dict__["_terminal_recovery"] = recovery
+            self._threads[handle.run_id] = thread
+            self._requests[handle.run_id] = recovery.start_request
+            self._known_threads.add(handle.run_id)
+            return handle
+        await self._bootstrap_plugins_once()
+        restored = await self._client.restore_managed_a2a_thread(recovery)
+        if restored != handle.run_id:
+            raise ValueError("A2A_CODEX_RECOVERY_NATIVE_IDENTITY_INVALID")
+        thread = _CodexThread(thread_id=restored, continuation_preexisting=True)
+        thread.__dict__["_start_request"] = recovery.start_request
+        thread.__dict__["_recovery"] = recovery
+        self._threads[restored] = thread
+        self._requests[restored] = recovery.start_request
+        self._known_threads.add(restored)
+        return handle
+
+    async def durable_restore(self, handle: RunHandle) -> RunHandle:
+        if not self._a2a_experts:
+            return await super().durable_restore(handle)
+        return await self.attach(handle)
+
+    def requires_recovery_stream(self, handle: RunHandle) -> bool:
+        thread = self._threads.get(handle.run_id)
+        return thread is not None and any(
+            thread.__dict__.get(key) is not None for key in ("_recovery", "_terminal_recovery")
         )
 
     async def _bootstrap_plugins_once(self) -> None:
@@ -238,6 +354,10 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             return CancelResult.NOT_RUNNING
         assert thread is not None
         try:
+            # Cancel bound experts while the Kernel still owns this live run.
+            # Native interruption can settle the parent before stream teardown.
+            if thread.cancel_experts is not None:
+                await thread.cancel_experts()
             # 级联丢弃 pending 工具审批(快照 runtime 自跟踪的 pending 集,供观测)。
             # 真实 SDK 无独立 drain API:interrupt 后 turn 停止,pending 审批随之失效。
             self.last_cancel_dropped_approvals = set(thread.pending_approvals)
@@ -252,14 +372,17 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 if thread.goal_mode
                 else await self._client.interrupt_active_turn(thread.thread_id)
             )
-            if not interrupted:
+            if not interrupted and thread.__dict__.get("_recovery") is None:
                 # 无活跃 handle 可 interrupt(竞态:turn 刚好结束)→ 视为未在运行。
                 return CancelResult.NOT_RUNNING
             # 被中断的 session 不持久化(goal-09 契约 1)。
             self._do_not_persist.add(thread_id)
             thread.done = True
             self._threads.pop(thread_id, None)
-            self._requests.pop(thread_id, None)
+            if thread.__dict__.get("_recovery") is None:
+                self._requests.pop(thread_id, None)
+            # Recovery has no native terminal notification yet. Its consumer
+            # still needs the original caller identity to emit run.canceled.
             self._pending_cancels.discard(thread_id)
             return CancelResult.INTERRUPTED_ACTIVE_TURN
         except Exception:  # noqa: BLE001
@@ -327,6 +450,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         if handle.run_id in self._do_not_persist:
             raise ValueError(f"thread {handle.run_id} 已被中断/杀进程,不持久化,不可 resume")
         self._pending_cancels.discard(handle.run_id)
+        self._canonical_roots.pop(handle.run_id, None)
         self._known_threads.add(target.id)
         thread = _CodexThread(
             thread_id=target.id,
@@ -379,9 +503,29 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             ref={"thread_id": handle.native_ref.get("thread_id")},
         )
 
+    def adopt_app_lifetime(self) -> None:
+        """A shared composition root owns the native transport and projector."""
+        self._owned_by_app = True
+
+    async def close_app_resources(self) -> None:
+        if self._owned_by_app:
+            await self.close_all()
+
     async def close(self, handle: RunHandle) -> None:
         self._do_not_persist.add(handle.run_id)
-        await self.close_all()
+        if not self._owned_by_app:
+            await self.close_all()
+            return
+        thread = self._threads.get(handle.run_id)
+        if thread is not None and thread.streaming and not thread.done:
+            thread.interrupt_event.set()
+            await self._client.interrupt_active_turn(thread.thread_id)
+        # Preserve the native client's completed-thread cache for the next
+        # turn; release only this Kernel run's projections and request.
+        self._threads.pop(handle.run_id, None)
+        self._requests.pop(handle.run_id, None)
+        self._canonical_roots.pop(handle.run_id, None)
+        self._pending_cancels.discard(handle.run_id)
 
     async def compact_session(self, thread_id: str, config: dict[str, Any]) -> dict[str, Any]:
         """Compact an existing native session using this build's client."""
@@ -392,10 +536,9 @@ class CodexRuntimeAdapter(RuntimeAdapter):
     async def close_all(self) -> None:
         """Dispose every thread and the activation-owned App Server process.
 
-        One ``CodexRuntimeAdapter`` owns one client transport. Closing any
-        attached Kernel handle therefore closes the transport as a unit; this
-        additive helper also lets a draining AgentProvider clean up a runtime
-        that has been created but not started yet.
+        An independently owned adapter closes the transport with its handle.
+        Shared app-owned adapters retain it until application shutdown. This
+        helper also lets a draining AgentProvider release an unused runtime.
         """
 
         if self._closed:
@@ -422,6 +565,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             self._do_not_persist.update(thread_ids)
             self._threads.clear()
             self._requests.clear()
+            self._canonical_roots.clear()
+            self._recovery_records.clear()
             self._known_threads.clear()
             self._pending_cancels.clear()
 
@@ -441,25 +586,59 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             thread = _CodexThread(thread_id=handle.run_id)
             self._threads[handle.run_id] = thread
 
+        terminal = thread.__dict__.get("_terminal_recovery")
+        if terminal is not None:
+            from ksadk.a2a.codex_session_checkpoint import terminal_recovery_event
+
+            try:
+                yield await terminal_recovery_event(terminal)
+            finally:
+                thread.done = True
+                self._threads.pop(handle.run_id, None)
+            return
+
+        recovery = thread.__dict__.get("_recovery")
+        if recovery is not None:
+            await self._restore_canonical_root(handle, recovery)
+
         if handle.run_id in self._pending_cancels:
             self._pending_cancels.discard(handle.run_id)
-            yield self._make_run_canceled(
-                handle,
-                reason=f"pending_cancel:{CancelResult.PENDING_CANCEL_RECORDED.value}",
-            )
+            try:
+                yield self._make_run_canceled(
+                    handle,
+                    reason=f"pending_cancel:{CancelResult.PENDING_CANCEL_RECORDED.value}",
+                )
+            finally:
+                self._canonical_roots.pop(handle.run_id, None)
             return
 
         request = thread.__dict__.get("_start_request")
         resume_state = thread.__dict__.get("_resume")
-        projected = self._turn_projector.project(
-            request, resume_state.get("payload") if resume_state is not None else None,
-        )
-        run_input = projected.input
+        if recovery is None:
+            projected = self._turn_projector.project(
+                request, resume_state.get("payload") if resume_state is not None else None,
+            )
+            run_input = projected.input
+        else:
+            # The original user input is already in the restored transcript.
+            # Only verified expert outputs precede the next native turn.
+            run_input = []
         thread.streaming = True
         thread.turn_id = thread.turn_id or f"turn_{thread.thread_id}"
         try:
-            async for event in self._map_codex_stream(handle, thread, run_input):
-                yield event
+            events = self._map_codex_stream(handle, thread, run_input)
+            if self._a2a_experts:
+                from ksadk.a2a.codex_runtime import managed_codex_events
+                events = managed_codex_events(self._client, self._managed_a2a_bootstrap, events, request=request, owner=thread, recovery=recovery)
+            async with aclosing(events):
+                async for event in events:
+                    if (isinstance(event, RunStarted) and event.parent_scope_id is None
+                            and event.run_id == self._event_run_id(handle)):
+                        # Runtime fallbacks must terminate the public/native
+                        # root already observed by consumers, even if cancel
+                        # removes the request/thread before stream teardown.
+                        self._canonical_roots.setdefault(handle.run_id, event)
+                    yield event
         except asyncio.CancelledError:
             thread.interrupted = True
             self._do_not_persist.add(handle.run_id)
@@ -474,12 +653,31 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             await self._client.close()
             yield self._make_run_failed(handle, "codex turn timed out")
         except Exception as exc:  # noqa: BLE001  通用兜底:任何异常都发 RunFailed
+            from ksadk.a2a.codex_runtime import CodexRecoveryCancelled
+
             self._do_not_persist.add(handle.run_id)
-            yield self._make_run_failed(handle, str(exc))
+            if isinstance(exc, CodexRecoveryCancelled):
+                yield self._make_run_canceled(handle, reason="recovery_canceled")
+            else:
+                yield self._make_run_failed(handle, str(exc))
         finally:
             thread.streaming = False
             thread.done = True
             self._threads.pop(handle.run_id, None)
+            self._canonical_roots.pop(handle.run_id, None)
+
+    async def _restore_canonical_root(self, handle: RunHandle, recovery: Any) -> None:
+        from ksadk.events.run_authority import current_run_event_authority
+
+        authority = current_run_event_authority()
+        if authority is None:
+            raise RuntimeError("A2A_KERNEL_AUTHORITY_REQUIRED")
+        # No tail limit: the root may precede hundreds of native observations.
+        # The capability enforces the validated public session/run identity.
+        for event in await authority.list(handle.session_id, run_id=recovery.run_id):
+            if isinstance(event, RunStarted) and event.parent_scope_id is None:
+                self._canonical_roots[handle.run_id] = event
+                return
 
     async def _map_codex_stream(
         self,
@@ -607,6 +805,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 chunk_method = (
                     str((chunk or {}).get("method") or "") if isinstance(chunk, dict) else ""
                 )
+                if chunk_method in {"ksadk/a2a/toolCall", "ksadk/a2a/toolCancel"}:
+                    if not self._a2a_experts:
+                        raise ValueError("A2A_CODEX_EXPERTS_NOT_CONFIGURED")
+                    yield chunk
+                    continue
                 if chunk_method in {
                     "item/autoApprovalReview/started",
                     "item/autoApprovalReview/completed",
@@ -627,6 +830,14 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                     timestamp=time.time(),
                 ):
                     event = self._with_caller_scope(event, request)
+                    if thread.__dict__.get("_recovery") is not None:
+                        root = self._canonical_roots.get(handle.run_id)
+                        if (root is not None and isinstance(event, RunStarted)
+                                and event.run_id == root.run_id and event.parent_scope_id is None):
+                            # The public run already started before recovery;
+                            # a new native turn must not start it a second time.
+                            continue
+                        event = self._with_recovered_root(event, handle)
                     # 跟踪 pending 审批(cancel 级联丢弃契约依赖该集合)。
                     if isinstance(event, InteractionRequested):
                         if event.interaction_id:
@@ -665,23 +876,31 @@ class CodexRuntimeAdapter(RuntimeAdapter):
     # ---- canonical run.* helpers (for runtime-owned lifecycle) ----
 
     def _event_run_id(self, handle: RunHandle) -> str:
-        """事件的 canonical run_id:调用方 invocation_id 优先,退回 thread id。
+        """事件使用调用方 invocation_id 或 Kernel run_id，最后回退到 thread id。
 
         ``handle.run_id`` 是 codex 原生 thread id(resume/cancel 按 thread 寻址);
         但 canonical RuntimeEvent 的 run_id 必须与调用方
-        ``StartRequest.metadata['invocation_id']`` 一致(conversation kernel 的
-        event scope 校验),否则 hosted/web 执行路径会在首个事件上 fail。
+        ``StartRequest.metadata['invocation_id']`` 或 Kernel 的 ``run_id`` 一致，
+        否则同一原生 thread 上的后续调用可能复用事件身份并被去重。
         """
+        root = self._canonical_roots.get(handle.run_id)
+        if root is not None:
+            return root.run_id
         request = self._requests.get(handle.run_id)
         if request is not None:
             invocation_id = str(
-                (getattr(request, "metadata", None) or {}).get("invocation_id") or ""
+                (getattr(request, "metadata", None) or {}).get("invocation_id")
+                or (getattr(request, "metadata", None) or {}).get("run_id")
+                or ""
             ).strip()
             if invocation_id:
                 return invocation_id
         return handle.run_id
 
     def _make_source(self, handle: RunHandle) -> SourceRef:
+        root = self._canonical_roots.get(handle.run_id)
+        if root is not None:
+            return root.source
         request = self._requests.get(handle.run_id)
         return SourceRef(
             framework="codex",
@@ -695,12 +914,25 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 ),
                 "session_id": handle.session_id,
                 "invocation_id": (
-                    str(request.metadata.get("invocation_id") or handle.run_id)
+                    self._event_run_id(handle)
                     if request is not None
                     else handle.run_id
                 ),
             },
         )
+
+    def _with_recovered_root(self, event: RuntimeEvent, handle: RunHandle) -> RuntimeEvent:
+        root = self._canonical_roots.get(handle.run_id)
+        if (root is None or event.run_id != root.run_id
+                or event.parent_scope_id is not None
+                or not event.event_type.startswith("run.")):
+            return event
+        # Normalize before managed checkpointing, preserving native source and
+        # item/child identities of the continuation's new native turn.
+        updates = {"scope_id": root.scope_id}
+        if isinstance(event, RunFailed):
+            updates["error"] = event.error.model_copy(update={"scope_id": root.scope_id})
+        return event.model_copy(update=updates)
 
     def _with_caller_scope(self, event: RuntimeEvent, request: Any) -> RuntimeEvent:
         """把调用方 scope(request 的 agent/user/session/invocation)并入事件 source。"""
@@ -747,10 +979,14 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             "source": self._make_source(handle),
         }
 
+    def _lifecycle_scope_id(self, handle: RunHandle) -> str:
+        root = self._canonical_roots.get(handle.run_id)
+        return root.scope_id if root is not None else stable_scope_id("codex", self._event_run_id(handle))
+
     def _make_run_canceled(self, handle: RunHandle, *, reason: str | None = None) -> RunCanceled:
         framework = "codex"
         run_id = self._event_run_id(handle)
-        scope_id = stable_scope_id(framework, run_id)
+        scope_id = self._lifecycle_scope_id(handle)
         item_id = stable_item_id(framework, run_id, "$run")
         return RunCanceled(
             **self._canonical_kwargs(
@@ -769,7 +1005,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
     ) -> RunInterrupted:
         framework = "codex"
         run_id = self._event_run_id(handle)
-        scope_id = stable_scope_id(framework, run_id)
+        scope_id = self._lifecycle_scope_id(handle)
         item_id = stable_item_id(framework, run_id, "$run")
         return RunInterrupted(
             **self._canonical_kwargs(
@@ -786,7 +1022,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
     def _make_run_failed(self, handle: RunHandle, error_message: str) -> RunFailed:
         framework = "codex"
         run_id = self._event_run_id(handle)
-        scope_id = stable_scope_id(framework, run_id)
+        scope_id = self._lifecycle_scope_id(handle)
         item_id = stable_item_id(framework, run_id, "$run")
         return RunFailed(
             **self._canonical_kwargs(

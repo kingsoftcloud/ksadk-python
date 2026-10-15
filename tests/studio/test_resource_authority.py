@@ -151,6 +151,7 @@ def _setup(tmp_path, origin, *, data_path="/aicp"):
 def test_real_signed_transport_proves_exact_subaccount_and_knowledge_read(
     tmp_path, authority_upstream, monkeypatch
 ):
+    monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", "admission-fixture")
     origin, state = authority_upstream
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
@@ -181,6 +182,7 @@ def test_real_signed_transport_proves_exact_subaccount_and_knowledge_read(
     assert knowledge_body["DatasetId"] == "dataset-a"
     assert knowledge_body["Query"] == "ksadk-resource-authority-probe"
     for _, headers, _ in state["calls"]:
+        assert headers["X-Traffic-Source"] == "admission-fixture"
         authorization = next(
             value for key, value in headers.items() if key.lower() == "authorization"
         )
@@ -557,3 +559,27 @@ def test_settings_api_saved_credentials_reach_signed_resource_admission(
     assert access.authority.tenant_ref == "fixture-account"
     assert access.credentials.access_key.get_secret_value() == "fixture-current-ak"
     assert [urlsplit(item[0]).path for item in state["calls"]] == ["/iam", "/iam", "/aicp"]
+
+
+def test_preprod_control_plane_http_is_exact_and_root_only():
+    endpoint = "https://control.example.test"
+    environment = {
+        "KSYUN_ACCESS_KEY": "fixture-access",
+        "KSYUN_SECRET_KEY": "fixture-secret",
+        "AGENTENGINE_REGION": "pre-online",
+        "AGENTENGINE_SERVER_URL": endpoint,
+    }
+    policy = resource_authority_policy_from_environment(environment)
+    assert policy.allowed_data_endpoints == (endpoint,)
+    assert policy.iam_endpoint == "https://iam.api.ksyun.com"
+    with pytest.raises(ValueError, match="HTTPS"):
+        ResourceAuthorityPolicy(
+            iam_endpoint="https://iam.api.ksyun.com",
+            allowed_data_endpoints=(endpoint,),
+            allowed_regions=("cn-beijing-6",),
+        )
+    for suffix in (".attacker.example", ":8080", "/alternate", "?redirect=evil", "#fragment"):
+        with pytest.raises(ValueError):
+            resource_authority_policy_from_environment({
+                **environment, "AGENTENGINE_SERVER_URL": endpoint + suffix,
+            })

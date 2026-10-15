@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import sqlite3
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 @dataclass(frozen=True)
@@ -20,6 +24,7 @@ class A2AContextIdentity:
     tenant_id: str
     caller_principal_type: str
     caller_principal_id: str
+    sub_account_id: str | None = None
 
     def canonical_owner(self) -> str:
         values = (
@@ -29,9 +34,15 @@ class A2AContextIdentity:
             self.caller_principal_id.strip(),
         )
         if not values[0] or not values[2] or not values[3]:
-            raise ValueError(
-                "A2A context identity requires verified account, type, and principal"
-            )
+            raise ValueError("A2A context identity requires verified account, type, and principal")
+        if self.caller_principal_type == "user":
+            # Product identifiers are opaque. Preserve exact values and field
+            # boundaries instead of trimming or joining with an escapable delimiter.
+            owner = [self.account_id, self.tenant_id, self.caller_principal_type,
+                     self.caller_principal_id]
+            if self.sub_account_id is not None:
+                owner.append(self.sub_account_id)
+            return json.dumps(owner, ensure_ascii=False, separators=(",", ":"))
         return "\x1f".join(values)
 
 
@@ -42,6 +53,19 @@ class A2AContextStore(ABC):
     async def initialize(self) -> None:
         """Verify durable storage is ready before inbound A2A starts serving."""
         raise NotImplementedError
+
+
+def _mapping_key(
+    identity: A2AContextIdentity,
+    external_context_id: str,
+    isolation_scope: str | None,
+) -> tuple[str, str, str]:
+    context = external_context_id.strip()
+    if not context:
+        raise ValueError("external_context_id must be non-empty")
+    owner_hash = hashlib.sha256(identity.canonical_owner().encode("utf-8")).hexdigest()
+    context_hash = hashlib.sha256(context.encode("utf-8")).hexdigest()
+    return owner_hash, context_hash, str(isolation_scope or "")
 
     @abstractmethod
     async def resolve_or_create(
@@ -97,7 +121,7 @@ class SQLiteA2AContextStore(A2AContextStore):
         isolation_scope: str | None = None,
     ) -> str:
         await self.initialize()
-        key = self._mapping_key(identity, external_context_id, isolation_scope)
+        key = _mapping_key(identity, external_context_id, isolation_scope)
         return await asyncio.to_thread(self._resolve_or_create_sync, key)
 
     async def get(
@@ -108,7 +132,7 @@ class SQLiteA2AContextStore(A2AContextStore):
         isolation_scope: str | None = None,
     ) -> str | None:
         await self.initialize()
-        key = self._mapping_key(identity, external_context_id, isolation_scope)
+        key = _mapping_key(identity, external_context_id, isolation_scope)
         return await asyncio.to_thread(self._get_sync, key)
 
     def _initialize_sync(self) -> None:
@@ -135,19 +159,6 @@ class SQLiteA2AContextStore(A2AContextStore):
         finally:
             connection.close()
         os.chmod(self._path, 0o600)
-
-    @staticmethod
-    def _mapping_key(
-        identity: A2AContextIdentity,
-        external_context_id: str,
-        isolation_scope: str | None,
-    ) -> tuple[str, str, str]:
-        context = external_context_id.strip()
-        if not context:
-            raise ValueError("external_context_id must be non-empty")
-        owner_hash = hashlib.sha256(identity.canonical_owner().encode("utf-8")).hexdigest()
-        context_hash = hashlib.sha256(context.encode("utf-8")).hexdigest()
-        return owner_hash, context_hash, str(isolation_scope or "")
 
     def _resolve_or_create_sync(self, key: tuple[str, str, str]) -> str:
         owner_hash, context_hash, scope = key
@@ -200,4 +211,92 @@ class SQLiteA2AContextStore(A2AContextStore):
             connection.close()
 
 
-__all__ = ["A2AContextIdentity", "A2AContextStore", "SQLiteA2AContextStore"]
+class PostgresA2AContextStore(A2AContextStore):
+    """Shared context mapping for multi-replica managed Runtimes."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def initialize(self) -> None:
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS ksadk_a2a_context_mappings (
+                        schema_version INTEGER NOT NULL,
+                        owner_key_sha256 TEXT NOT NULL,
+                        external_context_sha256 TEXT NOT NULL,
+                        isolation_scope TEXT NOT NULL,
+                        internal_session_id TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY(owner_key_sha256, external_context_sha256, isolation_scope)
+                    )
+                    """
+                )
+            )
+
+    async def resolve_or_create(
+        self,
+        identity: A2AContextIdentity,
+        external_context_id: str,
+        *,
+        isolation_scope: str | None = None,
+    ) -> str:
+        owner_hash, context_hash, scope = _mapping_key(
+            identity, external_context_id, isolation_scope
+        )
+        session_id = f"a2a-session-{uuid.uuid4().hex}"
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    INSERT INTO ksadk_a2a_context_mappings(
+                        schema_version, owner_key_sha256, external_context_sha256,
+                        isolation_scope, internal_session_id
+                    ) VALUES (1, :owner_hash, :context_hash, :scope, :session_id)
+                    ON CONFLICT(owner_key_sha256, external_context_sha256, isolation_scope)
+                    DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                    RETURNING internal_session_id
+                    """
+                ),
+                {
+                    "owner_hash": owner_hash,
+                    "context_hash": context_hash,
+                    "scope": scope,
+                    "session_id": session_id,
+                },
+            )
+            return str(result.scalar_one())
+
+    async def get(
+        self,
+        identity: A2AContextIdentity,
+        external_context_id: str,
+        *,
+        isolation_scope: str | None = None,
+    ) -> str | None:
+        owner_hash, context_hash, scope = _mapping_key(
+            identity, external_context_id, isolation_scope
+        )
+        async with self._engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT internal_session_id FROM ksadk_a2a_context_mappings
+                    WHERE owner_key_sha256 = :owner_hash
+                      AND external_context_sha256 = :context_hash
+                      AND isolation_scope = :scope
+                    """
+                ),
+                {"owner_hash": owner_hash, "context_hash": context_hash, "scope": scope},
+            )
+            value = result.scalar_one_or_none()
+            return str(value) if value is not None else None
+
+__all__ = [
+    "A2AContextIdentity",
+    "A2AContextStore",
+    "PostgresA2AContextStore",
+    "SQLiteA2AContextStore",
+]

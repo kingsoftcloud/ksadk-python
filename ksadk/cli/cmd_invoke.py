@@ -36,6 +36,8 @@ from ksadk.hermes_terminal import run_hermes_terminal_session
 from ksadk.terminal_client import run_terminal_session
 from ksadk_runtime_common.workspace_files.constants import DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
 
+from ksadk.cli.invoke_content import _extract_content, _extract_response_content
+
 console: Any = None
 Markdown: Any = None
 Live: Any = None
@@ -583,6 +585,14 @@ def run_invoke_command(
 
     if message:
         # 单次调用模式
+        if not local and not _is_openclaw_target(next_state, latest_access) and not _is_hermes_target(next_state, latest_access):
+            from ksadk.cli.hosted_invoke import try_invoke_hosted_once
+
+            if try_invoke_hosted_once(
+                endpoint=endpoint, api_key=api_key, session_id=session_id,
+                message=message, model=model, insecure=insecure,
+            ):
+                return
         api_format_resolved = asyncio.run(
             _resolve_remote_api_format(
                 endpoint=endpoint,
@@ -1375,7 +1385,7 @@ async def _invoke_once(
             else:
                 click.echo(content)
     except Exception as e:
-        click.secho(f"\n❌ 调用失败: {e}", fg="red")
+        raise click.ClickException(f"调用失败: {e}") from e
 
 
 async def _chat(
@@ -1485,94 +1495,37 @@ async def _stream_chat(
     async with httpx.AsyncClient(**client_kwargs) as client:
         async with client.stream("POST", url, json=payload, headers=headers) as response:
             response.raise_for_status()
-            try:
-                current_event = ""
-                # Use aiter_lines() for robust UTF-8 decoding and line splitting
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
+            current_event = ""
+            # Use aiter_lines() for robust UTF-8 decoding and line splitting
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
 
-                    if line.startswith("event: "):
-                        current_event = line[7:].strip()
-                        continue
+                if line.startswith("event: "):
+                    current_event = line[7:].strip()
+                    continue
 
-                    if line.startswith("data: "):
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
+                if line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
 
-                        try:
-                            data = json.loads(data_str)
-                            if not isinstance(data, dict):
-                                continue
-                            if current_event and isinstance(data, dict):
-                                data = {**data, "_event": current_event}
-                            # 直接 yield 解析后的 JSON 数据，让 _extract_content 处理
-                            yield data
+                    try:
+                        data = json.loads(data_str)
+                        if not isinstance(data, dict):
+                            continue
+                        if current_event and isinstance(data, dict):
+                            data = {**data, "_event": current_event}
+                        event_type = current_event or data.get("type")
+                        response_payload = data.get("response")
+                        nested_error = (
+                            response_payload.get("error")
+                            if isinstance(response_payload, dict) else None
+                        )
+                        error = data.get("error") or nested_error
+                        if error or event_type in {"error", "response.failed"}:
+                            raise RuntimeError(str(error or data.get("message") or event_type))
+                        yield data
 
-                            # Handle events/errors
-                            error = data.get("error")
-                            if error:
-                                click.secho(f"\nError: {error}", fg="red")
-
-                        except json.JSONDecodeError:
-                            pass
-            except Exception as e:
-                click.secho(f"\nStream error: {e}", fg="red")
-
-
-def _extract_content(chunk: dict) -> tuple[str, str]:
-    """从 OpenAI 流式响应中提取内容 (包含 reasoning_content)"""
-    event_name = str(chunk.get("_event") or "")
-    if event_name == "response.output_text.delta":
-        return str(chunk.get("delta") or ""), ""
-    # reasoning delta 有 4 个变体名(与 remote_runner / 前端 chatProtocol 对齐),
-    # 主 runtime 发 reasoning.delta,Studio shared_web 发 reasoning_summary_text.delta。
-    if event_name in {
-        "response.reasoning.delta",
-        "response.reasoning_text.delta",
-        "response.reasoning_summary.delta",
-        "response.reasoning_summary_text.delta",
-    }:
-        return "", str(chunk.get("delta") or chunk.get("text") or "")
-    if event_name == "response.completed":
-        return "", ""
-
-    # OpenAI 格式: {"choices": [{"delta": {"content": "xxx", "reasoning_content": "thought"}}]}
-    try:
-        choices = chunk.get("choices", [])
-        if choices:
-            delta = choices[0].get("delta", {})
-            return delta.get("content", "") or "", delta.get("reasoning_content", "") or ""
-    except (KeyError, IndexError):
-        pass
-
-    if isinstance(chunk.get("output_text"), str):
-        return chunk["output_text"], ""
-    if isinstance(chunk.get("delta"), str):
-        return chunk["delta"], ""
-    return "", ""
-
-
-def _extract_response_content(response: dict) -> str:
-    """从 OpenAI 非流式响应中提取内容"""
-    output_text = response.get("output_text")
-    if output_text:
-        return str(output_text)
-    output = response.get("output") or []
-    for item in output:
-        if not isinstance(item, dict):
-            continue
-        for content in item.get("content") or []:
-            if isinstance(content, dict) and content.get("text"):
-                return str(content["text"])
-
-    # OpenAI 格式: {"choices": [{"message": {"content": "xxx"}}]}
-    try:
-        choices = response.get("choices", [])
-        if choices:
-            message = choices[0].get("message", {})
-            return str(message.get("content") or "")
-    except (KeyError, IndexError):
-        pass
-    return str(response)
+                    except json.JSONDecodeError:
+                        pass

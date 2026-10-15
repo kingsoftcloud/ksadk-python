@@ -1,3 +1,5 @@
+import { A2AOrchestrationEditor, type A2AOrchestration } from "../components/A2AOrchestrationEditor";
+import { RemoteAgentBindingsEditor, type RemoteAgentBinding } from "../components/RemoteAgentBindingsEditor";
 import { SubAgentBindingsEditor, validateSubAgentBindings, type SubAgentBinding } from "../components/SubAgentBindingsEditor";
 import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
 import { useEffect, useMemo, useState } from "react";
@@ -39,6 +41,7 @@ interface AgentDetail {
   draft: {
     metadata: { id: string; name: string; revision: number; labels?: Record<string, string>; appearance?: AgentAppearance };
     spec: {
+      a2aOrchestration?: A2AOrchestration | null;
       description?: string;
       runtime?: {
         type?: string;
@@ -91,6 +94,7 @@ interface AgentDetail {
         [key: string]: unknown;
       };
       bindings?: {
+        remoteAgents?: RemoteAgentBinding[];
         modelProfileId?: string | null;
         modelProfileIds?: string[];
         skills?: CapabilityBindingValue[];
@@ -234,6 +238,7 @@ export function AgentEditor({
   const { name, slug, runtimeType: runtime, prompt } = agentForm.watch();
   const [defaultModel, setDefaultModel] = useState("");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [modelFailoverMode, setModelFailoverMode] = useState<"strict" | "automatic">("strict");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
@@ -244,6 +249,10 @@ export function AgentEditor({
   const [runtimeEntryPoint, setRuntimeEntryPoint] = useState("");
   const [runtimeAgentVariable, setRuntimeAgentVariable] = useState("root_agent");
   const [providerRef, setProviderRef] = useState("");
+  const [a2aOrchestration, setA2AOrchestration] = useState<A2AOrchestration | null>(null);
+  const [a2aOrchestrationTouched, setA2AOrchestrationTouched] = useState(false);
+  const [remoteAgents, setRemoteAgents] = useState<RemoteAgentBinding[]>([]);
+  const [remoteAgentsTouched, setRemoteAgentsTouched] = useState(false);
   const [subAgents, setSubAgents] = useState<SubAgentBinding[]>([]);
   const [subAgentsTouched, setSubAgentsTouched] = useState(false);
   const [providerConfigText, setProviderConfigText] = useState("{}");
@@ -349,9 +358,14 @@ export function AgentEditor({
         });
         setSelectedModels(ids);
         setDefaultModel(bindings.modelProfileId || ids[0] || "");
+        setModelFailoverMode(bindings.modelFailoverMode === "automatic" ? "automatic" : "strict");
         setSelectedSkills((bindings.skills || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedMcp((bindings.mcpServers || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedTools((bindings.tools || []).map((item: { resourceId: string }) => item.resourceId));
+        setA2AOrchestration(draft.spec?.a2aOrchestration || null);
+        setA2AOrchestrationTouched(false);
+        setRemoteAgents(bindings.remoteAgents || []);
+        setRemoteAgentsTouched(false);
         setSubAgents(draft.spec?.subAgents || []);
         setSubAgentsTouched(false);
         setSelectedPlugins(bindings.plugins || []);
@@ -559,8 +573,8 @@ export function AgentEditor({
         return;
       }
     }
-    if (!Number.isInteger(executionMaxSteps) || executionMaxSteps < 1 || executionMaxSteps > 100) {
-      setSaveError("最大步骤数必须是 1 到 100 的整数");
+    if (!Number.isInteger(executionMaxSteps) || executionMaxSteps < 1) {
+      setSaveError("兼容步骤提示必须是正整数");
       return;
     }
     if (!Number.isInteger(executionTimeoutSeconds) || executionTimeoutSeconds < 1 || executionTimeoutSeconds > 3600) {
@@ -645,11 +659,14 @@ export function AgentEditor({
         ...(original.bindings || {}),
         modelProfileId: resolvedDefaultModel || null,
         modelProfileIds: selectedModels,
+        modelFailoverMode,
         skills: mergeCapabilityBindings(original.bindings?.skills, selectedSkills),
         mcpServers: mergeCapabilityBindings(original.bindings?.mcpServers, selectedMcp),
         tools: mergeCapabilityBindings(original.bindings?.tools, selectedTools),
         plugins: selectedPlugins,
       };
+      if (a2aOrchestrationTouched) spec.a2aOrchestration = a2aOrchestration;
+      if (remoteAgentsTouched) spec.bindings.remoteAgents = remoteAgents;
       if (subAgentsTouched) spec.subAgents = subAgents;
       spec.context = {
         ...(original.context || {}),
@@ -1047,7 +1064,7 @@ export function AgentEditor({
           </FormField>
         </div>
         <div className="field quick-model-binding-field">
-          <div className="field-heading"><label>绑定模型</label><span className="helper">会话中只能动态切换到这里选中的模型</span></div>
+          <div className="field-heading"><label>绑定模型</label><span className="helper">会话中只能切换到这里选中的模型；不会因此自动改用其他模型。</span></div>
           <StudioMultiSelect
             ariaLabel="选择绑定模型"
             items={visibleModels}
@@ -1061,6 +1078,25 @@ export function AgentEditor({
             emptyMessage="当前模型服务没有返回可绑定模型"
           />
         </div>
+        <FormField
+          label="模型故障策略"
+          requirement="optional"
+          htmlFor="editModelFailoverMode"
+          hint={runtime === "harness"
+            ? "Native 暂不支持自动切换，运行时会拒绝此配置；请使用严格模式。"
+            : "严格模式保证一次任务始终使用你选定的模型。"}
+        >
+          <StudioSelect
+            id="editModelFailoverMode"
+            ariaLabel="模型故障策略"
+            value={modelFailoverMode}
+            options={[
+              { value: "strict", label: "严格使用默认模型", description: "429 等瞬时错误只重试当前模型，不跨模型切换。" },
+              { value: "automatic", label: "高可用：自动切换候选模型", description: "需 Runtime 支持；Native 暂不支持。支持时按绑定顺序切换，并记录活动。" },
+            ]}
+            onValueChange={value => setModelFailoverMode(value === "automatic" ? "automatic" : "strict")}
+          />
+        </FormField>
         <div className="field quick-model-binding-field">
           <div className="field-heading"><label>绑定 Skill / MCP</label><span className="helper">{runtime === "harness" ? "Skill 与 MCP 由通用智能体按需加载，并执行权限与审批策略。" : runtime === "codex" ? "Skill 与 MCP 由 Codex Runtime 按能力投影。" : runtime === "plugin" ? "Skill 与 MCP 会通过 PluginHost 投影给外部 Provider。" : "Skill 可编辑；当前 Runtime 尚未实现 MCP 源码注入，历史 MCP 仅保留。"}</span></div>
           <div className="quick-capability-bindings">
@@ -1091,6 +1127,8 @@ export function AgentEditor({
             />
           </div>
         </div>
+        {(["adk", "langgraph", "codex"].includes(runtime) || remoteAgents.length > 0) && <RemoteAgentBindingsEditor key={agentId} value={remoteAgents} onChange={value => { setRemoteAgents(value); setRemoteAgentsTouched(true); }} />}
+        {(["adk", "langgraph"].includes(runtime) || a2aOrchestration) && <A2AOrchestrationEditor key={`${agentId}-a2a-plan`} agentId={agentId} revision={detail?.draft.metadata.revision || 1} runtime={{ type: runtime, projectPath: runtimeProjectPath, entryPoint: runtimeEntryPoint, agentVariable: runtimeAgentVariable }} bindings={remoteAgents} value={a2aOrchestration} onChange={value => { setA2AOrchestration(value); setA2AOrchestrationTouched(true); }} />}
         {runtime === "harness" && <SubAgentBindingsEditor value={subAgents} tools={visibleTools.filter(tool => {
           const boundIds = selectedTools.length
             ? selectedTools
@@ -1188,8 +1226,8 @@ export function AgentEditor({
               onValueChange={setExecutionStrategy}
             />
           </FormField>
-          <FormField label="最大步骤数" requirement="required" htmlFor="editExecutionMaxSteps" hint="单次运行允许的最大 Agent 步骤，范围 1–100。">
-            <input id="editExecutionMaxSteps" type="number" min={1} max={100} value={executionMaxSteps} onChange={event => setExecutionMaxSteps(Number(event.target.value))} />
+          <FormField label="步骤提示（兼容）" requirement="required" htmlFor="editExecutionMaxSteps" hint="保留旧配置兼容，不是统一运行上限；实际停止条件由所选 Runtime 的轮次、超时、工具与 Token 预算决定。">
+            <input id="editExecutionMaxSteps" type="number" min={1} value={executionMaxSteps} onChange={event => setExecutionMaxSteps(Number(event.target.value))} />
           </FormField>
           <FormField label="超时秒数" requirement="required" htmlFor="editExecutionTimeout" hint="单次运行的整体超时，范围 1–3600 秒。">
             <input id="editExecutionTimeout" type="number" min={1} max={3600} value={executionTimeoutSeconds} onChange={event => setExecutionTimeoutSeconds(Number(event.target.value))} />

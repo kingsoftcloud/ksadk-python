@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -212,6 +213,12 @@ async def test_scheduler_registry_rejects_a_stale_or_cross_agent_target(tmp_path
         await registry.close()
 
 
+# G11 环境 Section 内容（日期动态），以 system 角色随每次装配注入。
+_ENV_SECTION_RE = re.compile(
+    r"当前日期：\d{4}-\d{2}-\d{2}（时区 .+）\nAgent：agent-a\n平台：\w+"
+)
+
+
 @pytest.mark.asyncio
 async def test_managed_harness_scheduler_restores_history_after_registry_restart(
     tmp_path: Path,
@@ -276,12 +283,28 @@ async def test_managed_harness_scheduler_restores_history_after_registry_restart
         assert second.state == "succeeded", second
         assert second.session_id == first.session_id == "continued-session"
         assert second.run_id != first.run_id
-        assert [(m["role"], m["content"]) for m in requests[1]] == [
+        actual = [(m["role"], m["content"]) for m in requests[1]]
+        # The current Build's empty Skill directory is a stable, low-trust
+        # context section. It is not a recovered conversation turn.
+        assert actual[1][0] == "assistant", actual
+        assert "<<<BEGIN_SKILL_CATALOG_CONTEXT>>>" in actual[1][1]
+        assert "当前没有已绑定 Skill" in actual[1][1]
+        actual = [actual[0], *actual[2:]]
+        expected = [
             ("system", "system-role"),
+            # G11 环境上下文段（system trust）随每次装配注入，日期动态。
+            ("system", _ENV_SECTION_RE),
             ("user", "remember alpha"),
             ("assistant", "answer-1"),
             ("user", "remember alpha"),
         ]
+        assert len(actual) == len(expected), actual
+        for (arole, atext), (erole, epat) in zip(actual, expected):
+            assert arole == erole, actual
+            if isinstance(epat, re.Pattern):
+                assert epat.fullmatch(atext), atext
+            else:
+                assert atext == epat, actual
     finally:
         await scheduler.stop()
 

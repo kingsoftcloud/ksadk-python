@@ -66,7 +66,14 @@ def application(monkeypatch):
     observed = []
 
     def upstream(request):
-        observed.append((str(request.url), request.headers.get("origin"), request.read()))
+        observed.append(
+            (
+                str(request.url),
+                request.headers.get("origin"),
+                request.headers.get("cookie"),
+                request.read(),
+            )
+        )
         return httpx.Response(
             200,
             stream=httpx.ByteStream(b"event: result\ndata: ok\n\n"),
@@ -115,8 +122,26 @@ def test_core_proxy_preserves_stream_body_and_rewrites_only_transport_origin(app
     assert response.content == b"event: result\ndata: ok\n\n"
     assert response.headers["content-type"] == "text/event-stream"
     assert observed == [
-        ("http://127.0.0.1:43123/api/example?q=test", "http://127.0.0.1:43123", b'{"args":{}}')
+        (
+            "http://127.0.0.1:43123/api/example?q=test",
+            "http://127.0.0.1:43123",
+            None,
+            b'{"args":{}}',
+        )
     ]
+
+
+def test_core_proxy_drops_stale_studio_cookies_but_keeps_core_session(application):
+    client, _, observed = application
+    client.cookies.set("agentkit_studio_session", "test-session")
+    client.cookies.set("agentkit_studio_session_deadbeef", "obsolete")
+    client.cookies.set("agentkit_studio_chat_agent", "agent-1")
+    client.cookies.set("dsh_core_session", "core-token")
+
+    response = client.get("/studio-core/plugins/events")
+
+    assert response.status_code == 200
+    assert observed[0][2] == "dsh_core_session=core-token"
 
 
 def test_websocket_checks_authentication_before_connecting(application):

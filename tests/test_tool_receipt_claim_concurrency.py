@@ -56,8 +56,8 @@ class _PostgresPool:
         self.pool, self.checked, self.release = pool, checked, release
 
     @asynccontextmanager
-    async def acquire(self):
-        async with self.pool.acquire() as connection:
+    async def acquire(self, **kwargs):
+        async with self.pool(**kwargs) as connection:
             pool = self
 
             class Connection:
@@ -97,8 +97,8 @@ async def test_delete_cannot_erase_a_claim_inserted_after_its_check(audit_servic
             lambda query: f"SELECT 1 FROM {tool_receipts_table}" in query, pause)
     else:
         checked, release = asyncio.Event(), asyncio.Event()
-        original = first._pool
-        first._pool = _PostgresPool(original, checked, release)
+        original = first._connection
+        first._connection = _PostgresPool(original, checked, release).acquire
     deletion = asyncio.create_task(first.delete_session("session-1"))
     try:
         if is_sqlite:
@@ -124,7 +124,7 @@ async def test_delete_cannot_erase_a_claim_inserted_after_its_check(audit_servic
         if is_sqlite:
             first._connection = original
         else:
-            first._pool = original
+            first._connection = original
             await second.aclose()
 
 

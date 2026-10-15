@@ -244,19 +244,28 @@ runtime_context = RuntimeLaunchContext(
     detection=detection_result,
     config=dict(getattr(detection_result, "raw_config", None) or {{}}),
 )
-# managed A2A discovery-only card:KSADK_A2A_RUNTIME_ID 非空时挂
-# /.well-known/agent-card.json;注册前即可被 server 探测(a2a-runtime-inbound-wiring)。
-_managed_a2a_card = None
+# Runtime identity is available before registration for discovery.  Operator
+# enables the complete composition only after every Secret projection exists.
+_managed_a2a_bootstrap = None
+_a2a_adapter = None
 if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():
-    from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+    if os.environ.get("KSADK_A2A_MANAGED_BOOTSTRAP_ENABLED", "").strip().lower() == "true":
+        from ksadk.a2a.platform import build_managed_a2a_bootstrap_from_env
+        from ksadk.runtime.factory import create_runtime_adapter
 
-    _managed_a2a_card = build_managed_a2a_card_if_configured()
+        _managed_a2a_bootstrap = build_managed_a2a_bootstrap_from_env()
+        _a2a_adapter = create_runtime_adapter(runtime_context)
+    else:
+        from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+
+        _managed_a2a_bootstrap = build_managed_a2a_card_if_configured()
 app = create_runtime_app(
     RuntimeAppConfig(
         runtime_type=detection_result.type.value,
         runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
         launch_context=runtime_context,
-        a2a=_managed_a2a_card,
+        a2a=_managed_a2a_bootstrap,
+        a2a_runtime_adapter=_a2a_adapter,
     ),
     configure_runtime_app,
 )

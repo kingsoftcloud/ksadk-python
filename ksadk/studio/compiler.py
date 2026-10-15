@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from ksadk.conversations.model_context import supports_native_image_input
 from ksadk.plugins.providers.legacy_catalog import CODEX_AGENT_PROVIDER_PLUGIN_ID
 from ksadk.resource_runtime.plugin_config import resource_plugin_config
 from ksadk.studio.capabilities import (
@@ -15,10 +16,13 @@ from ksadk.studio.capabilities import (
     sha256_digest,
 )
 from ksadk.studio.contracts import (
+    AgentBindings,
     AgentDraft,
     CapabilitiesSpec,
+    ModelSpec,
     ResolvedAgentSpec,
     ResolvedCapabilities,
+    RemoteAgentBinding,
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.resource_catalog import LocalResourceCatalog
@@ -31,6 +35,8 @@ from ksadk.studio.workspace import Workspace
 class CompileResult:
     resolved: ResolvedAgentSpec
     dependency_lock: dict[str, Any]
+    a2a_source: str | None = None
+    a2a_entry_source: str | None = None
 
 
 class AgentCompiler:
@@ -48,6 +54,13 @@ class AgentCompiler:
         self.catalog = catalog or LocalResourceCatalog(workspace)
 
     def compile(self, draft: AgentDraft) -> CompileResult:
+        from ksadk.studio.a2a_orchestration import compile_orchestration
+        from ksadk.studio.a2a_bindings import require_execution_policy
+
+        orchestration = compile_orchestration(draft)
+        for binding in draft.spec.bindings.remote_agents:
+            RemoteAgentBinding.model_validate(binding.model_dump())
+            require_execution_policy(binding.policy_ref)
         unsupported_plugins = [
             binding.plugin_ref
             for binding in draft.spec.bindings.plugins
@@ -111,7 +124,36 @@ class AgentCompiler:
                     field="spec.subAgents",
                 )
 
+        resolved_model = self.resolver.resolve_model(materialized.spec.model)
+        vision_spec = self._vision_model_spec(materialized.spec.bindings)
+        vision_model = self.resolver.resolve_model(vision_spec) if vision_spec is not None else None
+        if (
+            vision_model is not None
+            and not supports_native_image_input(vision_model.metadata)
+        ):
+            raise StudioError(
+                "VISION_MODEL_IMAGE_INPUT_REQUIRED",
+                "视觉模型资源必须显式声明图片输入能力",
+                status_code=422,
+                field="spec.bindings.visionModelProfileId",
+            )
+        bound_models = [
+            self.resolver.resolve_model(model)
+            for model in self.catalog.resolve_models(materialized.spec.bindings)
+        ]
+        fallback_models = []
+        if materialized.spec.bindings.model_failover_mode == "automatic":
+            fallback_models = [
+                model
+                for model in bound_models
+                if not (
+                    model.model == resolved_model.model
+                    and model.endpoint_url == resolved_model.endpoint_url
+                )
+            ]
+
         resolved = ResolvedAgentSpec(
+            a2a_orchestration=({**orchestration.plan, "digest": orchestration.digest} if orchestration else None),
             agent_id=draft.metadata.id,
             source_revision=draft.metadata.revision,
             instructions=compose_system_instruction(
@@ -119,12 +161,16 @@ class AgentCompiler:
                 materialized.spec.soul,
             ),
             soul=materialized.spec.soul,
-            model=self.resolver.resolve_model(materialized.spec.model),
+            model=resolved_model,
+            vision_model=vision_model,
+            fallback_models=fallback_models[:4],
+            model_failover_mode=materialized.spec.bindings.model_failover_mode,
             capabilities=ResolvedCapabilities(
                 skills=skills,
                 mcp_servers=mcp_servers,
                 tools=tools,
             ),
+            remote_agents=sorted(materialized.spec.bindings.remote_agents, key=lambda item: (item.local_name, item.binding_id)),
             execution=materialized.spec.execution,
             context=materialized.spec.context,
             memory=materialized.spec.memory,
@@ -150,13 +196,53 @@ class AgentCompiler:
                 exclude_none=True,
                 mode="json",
             ),
+            "fallbackModels": [
+                model.model_dump(by_alias=True, exclude_none=True, mode="json")
+                for model in resolved.fallback_models
+            ],
+            **(
+                {
+                    "visionModel": vision_model.model_dump(
+                        by_alias=True, exclude_none=True, mode="json"
+                    )
+                }
+                if vision_model is not None
+                else {}
+            ),
             "skills": skills,
             "mcpServers": mcp_servers,
             "tools": [
                 tool.model_dump(by_alias=True, exclude_none=True, mode="json") for tool in tools
             ],
         }
-        return CompileResult(resolved=resolved, dependency_lock=dependency_lock)
+        dependency_lock["remoteAgents"] = [binding.model_dump(by_alias=True, mode="json") for binding in resolved.remote_agents]
+        if orchestration:
+            dependency_lock["a2aOrchestration"] = {**orchestration.plan, "digest": orchestration.digest}
+        return CompileResult(resolved=resolved, dependency_lock=dependency_lock,
+                             a2a_source=orchestration.source if orchestration else None,
+                             a2a_entry_source=orchestration.entry_source if orchestration else None)
+
+    def _vision_model_spec(self, bindings: AgentBindings) -> ModelSpec | None:
+        profile_id = bindings.vision_model_profile_id
+        if profile_id is None:
+            return None
+        selected = bindings.model_copy(
+            update={
+                "model_profile_id": profile_id,
+                "model_profile_ids": [],
+                "model_parameters": None,
+                "vision_model_profile_id": None,
+            }
+        )
+        model = self.catalog.resolve_model(selected)
+        if model is None:
+            raise StudioError(
+                "VISION_MODEL_PROFILE_REQUIRED",
+                "视觉模型资源不可用",
+                status_code=422,
+                field="spec.bindings.visionModelProfileId",
+            )
+        return model
 
     def _materialize_bindings(self, draft: AgentDraft) -> AgentDraft:
         runtime = draft.spec.runtime
@@ -179,6 +265,7 @@ class AgentCompiler:
         if (
             not uses_codex_native_tools
             and not bindings.model_profile_id
+            and not bindings.vision_model_profile_id
             and not bindings.tools
             and not bindings.mcp_servers
             and not bindings.skills
@@ -249,11 +336,20 @@ class AgentCompiler:
             | set(permissions)
             | {permission for tool in bound_mcp_tools for permission in tool.permissions}
         )
-        endpoint = model.endpoint_url or model.base_url or ""
-        hostname = (urlparse(endpoint).hostname or "").lower().rstrip(".")
-        if hostname and materialized.spec.security.network.mode == "restricted":
+        network_models = self.catalog.resolve_models(bindings)
+        vision_spec = self._vision_model_spec(bindings)
+        if vision_spec is not None:
+            network_models.append(vision_spec)
+        model_hosts = {
+            (urlparse(item.endpoint_url or item.base_url or "").hostname or "")
+            .lower()
+            .rstrip(".")
+            for item in network_models
+        }
+        model_hosts.discard("")
+        if model_hosts and materialized.spec.security.network.mode == "restricted":
             materialized.spec.security.network.allowed_hosts = sorted(
-                set(materialized.spec.security.network.allowed_hosts) | {hostname}
+                set(materialized.spec.security.network.allowed_hosts) | model_hosts
             )
         return materialized
 

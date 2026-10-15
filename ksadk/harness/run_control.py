@@ -223,11 +223,14 @@ class RunController:
     total_tokens: int = 0
     replans: int = 0
     closing_requested: bool = False
+    closing_reason: str = ""
     closing_prompt_emitted: bool = False
     stop_reason: str = ""
     budget_exhausted: bool = False
     action_fingerprints: deque[str] = field(default_factory=deque)
     error_fingerprints: deque[str] = field(default_factory=deque)
+    semantic_action_key: str = ""
+    semantic_action_streak: int = 0
     acceptance_evidence: dict[str, list[str]] = field(default_factory=dict)
     completed_milestones: set[str] = field(default_factory=set)
     guidance_revision: int = 0
@@ -255,10 +258,27 @@ class RunController:
         if not stagnation_exempt:
             fingerprint = _fingerprint({"tool": name, "arguments": arguments})
             self._append(self.action_fingerprints, fingerprint)
-            if Counter(self.action_fingerprints)[fingerprint] >= (
+            if _trailing_repeat_count(self.action_fingerprints, fingerprint) >= (
                 self.spec.stagnation.action_repeat_threshold
             ):
                 return self._request_replan("repeated_action")
+            semantic_key = _semantic_action_key(name, arguments)
+            if semantic_key and semantic_key == self.semantic_action_key:
+                self.semantic_action_streak += 1
+            elif semantic_key:
+                self.semantic_action_key = semantic_key
+                self.semantic_action_streak = 1
+            else:
+                self.semantic_action_key = ""
+                self.semantic_action_streak = 0
+            # A model can evade exact argument fingerprints by varying search
+            # wording while repeatedly calling the same wrapped MCP endpoint.
+            # Four consecutive calls leave room for normal refinement but stop
+            # unproductive retrieval loops before they inflate the context.
+            if self.semantic_action_streak >= max(
+                4, self.spec.stagnation.action_repeat_threshold + 1
+            ):
+                return self._request_replan("repeated_action_kind")
         self.tool_calls += 1
         return decision
 
@@ -276,6 +296,24 @@ class RunController:
                     event.payload.get("output_tokens") or 0
                 )
             self.total_tokens += int(reported or 0)
+            return self._budget_decision()
+        if event.event_type == EventType.MODEL_CALL_FAILED and str(
+            event.payload.get("action") or ""
+        ) in {"retry_same_model", "failover", "recover_context"}:
+            # Provider policy already owns these recoverable attempts. Counting
+            # every visible 429 retry as an agent-level repeated error causes
+            # the stagnation guard to stop a turn even when a later retry
+            # succeeds. Only terminal/unhandled model failures participate in
+            # task-level stagnation detection.
+            return self._budget_decision()
+        if event.event_type == EventType.TOOL_CALL_END and str(
+            event.payload.get("error") or ""
+        ).startswith("RunControlReplan:"):
+            # ``before_tool`` already consumed this controller decision and
+            # requested a new plan.  The tool loop represents that internal
+            # control-flow signal as a failed tool result so the model can see
+            # it; counting the same signal again as a repeated tool error
+            # spends a second replan for one duplicated action.
             return self._budget_decision()
         if event.event_type in {EventType.TOOL_CALL_END, EventType.MODEL_CALL_FAILED}:
             error = str(
@@ -374,11 +412,14 @@ class RunController:
             "total_tokens": self.total_tokens,
             "replans": self.replans,
             "closing_requested": self.closing_requested,
+            "closing_reason": self.closing_reason,
             "closing_prompt_emitted": self.closing_prompt_emitted,
             "stop_reason": self.stop_reason,
             "budget_exhausted": self.budget_exhausted,
             "action_fingerprints": list(self.action_fingerprints),
             "error_fingerprints": list(self.error_fingerprints),
+            "semantic_action_key": self.semantic_action_key,
+            "semantic_action_streak": self.semantic_action_streak,
             "acceptance_evidence": {
                 key: list(value) for key, value in self.acceptance_evidence.items()
             },
@@ -400,6 +441,7 @@ class RunController:
         self.total_tokens = int(snapshot.get("total_tokens") or 0)
         self.replans = int(snapshot.get("replans") or 0)
         self.closing_requested = bool(snapshot.get("closing_requested"))
+        self.closing_reason = str(snapshot.get("closing_reason") or "")
         self.closing_prompt_emitted = bool(snapshot.get("closing_prompt_emitted"))
         self.stop_reason = str(snapshot.get("stop_reason") or "")
         self.budget_exhausted = bool(snapshot.get("budget_exhausted"))
@@ -410,6 +452,10 @@ class RunController:
         self.error_fingerprints = deque(
             (str(item) for item in snapshot.get("error_fingerprints") or ()),
             maxlen=self.spec.stagnation.fingerprint_window,
+        )
+        self.semantic_action_key = str(snapshot.get("semantic_action_key") or "")
+        self.semantic_action_streak = max(
+            0, int(snapshot.get("semantic_action_streak") or 0)
         )
         self.acceptance_evidence = {
             str(key): [str(item) for item in value]
@@ -462,6 +508,20 @@ class RunController:
             else "当前没有未完成且依赖已满足的里程碑。"
         )
         replan = f"重规划原因：{self.replan_reason}。" if self.replan_reason else ""
+        if self.replan_reason == "repeated_action":
+            replan += (
+                "不要再次执行与刚才相同的工具和参数；直接利用已经返回的结果，"
+                "选择能推动交付物完成的下一步。"
+            )
+        elif self.replan_reason == "repeated_action_kind":
+            replan += (
+                "停止继续调用同一类工具；已有结果视为本阶段检索已完成，"
+                "立即转向编写、执行或验证交付物。"
+            )
+        elif self.replan_reason == "repeated_error":
+            replan += (
+                "不要原样重试同一失败动作；先根据已有错误证据更换方法或修正输入。"
+            )
         return (
             "这是运行控制器提供的低频执行合同。最终完成状态只由外部验收证据决定，"
             "不要自报完成。"
@@ -539,7 +599,8 @@ class RunController:
         for name, used, limit, pending in checks:
             if limit is not None and used + pending >= limit * limits.soft_limit_ratio:
                 self.closing_requested = True
-                return ControlDecision(ControlAction.CLOSE, f"{name}_soft_limit")
+                self.closing_reason = f"{name}_soft_limit"
+                return ControlDecision(ControlAction.CLOSE, self.closing_reason)
         return ControlDecision(ControlAction.CONTINUE)
 
     def _request_replan(self, reason: str) -> ControlDecision:
@@ -547,6 +608,16 @@ class RunController:
             self.stop_reason = f"stagnation_after_{self.replans}_replans:{reason}"
             return ControlDecision(ControlAction.STOP, self.stop_reason)
         self.replans += 1
+        # A replan starts a fresh stagnation window.  Keeping the offending
+        # fingerprint at threshold would make the very next attempt consume
+        # another replan even after the model chose a different intermediate
+        # action, leaving no real opportunity to recover.
+        if reason in {"repeated_action", "repeated_action_kind"}:
+            self.action_fingerprints.clear()
+            self.semantic_action_key = ""
+            self.semantic_action_streak = 0
+        elif reason == "repeated_error":
+            self.error_fingerprints.clear()
         self.guidance_revision += 1
         self.replan_reason = reason
         return ControlDecision(ControlAction.REPLAN, reason)
@@ -565,6 +636,40 @@ class RunController:
             if all(self.acceptance_evidence.get(item) for item in milestone.acceptance_ids):
                 self.completed_milestones.add(milestone.milestone_id)
                 self.guidance_revision += 1
+
+
+def _semantic_action_key(name: str, arguments: Mapping[str, Any]) -> str:
+    """Return a stable identity for wrapped calls whose payload may vary.
+
+    This deliberately stays narrow: normal file reads/writes often repeat with
+    different paths and must not be treated as a loop.  The generic MCP wrapper,
+    however, hides the real operation in its arguments, so provider + tool name
+    is the useful action identity.
+    """
+
+    if name != "mcp_call_tool":
+        return ""
+    server_id = str(arguments.get("server_id") or "").strip()
+    tool_name = str(arguments.get("tool_name") or "").strip()
+    if not server_id or not tool_name:
+        return ""
+    return f"{name}:{server_id}:{tool_name}"
+
+
+def _trailing_repeat_count(values: Sequence[str], expected: str) -> int:
+    """Count only consecutive repeats at the end of an action history.
+
+    Re-running a validator after an intervening edit is progress, even when
+    the validator arguments are identical.  A window-wide frequency count
+    incorrectly blocks that normal edit-then-verify workflow.
+    """
+
+    count = 0
+    for value in reversed(values):
+        if value != expected:
+            break
+        count += 1
+    return count
 
 
 def _evaluate_check(

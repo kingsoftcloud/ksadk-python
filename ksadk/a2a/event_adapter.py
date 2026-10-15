@@ -1,15 +1,7 @@
-"""A2AEventAdapter — A2A Message/Task/Artifact 与 RuntimeEvent 的双向转换 (goal-05)。
+"""Deprecated stateless facade over the sole canonical A2A mapper.
 
-契约 §3.2:``A2AEventAdapter`` 负责 A2A wire 对象与 G0.2 RuntimeEvent 的双向转换;
-§7.2:artifact/message ↔ RuntimeEvent artifact/text/data。
-
-方向:
-- ``task_status_to_event``:A2A TaskStatus/TaskState → RuntimeEvent(run.*)。
-- ``artifact_to_event``:A2A Artifact → RuntimeEvent(item.*,item_kind="artifact")。
-- ``message_to_event``:A2A Message → RuntimeEvent(item.*,item_kind="message")。
-- ``event_to_text_part``:RuntimeEvent(item.*,item_kind="message")→ A2A ``Part``(用于出站)。
-
-wire 对象是 protobuf(``a2a_pb2``);文本用 ``Part(text=...)``。
+Managed invocations use events.adapters.a2a directly, retaining one adapter
+per local handle. This facade only preserves older scalar helper signatures.
 """
 
 from __future__ import annotations
@@ -17,197 +9,104 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from a2a.types import Part, TaskState, TaskStatus
+from a2a.types import Message, Part, Role, Task, TaskArtifactUpdateEvent, TaskState
 
-from ksadk.events.canonical import (
-    ContentSnapshot,
-    ErrorInfo,
-    ItemCompleted,
-    ItemStarted,
-    ItemUpdated,
-    RunCanceled,
-    RunCompleted,
-    RunFailed,
-    RunInterrupted,
-    RunProgress,
-    RunStarted,
-    RuntimeEvent,
-    SourceRef,
-)
+from ksadk.events.adapters.a2a import A2AAdapterContext
+from ksadk.events.adapters.a2a import A2AEventAdapter as CanonicalA2AEventAdapter
+from ksadk.events.canonical import ItemCompleted, ItemUpdated, RunStarted, RuntimeEvent
 from ksadk.events.content import TextContent
-from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 
 
 class A2AEventAdapter:
-    """A2A wire 对象 ↔ RuntimeEvent 双向转换器。"""
+    def __init__(self) -> None:
+        self._canonical = CanonicalA2AEventAdapter()
 
-    # ---- A2A → RuntimeEvent ----
+    @staticmethod
+    def _context(kwargs):
+        return A2AAdapterContext(
+            run_id=kwargs["invocation_id"],
+            context_id=kwargs["session_id"],
+            task_id=kwargs["invocation_id"],
+            initial_seq=kwargs["seq_id"],
+        )
 
-    def task_status_to_event(
-        self,
-        status: TaskStatus,
-        *,
-        agent_id: str,
-        user_id: str,
-        session_id: str,
-        invocation_id: str,
-        seq_id: int,
-        event_id: Optional[str] = None,
-    ) -> RuntimeEvent:
-        """A2A TaskStatus → canonical RuntimeEvent(run.*)。"""
-        state = status.state
-        state_name = TaskState.Name(state) if state is not None else "unknown"
-        scope_id = stable_scope_id("a2a", session_id, invocation_id)
-        run_id = invocation_id
-        source = SourceRef(
-            framework="a2a",
-            native_run_id=invocation_id,
-            metadata={"agent_id": agent_id, "user_id": user_id, "status": state_name},
+    @staticmethod
+    def _decorate(event, kwargs):
+        updates = {"seq": kwargs["seq_id"]}
+        if kwargs.get("event_id"):
+            updates["event_id"] = kwargs["event_id"]
+        return event.model_copy(update=updates)
+
+    def task_status_to_events(self, status, **kwargs):
+        # A terminal task may be the only frame delivered by a legacy peer.
+        # That path historically represents a completed item and must not
+        # manufacture a lifecycle start after its terminal status message.
+        # Streaming peers still receive RunStarted from their first
+        # non-terminal snapshot, which keeps the canonical lifecycle intact.
+        was_started = self._canonical._run_started
+        context = self._context(kwargs)
+        # The legacy scalar callback has no outer Task context. Project its
+        # interaction message onto the local platform task identity; the
+        # canonical mapper needs that message to identify input/approval waits.
+        # Other status messages are projected separately by
+        # _SpaceClientEventMixin.
+        scalar_status = type(status)()
+        scalar_status.CopyFrom(status)
+        if scalar_status.HasField("message"):
+            if status.state in {
+                TaskState.TASK_STATE_INPUT_REQUIRED,
+                TaskState.TASK_STATE_AUTH_REQUIRED,
+            }:
+                scalar_status.message.context_id = context.context_id
+                scalar_status.message.task_id = context.task_id
+            else:
+                scalar_status.ClearField("message")
+        task = Task(id=context.task_id, context_id=context.context_id, status=scalar_status)
+        events = self._canonical._map_task_snapshot(
+            task, context, "subscription_rebuild", "legacy", time.time()
         )
-        timestamp = time.time()
-        eid = event_id or stable_event_id(
-            "a2a", scope_id, run_id, "run", "run", invocation_id, seq_id
-        )
-        common: dict[str, Any] = {
-            "schema_version": 2,
-            "event_id": eid,
-            "seq": seq_id,
-            "timestamp": timestamp,
-            "run_id": run_id,
-            "scope_id": scope_id,
-            "source": source,
+        terminal_states = {
+            TaskState.TASK_STATE_COMPLETED,
+            TaskState.TASK_STATE_CANCELED,
+            TaskState.TASK_STATE_FAILED,
+            TaskState.TASK_STATE_REJECTED,
         }
-        if state == TaskState.TASK_STATE_SUBMITTED:
-            return RunStarted(**common, status="running")
-        if state == TaskState.TASK_STATE_WORKING:
-            return RunProgress(**common, status="running", message=state_name)
-        if state == TaskState.TASK_STATE_COMPLETED:
-            return RunCompleted(**common, status="completed", output_refs=())
-        if state in {TaskState.TASK_STATE_FAILED, TaskState.TASK_STATE_REJECTED}:
-            message = getattr(status, "message", None)
-            error_text = self._parts_text(getattr(message, "parts", None)) or state_name
-            return RunFailed(
-                **common,
-                status="failed",
-                error=ErrorInfo(
-                    code=(
-                        "a2a_task_rejected"
-                        if state == TaskState.TASK_STATE_REJECTED
-                        else "a2a_task_failed"
-                    ),
-                    message=error_text,
-                    source="a2a",
-                    scope_id=scope_id,
-                ),
-            )
-        if state == TaskState.TASK_STATE_CANCELED:
-            return RunCanceled(**common, status="canceled", reason="interrupted_active_turn")
-        if state == TaskState.TASK_STATE_INPUT_REQUIRED:
-            return RunInterrupted(**common, status="interrupted", reason=state_name)
-        return RunProgress(**common, status="running", message=state_name)
+        if status.state in terminal_states and not was_started:
+            return [event for event in events if not isinstance(event, RunStarted)]
+        return events
 
-    def artifact_to_event(
-        self,
-        artifact: Any,
-        *,
-        agent_id: str,
-        user_id: str,
-        session_id: str,
-        invocation_id: str,
-        seq_id: int,
-        event_id: Optional[str] = None,
-    ) -> RuntimeEvent:
-        """A2A Artifact → canonical RuntimeEvent(item.started,item_kind="artifact")。"""
-        artifact_id = str(getattr(artifact, "artifact_id", None) or "")
-        name = getattr(artifact, "name", None) or "artifact"
-        text = self._parts_text(getattr(artifact, "parts", None))
-        scope_id = stable_scope_id("a2a", session_id, invocation_id)
-        item_id = stable_item_id(
-            "a2a", session_id, invocation_id, "artifact", artifact_id or name
-        )
-        source = SourceRef(
-            framework="a2a",
-            native_run_id=invocation_id,
-            native_item_id=artifact_id or None,
-            metadata={"agent_id": agent_id, "user_id": user_id, "artifact_name": name},
-        )
-        eid = event_id or stable_event_id(
-            "a2a", scope_id, item_id, "item.started", "artifact", invocation_id, seq_id
-        )
-        initial = (
-            ContentSnapshot(parts=(TextContent(part_id="text", text=text),))
-            if text
-            else None
-        )
-        return ItemStarted(
-            schema_version=2,
-            event_id=eid,
-            seq=seq_id,
-            timestamp=time.time(),
-            run_id=invocation_id,
-            scope_id=scope_id,
-            source=source,
-            item_id=item_id,
-            item_kind="artifact",
-            phase="final_answer",
-            initial=initial,
-        )
+    def task_status_to_event(self, status, **kwargs):
+        return self._decorate(self.task_status_to_events(status, **kwargs)[-1], kwargs)
 
-    def message_to_event(
-        self,
-        text: str,
-        *,
-        final: bool,
-        agent_id: str,
-        user_id: str,
-        session_id: str,
-        invocation_id: str,
-        seq_id: int,
-        event_id: Optional[str] = None,
-    ) -> RuntimeEvent:
-        """A2A Message 文本 → canonical RuntimeEvent(item.*,item_kind="message")。"""
-        scope_id = stable_scope_id("a2a", session_id, invocation_id)
-        item_id = stable_item_id("a2a", session_id, invocation_id, "message", "response")
-        source = SourceRef(
-            framework="a2a",
-            native_run_id=invocation_id,
-            metadata={"agent_id": agent_id, "user_id": user_id},
+    def artifact_to_events(self, artifact, **kwargs):
+        context = self._context(kwargs)
+        native = TaskArtifactUpdateEvent(
+            task_id=context.task_id,
+            context_id=context.context_id,
+            artifact=artifact,
+            append=False,
+            last_chunk=False,
         )
-        timestamp = time.time()
-        if final:
-            eid = event_id or stable_event_id(
-                "a2a", scope_id, item_id, "item.completed", "snapshot", invocation_id, seq_id
-            )
-            return ItemCompleted(
-                schema_version=2,
-                event_id=eid,
-                seq=seq_id,
-                timestamp=timestamp,
-                run_id=invocation_id,
-                scope_id=scope_id,
-                source=source,
-                item_id=item_id,
-                item_kind="message",
-                snapshot=ContentSnapshot(
-                    parts=(TextContent(part_id="text-0", text=text),)
-                ),
-            )
-        eid = event_id or stable_event_id(
-            "a2a", scope_id, item_id, "item.updated", "text-0", invocation_id, seq_id
+        return self._canonical.map_event(native, context, timestamp=time.time())
+
+    def artifact_to_event(self, artifact, **kwargs):
+        events = self.artifact_to_events(artifact, **kwargs)
+        return self._decorate(events[-1], kwargs)
+
+    def message_to_event(self, text, *, final, **kwargs):
+        adapter, context = CanonicalA2AEventAdapter(), self._context(kwargs)
+        native = Message(
+            message_id=kwargs.get("event_id") or "legacy-response",
+            task_id=context.task_id,
+            context_id=context.context_id,
+            role=Role.ROLE_AGENT,
+            parts=[Part(text=text)],
         )
-        return ItemUpdated(
-            schema_version=2,
-            event_id=eid,
-            seq=seq_id,
-            timestamp=timestamp,
-            run_id=invocation_id,
-            scope_id=scope_id,
-            source=source,
-            item_id=item_id,
-            item_kind="message",
-            op="append",
-            update=TextContent(part_id="text-0", text=text),
-        )
+        events = adapter.map_event(native, context, timestamp=time.time())
+        message_events = [
+            event for event in events if getattr(event, "item_kind", None) == "message"
+        ]
+        return self._decorate(message_events[-1], kwargs)
 
     # ---- RuntimeEvent → A2A ----
 

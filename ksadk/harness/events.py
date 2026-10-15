@@ -73,9 +73,12 @@ class EventType:
     # reasoning(相位恒 commentary)。payload: text, summary
     REASONING_DELTA = "reasoning.delta"
     REASONING_COMPLETED = "reasoning.completed"
+    PUBLIC_SUMMARY_DELTA = "thinking.summary.delta"
+    PUBLIC_SUMMARY_COMPLETED = "thinking.summary.completed"
     # tool。begin: call_id, name, args;end: call_id, name, result, error, duration_ms
     TOOL_CALL_BEGIN = "tool.call.begin"
     TOOL_CALL_END = "tool.call.end"
+    TOOL_OUTPUT_UPDATED = "tool.output.updated"
     # artifact。payload: name, version, uri, mime
     ARTIFACT_CREATED = "artifact.created"
     ARTIFACT_UPDATED = "artifact.updated"
@@ -114,6 +117,10 @@ class EventType:
     # turn 生命周期。payload: turn_id, turn_number
     TURN_STARTED = "turn.started"
     TURN_COMPLETED = "turn.completed"
+    # 流式中 Steering（G1）。received: 用户/调用方注入 steer 消息;
+    # delivered: steer 被投递进当前 turn（或升级为 follow_up）。
+    STEER_RECEIVED = "steer.received"
+    STEER_DELIVERED = "steer.delivered"
     # context 计划。payload: budget_tokens, sections
     CONTEXT_PLANNED = "context.planned"
     CONTEXT_RECOVERED = "context.recovered"
@@ -123,10 +130,21 @@ class EventType:
     # 稳定 Prompt 前缀缓存诊断（仅 Hash）。payload: stable_prompt_hash,
     # previous_stable_prompt_hash, cache_break, reason
     PROMPT_CACHE_DIAGNOSTIC = "prompt.cache.diagnostic"
+    # G13 §16.2：stable 前缀 hash 在 Revision 生命周期内变化的边界断言
+    # （可见，不阻塞）。payload: scope, stable_prefix_hash, previous_hash
+    CONTEXT_CACHE_BOUNDARY_BROKEN = "context.cache_boundary_broken"
     # model 调用。payload: model, attempt; completed 增补 usage
     MODEL_CALL_STARTED = "model.call.started"
     MODEL_CALL_COMPLETED = "model.call.completed"
     MODEL_CALL_FAILED = "model.call.failed"
+    # 候选5 工具集装配可见性：每轮 reason 前按 closing_turn 动态裁剪后的工具面
+    # 记账（binding 声明 ↔ 工具面 ↔ 记账三方一致，G24 发现门的前置防线）。
+    # payload: turn_id, closing_turn, tool_names, sources{host,skill,mcp,subagent,delegation}
+    TOOL_SURFACE = "tool.surface"
+    # G7 沙箱执行：每次命令执行的后端身份 + 能力摘要 + 拒绝与否（Studio 会话页消费）。
+    # payload: backend_id, capabilities{filesystem_isolation, network_control,
+    # process_boundary}, rejected, command_digest
+    SANDBOX_EXECUTED = "sandbox.executed"
     # policy 决策。payload: action, reason, policy_ref, risk_level
     POLICY_DECISION = "policy.decision"
     # memory。payload: scope, memory_ref; conflict 增补 conflicting_ref
@@ -162,9 +180,12 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.TEXT_DELTA,
         EventType.TEXT_COMPLETED,
         EventType.REASONING_DELTA,
+        EventType.PUBLIC_SUMMARY_DELTA,
+        EventType.PUBLIC_SUMMARY_COMPLETED,
         EventType.REASONING_COMPLETED,
         EventType.TOOL_CALL_BEGIN,
         EventType.TOOL_CALL_END,
+        EventType.TOOL_OUTPUT_UPDATED,
         EventType.ARTIFACT_CREATED,
         EventType.ARTIFACT_UPDATED,
         EventType.APPROVAL_REQUESTED,
@@ -191,13 +212,18 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.RUN_RESUMED,
         EventType.TURN_STARTED,
         EventType.TURN_COMPLETED,
+        EventType.STEER_RECEIVED,
+        EventType.STEER_DELIVERED,
         EventType.CONTEXT_PLANNED,
         EventType.CONTEXT_RECOVERED,
         EventType.CONTEXT_BUILT,
         EventType.PROMPT_CACHE_DIAGNOSTIC,
+        EventType.CONTEXT_CACHE_BOUNDARY_BROKEN,
         EventType.MODEL_CALL_STARTED,
         EventType.MODEL_CALL_COMPLETED,
         EventType.MODEL_CALL_FAILED,
+        EventType.TOOL_SURFACE,
+        EventType.SANDBOX_EXECUTED,
         EventType.POLICY_DECISION,
         EventType.MEMORY_READ,
         EventType.MEMORY_WRITE,
@@ -221,9 +247,12 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.TEXT_DELTA: frozenset({"text"}),
     EventType.TEXT_COMPLETED: frozenset({"text"}),
     EventType.REASONING_DELTA: frozenset({"text"}),
+    EventType.PUBLIC_SUMMARY_DELTA: frozenset({"text", "summary_id"}),
+    EventType.PUBLIC_SUMMARY_COMPLETED: frozenset({"text", "summary_id"}),
     EventType.REASONING_COMPLETED: frozenset({"text"}),
     EventType.TOOL_CALL_BEGIN: frozenset({"call_id", "name"}),
     EventType.TOOL_CALL_END: frozenset({"call_id", "name"}),
+    EventType.TOOL_OUTPUT_UPDATED: frozenset({"call_id", "name", "public_display"}),
     EventType.ARTIFACT_CREATED: frozenset({"name", "version"}),
     EventType.ARTIFACT_UPDATED: frozenset({"name", "version"}),
     EventType.APPROVAL_REQUESTED: frozenset({"approval_id", "call_id", "kind"}),
@@ -253,13 +282,19 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.RUN_RESUMED: frozenset({"target", "resume_kind"}),
     EventType.TURN_STARTED: frozenset({"turn_id", "turn_number"}),
     EventType.TURN_COMPLETED: frozenset({"turn_id", "turn_number"}),
+    # steer.* 流式中 Steering（G1 收口冻结）。received: source(user/调用方),
+    # mode(steer|follow_up), accepted, upgraded; delivered: message_count,
+    # delivered_at_turn（投递进第 N 个 turn，seq 落在 TURN_STARTED(tN) 之前）。
+    EventType.STEER_RECEIVED: frozenset({"source", "mode", "accepted", "upgraded"}),
+    EventType.STEER_DELIVERED: frozenset({"message_count", "delivered_at_turn"}),
     EventType.CONTEXT_PLANNED: frozenset({"budget_tokens"}),
     EventType.CONTEXT_RECOVERED: frozenset({"reason"}),
     EventType.CONTEXT_BUILT: frozenset(
         {"manifest_id", "planned_tokens", "projected_tokens", "sections"}
     ),
-    EventType.PROMPT_CACHE_DIAGNOSTIC: frozenset(
-        {"stable_prompt_hash", "cache_break", "reason"}
+    EventType.PROMPT_CACHE_DIAGNOSTIC: frozenset({"stable_prompt_hash", "cache_break", "reason"}),
+    EventType.CONTEXT_CACHE_BOUNDARY_BROKEN: frozenset(
+        {"scope", "stable_prefix_hash", "previous_hash"}
     ),
     EventType.MODEL_CALL_STARTED: frozenset({"model"}),
     EventType.MODEL_CALL_COMPLETED: frozenset({"model"}),
@@ -287,6 +322,8 @@ _PHASE_AWARE_TYPES: frozenset[str] = frozenset(
         EventType.TEXT_DELTA,
         EventType.TEXT_COMPLETED,
         EventType.REASONING_DELTA,
+        EventType.PUBLIC_SUMMARY_DELTA,
+        EventType.PUBLIC_SUMMARY_COMPLETED,
         EventType.REASONING_COMPLETED,
     }
 )

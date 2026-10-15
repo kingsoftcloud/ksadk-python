@@ -43,11 +43,21 @@ class SubAgentSpec:
     #: 允许子 Agent 使用的工具名（空 = 不用工具，只做文本推理）。
     tools: tuple[str, ...] = ()
     description: str = ""
-    timeout_seconds: float = 120.0
-    max_turns: int = 4
+    #: 子 Agent 的墙钟预算。原默认 120s **没有任何参照依据**：Claude Code 的子 Agent
+    #: 是后台跑到底的（`AgentTool.tsx` 里只有 1 秒的清理超时，没有墙钟限制）。
+    #: 2026-09-18 实测：120s 让"实现核心规则/界面交互/自动化测试"这类子任务必然被判
+    #: 取消，父 Agent 随即放弃委派并自己硬做，交付链路因此断开。
+    timeout_seconds: float = 1800.0
+    #: 子 Agent 回合上限。原默认 4 在参照实现里找不到对应：
+    #: DeepAgents 给子图 `recursion_limit: 9999`（graph.py:781，实质跑到完）；
+    #: Claude Code 的 maxTurns 是可配置项，唯一具体数字是 DreamTask 的
+    #: `MAX_TURNS = 30`（src/tasks/DreamTask/DreamTask.ts:12）。取 30 作默认。
+    #: 4 回合连"读规范 → 写文件 → 自检"都走不完，实现类子任务必然半途而废。
+    max_turns: int = 30
     max_total_tokens: int | None = None
     max_artifacts: int | None = None
     max_tool_calls: int | None = None
+    concurrent_safe: bool = False
     output_schema: dict[str, Any] | None = None
     depends_on: tuple[str, ...] = ()
     failure_policy: str = "propagate"

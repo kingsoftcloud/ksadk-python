@@ -85,6 +85,14 @@ class _HealthState:
     opened_at: float | None = None
 
 
+@dataclass(frozen=True)
+class McpMetaRejection:
+    """G34：MCP _meta 策略拒绝（如 alwaysLoad 被拒）。"""
+
+    server_id: str
+    reason: str
+
+
 @dataclass
 class McpServerBinding:
     """一条 Revision binding 的运行时形态。"""
@@ -95,6 +103,9 @@ class McpServerBinding:
     required: bool = False
     #: 工具前缀（避免跨服务器重名）。
     tool_prefix: str = ""
+    #: 静态已知工具名清单（G9 §12.3.2）：连接前即可进入 L0 目录；
+    #: 外部 Server 无静态名单时为空，目录只披露 server 名 + 描述。
+    static_tool_names: tuple[str, ...] = ()
     #: ``transport`` 表示 Transport 能将幂等键透传到真正执行副作用的服务。
     #: 默认 ``none`` 保持旧 MCP Transport 行为，不虚假承诺 exactly-once。
     idempotency_mode: Literal["none", "transport"] = "none"
@@ -165,6 +176,28 @@ class McpCapabilityRuntime:
             return self._servers[server_id]
         except KeyError:
             raise McpRuntimeError(f"unknown mcp binding: {server_id}") from None
+
+    def validate_meta_policy(
+        self, *, server_id: str, meta: dict[str, Any] | None
+    ) -> "McpMetaRejection | None":
+        """G34：拒绝 MCP `_meta alwaysLoad`（被接入方不得自证跳过延迟披露）。
+
+        ``alwaysLoad``（含 ``anthropic/alwaysLoad``）让外部 Server 把整份 schema
+        塞进系统提示，绕过租户/管理员策略决定的延迟披露。返回 ``McpMetaRejection``
+        表示拒绝，None 表示接受。调用方发可见降级事件。
+        """
+        if not meta:
+            return None
+        for key, value in meta.items():
+            if key.endswith("alwaysLoad") and value:
+                return McpMetaRejection(
+                    server_id=server_id,
+                    reason=(
+                        f"_meta[{key!r}]=True 被拒绝：是否延迟披露由租户/管理员"
+                        "策略决定，不由被接入方决定（G34）"
+                    ),
+                )
+        return None
 
     def availability(self, server_id: str) -> Literal["unknown", "available", "degraded"]:
         """返回 Harness 当前观察到的 Server 可用性。

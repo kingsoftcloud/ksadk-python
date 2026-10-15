@@ -19,7 +19,9 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol, Sequence
 
 from ksadk.harness.events import EventType, RuntimeEvent
+from ksadk.harness.hooks import RunContext
 from ksadk.harness.state import WorkingContext
+from ksadk.harness.tool_output import PublicOutputBuffer, tool_output_scope
 from ksadk.harness.tool_reliability import ToolReliability, classify_tool_reliability
 from ksadk.harness.working_context import record_tool_failure, record_tool_result
 
@@ -131,6 +133,13 @@ class ToolCallInput:
     #: message records a normal tool error for the model to repair, without
     #: asking a human to approve an invocation that cannot execute.
     argument_validator: ArgumentValidator | None = None
+    #: 中央结果治理（G10/G16）：``govern(name, raw_text) -> (context_text, meta)``。
+    #: 为 None 时结果原样透传（旧语义/纯单测路径）。
+    result_governor: Any = None
+    #: G5 §5.2 on_tool_result 钩子：``hook(run_ctx, call, result) -> dict | None``。
+    #: 由引擎构造（内部按注册顺序跑钩子链，降级走引擎缓冲）；返回改写后的
+    #: result dict（带新 content）表示改写生效，返回 None 表示未改写/未启用。
+    tool_result_hook: Any = None
 
 
 @dataclass
@@ -257,9 +266,15 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
             continue
 
         validation_error = (
-            inp.argument_validator(name, arguments)
-            if inp.argument_validator is not None
-            else None
+            # 参数本身无法解析（模型输出损坏/截断）时，直接走 invalid_arguments
+            # 回灌路径，不执行、也不升级为整轮失败。
+            str(pending.get("invalid_reason") or "").strip() or None
+            if pending.get("invalid_reason")
+            else (
+                inp.argument_validator(name, arguments)
+                if inp.argument_validator is not None
+                else None
+            )
         )
         if validation_error:
             seq += 1
@@ -461,13 +476,25 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                 },
             )
         )
+        def observe_display(display: dict) -> None:
+            nonlocal seq
+            seq += 1
+            out.events.append(_event(EventType.TOOL_OUTPUT_UPDATED, inp, seq, {
+                "call_id": call_id, "name": name, "public_display": display,
+            }))
+
+        output = PublicOutputBuffer(name, arguments, observe_display)
         try:
-            result = await _invoke(
-                inp.tool_executor,
-                name,
-                arguments,
-                context=ToolExecutionContext(run_id=inp.run_id, call_id=call_id),
-            )
+            with tool_output_scope(output.observe):
+                try:
+                    result = await _invoke(
+                        inp.tool_executor,
+                        name,
+                        arguments,
+                        context=ToolExecutionContext(run_id=inp.run_id, call_id=call_id),
+                    )
+                finally:
+                    output.finish()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 单工具失败不终止 Run
@@ -514,7 +541,55 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     cancelled_call_ids.add(skipped_call_id)
             continue
 
-        result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        raw_result_text = (
+            result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        )
+        try:
+            result_text, governance = _govern(inp, name, raw_result_text)
+        except Exception as exc:  # noqa: BLE001 - 治理失败 = 明确报错降级（G10）
+            seq += 1
+            out.events.append(
+                _event(
+                    EventType.TOOL_CALL_END,
+                    inp,
+                    seq,
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "error": f"result_governance_failed: {exc}",
+                        "error_category": "result_governance_failed",
+                        "receipt_committed": False,
+                        "reliability": reliability_payload,
+                    },
+                )
+            )
+            out.new_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": name,
+                    "content": f"[error] 工具结果治理失败，结果未写入上下文: {exc}",
+                }
+            )
+            if out.working_context is not None:
+                out.working_context = record_tool_failure(
+                    out.working_context, name=name, error=f"result governance: {exc}"
+                )
+            continue
+        result_text, modified_by_hook = await _apply_tool_result_hook(
+            inp, call_id=call_id, name=name, arguments=arguments, result_text=result_text
+        )
+        # Disclosure comes from the trusted executor, never from a JSON key
+        # in a tool result. Presentation failure cannot alter execution facts.
+        public_display = None
+        presenter = getattr(inp.tool_executor, "public_display", None)
+        if callable(presenter):
+            try:
+                from ksadk.harness.tool_display import safe_tool_display
+
+                public_display = safe_tool_display(presenter(name, arguments, result))
+            except Exception:
+                public_display = None
         if runtime is not None:
             runtime.record_receipt(
                 invocation_id=inp.run_id,
@@ -523,7 +598,9 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                 arguments=arguments,
                 decision="approved",
                 status="executed",
-                result_digest=result_text[:65_536],
+                # Receipt 记录原文引用（审计不丢，G10 "不静默丢弃"；on_tool_result
+                # 改写只作用于模型可见链，不改变审计事实）。
+                result_digest=raw_result_text[:65_536],
             )
         if out.working_context is not None:
             out.working_context = record_tool_result(
@@ -539,6 +616,16 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     "call_id": call_id,
                     "name": name,
                     "result": result,
+                    **({"public_display": public_display} if public_display else {}),
+                    **(
+                        {"result_governance": governance}
+                        if governance.get("truncated") or governance.get("offloaded")
+                        or governance.get("delimited")
+                        else {}
+                    ),
+                    # G5 §5.2：on_tool_result 改写生效的留痕（Receipt 载荷为固定
+                    # schema 不可扩展——见 tool_receipts——以事件+消息留痕为准）。
+                    **({"modified_by_hook": True} if modified_by_hook else {}),
                     "receipt_committed": bool(
                         runtime is not None and runtime.receipt_enabled
                     ),
@@ -552,12 +639,57 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                 "tool_call_id": call_id,
                 "name": name,
                 "content": result_text,
+                **({"modified_by_hook": True} if modified_by_hook else {}),
             }
         )
         succeeded.add(name)
 
     out.pending_tool_calls = []
     return out
+
+
+def _govern(inp: ToolCallInput, name: str, raw_text: str) -> tuple[str, dict[str, Any]]:
+    """应用中央结果治理（G10/G16）；未注入 governor 时原样透传。"""
+
+    governor = inp.result_governor
+    if governor is None:
+        return raw_text, {}
+    return governor.govern(name, raw_text)
+
+
+async def _apply_tool_result_hook(
+    inp: ToolCallInput,
+    *,
+    call_id: str,
+    name: str,
+    arguments: dict[str, Any],
+    result_text: str,
+) -> tuple[str, bool]:
+    """G5 §5.2 on_tool_result：结果消息回填前应用钩子改写。
+
+    钩子由引擎注入（内部 ``run_hooks`` 按注册顺序跑钩子链；单钩子异常与协议
+    违约在闭包内可见降级并沿用上一有效值，不再向上抛）。返回
+    ``(最终文本, 是否被钩子改写)``：改写生效时调用侧在结果消息与
+    tool.call.end payload 加 ``modified_by_hook=True`` 留痕；未配置钩子或返回
+    None（未改写）时不新增任何键——保持无钩子路径的旧语义逐字节不变。
+    """
+    hook = inp.tool_result_hook
+    if hook is None:
+        return result_text, False
+    rewritten = await hook(
+        RunContext(
+            run_id=inp.run_id,
+            agent_id=inp.agent_id,
+            user_id=inp.user_id,
+            session_id=inp.session_id,
+        ),
+        {"call_id": call_id, "name": name, "arguments": arguments},
+        {"content": result_text},
+    )
+    if rewritten is None:
+        return result_text, False
+    content = str(rewritten.get("content") or "")
+    return content, content != result_text
 
 
 def _parallel_batch_allowed(inp: ToolCallInput) -> bool:
@@ -632,6 +764,7 @@ async def _execute_parallel_batch(inp: ToolCallInput) -> ToolCallOutput:
             )
         )
         seq += 1
+        modified_by_hook = False
         if error is not None:
             error_text = f"{type(error).__name__}: {error}"
             category = str(getattr(error, "category", "") or "")
@@ -657,8 +790,12 @@ async def _execute_parallel_batch(inp: ToolCallInput) -> ToolCallOutput:
                     out.working_context, name=name, error=error_text
                 )
         else:
-            result_text = (
+            raw_result_text = (
                 result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+            )
+            result_text, governance = _govern(inp, name, raw_result_text)
+            result_text, modified_by_hook = await _apply_tool_result_hook(
+                inp, call_id=call_id, name=name, arguments=arguments, result_text=result_text
             )
             out.events.append(
                 _event(
@@ -670,6 +807,13 @@ async def _execute_parallel_batch(inp: ToolCallInput) -> ToolCallOutput:
                         "name": name,
                         "result": result,
                         "parallel": True,
+                        **(
+                            {"result_governance": governance}
+                            if governance.get("truncated") or governance.get("offloaded")
+                            or governance.get("delimited")
+                            else {}
+                        ),
+                        **({"modified_by_hook": True} if modified_by_hook else {}),
                         "receipt_committed": False,
                         "reliability": reliability_payload,
                     },
@@ -685,6 +829,7 @@ async def _execute_parallel_batch(inp: ToolCallInput) -> ToolCallOutput:
                 "tool_call_id": call_id,
                 "name": name,
                 "content": result_text,
+                **({"modified_by_hook": True} if modified_by_hook else {}),
             }
         )
     return out

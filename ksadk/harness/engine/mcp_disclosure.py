@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
@@ -36,6 +35,14 @@ from ksadk.harness.artifact_store import ArtifactStore
 from ksadk.harness.capabilities import RiskLevel
 from ksadk.harness.engine.base import ExecutionEngineError
 from ksadk.harness.events import EventType, RuntimeEvent
+from ksadk.harness.mcp_disclosure_contract import (
+    MCP_CALL_TOOL_TOOL,
+    MCP_LIST_TOOLS_TOOL,
+    MCP_READ_SCHEMA_TOOL,
+    McpDisclosureToolSpec,
+    disclosure_tools,
+)
+from ksadk.harness.mcp_result_policy import McpOffloadPolicy as McpOffloadPolicy
 from ksadk.harness.mcp_runtime import (
     McpCapabilityRuntime,
     McpRuntimeError,
@@ -44,20 +51,8 @@ from ksadk.harness.mcp_runtime import (
 from ksadk.harness.spec import HarnessSpec
 from ksadk.harness.tool_reliability import ToolReliability, classify_tool_reliability
 
-MCP_LIST_TOOLS_TOOL = "mcp_list_tools"
-MCP_READ_SCHEMA_TOOL = "mcp_read_tool_schema"
-MCP_CALL_TOOL_TOOL = "mcp_call_tool"
-
 #: 触发审批的风险等级（capability.descriptor.risk_level）。
 _APPROVAL_RISK_LEVELS = frozenset({RiskLevel.HIGH, RiskLevel.CRITICAL})
-
-#: 平台托管 Runtime 的基础敏感数据默认规则（组织可覆盖或接 DLP）：
-#: 中国大陆身份证号 / 16-19 位银行卡号 / 1[3-9] 开头手机号。
-_DEFAULT_SENSITIVE_PATTERNS = (
-    r"\b\d{17}[\dXx]\b",
-    r"\b\d{16,19}\b",
-    r"(?<!\d)1[3-9]\d{9}(?!\d)",
-)
 
 _T = TypeVar("_T")
 
@@ -76,106 +71,6 @@ class McpDisclosureCursors:
 
     listed: set[tuple[str, str]] = field(default_factory=set)
     schema_read: set[tuple[str, str, str]] = field(default_factory=set)
-
-
-@dataclass(frozen=True)
-class McpOffloadPolicy:
-    """P1 大结果 Offload 策略。
-
-    - ``single_result_threshold_bytes``：单次工具结果超过该字节数 → 外置；
-    - ``sensitive_patterns``：命中任一正则 → 无论大小强制外置，且摘要置空
-      （敏感明文不留在 Context）。默认开启平台基础规则（身份证/银行卡/
-      手机号），组织可通过自定义 policy 覆盖或接入 DLP/分类服务；
-    - ``run_total_quota_bytes``：Run 累计外置字节配额，超出后新的超大结果
-      明确报错降级（不回填 Context）。
-    """
-
-    enabled: bool = True
-    single_result_threshold_bytes: int = 4096
-    run_total_quota_bytes: int = 10 * 1024 * 1024
-    summary_chars: int = 500
-    sensitive_patterns: tuple[str, ...] = _DEFAULT_SENSITIVE_PATTERNS
-
-    def sensitive_match(self, content: str) -> str | None:
-        for pattern in self.sensitive_patterns:
-            if re.search(pattern, content):
-                return pattern
-        return None
-
-
-@dataclass(frozen=True)
-class McpDisclosureToolSpec:
-    """暴露给模型的受控 MCP 披露工具描述。"""
-
-    name: str
-    description: str
-    parameters: dict[str, Any]
-
-    @property
-    def openai_schema(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
-
-
-def disclosure_tools() -> list[McpDisclosureToolSpec]:
-    server_id = {"type": "string", "description": "Revision 已绑定的 MCP Server 引用。"}
-    tool_name = {"type": "string", "description": "该 Server 上的 Tool 名。"}
-    return [
-        McpDisclosureToolSpec(
-            name=MCP_LIST_TOOLS_TOOL,
-            description=(
-                "列出指定 MCP Server 的可用 Tool（名称与一句话描述，不含参数 Schema）。"
-                "使用该 Server 的任何 Tool 前必须先调用此工具。refresh=true 时刷新缓存。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "server_id": server_id,
-                    "refresh": {"type": "boolean", "description": "失效并重新拉取工具列表"},
-                },
-                "required": ["server_id"],
-                "additionalProperties": False,
-            },
-        ),
-        McpDisclosureToolSpec(
-            name=MCP_READ_SCHEMA_TOOL,
-            description=(
-                "读取指定 Tool 的完整输入参数 Schema。必须先 mcp_list_tools 该 Server，"
-                "且调用任何 Tool 前必须先读其 Schema。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {"server_id": server_id, "tool_name": tool_name},
-                "required": ["server_id", "tool_name"],
-                "additionalProperties": False,
-            },
-        ),
-        McpDisclosureToolSpec(
-            name=MCP_CALL_TOOL_TOOL,
-            description=(
-                "调用指定 MCP Tool。必须先用 mcp_read_tool_schema 读取该 Tool 的 Schema。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "server_id": server_id,
-                    "tool_name": tool_name,
-                    "arguments": {
-                        "type": "object",
-                        "description": "按 Schema 组装的工具参数。",
-                    },
-                },
-                "required": ["server_id", "tool_name", "arguments"],
-                "additionalProperties": False,
-            },
-        ),
-    ]
 
 
 class McpDisclosureBridge:
@@ -225,7 +120,8 @@ class McpDisclosureBridge:
             if binding.load_policy == "explicit":
                 continue
             try:
-                descriptor = self._runtime.binding(binding.capability_ref).descriptor
+                server = self._runtime.binding(binding.capability_ref)
+                descriptor = server.descriptor
             except McpRuntimeError:
                 if binding.required:
                     raise
@@ -233,6 +129,9 @@ class McpDisclosureBridge:
             # L0 目录只注入一句话描述（截短到 120 字符），降低 Prompt 固定开销
             # （plan §10.4：L0 = 名称 + 一句话描述，不含 Schema/Tool 详情）。
             short_desc = (descriptor.description or "")[:120]
+            # G9 §12.3.2：L0 目录携带静态已知工具名（只含名字不含 Schema），
+            # 让模型能把用户意图映射到具体 Server 的工具；Schema 仍走 L2。
+            tool_names = ",".join(server.static_tool_names)
             result.append(
                 {
                     "server_id": descriptor.id,
@@ -240,6 +139,7 @@ class McpDisclosureBridge:
                     "description": short_desc,
                     "risk_level": descriptor.risk_level.value,
                     "load_policy": binding.load_policy,
+                    "tools": tool_names,
                 }
             )
         return tuple(result)
@@ -502,6 +402,12 @@ class McpDisclosureBridge:
             content=str(rendered),
             tool_name=tool_name,
         )
+        self._emit_semantic_tool_fact(
+            run,
+            pending_events,
+            server_id=server_id,
+            tool_name=tool_name,
+        )
         payload = self._offload_if_needed(
             run,
             pending_events,
@@ -514,6 +420,51 @@ class McpDisclosureBridge:
             # 大结果不回 Context：只保留摘要与引用（完整内容在 Artifact URI）。
             return {"server_id": server_id, "tool_name": tool_name, **payload}
         return {"server_id": server_id, "tool_name": tool_name, "result": rendered}
+
+    @staticmethod
+    def _emit_semantic_tool_fact(
+        run: Any,
+        pending_events: dict[str, list[RuntimeEvent]],
+        *,
+        server_id: str,
+        tool_name: str,
+    ) -> None:
+        """Project successful standard MCP operations into Harness facts.
+
+        The MCP envelope intentionally hides arguments and results from the
+        canonical activity stream.  Once a standard memory operation has
+        returned successfully, however, its non-sensitive semantic fact must
+        still be observable; otherwise evaluation and audit report a false
+        zero even though the external memory was actually used.
+        """
+
+        if tool_name == "load_memory":
+            event_type = EventType.MEMORY_RECALLED
+            payload = {
+                "scope": f"mcp:{server_id}",
+                "query": "external-memory-query",
+            }
+        elif tool_name in {"save_memory", "update_memory", "delete_memory"}:
+            event_type = EventType.MEMORY_WRITE
+            payload = {
+                "scope": f"mcp:{server_id}",
+                "memory_ref": "",
+                "decision": "commit",
+                "operation": tool_name,
+            }
+        else:
+            return
+        pending_events.setdefault(run.handle.run_id, []).append(
+            RuntimeEvent.create(
+                event_type,
+                agent_id=run.state.agent_id,
+                user_id=run.state.user_id,
+                session_id=run.state.session_id,
+                invocation_id=run.handle.run_id,
+                seq_id=0,
+                payload=payload,
+            )
+        )
 
     async def _observe_runtime_operation(
         self,

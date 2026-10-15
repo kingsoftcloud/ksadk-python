@@ -11,6 +11,9 @@ from pathlib import Path
 from ksadk.resource_runtime.broker import ResourceBroker
 from ksadk.resource_runtime.ipc import MAX_FRAME_BYTES, FrameError, decode_body, encode_frame
 
+# macOS/BSD sockaddr_un has 104 bytes, including the terminating NUL.
+_MAX_SOCKET_PATH_BYTES = 103
+
 
 class ResourceSocketServer:
     def __init__(self, broker: ResourceBroker, *, max_connections: int = 64):
@@ -33,6 +36,14 @@ class ResourceSocketServer:
         self._directory = directory
         self.path = Path(directory.name) / "broker.sock"
         try:
+            if len(os.fsencode(self.path)) > _MAX_SOCKET_PATH_BYTES:
+                # Artifact/workspace TMPDIRs can exceed Unix socket limits.
+                # Keep their preference when usable; only this ephemeral IPC
+                # endpoint falls back to an atomic, independently private path.
+                directory.cleanup()
+                directory = tempfile.TemporaryDirectory(prefix="ksr-", dir="/tmp")
+                self._directory = directory
+                self.path = Path(directory.name) / "broker.sock"
             os.chmod(directory.name, 0o700)
             # Private parent directory prevents access during the bind/chmod gap.
             self._server = await asyncio.start_unix_server(self._accept, path=str(self.path))

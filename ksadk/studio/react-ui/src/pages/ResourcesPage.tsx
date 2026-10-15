@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Check, CircleAlert, Cpu, Database, Eye, Network, Plus, Search, Sparkles, Wrench, Zap,
+  Check, CircleAlert, Cpu, Database, Eye, Network, Plus, Search, Sparkles, Wrench,
 } from "lucide-react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { FormProvider, useForm, type Resolver } from "react-hook-form";
@@ -24,10 +24,8 @@ import { applyApiFieldErrors } from "../lib/formErrors";
 import {
   credentialValueSchema,
   mcpSchema,
-  modelProfileSchema,
   pythonToolSchema,
   type McpFormValues,
-  type ModelProfileFormValues,
   type PythonToolFormValues,
   type CredentialValueFormValues,
 } from "../schemas/resourceForms";
@@ -75,9 +73,26 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 const DEFAULT_RESOURCE_PAGE_SIZE = 20;
 
-async function errorMessage(res: Response, fallback: string): Promise<string> {
+export async function errorMessage(res: Response, fallback: string): Promise<string> {
   const text = await res.text().catch(() => "");
   try { return JSON.parse(text)?.error?.message || `${fallback}（${res.status}）`; } catch { return `${fallback}（${res.status}）`; }
+}
+
+async function waitForOperation(operationId: string): Promise<void> {
+  const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"]);
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    const response = await apiFetch(`/api/v1/operations/${encodeURIComponent(operationId)}`);
+    const operation = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(operation?.error?.message || "构建状态获取失败");
+    if (terminal.has(operation?.status)) {
+      if (operation.status !== "SUCCEEDED") {
+        throw new Error(operation?.error?.message || "Skill 已绑定，但新构建未完成");
+      }
+      return;
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 200));
+  }
+  throw new Error("Skill 已绑定，但等待新构建超时");
 }
 
 function credentialRef(item: ResItem): string {
@@ -93,7 +108,7 @@ function formatByteCount(value: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-function CatalogResourcesPage({ kind, onKindChange, refreshTick }: { kind: CatalogResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
+function CatalogResourcesPage({ kind, onKindChange, refreshTick, onOpenModelSetup }: { kind: CatalogResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number; onOpenModelSetup?: () => void }) {
   const [catalog, setCatalog] = useState<ResItem[]>([]);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
@@ -108,7 +123,6 @@ function CatalogResourcesPage({ kind, onKindChange, refreshTick }: { kind: Catal
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [credModel, setCredModel] = useState<ResItem | null>(null);
-  const [showAddModel, setShowAddModel] = useState(false);
   const [showMcp, setShowMcp] = useState(false);
   const [mcpDetail, setMcpDetail] = useState<ResItem | null>(null);
   const [viewItem, setViewItem] = useState<ResItem | null>(null);
@@ -197,8 +211,9 @@ function CatalogResourcesPage({ kind, onKindChange, refreshTick }: { kind: Catal
   }
 
   function handleAdd() {
+    // 添加模型统一走设置页的极简流程（默认端点 + 智能探测）。
     if (kind === "model") {
-      setShowAddModel(true);
+      onOpenModelSetup?.();
       return;
     }
     if (kind === "mcp") { setShowMcp(true); return; }
@@ -368,7 +383,6 @@ function CatalogResourcesPage({ kind, onKindChange, refreshTick }: { kind: Catal
           onChanged={resetAndLoad}
         />
       )}
-      {showAddModel && <AddModelDrawer onClose={() => setShowAddModel(false)} onAdded={() => { setShowAddModel(false); resetAndLoad(); }} />}
       {showMcp && <McpConnectDrawer onClose={() => setShowMcp(false)} onConnected={() => { setShowMcp(false); resetAndLoad(); }} />}
       {mcpDetail && <McpDetailDrawer item={mcpDetail} onClose={() => setMcpDetail(null)} />}
       {viewItem && <ResourceDetailDrawer item={viewItem} onClose={() => setViewItem(null)} />}
@@ -390,7 +404,7 @@ function CatalogResourcesPage({ kind, onKindChange, refreshTick }: { kind: Catal
 
 const PLATFORM_RESOURCE_KINDS = new Set<ResourceKind>(["knowledge-base", "memory-instance", "skill-space"]);
 
-export function ResourcesPage(props: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
+export function ResourcesPage(props: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number; onOpenModelSetup?: () => void }) {
   if (PLATFORM_RESOURCE_KINDS.has(props.kind)) {
     return <PlatformResourcesPage
       kind={props.kind as "knowledge-base" | "memory-instance" | "skill-space"}
@@ -632,211 +646,6 @@ export function ModelCredentialDrawer({ model, onClose, onChanged }: {
 
       {error && <InlineAlert kind="error" title={error.title} message={error.message} />}
 
-    </Drawer>
-    </FormProvider>
-  );
-}
-
-/* ================= 添加模型抽屉（智能探测） ================= */
-
-function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
-  const modelForm = useForm<ModelProfileFormValues>({
-    resolver: zodResolver(modelProfileSchema) as Resolver<ModelProfileFormValues>,
-    defaultValues: {
-      name: "",
-      displayName: "",
-      model: "",
-      endpointUrl: "",
-      credentialRef: "env://MODEL_API_KEY",
-      description: "",
-      apiKey: "",
-      temperature: 0.2,
-      maxTokens: 2048,
-      addressMode: "endpoint",
-      wireApi: "",
-    },
-  });
-  const {
-    name,
-    displayName,
-    model: modelId,
-    endpointUrl: url,
-    credentialRef,
-    apiKey,
-    temperature,
-    maxTokens,
-    addressMode,
-    wireApi,
-  } = modelForm.watch();
-  const envName = credentialRef.replace(/^env:\/\//, "");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [probing, setProbing] = useState(false);
-  const [probeAttempts, setProbeAttempts] = useState<any[]>([]);
-  const [probeModels, setProbeModels] = useState<string[]>([]);
-  const [catalogModels, setCatalogModels] = useState<string[]>([]);
-
-  useEffect(() => {
-    apiFetch("/api/v1/catalog/models").then(r => r.json()).then(d => {
-      setCatalogModels((d.items || []).map((i: any) => i.name).filter(Boolean));
-    }).catch(() => {});
-  }, []);
-
-  async function probe() {
-    if (!url.trim()) { setError("请先填写接口地址再探测"); return; }
-    setProbing(true); setError(""); setProbeAttempts([]); setProbeModels([]);
-    try {
-      const body: any = { url: url.trim() };
-      if (envName.trim()) body.credentialRef = `env://${envName.trim()}`;
-      if (apiKey.trim()) body.apiKey = apiKey.trim();
-      const res = await apiFetch("/api/v1/model-endpoints:probe", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(await errorMessage(res, "探测失败"));
-      const d = await res.json();
-      setProbeAttempts(d.attempts || []);
-      setProbeModels(d.models || []);
-      if (d.recommended) {
-        modelForm.setValue("wireApi", d.recommended.wireApi || "chat");
-        modelForm.setValue("addressMode", "endpoint");
-        modelForm.setValue("endpointUrl", d.recommended.endpointUrl, { shouldValidate: true });
-        if (d.recommended.status === "auth_required") setError("端点可达，但需要有效凭证（401/403）；配置 API Key 后可正常使用");
-      } else {
-        setError("未能识别可用协议，请检查地址或网络");
-      }
-    } catch (e: any) { setError(e.message); }
-    setProbing(false);
-  }
-
-  const modelSuggestions = [...new Set([...probeModels, ...catalogModels])];
-
-  async function save(values: ModelProfileFormValues) {
-    setSaving(true); setError("");
-    try {
-      const credentialName = values.credentialRef.replace(/^env:\/\//, "");
-      if (values.apiKey.trim()) {
-        const credRes = await apiFetch(`/api/v1/credentials/${encodeURIComponent(credentialName)}`, {
-          method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value: values.apiKey.trim(), persistence: "session" }),
-        });
-        if (!credRes.ok) throw new Error(await errorMessage(credRes, "凭证保存失败"));
-      }
-      const spec: any = {
-        provider: "openai-compatible",
-        model: values.model.trim(),
-        credentialRef: values.credentialRef,
-        parameters: { temperature: values.temperature, max_tokens: values.maxTokens },
-      };
-      if (values.wireApi) spec.wireApi = values.wireApi;
-      if (values.addressMode === "endpoint") spec.endpointUrl = values.endpointUrl.trim(); else spec.baseUrl = values.endpointUrl.trim();
-      const res = await apiFetch("/api/v1/catalog/model-profiles", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: values.name.trim(), displayName: values.displayName.trim(), version: "1.0.0", description: values.description || "", spec }),
-      });
-      if (!res.ok) {
-        const payload = await res.json().catch(() => null);
-        if (applyApiFieldErrors(payload, modelForm.setError)) {
-          setSaving(false);
-          return;
-        }
-        throw new Error(payload?.error?.message || `创建失败（${res.status}）`);
-      }
-      showToast("模型已创建", `${values.displayName.trim()} · ${values.model.trim()}`);
-      onAdded();
-    } catch (e: any) { setError(e.message); }
-    setSaving(false);
-  }
-
-  const attemptLabel = (a: any) =>
-    `${a.protocol === "chat" ? "Chat" : "Responses"} · ${
-      a.status === "ok" ? `可用 ${a.latencyMs}ms`
-      : a.status === "auth_required" ? "需凭证"
-      : a.status === "recognized" ? "可识别"
-      : a.status === "unavailable" ? "不存在"
-      : a.status === "unreachable" ? "不可达" : "错误"}`;
-  const attemptState = (a: any) =>
-    a.status === "ok" ? "ready" : a.status === "unavailable" || a.status === "unreachable" ? "failed" : "pending";
-
-  return (
-    <FormProvider {...modelForm}>
-    <Drawer
-      title="添加模型"
-      subtitle="接入 OpenAI 兼容模型端点。"
-      wide
-      onClose={onClose}
-      footer={
-        <>
-          <button className="button secondary" type="button" onClick={onClose}>取消</button>
-          <button className="button accent" type="button" onClick={modelForm.handleSubmit(save)} disabled={saving}>
-            <Check size={15} /><span>{saving ? "创建中…" : "创建模型"}</span>
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid two-columns">
-        <FormField label="名称（Slug）" requirement="required" htmlFor="amName" error={modelForm.formState.errors.name?.message}>
-          <input id="amName" className="mono" placeholder="my-model" {...modelForm.register("name")} />
-        </FormField>
-        <FormField label="显示名称" requirement="required" htmlFor="amDisplayName" error={modelForm.formState.errors.displayName?.message}>
-          <input id="amDisplayName" placeholder="我的模型" {...modelForm.register("displayName")} />
-        </FormField>
-      </div>
-      <FormField label="模型 ID" requirement="required" htmlFor="amModelId" error={modelForm.formState.errors.model?.message}>
-        <div>
-        <input id="amModelId" className="mono" placeholder="deepseek-v4.1-flash / …" list="am-model-suggestions" {...modelForm.register("model")} />
-        <datalist id="am-model-suggestions">{modelSuggestions.map(m => <option key={m} value={m} />)}</datalist>
-        {modelSuggestions.length > 0 && <span className="helper">可输入或从 {modelSuggestions.length} 个可用模型中选择（自动补全）。</span>}
-        </div>
-      </FormField>
-
-      <FormField label="接口地址" requirement="required" htmlFor="amEndpoint" hint="支持主机、/v1、Chat Completions 或 Responses 地址；智能探测会自动归一化。" error={modelForm.formState.errors.endpointUrl?.message}>
-        <div>
-        {wireApi && <span className="tag">{wireApi === "responses" ? "Responses 协议" : "Chat 协议"}</span>}
-        <div className="model-endpoint-actions">
-          <div className="segmented-control">
-            <button type="button" className={addressMode === "endpoint" ? "selected" : ""} onClick={() => modelForm.setValue("addressMode", "endpoint")}>完整 endpointUrl</button>
-            <button type="button" className={addressMode === "base" ? "selected" : ""} onClick={() => modelForm.setValue("addressMode", "base")}>baseUrl</button>
-          </div>
-          <button className="button secondary small" type="button" onClick={probe} disabled={probing || !url.trim()}>
-            <Zap size={14} /><span>{probing ? "探测中…" : "智能探测"}</span>
-          </button>
-        </div>
-        <input id="amEndpoint" className="mono" placeholder={addressMode === "endpoint" ? "https://host/v1/chat/completions" : "https://host/v1"} {...modelForm.register("endpointUrl")} />
-        {probeAttempts.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
-            {probeAttempts.map((a, i) => (
-              <span key={i} className="badge" data-state={attemptState(a)} title={a.endpointUrl}>{attemptLabel(a)}</span>
-            ))}
-          </div>
-        )}
-        </div>
-      </FormField>
-
-      <div className="form-grid two-columns">
-        <FormField label="凭证环境变量名" requirement="required" htmlFor="amEnvName" error={modelForm.formState.errors.credentialRef?.message}>
-          <input
-            id="amEnvName"
-            className="mono"
-            value={envName}
-            onChange={event => modelForm.setValue("credentialRef", `env://${event.target.value}`, { shouldDirty: true, shouldValidate: true })}
-            placeholder="MY_MODEL_API_KEY"
-          />
-        </FormField>
-        <FormField label="API Key 值" requirement="optional" htmlFor="amApiKey" hint="保存到当前工作区；留空则使用现有凭证或启动环境变量。" error={modelForm.formState.errors.apiKey?.message}>
-          <input id="amApiKey" type="password" autoComplete="new-password" placeholder="留空则从环境读取" {...modelForm.register("apiKey")} />
-        </FormField>
-      </div>
-
-      <div className="form-grid two-columns">
-        <FormField label="temperature" requirement="optional" htmlFor="amTemp" error={modelForm.formState.errors.temperature?.message}>
-          <input id="amTemp" type="number" step="0.1" min={0} max={2} {...modelForm.register("temperature", { valueAsNumber: true })} />
-        </FormField>
-        <FormField label="max_tokens" requirement="optional" htmlFor="amMaxTokens" error={modelForm.formState.errors.maxTokens?.message}>
-          <input id="amMaxTokens" type="number" min={1} max={131072} {...modelForm.register("maxTokens", { valueAsNumber: true })} />
-        </FormField>
-      </div>
-
-      {error && <InlineAlert kind="error" title="添加模型" message={error} />}
     </Drawer>
     </FormProvider>
   );
@@ -1103,18 +912,27 @@ interface SkillCandidate extends SkillDiscoveryCandidate {
   totalBytes?: number;
   risk?: {
     requiresReview?: boolean;
+    containsScripts?: boolean;
+    scripts?: string[];
+    networkMarkers?: string[];
   };
   diagnostics?: Array<{ message?: string }>;
 }
 
-function SkillDiscoveryDrawer({
+export function SkillDiscoveryDrawer({
   onClose,
   onCatalogChanged,
 }: {
   onClose: () => void;
   onCatalogChanged: () => void | Promise<void>;
 }) {
+  const [sourceMode, setSourceMode] = useState<"local" | "github">("local");
   const [scanPaths, setScanPaths] = useState("");
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourceRef, setSourceRef] = useState("main");
+  const [agents, setAgents] = useState<Array<{ metadata: { id: string; name: string } }>>([]);
+  const [bindAgentId, setBindAgentId] = useState("");
+  const [buildAfterBinding, setBuildAfterBinding] = useState(true);
   const [discovery, setDiscovery] = useState<any>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<Record<string, SkillImportResult<ResItem>>>({});
@@ -1129,6 +947,15 @@ function SkillDiscoveryDrawer({
 
   const candidates: SkillCandidate[] = discovery?.candidates || [];
 
+  useEffect(() => {
+    let active = true;
+    void apiFetch("/api/v1/agents?limit=200")
+      .then(async response => response.ok ? response.json() : { items: [] })
+      .then(payload => { if (active) setAgents(payload.items || []); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
   function resetBatchState() {
     setSelectedIds(new Set());
     setResults({});
@@ -1138,14 +965,36 @@ function SkillDiscoveryDrawer({
     setConflicts(null);
   }
 
+  async function discardDiscovery() {
+    const token = discovery?.inspectionToken;
+    if (!token) return;
+    await apiFetch(`/api/v1/catalog/skills/discoveries/${encodeURIComponent(token)}`, {
+      method: "DELETE",
+    }).catch(() => undefined);
+  }
+
+  function closeDrawer() {
+    if (committing) return;
+    void discardDiscovery();
+    onClose();
+  }
+
   async function scan() {
     setError("");
     setScanning(true);
     try {
+      await discardDiscovery();
+      if (sourceMode === "github" && !sourceUrl.trim()) {
+        throw new Error("请输入公开 GitHub 仓库地址");
+      }
       const list = scanPaths.split(",").map(s => s.trim()).filter(Boolean);
-      const res = await apiFetch("/api/v1/catalog/skills:discover", {
+      const res = await apiFetch(sourceMode === "github"
+        ? "/api/v1/catalog/skills:discover-github"
+        : "/api/v1/catalog/skills:discover", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scanPaths: list }),
+        body: JSON.stringify(sourceMode === "github"
+          ? { sourceUrl: sourceUrl.trim(), ref: sourceRef.trim() || "main" }
+          : { scanPaths: list }),
       });
       if (!res.ok) throw new Error(await errorMessage(res, "Skill 发现失败"));
       const d = await res.json();
@@ -1186,6 +1035,7 @@ function SkillDiscoveryDrawer({
     setResults({});
     setProgress({ completed: 0, total });
     setCommitting(true);
+    let importedCount = 0;
     try {
       const completed = await runSkillImportBatch<ResItem, SkillCandidate>({
         candidates,
@@ -1205,10 +1055,17 @@ function SkillDiscoveryDrawer({
           setProgress({ completed: completedCount, total: batchTotal });
         },
       });
+      importedCount = completed.succeededIds.length;
       setSummary(completed);
       setSelectedIds(new Set(completed.failedIds));
       if (completed.succeededIds.length) {
         await onCatalogChanged();
+        if (bindAgentId) {
+          const importedSkillIds = completed.results
+            .filter(result => result.status === "succeeded" && result.value?.resourceId)
+            .map(result => String(result.value!.resourceId));
+          await bindImportedSkills(bindAgentId, importedSkillIds, buildAfterBinding);
+        }
       }
       if (completed.failedIds.length) {
         showToast(
@@ -1219,7 +1076,11 @@ function SkillDiscoveryDrawer({
       } else {
         showToast("Skill 批量导入完成", `已导入 ${completed.succeededIds.length} 个 Skill。`);
       }
-    } catch (e: any) { setError(e.message); }
+    } catch (e: any) {
+      setError(importedCount
+        ? `已有 ${importedCount} 个 Skill 安装到资源目录，但后续绑定或构建未完成：${e.message}`
+        : e.message);
+    }
     setCurrentImportId("");
     setCommitting(false);
   }
@@ -1237,16 +1098,54 @@ function SkillDiscoveryDrawer({
 
   const selectedCount = selectedIds.size;
 
+  async function bindImportedSkills(agentId: string, resourceIds: string[], build: boolean) {
+    if (!resourceIds.length) return;
+    const detailResponse = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`);
+    const detail = await detailResponse.json().catch(() => null);
+    if (!detailResponse.ok) throw new Error(detail?.error?.message || "Agent 加载失败");
+    const draft = detail?.draft;
+    const bindings = structuredClone(draft?.spec?.bindings || {});
+    const existing = new Map((bindings.skills || []).map((item: any) => [item.resourceId, item]));
+    for (const resourceId of resourceIds) {
+      if (!existing.has(resourceId)) existing.set(resourceId, { resourceId, enabled: true });
+    }
+    bindings.skills = Array.from(existing.values());
+    const updateResponse = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/bindings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "If-Match": String(draft.metadata.revision) },
+      body: JSON.stringify(bindings),
+    });
+    const updated = await updateResponse.json().catch(() => null);
+    if (!updateResponse.ok) throw new Error(updated?.error?.message || "Skill 绑定失败");
+    if (!build) {
+      showToast("Skill 已绑定", "已写入 Agent 草稿；下次构建后生效。");
+      return;
+    }
+    const revision = Number(updated?.metadata?.revision);
+    const buildResponse = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/builds`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": `skill-bind-${agentId}-r${revision}-${Date.now()}`,
+      },
+      body: JSON.stringify({ revision, runEvaluation: false }),
+    });
+    const operation = await buildResponse.json().catch(() => null);
+    if (!buildResponse.ok) throw new Error(operation?.error?.message || "Skill 绑定已保存，但构建失败");
+    await waitForOperation(operation.id);
+    showToast("Skill 已绑定并完成构建", "新会话现在可以使用安装的 Skill。");
+  }
+
   return (
     <Drawer
-      title="发现本地 Skill"
-      subtitle="扫描本地 Skill，选择后导入。"
+      title="发现 Skill"
+      subtitle="从安全本地目录或公开 GitHub 仓库检查 Skill，确认后安装。"
       wide
       closeDisabled={committing}
-      onClose={onClose}
+      onClose={closeDrawer}
       footer={
         <>
-          <button className="button secondary" type="button" onClick={onClose} disabled={committing}>取消</button>
+          <button className="button secondary" type="button" onClick={closeDrawer} disabled={committing}>取消</button>
           <button className="button accent" type="button" onClick={beginImport} disabled={!selectedCount || committing}>
             <Check size={15} />
             <span>{committing ? `正在导入 ${progress.completed}/${progress.total}` : `导入所选 ${selectedCount} 个`}</span>
@@ -1255,13 +1154,50 @@ function SkillDiscoveryDrawer({
       }
     >
       <div className="field">
-        <label htmlFor="skillScanPaths">扫描目录（逗号分隔；留空扫描安全默认目录）</label>
-        <input id="skillScanPaths" value={scanPaths} onChange={e => setScanPaths(e.target.value)} placeholder="skills, .claude/skills, user:codex" />
-        <span className="helper">用户目录仅支持 user:agents、user:codex、user:claude；不支持任意本机路径扫描。</span>
+        <label htmlFor="skillSourceMode">发现来源</label>
+        <select id="skillSourceMode" value={sourceMode} onChange={event => {
+          void discardDiscovery();
+          setSourceMode(event.target.value as "local" | "github");
+          setDiscovery(null);
+          resetBatchState();
+        }}>
+          <option value="local">本地安全目录</option>
+          <option value="github">公开 GitHub 仓库</option>
+        </select>
       </div>
+      {sourceMode === "local" ? (
+        <div className="field">
+          <label htmlFor="skillScanPaths">扫描目录（逗号分隔；留空扫描安全默认目录）</label>
+          <input id="skillScanPaths" value={scanPaths} onChange={e => setScanPaths(e.target.value)} placeholder="skills, .claude/skills, user:codex" />
+          <span className="helper">用户目录仅支持 user:agents、user:codex、user:claude；不支持任意本机路径扫描。</span>
+        </div>
+      ) : (
+        <>
+          <div className="field">
+            <label htmlFor="skillSourceUrl">GitHub 仓库地址</label>
+            <input id="skillSourceUrl" value={sourceUrl} onChange={event => setSourceUrl(event.target.value)} placeholder="https://github.com/owner/repository" />
+            <span className="helper">仅支持公开 github.com 仓库；安装前会锁定到不可变 commit，并展示脚本与网络风险。</span>
+          </div>
+          <div className="field">
+            <label htmlFor="skillSourceRef">分支、标签或 commit</label>
+            <input id="skillSourceRef" value={sourceRef} onChange={event => setSourceRef(event.target.value)} placeholder="main" />
+          </div>
+        </>
+      )}
       <button className="button secondary" type="button" onClick={scan} disabled={scanning || committing}>
-        <Search size={15} /><span>{scanning ? "正在扫描" : "扫描候选"}</span>
+        <Search size={15} /><span>{scanning ? "正在检查" : "检查候选"}</span>
       </button>
+      <div className="field" style={{ marginTop: 16 }}>
+        <label htmlFor="skillBindAgent">安装后绑定到 Agent（可选）</label>
+        <select id="skillBindAgent" value={bindAgentId} onChange={event => setBindAgentId(event.target.value)}>
+          <option value="">仅安装到资源目录</option>
+          {agents.map(agent => <option key={agent.metadata.id} value={agent.metadata.id}>{agent.metadata.name}</option>)}
+        </select>
+        {bindAgentId && <label className="checkbox-row">
+          <input type="checkbox" checked={buildAfterBinding} onChange={event => setBuildAfterBinding(event.target.checked)} />
+          <span>绑定后立即构建，使新会话可用</span>
+        </label>}
+      </div>
       {candidates.length > 0 && (
         <div className="skill-selection-toolbar">
           <span>已选择 {selectedCount} / {eligibleSkillIds(candidates).size}</span>
@@ -1274,7 +1210,11 @@ function SkillDiscoveryDrawer({
       <div className="skill-discovery-list" style={{ marginTop: 16 }}>
         {candidates.length === 0 ? (
           <div className="trace-stage-empty compact">
-            <p>{discovery ? "安全默认目录中没有发现 Skill。" : "点击扫描候选。"}</p>
+            <p>{discovery
+              ? sourceMode === "github"
+                ? "该仓库中没有发现可安装的 SKILL.md。"
+                : "安全默认目录中没有发现 Skill。"
+              : "点击检查候选。"}</p>
           </div>
         ) : candidates.map(candidate => {
           const risk = candidate.risk || {};
@@ -1288,6 +1228,12 @@ function SkillDiscoveryDrawer({
               : "无效";
           const details = candidate.diagnostics?.map((d: any) => d.message).join("；")
             || `${candidate.fileCount || 0} 个文件 · ${formatByteCount(candidate.totalBytes || 0)}`;
+          const riskDetails = [
+            risk.containsScripts
+              ? `包含可执行脚本${risk.scripts?.length ? `（${risk.scripts.length} 个）` : ""}`
+              : "",
+            risk.networkMarkers?.length ? "说明中包含网络访问指令" : "",
+          ].filter(Boolean).join("；");
           const importState = result?.status === "succeeded"
             ? "已导入"
             : result?.status === "failed"
@@ -1311,6 +1257,7 @@ function SkillDiscoveryDrawer({
                 <strong>{candidate.displayName || candidate.name}</strong>
                 <span>{candidate.path} · {candidate.version || "版本无效"}</span>
                 <small>{details}</small>
+                {riskDetails && <small className="skill-import-state pending">复核原因：{riskDetails}</small>}
                 {importState && <small className={`skill-import-state ${result?.status || "pending"}`}>{importState}</small>}
               </span>
               <span className="badge" data-state={candidate.status === "ready" ? "ready" : "pending"}>

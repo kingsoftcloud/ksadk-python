@@ -2,5 +2,7 @@ prune ksadk/server/web-ui
 recursive-exclude ksadk/server/web-ui *
 prune ksadk/studio/react-ui
 recursive-exclude ksadk/studio/react-ui *
+prune tests
+recursive-exclude tests *
 recursive-include ksadk_runtime_common/schemas *.json
 include ksadk/_build_provenance.json

@@ -39,10 +39,18 @@ requires_openai_auth = false
         environment.update(
             {
                 "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
+                "KSADK_CODEX_USE_PROXY": "0",
+                "OPENAI_BASE_URL": self._responses_url,
                 "RUST_LOG": "warn",
             }
         )
-        client = AsyncCodexClient(dataclasses.replace(config, env=environment))
+        # The native fixture owns its local, unauthenticated Responses route;
+        # process-wide model/proxy defaults must not replace its provider.
+        overrides = tuple(getattr(config, "config_overrides", ()) or ())
+        client = AsyncCodexClient(dataclasses.replace(
+            config, env=environment,
+            config_overrides=(*overrides, "model_provider=ksadk_provider_stub"),
+        ))
         transport = client._codex._client._sync
         original_close = transport.close
 

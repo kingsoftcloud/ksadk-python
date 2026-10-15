@@ -68,6 +68,8 @@ class A2AAdapterContext:
     context_id: str
     task_id: str | None
     initial_seq: int = 0
+    fixed_scope_id: str | None = None
+    parent_scope_id: str | None = None
     _next_seq: int = field(init=False, repr=False)
     _direct_message_id: str | None = field(default=None, init=False, repr=False)
 
@@ -82,6 +84,8 @@ class A2AAdapterContext:
 
     @property
     def scope_id(self) -> str:
+        if self.fixed_scope_id is not None:
+            return self.fixed_scope_id
         if self.task_id is not None:
             return stable_scope_id("a2a", self.context_id, self.task_id)
         if self._direct_message_id is not None:
@@ -93,12 +97,20 @@ class A2AAdapterContext:
         )
 
     @property
+    def item_identity(self) -> tuple[str, ...]:
+        if self.fixed_scope_id is not None:
+            return (self.fixed_scope_id,)
+        return (self.context_id, self.task_id) if self.task_id else (self.context_id,)
+
+    @property
     def native_run_id(self) -> str:
-        return _required_string(self.task_id or self._direct_message_id, "task_id/message_id")
+        return _required_string(
+            self.task_id or self._direct_message_id or self.fixed_scope_id, "task_id/message_id"
+        )
 
     def bind_direct_message(self, message_id: str) -> None:
         native_message_id = _required_string(message_id, "message.message_id")
-        if self.task_id is not None:
+        if self.task_id is not None or self.fixed_scope_id is not None:
             return
         if self._direct_message_id not in {None, native_message_id}:
             _fail(
@@ -153,7 +165,7 @@ class _ArtifactState:
 
 @dataclass(frozen=True)
 class _MessageState:
-    signature: bytes
+    signature: str
 
 
 @dataclass(frozen=True)

@@ -14,6 +14,7 @@ from typing import List, Optional
 import httpx
 from pydantic import ConfigDict
 
+from ksadk.common.cloud_headers import build_cloud_headers
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
 
             self._client = httpx.Client(
                 base_url=self.base_url,
-                headers=headers,
+                headers=build_cloud_headers(headers),
                 timeout=self.timeout,
             )
         return self._client

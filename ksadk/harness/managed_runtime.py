@@ -34,14 +34,20 @@ from ksadk.events.content import ContentSnapshot, TextContent
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.harness.context_engine import HarnessContextEngine
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine, memory_checkpointer
+from ksadk.harness.engine.steering import SteerReceipt
 from ksadk.harness.events import EventType
 from ksadk.harness.events import RuntimeEvent as HarnessEvent
 from ksadk.harness.execution_policy import ExecutionPolicy, ExecutionPolicyResolver
 from ksadk.harness.public_activity import tool_public_action
 from ksadk.harness.reasoner import HarnessReasoner
+from ksadk.harness.runtime_capabilities import (
+    managed_harness_capabilities,
+    managed_harness_native_capabilities,
+)
 from ksadk.harness.skill_composition import compose_engine
 from ksadk.harness.spec import HarnessSpec
-from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
+from ksadk.harness.tool_display import safe_tool_display, tool_display_start
+from ksadk.kernel.contracts import RuntimeCapabilityMatrix, SteerPayload
 from ksadk.kernel.errors import UnsupportedControlError
 from ksadk.runtime import (
     BaseRuntime,
@@ -63,16 +69,7 @@ class ManagedHarnessRuntime(BaseRuntime):
         self._durable = durable
 
     def native_capabilities(self) -> dict[str, Any]:
-        return {
-            "cancel": {"supported": True},
-            "resume": {"supported": True},
-            "checkpoint": {"supported": True, "granularity": "snapshot"},
-            "session_continuity": {
-                "durable": self._durable,
-                "scope": "workspace" if self._durable else "process",
-            },
-            "progressive_disclosure": {"skill": True, "mcp": True},
-        }
+        return managed_harness_native_capabilities(durable=self._durable)
 
 
 class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
@@ -88,6 +85,7 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         durable: bool = False,
         shared_across_pods: bool = False,
         execution_policy_resolver: ExecutionPolicyResolver | None = None,
+        hooks: tuple | None = None,
     ) -> None:
         super().__init__(ManagedHarnessRuntime(durable=durable))
         self._spec = spec
@@ -100,6 +98,7 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
             reasoner=reasoner,
             checkpointer=memory_checkpointer(),
             context_engine=HarnessContextEngine(),
+            **({"hooks": tuple(hooks)} if hooks else {}),
         )
         self._compiled: Any | None = None
         self._external_handles: dict[str, RunHandle] = {}
@@ -240,25 +239,67 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
 
     async def _stream(self, handle: RunHandle) -> AsyncIterator[Any]:
         internal = self._internal_handle(handle)
-        async for event in self._engine.stream(internal):
-            rich = event.to_v2()
-            if not rich.parent_run_id:
-                terminal_status = {
-                    EventType.RUN_COMPLETED: "completed",
-                    EventType.RUN_FAILED: "failed",
-                    EventType.RUN_CANCELED: "canceled",
-                }.get(rich.event_type)
-                if terminal_status is not None:
-                    # A terminal checkpoint must not remain eligible for cold
-                    # attach.  Persist before yielding so a consumer that stops
-                    # at the terminal event cannot leave a stale live handle.
-                    self._persist_durable_handle(
-                        handle,
-                        terminal_status,
-                        terminal=True,
-                    )
-            for projected in _project_event(event):
-                yield projected
+        while True:
+            run_completed = False
+            async for event in self._engine.stream(internal):
+                rich = event.to_v2()
+                if not rich.parent_run_id:
+                    terminal_status = {
+                        EventType.RUN_COMPLETED: "completed",
+                        EventType.RUN_FAILED: "failed",
+                        EventType.RUN_CANCELED: "canceled",
+                    }.get(rich.event_type)
+                    if terminal_status is not None:
+                        # A terminal checkpoint must not remain eligible for cold
+                        # attach.  Persist before yielding so a consumer that stops
+                        # at the terminal event cannot leave a stale live handle.
+                        self._persist_durable_handle(
+                            handle,
+                            terminal_status,
+                            terminal=True,
+                        )
+                if rich.event_type == EventType.RUN_COMPLETED and not rich.parent_run_id:
+                    run_completed = True
+                for projected in _project_event(event):
+                    yield projected
+            if not run_completed:
+                return
+            # follow_up 语义：本次 Run 自然完成后，若旧 Run 排了尾随指令，
+            # 就在同一条 stream 上自动起下一个 Run（新 run_id），宿主无感知。
+            follow_text = self._engine.pop_follow_up(internal.run_id)
+            if follow_text is None:
+                return
+            external_current = handle
+            follow_request = StartRequest(
+                input=follow_text,
+                user_id=external_current.native_ref.get("user_id") or "unknown",
+                session_id=external_current.session_id,
+                agent_id=external_current.native_ref.get("agent_id"),
+                runtime_type="harness",
+                metadata={
+                    "origin": "follow_up",
+                    "follow_up_of": external_current.run_id,
+                },
+            )
+            external_current = await self.start(follow_request)
+            handle = external_current
+            internal = self._internal_handle(external_current)
+
+    async def steer(self, handle: RunHandle, text: Any) -> SteerReceipt:
+        """流式中投递纠偏指令（返回 engine 的 :class:`SteerReceipt`）。
+
+        同时接受纯文本（adapter 直调）与 Kernel 的 SteerPayload 线格式
+        （worker 会把契约载荷原样交给 adapter）。
+        """
+        return self._engine.steer(
+            self._internal_handle(handle),
+            _steer_text(text),
+            allow_follow_up=not isinstance(text, SteerPayload),
+        )
+
+    async def follow_up(self, handle: RunHandle, text: Any) -> SteerReceipt:
+        """排队尾随指令：本次 Run 自然完成后自动续跑下一个 Run。"""
+        return self._engine.follow_up(self._internal_handle(handle), _steer_text(text))
 
     async def cancel(self, handle: RunHandle) -> CancelResult:
         result = await self._engine.cancel(self._internal_handle(handle))
@@ -282,6 +323,11 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
             # string. Unknown/missing decisions never become an approval.
             normalized = {
                 "approve": "approved",
+                # Preserve the wider scope.  Collapsing this to ``approved``
+                # only released the current tool call, so every subsequent
+                # write prompted again despite the Studio action saying
+                # "本次会话允许".
+                "approve_session": "approved_session",
                 "approved": "approved",
                 "reject": "denied",
                 "rejected": "denied",
@@ -341,6 +387,21 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
             raise KeyError(f"unknown managed Harness run: {handle.run_id}") from None
 
 
+def _final_item_id(run_id: str, rich: Any) -> str:
+    """Derive the final-answer message item id, turn-scoped when turn_id is present.
+
+    会话串轮修复（交接记录 2026-09-22 §7）：final item_id 之前只按 ``run_id``
+    派生，同一 run 内多轮 final 撞到同一 item_id，历史/重放 final 遮蔽当前轮
+    正确 final。引擎在 final-answer 的 TEXT_COMPLETED 与 RUN_COMPLETED payload
+    里带上当前 ``turn_id`` 后，这里据此派生 turn 级身份；未带 turn_id 时回退到
+    旧 run 级身份，保持不发 TURN_STARTED 的引擎/路径行为不回退。
+    """
+    turn_id = str(rich.payload.get("turn_id") or "").strip()
+    if turn_id:
+        return stable_item_id("ksadk", run_id, "turn", turn_id, "message", "final")
+    return stable_item_id("ksadk", run_id, "message", "final")
+
+
 def _project_event(event: HarnessEvent) -> list[Any]:
     """Project one rich Harness event to one or more canonical v2 events."""
 
@@ -348,17 +409,32 @@ def _project_event(event: HarnessEvent) -> list[Any]:
     native_run_id = str(rich.run_id or rich.invocation_id)
     run_id = str(rich.invocation_id if rich.parent_run_id else native_run_id)
     scope_id = stable_scope_id("ksadk", native_run_id, str(rich.scope_id or rich.agent_id))
+    source_metadata: dict[str, Any] = {
+        "native_event_type": rich.event_type,
+        "agent_id": rich.agent_id,
+        "session_id": rich.session_id,
+        **({"phase": rich.phase} if rich.phase else {}),
+        **({"parent_run_id": rich.parent_run_id} if rich.parent_run_id else {}),
+    }
+    # Keep comparison-grade lifecycle facts on the canonical envelope.  These
+    # are identifiers/state, never model reasoning or tool input/output, so
+    # evaluation can count retries and subagents without parsing item content.
+    if rich.event_type == EventType.RUN_PROGRESS:
+        activity_kind = str(rich.payload.get("kind") or "").strip()
+        activity_call_id = str(rich.payload.get("call_id") or "").strip()
+        if activity_kind:
+            source_metadata["activity_kind"] = activity_kind
+        if activity_call_id:
+            source_metadata["activity_call_id"] = activity_call_id
+    elif rich.event_type == EventType.MODEL_CALL_FAILED:
+        failure_action = str(rich.payload.get("action") or "").strip()
+        if failure_action:
+            source_metadata["failure_action"] = failure_action
     source = SourceRef(
         framework="ksadk",
         native_event_id=rich.event_id,
         native_run_id=native_run_id,
-        metadata={
-            "native_event_type": rich.event_type,
-            "agent_id": rich.agent_id,
-            "session_id": rich.session_id,
-            **({"phase": rich.phase} if rich.phase else {}),
-            **({"parent_run_id": rich.parent_run_id} if rich.parent_run_id else {}),
-        },
+        metadata=source_metadata,
     )
 
     def envelope(event_type: str, item_id: str, part_id: str, ordinal: int = 0) -> dict[str, Any]:
@@ -399,6 +475,20 @@ def _project_event(event: HarnessEvent) -> list[Any]:
             )
         ]
 
+    if str(rich.payload.get("purpose") or "") == "compaction" and rich.event_type in {
+        EventType.TEXT_DELTA,
+        EventType.TEXT_COMPLETED,
+        EventType.REASONING_DELTA,
+        EventType.REASONING_COMPLETED,
+    }:
+        # Context summaries use the normal reasoner so model lifecycle and
+        # usage remain auditable. Their text is internal working state: exposing
+        # it as a final answer lets an old turn overwrite the current turn in
+        # Studio, and can disclose content that was only meant for compaction.
+        return status_projection(
+            {"purpose": "compaction", "event_type": rich.event_type}
+        )
+
     run_item = stable_item_id("ksadk", run_id, "$run")
     payload = rich.payload
     if rich.parent_run_id and rich.event_type in {
@@ -411,7 +501,20 @@ def _project_event(event: HarnessEvent) -> list[Any]:
     if rich.event_type == EventType.RUN_STARTED:
         return [RunStarted(**envelope("run.started", run_item, "run"), status="running")]
     if rich.event_type == EventType.RUN_COMPLETED:
-        message_id = stable_item_id("ksadk", run_id, "message", "final")
+        message_id = _final_item_id(run_id, rich)
+        control_reason = str(payload.get("control_reason") or "").strip()
+        if control_reason:
+            # A controller stop may preserve a useful partial answer, but it
+            # is not successful task completion.  Surface it as interrupted
+            # so Studio cannot show "已完成" next to an answer that explicitly
+            # reports remaining failed tests.
+            return [
+                RunInterrupted(
+                    **envelope("run.interrupted", run_item, "run"),
+                    status="interrupted",
+                    reason=control_reason,
+                )
+            ]
         return [
             RunCompleted(
                 **envelope("run.completed", run_item, "run"),
@@ -420,13 +523,25 @@ def _project_event(event: HarnessEvent) -> list[Any]:
             )
         ]
     if rich.event_type == EventType.RUN_FAILED:
+        category = str(payload.get("error_category") or "").strip()
+        error_code = str(payload.get("error_code") or "").strip()
+        status_code = payload.get("status_code")
+        try:
+            status_code = int(status_code) if status_code is not None else None
+        except (TypeError, ValueError):
+            status_code = None
+        if not error_code and category == "rate_limit":
+            error_code = "MODEL_RATE_LIMITED"
+        message = str(payload.get("error") or "Managed Harness run failed")
+        if status_code is not None and f"HTTP {status_code}" not in message:
+            message = f"HTTP {status_code} {message}"
         return [
             RunFailed(
                 **envelope("run.failed", run_item, "run"),
                 status="failed",
                 error=ErrorInfo(
-                    code="HARNESS_EXECUTION_FAILED",
-                    message=str(payload.get("error") or "Managed Harness run failed"),
+                    code=error_code or "HARNESS_EXECUTION_FAILED",
+                    message=message,
                     source="ksadk.harness.managed",
                     scope_id=scope_id,
                 ),
@@ -453,6 +568,22 @@ def _project_event(event: HarnessEvent) -> list[Any]:
                 ),
             )
         ]
+    if rich.event_type in {EventType.PUBLIC_SUMMARY_DELTA, EventType.PUBLIC_SUMMARY_COMPLETED}:
+        from ksadk.harness.tool_display import display_text
+
+        item_id = stable_item_id("ksadk", run_id, "public-summary", str(payload["summary_id"]))
+        text = display_text(payload.get("text"))
+        if rich.event_type == EventType.PUBLIC_SUMMARY_COMPLETED:
+            return [ItemCompleted(**envelope("item.completed", item_id, "summary"),
+                                  item_id=item_id, item_kind="reasoning",
+                                  snapshot=ContentSnapshot(parts=(TextContent(part_id="summary", text=text),)))]
+        if payload.get("summary_start") is True:
+            return [ItemStarted(**envelope("item.started", item_id, "summary"),
+                                item_id=item_id, item_kind="reasoning", phase="commentary",
+                                initial=ContentSnapshot(parts=(TextContent(part_id="summary", text=text),)))]
+        return [ItemUpdated(**envelope("item.updated", item_id, "summary"),
+                            item_id=item_id, item_kind="reasoning", op="append",
+                            update=TextContent(part_id="summary", text=text))]
     # Provider reasoning is retained as trace evidence but is not a stable or
     # user-oriented progress contract. Exposing every model turn creates noisy
     # "thought" cards and may reveal private reasoning. Chat progress comes
@@ -492,6 +623,11 @@ def _project_event(event: HarnessEvent) -> list[Any]:
         if payload.get("kind") in {"delegation.route", "subagent.event"}:
             return status_projection()
         kind = str(payload.get("kind") or "")
+        # Run-control guidance is an internal controller fact.  A literal
+        # "执行进度：guidance" row is neither useful to a user nor natural
+        # language; retain it in the canonical trace only.
+        if kind == "run_control":
+            return status_projection()
         if kind == "provider.retry":
             return _public_activity_items(
                 rich=rich,
@@ -563,6 +699,7 @@ def _project_event(event: HarnessEvent) -> list[Any]:
                 total_tokens=input_tokens + output_tokens,
                 cached_tokens=max(0, int(payload.get("cached_tokens") or 0)),
                 reasoning_tokens=max(0, int(payload.get("reasoning_tokens") or 0)),
+                mode=str(payload.get("mode") or "delta"),
             )
         ]
     if rich.event_type == EventType.APPROVAL_REQUESTED:
@@ -583,7 +720,7 @@ def _project_event(event: HarnessEvent) -> list[Any]:
         kind = "message" if rich.event_type == EventType.TEXT_COMPLETED else "reasoning"
         phase = str(rich.phase or ("final_answer" if kind == "message" else "commentary"))
         item_id = (
-            stable_item_id("ksadk", run_id, "message", "final")
+            _final_item_id(run_id, rich)
             if kind == "message" and phase == "final_answer"
             else stable_item_id("ksadk", run_id, kind, rich.event_id)
         )
@@ -618,7 +755,7 @@ def _project_event(event: HarnessEvent) -> list[Any]:
         kind = "message" if rich.event_type == EventType.TEXT_DELTA else "reasoning"
         phase = str(rich.phase or ("final_answer" if kind == "message" else "commentary"))
         item_id = (
-            stable_item_id("ksadk", native_run_id, "message", "final")
+            _final_item_id(native_run_id, rich)
             if kind == "message" and phase == "final_answer"
             else stable_item_id("ksadk", run_id, kind, "stream")
         )
@@ -644,21 +781,29 @@ def _project_event(event: HarnessEvent) -> list[Any]:
                 update=update,
             )
         ]
-    if rich.event_type in {EventType.TOOL_CALL_BEGIN, EventType.TOOL_CALL_END}:
+    if rich.event_type in {
+        EventType.TOOL_CALL_BEGIN, EventType.TOOL_CALL_END, EventType.TOOL_OUTPUT_UPDATED,
+    }:
         # Arguments, results and receipts remain in the canonical Trace. The
         # conversation receives the corresponding human-readable tool.batch
         # progress item, avoiding duplicate technical cards and configuration-
         # shaped payloads in the user-facing activity stream.
         action = tool_public_action(payload)
+        display = (safe_tool_display(payload.get("public_display"))
+                   or tool_display_start(str(payload.get("name") or "tool"), payload.get("args")))
         return status_projection(
             {
                 "name": str(payload.get("name") or "tool"),
                 "call_id": str(payload.get("call_id") or rich.event_id),
                 **({"public_action": action} if action else {}),
+                "tool_display": display,
                 "status": (
                     "started"
-                    if rich.event_type == EventType.TOOL_CALL_BEGIN
-                    else "failed" if payload.get("error") else "completed"
+                    if rich.event_type in {EventType.TOOL_CALL_BEGIN, EventType.TOOL_OUTPUT_UPDATED}
+                    else "failed" if payload.get("error") or (
+                        isinstance(payload.get("result"), dict)
+                        and payload["result"].get("ok") is False
+                    ) else "completed"
                 ),
             }
         )
@@ -681,21 +826,38 @@ def _public_activity_items(
     item_kind: str = "message",
     existing: bool = False,
 ) -> list[Any]:
-    """Build one identity-stable, replaceable public activity item."""
+    """Build one identity-stable public activity lifecycle transition.
+
+    Each Harness event must project to exactly one renderer mutation.  Emitting
+    ``started`` + identical ``updated`` + identical ``completed`` for a single
+    retry made clients that preserve canonical lifecycle events render the same
+    sentence twice.  Running activities start once, subsequent progress replaces
+    once, and completion supplies the authoritative final snapshot once.
+    """
     del rich, scope_id, source
     item_id = stable_item_id("ksadk", run_id, item_kind, f"activity-{key}")
     part_id = "text-0"
     snapshot = ContentSnapshot(parts=(TextContent(part_id=part_id, text=summary),))
-    events: list[Any] = []
+    if completed:
+        return [
+            ItemCompleted(
+                **envelope("item.completed", item_id, part_id, 2),
+                item_id=item_id,
+                item_kind=item_kind,
+                snapshot=snapshot,
+            )
+        ]
     if not existing:
-        events.append(ItemStarted(
+        return [
+            ItemStarted(
             **envelope("item.started", item_id, part_id, 0),
             item_id=item_id,
             item_kind=item_kind,
             phase="commentary",
             initial=snapshot,
-        ))
-    events.append(
+            )
+        ]
+    return [
         ItemUpdated(
             **envelope("item.updated", item_id, part_id, 1),
             item_id=item_id,
@@ -703,17 +865,7 @@ def _public_activity_items(
             op="replace",
             update=TextContent(part_id=part_id, text=summary),
         )
-    )
-    if completed:
-        events.append(
-            ItemCompleted(
-                **envelope("item.completed", item_id, part_id, 2),
-                item_id=item_id,
-                item_kind=item_kind,
-                snapshot=snapshot,
-            )
-        )
-    return events
+    ]
 
 
 def _progress_text(payload: dict[str, Any]) -> str:
@@ -778,12 +930,41 @@ def _provider_retry_text(payload: dict[str, Any]) -> str:
         attempt = max(2, int(payload["next_attempt"]))
     else:
         attempt = max(2, int(payload.get("model_attempt") or 1) + 1)
-    maximum = max(attempt, int(payload.get("max_attempts") or 10))
+    maximum = max(attempt, int(payload.get("max_attempts") or 3))
     delay_ms = max(0, int(payload.get("delay_ms") or payload.get("retry_delay_ms") or 0))
     wait = f"，{delay_ms / 1000:g} 秒后" if delay_ms else ""
     label = str(payload.get("label") or "").strip()
     scope = f"（{label}）" if label else ""
-    return f"模型服务繁忙{scope}{wait}自动重试（第 {attempt}/{maximum} 次）"
+    # 叙述必须区分"上游繁忙/限流"与"其它失败"：把被我们拒绝的响应说成
+    # "模型服务繁忙"会掩盖 bug（2026-09-18 实测事故）。
+    #
+    # 并且**类别本身也必须显示出来**：`transient` 里包含 `timeout`，而超时可能
+    # 是我们自己触发的（例如空闲进度超时）。统一写成"模型服务繁忙"会让用户
+    # 无法判断是网关的问题还是我们的问题——2026-09-18 用户直接质疑"服务器没
+    # 那么容易繁忙吧"，而我们当时确实拿不出证据。这里保留可读措辞并附上原始
+    # 类别，让重试原因可辨。
+    category = str(payload.get("failure_category") or "").strip().lower()
+    transient = {"rate_limit", "timeout", "unavailable", "transport"}
+    # 类别未知时保持原措辞（不改变既有语义）；只有确实拿到类别才改口径并附上。
+    headline = (
+        "模型调用未成功"
+        if category and category not in transient
+        else "模型服务繁忙"
+    )
+    if category:
+        headline = f"{headline}（{category}）"
+    # 附带上游 HTTP 状态码（纯数字，不含正文，无泄密风险）。2026-09-18 实测：
+    # 重试全是 `unavailable`，但它既可能是网关 503，也可能是**我们自己**把
+    # "网关 400（例如拒绝请求体某字段）"包装成 MODEL_REQUEST_FAILED(502)。
+    # 不显示状态码就无法区分"上游真的不可用"和"我们的请求把上游惹了"。
+    status_code = payload.get("status_code")
+    if status_code:
+        headline = f"{headline}[{status_code}]"
+    # 带上内部错误码（是我们自判失败还是上游失败，一眼可辨；不含任何正文/凭证）。
+    error_code = str(payload.get("error_code") or "").strip()
+    if error_code:
+        headline = f"{headline}<{error_code}>"
+    return f"{headline}{scope}{wait}自动重试（第 {attempt}/{maximum} 次）"
 
 
 def _public_approval_detail(value: Any) -> dict[str, Any]:
@@ -838,43 +1019,22 @@ def _compact_responsibilities(labels: list[str], *, max_items: int = 4) -> str:
     return "\n" + "\n".join(lines)
 
 
+def _steer_text(value: Any) -> str:
+    """Normalize both plain text and the Kernel wire payload to steering text."""
+    if isinstance(value, str):
+        return value
+    content = getattr(value, "content", None)
+    if content is None and isinstance(value, dict):
+        content = value.get("content")
+    return str(content) if content is not None else str(value)
+
+
 def _positive_int(value: Any) -> int | None:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
-
-
-def managed_harness_capabilities(
-    *, durable: bool, execution_policy: bool = False
-) -> RuntimeCapabilityMatrix:
-    """Return the canonical control matrix for one concrete assembly tier."""
-
-    def available() -> RuntimeCapability:
-        return RuntimeCapability(supported=True, mode="native")
-
-    def unavailable(reason: str) -> RuntimeCapability:
-        return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
-
-    durable_capability = (
-        available() if durable else unavailable("managed_harness_checkpoint_is_process_local")
-    )
-    return RuntimeCapabilityMatrix(
-        cancel=available(),
-        pause=unavailable("managed_harness_pause_not_implemented"),
-        resume=available(),
-        submit_interaction=durable_capability,
-        attach=durable_capability,
-        steer=unavailable("runtime_no_native_steer"),
-        inject=unavailable("runtime_no_native_inject"),
-        checkpoint=available(),
-        durable_restore=durable_capability,
-        interaction_mode="durable_resume" if durable else "unavailable",
-        execution_policy=(
-            available() if execution_policy else unavailable("managed_harness_no_host_resolver")
-        ),
-    )
 
 
 __all__ = [

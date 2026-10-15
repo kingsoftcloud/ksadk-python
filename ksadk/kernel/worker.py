@@ -21,17 +21,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from contextlib import nullcontext
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Literal
 
-from ksadk.interaction.contracts import (
-    InteractionSubmission,
-)
 from ksadk.interaction.provider import (
     RUNTIME_INTERACTION_UNAVAILABLE,
     InteractionProvider,
-    InteractionResolveContext,
     UnavailableInteractionProvider,
 )
 from ksadk.interaction.providers import default_interaction_providers
@@ -40,13 +37,6 @@ from ksadk.kernel.contracts import (
     ActivationLease,
     ActivationWriteGuard,
     AgentControlCommand,
-    SubmitInteractionPayload,
-)
-from ksadk.kernel.contracts import (
-    InjectPayload as ContractInjectPayload,
-)
-from ksadk.kernel.contracts import (
-    SteerPayload as ContractSteerPayload,
 )
 from ksadk.kernel.errors import (
     AgentKernelError,
@@ -59,30 +49,24 @@ from ksadk.kernel.execution_grants import (
     execution_grant_id,
     execution_grant_run_id,
 )
-from ksadk.kernel.mapping import COMMAND_HANDLERS, RESUME_TARGET_KINDS
+from ksadk.kernel.mapping import COMMAND_HANDLERS
 from ksadk.kernel.state import RunState
 from ksadk.kernel.store import (
     AgentKernelStore,
     RunRecord,
     control_event,
-    new_message_id,
 )
+from ksadk.kernel.worker_controls import WorkerControlMixin
 from ksadk.kernel.worker_identity import prepare_worker_identity
 from ksadk.runtime.adapter import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
-    CancelResult,
-    PauseResult,
     RunHandle,
     RuntimeAdapter,
     StartRequest,
 )
-from ksadk.runtime.adapter import (
-    ResumePayload as AdapterResumePayload,
-)
-from ksadk.runtime.adapter import (
-    ResumeTarget as AdapterResumeTarget,
-)
 from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY
+
+from ksadk.kernel.worker_interactions import _WorkerInteractionMixin
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +91,9 @@ class ActiveExecution:
     interaction_provider: InteractionProvider
     stream_task: asyncio.Task[None] | None = None
     stream_guard: ActivationWriteGuard | None = None
+    managed_interaction_waiters: dict = field(default_factory=dict)
+    managed_a2a_bootstraps: dict = field(default_factory=dict)
+    recovering: bool = False
 
 
 @dataclass(frozen=True)
@@ -120,7 +107,7 @@ class WorkResult:
     error: Exception | None = None
 
 
-class AgentKernelWorker:
+class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
     def __init__(
         self,
         store: AgentKernelStore,
@@ -154,7 +141,7 @@ class AgentKernelWorker:
         # A stream may fail after its enqueue has been durably completed.  Keep
         # the exception observable to diagnostics without leaving an unhandled
         # Task warning; the durable run remains open for recovery/takeover.
-        self._background_stream_errors: dict[str, Exception] = {}
+        self._background_stream_errors: dict[str, tuple[ActivationWriteGuard, Exception]] = {}
         # ``ActivationLease`` is a frozen wire contract and intentionally does
         # not carry ``session_id``.  Production composition roots therefore
         # pass the session scope to ``run_once`` explicitly.  Serialize that
@@ -206,10 +193,51 @@ class AgentKernelWorker:
         self._executions[durable_run_id] = execution
         return execution
 
+    def recover_stream(
+        self,
+        *,
+        run: RunRecord,
+        adapter: RuntimeAdapter,
+        handle: RunHandle,
+        guard: ActivationWriteGuard,
+    ) -> ActiveExecution:
+        """Own native recovery under the same fenced event/interaction pipeline."""
+        if handle.session_id != run.session_id or handle.run_id != run.metadata.get(
+            "runtime_run_id", run.run_id
+        ):
+            raise ValueError("recovery handle does not match durable run")
+        current = self._executions.get(run.run_id)
+        if (
+            current is not None
+            and current.stream_task is not None
+            and not current.stream_task.done()
+        ):
+            raise ValueError("recovery cannot replace an active stream owner")
+        execution = self.adopt_execution(
+            durable_run_id=run.run_id,
+            runtime_run_id=handle.run_id,
+            adapter=adapter,
+            handle=handle,
+        )
+        execution.recovering = True
+        return self._start_stream(execution, run, guard)
+
     def execution_for(self, durable_run_id: str) -> ActiveExecution | None:
         """control lookup 入口：永远按 durable run id 查 live execution。"""
 
         return self._executions.get(durable_run_id)
+
+    def take_stream_failure(self, run_id: str, activation: ActivationLease) -> Exception | None:
+        """Hand a failed stream back only to its original fenced owner."""
+        failure = self._background_stream_errors.pop(run_id, None)
+        if failure is None:
+            return None
+        guard, error = failure
+        if (guard.activation_id, guard.fencing_token) != (
+            activation.activation_id, activation.fencing_token
+        ):
+            return None
+        return error
 
     def active_session_ids(self) -> set[str]:
         """Sessions whose activation must stay alive after Inbox ack.
@@ -270,6 +298,11 @@ class AgentKernelWorker:
                 active = await self._store.find_active_run(agent_instance_id, message.session_id)
                 if active is not None or suspended_enqueue:
                     continue
+            if await self._awaiting_recovered_waiter(message.command, activation):
+                # Recovery installs managed waiters asynchronously. Keep the
+                # accepted reply in the durable inbox until its original waiter
+                # exists; other sessions and cancellation can still progress.
+                continue
             try:
                 # Store claim and execution-grant validation share one atomic
                 # transaction. A prior list/read is never start authorization.
@@ -282,6 +315,39 @@ class AgentKernelWorker:
                 continue
             return await self._execute_claim(claimed.command, activation)
         return WorkResult(outcome="idle")
+
+    async def _awaiting_recovered_waiter(
+        self, command: AgentControlCommand, activation: ActivationLease
+    ) -> bool:
+        if command.command_type != "submit_interaction":
+            return False
+        interaction_id = command.payload.get("interaction_id")
+        if not isinstance(interaction_id, str) or not interaction_id:
+            return False
+        active = await self._store.find_active_run(command.agent_instance_id, command.session_id)
+        execution = self._executions.get(active.run_id) if active is not None else None
+        if not (
+            execution is not None and execution.recovering
+            and execution.stream_task is not None and not execution.stream_task.done()
+            and execution.stream_guard is not None
+            and execution.stream_guard.activation_id == activation.activation_id
+            and execution.stream_guard.fencing_token == activation.fencing_token
+            and interaction_id not in execution.managed_interaction_waiters
+        ):
+            return False
+        record = await self._store.get(  # type: ignore[attr-defined]
+            interaction_id, tenant_id=command.tenant_id,
+            agent_instance_id=command.agent_instance_id, session_id=command.session_id,
+            run_id=active.run_id,
+        )
+        if (record is None or record.provider_id != "managed-a2a"
+                or record.status != "pending"
+                or record.tenant_id != command.tenant_id
+                or record.agent_instance_id != command.agent_instance_id
+                or record.session_id != command.session_id
+                or command.payload.get("run_id", record.run_id) != record.run_id):
+            return False
+        return True
 
     # ------------------------------------------------------------- execution
 
@@ -386,26 +452,41 @@ class AgentKernelWorker:
 
         fence = activation.fencing_token
         guard = ActivationWriteGuard(activation_id=activation.activation_id, fencing_token=fence)
+        if command.payload.get("legacy_history") is not None:
+            if self._session_events is None:
+                raise InvalidCommandError("legacy history import requires a SessionEvent store")
+            from ksadk.kernel.legacy_history import import_legacy_history
+
+            await import_legacy_history(
+                command,
+                session_events=self._session_events,
+                guard=guard,
+            )
         grant_id = execution_grant_id(command)
-        run_id = execution_grant_run_id(command) if grant_id else new_message_id()
-        if grant_id:
-            previous = await self._store.load_run(run_id)
-            if previous is not None:
-                # Once start may have reached the provider, neither a lost ACK
-                # nor takeover may invent a second model run. Normal recovery
-                # attaches durable handles; a handle-less pending start is
-                # uncertain and requires attention, never an automatic replay.
-                if previous.state == RunState.PENDING:
-                    await self._store.save_run_transition(
-                        previous.model_copy(
-                            update={
-                                "state": RunState.INTERRUPTED,
-                                "reason": "execution_start_uncertain",
-                            }
-                        ),
-                        expected_fence=fence,
-                    )
-                return run_id
+        # The stable identity also covers ordinary cloud enqueues. Grant-less
+        # requests must not repeat a native start whose response was lost.
+        run_id = execution_grant_run_id(command)
+        previous = await self._store.load_run(run_id)
+        if previous is None and not grant_id:
+            # Older workers used random Run IDs. Recover their command link
+            # instead of silently creating a second run after an upgrade.
+            previous = await self._store.find_command_run(
+                command.agent_instance_id, command.session_id, str(command.command_id)
+            )
+        if previous is not None:
+            if (previous.agent_instance_id != command.agent_instance_id
+                    or previous.session_id != command.session_id
+                    or previous.metadata.get("command_id") != str(command.command_id)):
+                raise InvalidCommandError("existing run does not match command identity")
+            if previous.state == RunState.PENDING:
+                await self._store.save_run_transition(
+                    previous.model_copy(update={
+                        "state": RunState.INTERRUPTED,
+                        "reason": "execution_start_uncertain",
+                    }),
+                    expected_fence=fence,
+                )
+            return previous.run_id
         adapter = self._adapter_factory()
         pending = RunRecord(
             run_id=run_id,
@@ -419,6 +500,11 @@ class AgentKernelWorker:
             # back to one occurrence without matching text or wall-clock time.
             metadata={
                 "command_id": str(command.command_id),
+                # Presentation is durable run metadata, never a model/provider option.
+                "presentation_profile": (
+                    "agent-block-v1" if command.payload.get("presentation_profile") == "agent-block-v1"
+                    else "flat-v1"
+                ),
                 **({"execution_grant_id": grant_id} if grant_id else {}),
                 "source_kind": command.source.kind,
                 "source_ref": command.source.ref,
@@ -426,7 +512,10 @@ class AgentKernelWorker:
             },
         )
         created = await self._store.save_run_transition(pending, expected_fence=fence)
-        continuation_metadata = await self._session_continuation_metadata(command.session_id)
+        prepare_continuation = getattr(adapter, "prepare_session_continuation", None)
+        continuation_metadata = await self._session_continuation_metadata(
+            command.session_id, include_run=callable(prepare_continuation),
+        )
         defaults = self._start_request_defaults
         runtime_options = command.payload.get("runtime_options")
         if not isinstance(runtime_options, Mapping):
@@ -446,6 +535,20 @@ class AgentKernelWorker:
             else default_model
         )
         request_config = dict(defaults.get("config") or {})
+        requested_collaboration = str(
+            runtime_options.get("collaborationMode")
+            or runtime_options.get("collaboration_mode")
+            or ""
+        ).strip()
+        if requested_collaboration in {"default", "plan"}:
+            request_config["collaboration_mode"] = requested_collaboration
+        requested_goal = str(
+            runtime_options.get("goalObjective")
+            or runtime_options.get("goal_objective")
+            or ""
+        ).strip()
+        if requested_goal:
+            request_config["goal_objective"] = requested_goal
         approval_mode = str(runtime_options.get("tool_approval_mode") or "").strip().lower()
         approval_overrides = {
             "ask": "manual",
@@ -471,56 +574,90 @@ class AgentKernelWorker:
                 ),
             }
 
-        handle = await adapter.start(
-            StartRequest(
-                input=command.payload.get("content"),
-                user_id=effective_user_id,
-                session_id=command.session_id,
-                agent_id=str(defaults.get("agent_id") or command.agent_instance_id),
-                model=selected_model,
-                config=request_config,
-                # durable run_id 优先传给 adapter；adapter 不认时以
-                # runtime_run_id 映射显式记录两个 ID 的对应关系。
-                metadata={
-                    **(
-                        {"session_context": command.payload["session_context"]}
-                        if "session_context" in command.payload
-                        else {}
-                    ),
-                    "command_id": str(command.command_id),
-                    "run_id": run_id,
-                    **(
-                        {TRUSTED_IDENTITY_METADATA_KEY: dict(invocation_identity)}
-                        if isinstance(invocation_identity, Mapping)
-                        else {}
-                    ),
-                    **continuation_metadata,
-                    **conversation_metadata,
-                    # Opaque policy reference is supplied only by a trusted
-                    # ingress. The Provider resolves and reauthorizes it for
-                    # this exact Run; Kernel owns no plugin policy semantics.
-                    **(
-                        {"execution_policy_ref": command.payload["execution_policy_ref"]}
-                        if isinstance(command.payload.get("execution_policy_ref"), str)
-                        else {}
-                    ),
-                    # An opaque Teams reference carries no permissions by
-                    # itself. Trusted host policy resolution must match the
-                    # prepared command/session/run before exposing tools.
-                    **(
-                        {"teams_context_ref": command.payload["teams_context_ref"]}
-                        if isinstance(command.payload.get("teams_context_ref"), str)
-                        else {}
-                    ),
-                },
-            )
+        start_request = StartRequest(
+            input=command.payload.get("content"),
+            user_id=effective_user_id,
+            session_id=command.session_id,
+            agent_id=str(defaults.get("agent_id") or command.agent_instance_id),
+            model=selected_model,
+            config=request_config,
+            # durable run_id 优先传给 adapter；adapter 不认时以
+            # runtime_run_id 映射显式记录两个 ID 的对应关系。
+            metadata={
+                **(
+                    {"session_context": command.payload["session_context"]}
+                    if "session_context" in command.payload
+                    else {}
+                ),
+                "command_id": str(command.command_id),
+                "run_id": run_id,
+                # Managed tools and runners consume the canonical tool profile
+                # from invocation metadata, alongside the Harness config above.
+                **(
+                    {"tool_approval_mode": approval_mode}
+                    if approval_mode in {"ask", "risk", "full"} else {}
+                ),
+                **(
+                    {TRUSTED_IDENTITY_METADATA_KEY: dict(invocation_identity)}
+                    if isinstance(invocation_identity, Mapping)
+                    else {}
+                ),
+                **continuation_metadata,
+                **conversation_metadata,
+                # Opaque policy reference is supplied only by a trusted
+                # ingress. The Provider resolves and reauthorizes it for
+                # this exact Run; Kernel owns no plugin policy semantics.
+                **(
+                    {"execution_policy_ref": command.payload["execution_policy_ref"]}
+                    if isinstance(command.payload.get("execution_policy_ref"), str)
+                    else {}
+                ),
+                # An opaque Teams reference carries no permissions by itself.
+                # Trusted host policy resolution must match the prepared
+                # command/session/run before exposing tools.
+                **(
+                    {"teams_context_ref": command.payload["teams_context_ref"]}
+                    if isinstance(command.payload.get("teams_context_ref"), str)
+                    else {}
+                ),
+            },
         )
+        start_snapshot = (
+            start_request.model_dump(mode="json")
+            if adapter.runtime.runtime_type == "adk"
+            or getattr(adapter, "requires_durable_start_request", False)
+            else None
+        )
+        # Some adapters (notably ADK) consume their first native events inside
+        # ``start`` in order to discover the invocation id.  Checkpoint/event
+        # writes performed there must use the same Kernel-owned session service
+        # as the later background stream.
+        from ksadk.sessions import bind_session_service
+
+        start_session_scope = (
+            bind_session_service(self._session_service)
+            if self._session_service is not None
+            else nullcontext()
+        )
+        with start_session_scope:
+            if callable(prepare_continuation) and continuation_metadata.get("thread_id"):
+                predecessor_id = continuation_metadata.get("continuation_run_id")
+                predecessor = await self._store.load_run(predecessor_id) if predecessor_id else None
+                await prepare_continuation(
+                    predecessor, start_request, agent_instance_id=command.agent_instance_id,
+                    tenant_id=command.tenant_id,
+                )
+            handle = await adapter.start(start_request)
         running_update: dict = {
             "state": RunState.RUNNING,
             "handle": handle.model_dump(mode="json"),
             "handle_digest": handle_digest(handle),
             "tenant_id": command.tenant_id,
         }
+        if start_snapshot is not None:
+            # Private RunRecord metadata, committed before the stream can
+            # invoke tools or contact a model. Never a public control payload.
+            running_update["start_request"] = start_snapshot
         if handle.run_id != run_id:
             running_update["runtime_run_id"] = handle.run_id
         running = created.model_copy(update=running_update)
@@ -543,7 +680,9 @@ class AgentKernelWorker:
             execution.stream_task.result()
         return run_id
 
-    async def _session_continuation_metadata(self, session_id: str) -> dict[str, str]:
+    async def _session_continuation_metadata(
+        self, session_id: str, *, include_run: bool = False,
+    ) -> dict[str, str]:
         """Recover the latest native thread identity for a follow-up turn.
 
         A durable Session owns multiple terminal Runs.  Starting each enqueue
@@ -555,11 +694,17 @@ class AgentKernelWorker:
 
         if self._session_events is None:
             return {}
-        from ksadk.events.canonical import ContinuationCreated, ContinuationResumed
+        from ksadk.events.canonical import ContinuationCreated, ContinuationResumed, RunCompleted
         from ksadk.events.canonical_store import RuntimeEventStore
 
         events = await RuntimeEventStore(self._session_events).list(session_id, limit=256)
         for event in reversed(events):
+            if include_run and isinstance(event, RunCompleted) and event.source.framework == "codex":
+                # A long turn can evict its initial continuation fact from this
+                # tail window; its completed fact carries the same thread scope.
+                completed_thread = str(event.source.metadata.get("thread_id") or "").strip()
+                if completed_thread:
+                    return {"thread_id": completed_thread, "continuation_run_id": event.run_id}
             if not isinstance(event, (ContinuationCreated, ContinuationResumed)):
                 continue
             if event.continuation_kind != "thread_resume":
@@ -569,7 +714,20 @@ class AgentKernelWorker:
             if not thread_id:
                 thread_id = str(event.source.metadata.get("thread_id") or "").strip()
             if thread_id:
-                return {"thread_id": thread_id}
+                predecessor_id = event.run_id
+                if include_run:
+                    # Native thread continuation facts need not repeat on every
+                    # turn. Use its latest completed Run, not the Run that first
+                    # announced this thread, or a third turn can lose turn two.
+                    for terminal in reversed(events):
+                        if (isinstance(terminal, RunCompleted)
+                                and terminal.source.framework == "codex"
+                                and terminal.source.metadata.get("thread_id") == thread_id):
+                            predecessor_id = terminal.run_id
+                            break
+                return {"thread_id": thread_id, **(
+                    {"continuation_run_id": predecessor_id} if include_run else {}
+                )}
         return {}
 
     def _start_stream(
@@ -607,7 +765,6 @@ class AgentKernelWorker:
                 type(error).__name__,
                 error,
             )
-            self._background_stream_errors[run_id] = error
             # A background stream has already left the Inbox claim path.  Do
             # not turn its failure into an invisible hung UI; keep the full
             # traceback in workload logs while recovery turns the durable run
@@ -627,6 +784,8 @@ class AgentKernelWorker:
             # attachment immediately.
             execution = self._executions.get(run_id)
             if execution is not None and execution.stream_task is task:
+                if execution.stream_guard is not None:
+                    self._background_stream_errors[run_id] = (execution.stream_guard, error)
                 self._executions.pop(run_id, None)
                 cleanup = asyncio.create_task(
                     self._close_failed_execution(execution),
@@ -658,6 +817,31 @@ class AgentKernelWorker:
         run: RunRecord,
         guard: ActivationWriteGuard,
     ) -> None:
+        if self._session_events is None:
+            return await self._consume_owned_stream(execution, run, guard)
+        from ksadk.events.run_authority import RunEventAuthority, bind_run_event_authority
+        from ksadk.sessions import bind_session_service
+
+        authority = RunEventAuthority(
+            self._session_events, session_id=run.session_id, run_id=run.run_id, guard=guard,
+            interaction_ledger=self._store, tenant_id=str(run.metadata.get("tenant_id") or ""),
+            agent_instance_id=run.agent_instance_id,
+            managed_a2a_bootstraps=execution.managed_a2a_bootstraps,
+        )
+        session_scope = (
+            bind_session_service(self._session_service)
+            if self._session_service is not None
+            else nullcontext()
+        )
+        with bind_run_event_authority(authority), session_scope:
+            return await self._consume_owned_stream(execution, run, guard)
+
+    async def _consume_owned_stream(
+        self,
+        execution: ActiveExecution,
+        run: RunRecord,
+        guard: ActivationWriteGuard,
+    ) -> None:
         """消费 run 的事件流并把每个事实落为 family=runtime/v2 事件。
 
         事件 run_id 统一改写为 durable run_id（adapter 私有 run_id 通过
@@ -674,11 +858,18 @@ class AgentKernelWorker:
         )
 
         runtime_store = None
+        recovery_reconciler = None
         if self._session_events is not None:
             # 延迟导入：ksadk.events 反向依赖 kernel.contracts，避免模块环。
             from ksadk.events.canonical_store import RuntimeEventStore
 
             runtime_store = RuntimeEventStore(self._session_events, session_id=run.session_id)
+            if execution.recovering:
+                from ksadk.kernel.recovery_projection import RecoveryEventReconciler
+
+                recovery_reconciler = RecoveryEventReconciler(
+                    await runtime_store.list(run.session_id, run_id=run.run_id)
+                )
         current_run = run
         terminal_state: RunState | None = None
         last_source: SourceRef | None = None
@@ -699,8 +890,8 @@ class AgentKernelWorker:
                 and event.interaction_id
                 and current_run.state is RunState.WAITING
             ):
-                # Codex emits this immediately after InteractionRequested to
-                # describe a *temporarily blocked native turn*.  The durable
+                # Framework adapters emit this after InteractionRequested to
+                # describe a temporarily blocked native turn.  The durable
                 # Kernel state for that condition is WAITING and the
                 # Interaction/v1 ledger is its authority.  Treating the
                 # companion run.interrupted event as a terminal fact closes the
@@ -717,7 +908,14 @@ class AgentKernelWorker:
                     update["scope_id"] = f"run:{run.run_id}"
                 event = event.model_copy(update=update)
             last_source = event.source
-            await runtime_store.append(event, guard=guard)
+            events_to_append = (
+                recovery_reconciler.accept(event) if recovery_reconciler is not None else (event,)
+            )
+            for candidate in events_to_append:
+                await runtime_store.append(candidate, guard=guard)
+            remember = getattr(execution.adapter, "remember_managed_checkpoint", None)
+            if callable(remember):
+                remember(execution.handle, event)
             terminal_state = {
                 "run.completed": RunState.COMPLETED,
                 "run.failed": RunState.FAILED,
@@ -731,6 +929,10 @@ class AgentKernelWorker:
                 # EOF; waiting for EOF here leaves the durable run RUNNING and
                 # every later FIFO command queued forever.
                 break
+
+        if recovery_reconciler is not None and runtime_store is not None:
+            for candidate in recovery_reconciler.flush():
+                await runtime_store.append(candidate, guard=guard)
 
         # ``submit_interaction`` may resolve a live provider while this task is
         # blocked in the framework stream.  It transitions the durable run
@@ -772,6 +974,26 @@ class AgentKernelWorker:
                     guard=guard,
                 )
         if terminal_state is not None:
+            # Managed A2A waiters can end on their own deadline without a
+            # SubmitInteraction command. A terminal run must not leave their
+            # durable approval/input prompts pending in replay. Native provider
+            # interactions retain their existing lifecycle.
+            now = datetime.now(timezone.utc)
+            for record in await self._store.list_pending_interactions(
+                str(current_run.metadata.get("tenant_id") or ""), current_run.session_id
+            ):
+                if (
+                    record.run_id != current_run.run_id
+                    or record.agent_instance_id != current_run.agent_instance_id
+                    or record.provider_id != "managed-a2a"
+                ):
+                    continue
+                expired = record.expires_at is not None and datetime.fromisoformat(record.expires_at) <= now
+                settle = self._store.expire if expired else self._store.cancel
+                await settle(record.interaction_id, record.revision, guard=guard)
+                waiter = execution.managed_interaction_waiters.pop(record.interaction_id, None)
+                if waiter is not None:
+                    waiter.close()
             current_run = await self._store.save_run_transition(
                 current_run.model_copy(update={"state": terminal_state}),
                 expected_fence=guard.fencing_token,
@@ -801,241 +1023,7 @@ class AgentKernelWorker:
                     execution.durable_run_id,
                 )
 
-    async def _record_interaction_request(
-        self,
-        execution: ActiveExecution,
-        run: RunRecord,
-        event: object,
-        guard: ActivationWriteGuard,
-    ) -> RunRecord:
-        """Persist one framework interaction as the durable ledger authority."""
-
-        from ksadk.events.canonical import ApprovalRequest, InteractionRequested
-        from ksadk.interaction.contracts import InteractionRecord
-
-        assert isinstance(event, InteractionRequested)
-        presentation = None
-        if isinstance(event.request, ApprovalRequest):
-            request_schema = {
-                "type": "object",
-                "properties": {
-                    "decision": {
-                        "type": "string",
-                        "enum": ["approve", "reject"],
-                    }
-                },
-                "required": ["decision"],
-            }
-            native_target = {"call_id": event.request.call_id or event.interaction_id}
-            presentation = approval_presentation(event.request)
-        else:
-            request_schema = dict(event.request.schema_)
-            # Codex maps the native JSON-RPC request id to a stable canonical
-            # interaction id for replay.  The live client, however, indexes its
-            # pending callback by the original request id.  Preserve that id as
-            # the provider target or SubmitInteraction can find the durable
-            # record but cannot wake the blocked Codex callback.
-            native_call_id = (
-                event.source.native_event_id or event.source.native_item_id or event.interaction_id
-            )
-            native_target = {"call_id": native_call_id}
-        for key in ("checkpoint_id", "thread_id"):
-            value = execution.handle.native_ref.get(key)
-            if value is not None:
-                native_target[key] = str(value)
-        provider_id = execution.interaction_provider.provider_id or execution.handle.runtime_type
-        record = InteractionRecord(
-            interaction_id=event.interaction_id,
-            tenant_id=str(run.metadata.get("tenant_id") or ""),
-            agent_instance_id=run.agent_instance_id,
-            session_id=run.session_id,
-            run_id=run.run_id,
-            kind=event.interaction_kind,
-            request_schema=request_schema,
-            created_at=datetime.fromtimestamp(event.timestamp, timezone.utc).isoformat(),
-            presentation=presentation,
-            provider_id=provider_id,
-            native_target=native_target,
-            continuation_metadata={"runtime_run_id": execution.runtime_run_id},
-        )
-        await self._store.request(record, guard=guard)  # type: ignore[attr-defined]
-        if run.state is RunState.WAITING:
-            return run
-        return await self._store.save_run_transition(
-            run.model_copy(update={"state": RunState.WAITING}),
-            expected_fence=guard.fencing_token,
-        )
-
     # 控制命令必须作用于 active Run 且本进程持有 live execution。
-    async def _control_active_run(
-        self, command: AgentControlCommand, activation: ActivationLease
-    ) -> str | None:
-        fence = activation.fencing_token
-        active = await self._store.find_active_run(command.agent_instance_id, command.session_id)
-        if active is None:
-            raise UnsupportedControlError(
-                "runtime_no_active_run",
-                details={"command_type": command.command_type},
-            )
-        execution = self._executions.get(active.run_id)
-        if execution is None:
-            raise UnsupportedControlError(
-                "runtime_not_attached",
-                details={"run_id": active.run_id},
-            )
-        # Task 6：控制命令作用在 activation 拥有的同一 adapter/handle 上，
-        # 绝不新建 adapter（那会把命令打到没有 live 状态的实例上）。
-        adapter = execution.adapter
-        handle = execution.handle
-        verb = COMMAND_HANDLERS[command.command_type]
-
-        if verb == "cancel":
-            result = await adapter.cancel(handle)
-            if result == CancelResult.INTERRUPTED_ACTIVE_TURN:
-                await self._transition_run(active, RunState.CANCELLED, fence)
-                self._executions.pop(active.run_id, None)
-        elif verb == "pause":
-            result = await adapter.pause(handle)
-            if result == PauseResult.PAUSED_ACTIVE_TURN:
-                await self._transition_run(active, RunState.PAUSED, fence)
-        elif verb == "resume":
-            target_dict = dict(command.payload.get("target") or {})
-            target = AdapterResumeTarget(
-                kind=RESUME_TARGET_KINDS[target_dict["kind"]],
-                id=str(target_dict["id"]),
-            )
-            resumed = await adapter.resume(
-                handle,
-                target,
-                AdapterResumePayload(
-                    kind="free_text", session_context=command.payload.get("session_context")
-                ),
-            )
-            execution = self._replace_handle(execution, resumed)
-            self._start_stream(
-                execution,
-                active,
-                ActivationWriteGuard(
-                    activation_id=activation.activation_id,
-                    fencing_token=fence,
-                ),
-            )
-        elif verb == "submit_interaction":
-            await self._submit_interaction(command, activation, active, execution)
-        elif verb == "steer":
-            await adapter.steer(handle, ContractSteerPayload.model_validate(dict(command.payload)))
-        elif verb == "inject":
-            await adapter.inject(
-                handle, ContractInjectPayload.model_validate(dict(command.payload))
-            )
-        else:  # pragma: no cover - mapping 冻结
-            raise UnsupportedControlError(f"unknown handler {verb!r}")
-        return active.run_id
-
-    # ------------------------------------------------- Task 6: interaction 回包
-
-    async def _submit_interaction(
-        self,
-        command: AgentControlCommand,
-        activation: ActivationLease,
-        active: RunRecord,
-        execution: ActiveExecution,
-    ) -> None:
-        """权威 record -> 绑定 provider -> provider 接受后才写 resolved。
-
-        顺序是合同：provider 拒绝（含 unavailable）时 Interaction 保持
-        pending，绝不提前标 resolved；ledger ``resolve`` 本身做 revision CAS
-        first-wins。
-        """
-
-        fence = activation.fencing_token
-        payload = SubmitInteractionPayload.model_validate(dict(command.payload))
-        record = await self._store.get(  # type: ignore[attr-defined]
-            payload.interaction_id,
-            tenant_id=command.tenant_id,
-            agent_instance_id=command.agent_instance_id,
-            session_id=command.session_id,
-            run_id=active.run_id,
-        )
-        if record is None:
-            raise InvalidCommandError(
-                f"unknown interaction_id {payload.interaction_id!r}",
-                details={"interaction_id": payload.interaction_id},
-            )
-        if record.run_id != active.run_id:
-            raise InvalidCommandError(
-                "interaction does not belong to the active run",
-                details={
-                    "interaction_id": record.interaction_id,
-                    "interaction_run_id": record.run_id,
-                    "active_run_id": active.run_id,
-                },
-            )
-        # ``ActiveExecution`` owns the adapter, live handle *and* provider for
-        # this activation.  The durable record tells us what was requested,
-        # but it must not redirect a response into another framework provider:
-        # e.g. calling LangGraph checkpoint resume with a Codex live handle
-        # would acknowledge a response that can never reach the original run.
-        provider = execution.interaction_provider
-        if provider.provider_id != record.provider_id or provider.mode == "unavailable":
-            raise AgentKernelError(
-                RUNTIME_INTERACTION_UNAVAILABLE,
-                f"interaction provider {record.provider_id!r} cannot deliver "
-                "the response through the active execution's native framework "
-                "identity",
-                retryable=False,
-                details={
-                    "provider_id": record.provider_id,
-                    "active_provider_id": provider.provider_id,
-                    "mode": provider.mode,
-                    "interaction_id": record.interaction_id,
-                },
-            )
-        submission = InteractionSubmission(
-            interaction_id=record.interaction_id,
-            expected_revision=int(
-                payload.expected_revision
-                if payload.expected_revision is not None
-                else record.revision
-            ),
-            action=payload.action or "submit",  # type: ignore[arg-type]
-            response=payload.response,
-            idempotency_key=payload.idempotency_key or command.idempotency_key,
-        )
-        context = InteractionResolveContext(
-            adapter=execution.adapter,
-            handle=execution.handle,
-            session_context=command.payload.get("session_context"),
-            activation_id=activation.activation_id,
-            fencing_token=fence,
-        )
-        # provider 接受（typed 异常原样上抛 -> command_rejected，不标 resolved）。
-        resumed = await provider.resolve(context, record, submission)
-        execution = self._replace_handle(execution, resumed)
-        # provider 已接受，才在 ledger 收口 InteractionResolved（同一 fence）。
-        await self._store.resolve(  # type: ignore[attr-defined]
-            submission,
-            guard=ActivationWriteGuard(activation_id=activation.activation_id, fencing_token=fence),
-        )
-        # A durable response returns a waiting run to execution.  The old live
-        # stream usually remains open (Codex); checkpoint providers normally
-        # returned a fresh handle and need a new background stream.  RUNNING is
-        # already the active-execution state (RUNNING -> RUNNING is not a legal
-        # transition), so only WAITING/PAUSED runs move back to RUNNING.
-        resumed_run = active
-        if active.state != RunState.RUNNING:
-            resumed_run = await self._transition_run(active, RunState.RUNNING, fence)
-        task = execution.stream_task
-        if task is None or task.done():
-            self._start_stream(
-                execution,
-                resumed_run,
-                ActivationWriteGuard(
-                    activation_id=activation.activation_id,
-                    fencing_token=fence,
-                ),
-            )
-
     def _replace_handle(self, execution: ActiveExecution, handle: RunHandle) -> ActiveExecution:
         if handle is execution.handle or handle == execution.handle:
             return execution

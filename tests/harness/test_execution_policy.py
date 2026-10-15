@@ -340,6 +340,48 @@ async def test_builtin_relative_paths_match_each_policy_workspace(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_builtin_command_and_file_tools_share_policy_workspace(tmp_path, monkeypatch):
+    from ksadk.harness.execution_policy import execution_policy_scope
+    from ksadk.plugins.providers.harness_tools import assemble_python_tools
+
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "local_process")
+    # This case verifies workspace propagation. Linux's per-UID task limit also
+    # counts the hosted runner's pytest/native threads; use an explicit budget.
+    monkeypatch.setenv("KSADK_LOCAL_PROCESS_MAX_PROCESSES", "256")
+    tools, _ = assemble_python_tools(
+        tmp_path,
+        {
+            "capabilities": {
+                "tools": [
+                    {"name": "write_workspace_file", "executor": "builtin"},
+                    {"name": "run_command", "executor": "builtin"},
+                    {"name": "sandbox_status", "executor": "builtin"},
+                ]
+            }
+        },
+        workspace_root=tmp_path / "base",
+    )
+
+    policy_root = tmp_path / "policy"
+    with execution_policy_scope(ExecutionPolicy(workspace_root=policy_root)):
+        written = await tools["write_workspace_file"].handler(
+            {"path": "artifact.txt", "content": "shared-root"}, "write"
+        )
+        command = await tools["run_command"].handler(
+            {"command": "pwd && cat artifact.txt"}, "command"
+        )
+        status = await tools["sandbox_status"].handler({}, "status")
+
+    assert written["ok"] is True
+    assert command["ok"] is True, command
+    assert command["exit_code"] == 0, command
+    assert str(policy_root) in command["stdout"]
+    assert "shared-root" in command["stdout"]
+    assert status["backend"] == "local_process"
+    assert status["enabled"] is True
+
+
+@pytest.mark.asyncio
 async def test_managed_provider_compiles_declared_subagents_and_policy_capability(tmp_path):
     from ksadk.harness.config import HarnessConfig
     from ksadk.plugins.providers.harness_managed import build_managed_provider_adapter
@@ -491,7 +533,9 @@ async def test_exclusive_host_policy_isolates_teams_ordinary_and_dynamic_dispatc
     class Reasoner:
         async def complete(self, *, tools, messages, **kwargs):
             names = [t.name for t in tools]
-            assert names in (["trusted"], ["shell"])
+            # The ordinary engine includes its read-only Skill catalog.
+            # Exclusive Teams calls must still expose only the host tool.
+            assert names in (["trusted"], ["shell", "skill_catalog"])
             if any(m["role"] == "tool" for m in messages):
                 return HarnessReasoningTurn(final_text="done")
             return HarnessReasoningTurn(tool_calls=(HarnessToolCall(names[0], names[0], {}),))

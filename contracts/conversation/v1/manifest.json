@@ -2,7 +2,7 @@
   "contract_set": "conversation/v1",
   "digest_algorithm": "sha256",
   "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
-  "aggregate_digest": "0920c82418155841ae0af7183ad44238fe16da45d65c9e744b8f6f8eb8aa0d38",
+  "aggregate_digest": "c0034c21645d5c255d489266c58f93f8e5316dcc1b3c63e9c75f9c723ceb90fc",
   "files": [
     {
       "path": "conversation-input.schema.json",
@@ -11,8 +11,8 @@
     },
     {
       "path": "conversation-item.schema.json",
-      "sha256": "94bb626042ed05ac1489e64b693179c6728a7ff7fb3822dda908ddebf384e55e",
-      "bytes": 1440
+      "sha256": "6251b5fa87357856e0d90845cfbb6300d203f4ea0bb360be6aa0c294c7a71e64",
+      "bytes": 1448
     },
     {
       "path": "conversation-surface.schema.json",

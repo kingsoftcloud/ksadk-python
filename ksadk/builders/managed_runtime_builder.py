@@ -28,6 +28,7 @@ _MANIFEST_KEYS = (
     "skills",
     "mcp_servers",
     "plugins",
+    "remote_agents",
     "sandbox",
     "approval_mode",
     "context",
@@ -163,6 +164,17 @@ class ManagedRuntimeBuilder(BaseBuilder):
         runtime_name = str(runtime.get("name") or "").strip().lower()
         if runtime_name != "codex":
             return "当前 ManagedRuntime v1 仅支持 runtime.name: codex"
+        if "remoteAgents" in config:
+            return "ManagedRuntime YAML 请使用 remote_agents 字段，不能静默忽略 remoteAgents"
+        if "remote_agents" in config:
+            from ksadk.plugins.host import PluginHostError
+            from ksadk.plugins.providers.codex import _bundle_a2a_experts
+            try:
+                _bundle_a2a_experts(config)
+            except (ValueError, PluginHostError):
+                # Validation errors can include authored input. Keep the CLI
+                # failure deterministic without echoing manifest data.
+                return "A2A_EXPERT_BINDING_INVALID: 请检查固定绑定、调用方式和执行策略"
         return None
 
     @staticmethod

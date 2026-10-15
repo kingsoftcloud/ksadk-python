@@ -25,7 +25,7 @@ from ksadk.events.canonical import (
 from ksadk.events.content import ContentSnapshot, TextContent, ToolCallContent, ToolResultContent
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.harness.config import HarnessConfig
-from ksadk.harness.reasoner import HarnessReasoner, LiteLLMHarnessReasoner
+from ksadk.harness.reasoner import HarnessReasoner, ModelGatewayHarnessReasoner
 from ksadk.harness.sandbox import HarnessSandboxExecutor
 from ksadk.harness.tools import HarnessTool, load_mcp_tools, sandbox_tools, tool_result_text
 from ksadk.runtime import (
@@ -52,6 +52,7 @@ class HarnessRuntime(BaseRuntime):
             "resume": {"supported": False},
             "checkpoint": {"supported": False, "granularity": "none"},
             "session_continuity": {"durable": False, "scope": "process"},
+            "steering": {"supported": False},
         }
 
 
@@ -90,7 +91,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         super().__init__(HarnessRuntime())
         self._config = config
         self._agent_name = agent_name
-        self._reasoner = reasoner or LiteLLMHarnessReasoner()
+        self._reasoner = reasoner or ModelGatewayHarnessReasoner()
         self._sandbox = HarnessSandboxExecutor(
             workspace_root=workspace_root,
             read_only=config.sandbox.read_only,
@@ -231,6 +232,9 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
             "reasoning_tokens": 0,
         }
         reasoning_parts: list[str] = []
+        reasoning_effort = (
+            str(request.config.get("effort") or "").strip().lower() or None
+        )
 
         for _turn_number in range(_MAX_REASONING_TURNS):
             turn = await self._reasoner.complete(
@@ -238,6 +242,11 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 prompt=prompt,
                 messages=tuple(messages),
                 tools=tools,
+                **(
+                    {"reasoning_effort": reasoning_effort}
+                    if reasoning_effort
+                    else {}
+                ),
             )
             for key in usage:
                 usage[key] += max(0, int((turn.usage or {}).get(key, 0)))

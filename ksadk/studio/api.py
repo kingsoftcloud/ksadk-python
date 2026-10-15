@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
+import httpx
 from fastapi import FastAPI, File, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -32,13 +33,17 @@ from ksadk.conversations.contracts import (
     validate_conversation_input,
 )
 from ksadk.conversations.projector import project_conversation_item
+from ksadk.conversations.runtime_payloads import extract_responses_resume_input
 from ksadk.events.canonical import parse_runtime_event_lenient
 from ksadk.scheduler.contracts import ScheduledTask
+from ksadk.studio.api_a2a_routes import register_a2a_routes
 from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
     AgentScheduleRequest,
     AuthoringCommitRequest,
     BuildRequest,
+    CancelChildRequest,
+    ChildInputRequest,
     CloudAgentVersionRollbackRequest,
     CloudChatInteractionSubmitRequest,
     CloudChatMessageRequest,
@@ -50,11 +55,13 @@ from ksadk.studio.api_contracts import (
     InteractionSubmitRequest,
     LinkedDirectoryRequest,
     ProjectInspectRequest,
+    PromoteChildRequest,
     PromptCompileRequest,
     QuickAuthoringRequest,
     RollbackRequest,
     RunRequest,
     SessionExchangeRequest,
+    SteerRunRequest,
     StudioEvaluationCreate,
     ValidationRequest,
     WorkspaceOpenRequest,
@@ -117,6 +124,7 @@ from ksadk.studio.workspace_registry import (
     WorkspaceRegistry,
     WorkspaceRuntimeManager,
 )
+from ksadk.version import __version__ as _sdk_version
 
 logger = logging.getLogger(__name__)
 
@@ -132,110 +140,11 @@ _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 # convention.  This is a narrow transport normalizer, not a provider payload
 # rewrite: only fields owned by the frozen RuntimeEvent envelope/content
 # contracts are translated before strict parsing.
-_RUNTIME_EVENT_WIRE_ALIASES = {
-    "schemaVersion": "schema_version",
-    "eventId": "event_id",
-    "runId": "run_id",
-    "runSeq": "run_seq",
-    "scopeId": "scope_id",
-    "parentScopeId": "parent_scope_id",
-    "eventType": "event_type",
-    "itemId": "item_id",
-    "itemKind": "item_kind",
-    "interactionId": "interaction_id",
-    "interactionKind": "interaction_kind",
-    "continuationId": "continuation_id",
-    "resumeAttemptId": "resume_attempt_id",
-    "outputRefs": "output_refs",
-    "inputTokens": "input_tokens",
-    "outputTokens": "output_tokens",
-    "totalTokens": "total_tokens",
-    "cachedTokens": "cached_tokens",
-    "reasoningTokens": "reasoning_tokens",
-}
-_SOURCE_WIRE_ALIASES = {
-    "nativeEventId": "native_event_id",
-    "nativeCursor": "native_cursor",
-    "nativeRunId": "native_run_id",
-    "nativeItemId": "native_item_id",
-}
-_CONTENT_WIRE_ALIASES = {
-    "contentType": "content_type",
-    "partId": "part_id",
-    "callId": "call_id",
-    "artifactId": "artifact_id",
-    "mimeType": "mime_type",
-    "isError": "is_error",
-}
-
-
-def _normalize_cloud_runtime_event_wire(value: dict[str, Any]) -> dict[str, Any]:
-    """Normalize only historic REST casing at the RuntimeEvent boundary."""
-
-    normalized = {_RUNTIME_EVENT_WIRE_ALIASES.get(key, key): item for key, item in value.items()}
-    source = normalized.get("source")
-    if isinstance(source, dict):
-        normalized["source"] = {
-            _SOURCE_WIRE_ALIASES.get(key, key): item for key, item in source.items()
-        }
-
-    def normalize_content(content: Any) -> Any:
-        if not isinstance(content, dict):
-            return content
-        return {_CONTENT_WIRE_ALIASES.get(key, key): item for key, item in content.items()}
-
-    normalized["update"] = normalize_content(normalized.get("update"))
-    for key in ("initial", "snapshot"):
-        snapshot = normalized.get(key)
-        if not isinstance(snapshot, dict):
-            continue
-        parts = snapshot.get("parts")
-        if isinstance(parts, list):
-            normalized[key] = {
-                **snapshot,
-                "parts": [normalize_content(part) for part in parts],
-            }
-    return normalized
-
-
-def _cloud_event_conversation_item(
-    event: dict[str, Any], *, session_id: str
-) -> dict[str, Any] | None:
-    """Project a complete cloud RuntimeEvent without inventing a browser item.
-
-    Cloud SessionEvent history has a compatibility envelope around the runtime
-    payload.  Keep the source event untouched, but add the same typed
-    ConversationItem that local Studio streams use whenever the nested event
-    validates against RuntimeEvent/v2.  A malformed or older envelope is still
-    observable to diagnostics, never guessed into an actionable chat card.
-    """
-
-    payload = event.get("payload") if isinstance(event.get("payload"), dict) else event
-    content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
-    candidates = (
-        content.get("runtime_event"),
-        content.get("runtimeEvent"),
-        payload.get("runtime_event"),
-        payload.get("runtimeEvent"),
-        event.get("runtime_event"),
-        event.get("runtimeEvent"),
-    )
-    raw_event = next((candidate for candidate in candidates if isinstance(candidate, dict)), None)
-    if raw_event is None:
-        return None
-    try:
-        runtime_event = parse_runtime_event_lenient(_normalize_cloud_runtime_event_wire(raw_event))
-        item = project_conversation_item(
-            runtime_event,  # type: ignore[arg-type]
-            session_id=session_id,
-            run_id=runtime_event.run_id,
-        )
-    except (TypeError, ValueError):
-        return None
-    return item.model_dump(by_alias=True, exclude_none=True, mode="json")
-
-
 import re as _re
+
+from ksadk.studio.api_cloud_chat_routes import _normalize_cloud_runtime_event_wire, _cloud_event_conversation_item, register_cloud_chat_routes
+
+from ksadk.studio.api_cloud_chat_routes import _RUNTIME_EVENT_WIRE_ALIASES, _SOURCE_WIRE_ALIASES, _CONTENT_WIRE_ALIASES
 
 # 内容 hash 文件名（如 index-CQj_Jm9z.js）可安全 immutable 强缓存；
 # index.html 与动态 HTML 仍需每次校验。
@@ -248,6 +157,21 @@ def _cache_control_for(path: str, response: Any) -> str:
     if _HASHED_ASSET_RE.search(path) and 200 <= response.status_code < 300:
         return "public, max-age=31536000, immutable"
     return response.headers.get("Cache-Control", "no-cache")
+
+
+_PYPI_LATEST_URL = "https://pypi.org/pypi/ksadk/json"
+
+
+def _version_key(value: str) -> tuple[int, ...]:
+    parts = [int(piece) for piece in value.split(".") if piece.isdigit()]
+    return tuple(parts) or (0,)
+
+
+async def _fetch_latest_ksadk_version() -> str:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(6.0)) as client:
+        response = await client.get(_PYPI_LATEST_URL)
+        response.raise_for_status()
+        return str(response.json()["info"]["version"])
 
 
 def create_studio_app(
@@ -396,14 +320,18 @@ def create_studio_app(
         collaboration_mode: str | None = None,
         goal_objective: str | None = None,
         runtime_input: Any = None,
+        presentation_profile: Literal["flat-v1", "agent-block-v1"] = "flat-v1",
         idempotency_key: str,
     ) -> StreamingResponse:
         """Create an observer-only SSE response for one durable Studio run."""
 
         queue: asyncio.Queue = asyncio.Queue()
+        from ksadk.studio.presentation import StudioConversationProjection
+
+        presentation = StudioConversationProjection(session_id, presentation_profile)
 
         def observe(event):
-            queue.put_nowait(event)
+            queue.put_nowait(presentation.apply(event))
 
         # The Operation owns the runtime task. The SSE response is only one
         # observer, so refreshing or switching chats cannot cancel the Run.
@@ -420,6 +348,10 @@ def create_studio_app(
             runtime_input=runtime_input,
             idempotency_key=idempotency_key,
             on_event=observe,
+            **(
+                {"presentation_profile": presentation_profile}
+                if presentation_profile != "flat-v1" else {}
+            ),
         )
 
         async def render():
@@ -767,6 +699,31 @@ def create_studio_app(
             or metadata.get("invocationId")
             or f"resp_{secrets.token_hex(12)}"
         )
+        resume_input = extract_responses_resume_input(payload.get("input"))
+        if resume_input is not None:
+            previous_response_id = str(payload.get("previous_response_id") or "").strip()
+            if not previous_response_id:
+                raise StudioError(
+                    "PREVIOUS_RESPONSE_REQUIRED",
+                    "恢复审批时必须提供 previous_response_id",
+                    status_code=422,
+                    field="previous_response_id",
+                )
+            if bool(payload.get("stream")):
+                return StreamingResponse(
+                    shared_web.stream_response_resume(
+                        previous_response_id=previous_response_id,
+                        response_id=response_id,
+                        resume_input=resume_input,
+                    ),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+                )
+            return await shared_web.invoke_response_resume(
+                previous_response_id=previous_response_id,
+                response_id=response_id,
+                resume_input=resume_input,
+            )
         bridge_payload: dict[str, Any] = {
             "AgentId": shared_web.resolve_agent_id(agent_id),
             "SessionId": session_id or f"ses_{secrets.token_hex(12)}",
@@ -779,10 +736,9 @@ def create_studio_app(
             "ReasoningEffort": reasoning_effort,
             "ModelExplicit": bool(str(payload.get("model") or "").strip()),
         }
-        bridge_payload["Model"] = shared_web.select_model(
-            bridge_payload["AgentId"],
-            bridge_payload["Model"],
-        )
+        # The shared bridge validates the model after ensuring the current
+        # immutable Build.  Do not validate here: provider-backed catalogs are
+        # discovered during a cold Build and may legitimately be empty now.
         if bool(payload.get("stream")):
             return StreamingResponse(
                 shared_web.stream_run(bridge_payload),
@@ -864,6 +820,10 @@ def create_studio_app(
                     data = await cloud_web.submit_interaction(
                         cloud_target, str(payload.get("SessionId") or ""), payload
                     )
+                elif action == "CancelRun" or (
+                    action == "RunAgent" and payload.get("Background") is True
+                ):
+                    data = await cloud_web.cloud.shared_web_action(cloud_target, action, payload)
                 elif action == "RunAgent":
                     # Open the upstream connection before StreamingResponse
                     # commits status 200, so admission failures remain a
@@ -925,6 +885,12 @@ def create_studio_app(
                 )
             elif action == "GetSession":
                 data = await shared_web.get_session(str(payload.get("SessionId") or ""))
+            elif action == "GetRunReceipt":
+                data = shared_web.run_receipt(
+                    shared_web.resolve_agent_id(requested_agent_id or None),
+                    str(payload.get("SessionId") or ""),
+                    str(payload.get("InvocationId") or ""),
+                )
             elif action == "CompactSession":
                 data = await shared_web.compact_session(
                     shared_web.resolve_agent_id(requested_agent_id or None),
@@ -956,6 +922,21 @@ def create_studio_app(
                 )
             elif action == "CancelRun":
                 data = await shared_web.cancel_run(str(payload.get("InvocationId") or ""))
+            elif action == "SteerRun":
+                instruction = payload.get("Text")
+                if (
+                    not isinstance(instruction, str)
+                    or not instruction.strip()
+                    or len(instruction) > 32768
+                ):
+                    raise StudioError(
+                        "RUN_STEER_INVALID", "插话内容必须是非空文本", status_code=422
+                    )
+                data = await shared_web.steer_run(
+                    str(payload.get("InvocationId") or ""),
+                    instruction,
+                    delivery=payload.get("Delivery", "replace"),
+                )
             elif action == "SubmitInteraction":
                 run_id = str(payload.get("RunId") or "")
                 studio._require_direct_run(run_id)
@@ -1017,6 +998,34 @@ def create_studio_app(
                     "Data": {"errorCode": exc.code},
                 },
             )
+
+    @app.get("/agentengine/api/v1/SubscribeSessionEvents")
+    async def shared_chat_subscribe_session_events(
+        request: Request,
+        session_id: str = Query(alias="SessionId"),
+        after_seq: int = Query(default=0, ge=0),
+        agent_id: str | None = Query(default=None, alias="AgentId"),
+    ):
+        requested_agent_id = str(
+            agent_id or request.cookies.get("agentkit_studio_chat_agent") or ""
+        )
+        if not is_cloud_agent_id(requested_agent_id):
+            raise StudioError("CLOUD_AGENT_REQUIRED", "需要云端 Agent", status_code=400)
+        stream = await cloud_web.cloud.subscribe_cloud_session_events(
+            cloud_chat_target(requested_agent_id), session_id=session_id, after_seq=after_seq,
+        )
+        async def forward():
+            try:
+                async for chunk in stream:
+                    yield chunk
+            finally:
+                close = getattr(stream, "aclose", None)
+                if close is not None:
+                    await close()
+        return StreamingResponse(
+            forward(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/agentengine/api/v1/SubscribeRunEvents")
     async def shared_chat_subscribe_run_events(
@@ -1093,6 +1102,7 @@ def create_studio_app(
         return {
             "serverVersion": "1.0.0",
             "apiVersion": "v1",
+            "sdkVersion": _sdk_version,
             "sessionTokenRequired": security_enabled,
             "csrfToken": csrf_secret,
             "workspace": {
@@ -1124,6 +1134,23 @@ def create_studio_app(
     @app.put("/api/v1/system/settings")
     async def update_settings(payload: dict[str, Any]):
         return await studio.apply_settings(payload)
+
+    @app.get("/api/v1/system/update-check")
+    async def update_check():
+        try:
+            latest = await _fetch_latest_ksadk_version()
+        except Exception as exc:  # noqa: BLE001 - 检查更新失败只降级展示，不进错误链路
+            return {
+                "currentVersion": _sdk_version,
+                "latestVersion": None,
+                "hasUpdate": False,
+                "error": type(exc).__name__,
+            }
+        return {
+            "currentVersion": _sdk_version,
+            "latestVersion": latest,
+            "hasUpdate": _version_key(latest) > _version_key(_sdk_version),
+        }
 
     @app.get("/api/v1/schedules")
     async def list_schedules():
@@ -1610,6 +1637,19 @@ def create_studio_app(
         display_input = "\n".join(text_parts).strip()
         if not display_input:
             display_input = "请处理本轮附件：" + "、".join(attachment_names)
+        from ksadk.a2a.presentation import negotiate_presentation_profile
+
+        requested_profile = conversation_input.extensions.get("ksadk.presentation", {}).get(
+            "profile"
+        )
+        presentation_profile = negotiate_presentation_profile(
+            producer_declares_capability=any(
+                capability.name == "agent.block" and capability.mode in {"native", "translated"}
+                for capability in surface.outputs
+            ),
+            requested_profile=requested_profile,
+            renderer_supports_agent_block=requested_profile == "agent-block-v1",
+        )
         return _stream_studio_run(
             build_id,
             user_input=display_input,
@@ -1620,6 +1660,7 @@ def create_studio_app(
             approval_mode=conversation_input.approval_mode,
             collaboration_mode=conversation_input.collaboration_mode,
             goal_objective=conversation_input.goal_objective,
+            presentation_profile=presentation_profile,
             runtime_input=runtime_parts if attachment_names else None,
             idempotency_key=key,
         )
@@ -1777,12 +1818,7 @@ def create_studio_app(
 
     @app.post("/api/v1/agents/{agent_id}/runtime:prewarm", status_code=202)
     async def prewarm_agent_runtime(agent_id: str, payload: dict[str, Any]):
-        """后台预热当前 Build 的 Provider 激活（MCP/图编译），不执行任何 turn。
-
-        首 token 延迟的主因是首轮 open_activation 时的 MCP spawn/health/list
-        （实测 ~12s）。前端在进入会话时 fire-and-forget 调用本端点，把这段
-        开销移到用户输入之前；失败静默（首轮照旧现场预热）。
-        """
+        """后台准备不可变 Build 的 Host，不提前绑定下一轮 Session 配置。"""
         session_id = str(payload.get("sessionId") or "")
         if not session_id:
             raise StudioError(
@@ -1796,22 +1832,9 @@ def create_studio_app(
                 status_code=404,
             ) from exc
 
-        async def warm() -> None:
-            try:
-                spec = studio.resolve_run_spec(build.id)
-                runtime = studio.run_service.plugin_runtime
-                if runtime is None:
-                    return
-                kernel_adapter = getattr(runtime, "kernel_adapter", None)
-                if kernel_adapter is None:
-                    return
-                # 打开并保留激活（以 session 为 key）；下一轮 RunAgent 直接复用，
-                # 不再现场 spawn/health/list MCP。
-                await kernel_adapter(spec, session_id=session_id)
-            except Exception as error:
-                logger.info("runtime prewarm for %s skipped: %s", agent_id, error)
+        from ksadk.studio.runtime_prewarm import prewarm_runtime_build
 
-        task = asyncio.create_task(warm())
+        task = asyncio.create_task(prewarm_runtime_build(studio, build.id))
         app.state.runtime_prewarms = getattr(app.state, "runtime_prewarms", set())
         app.state.runtime_prewarms.add(task)
         task.add_done_callback(app.state.runtime_prewarms.discard)
@@ -1996,6 +2019,14 @@ def create_studio_app(
         runtime._require_direct_run(run_id)
         return await runtime.run_service.pause_run(run_id)
 
+    @app.post("/api/v1/runs/{run_id}:steer", status_code=202)
+    async def steer_run(run_id: str, payload: SteerRunRequest):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.steer_run(run_id, payload.text, delivery=payload.delivery)
+
     @app.post("/api/v1/runs/{run_id}:resume", status_code=202)
     async def resume_run(run_id: str):
         runtime = studio.runtime_for_run(run_id)
@@ -2003,6 +2034,58 @@ def create_studio_app(
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
         runtime._require_direct_run(run_id)
         return await runtime.run_service.resume_run(run_id)
+
+    @app.get("/api/v1/runs/{run_id}/public-output/{artifact_id}")
+    async def public_tool_output(run_id: str, artifact_id: str):
+        from ksadk.studio.public_output_store import PublicOutputStore
+
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        data = PublicOutputStore(runtime.workspace).read(run_id, artifact_id)
+        return Response(content=data["text"], media_type="text/plain; charset=utf-8", headers={
+            "Content-Disposition": 'attachment; filename="tool-output.txt"',
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store",
+            "X-Ksadk-Output-Truncated": str(data["truncated"]).lower(),
+        })
+
+    @app.get("/api/v1/runs/{run_id}/children")
+    async def child_tasks(run_id: str):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.child_tasks(run_id)
+
+    @app.post("/api/v1/runs/{run_id}/children/{child_run_id}:cancel", status_code=202)
+    async def cancel_child(run_id: str, child_run_id: str, payload: CancelChildRequest):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.cancel_child(run_id, child_run_id,
+                                                     command_id=payload.command_id)
+
+    @app.post("/api/v1/runs/{run_id}/children/{child_run_id}:promote", status_code=202)
+    async def promote_child(run_id: str, child_run_id: str, payload: PromoteChildRequest):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.promote_child(run_id, child_run_id,
+                                                     command_id=payload.command_id)
+
+    @app.post("/api/v1/runs/{run_id}/children/{child_run_id}:send", status_code=202)
+    async def send_child_input(run_id: str, child_run_id: str, payload: ChildInputRequest):
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
+        return await runtime.run_service.send_child_input(
+            run_id, child_run_id, text=payload.text, command_id=payload.command_id,
+            expected_goal_revision=payload.expected_goal_revision,
+        )
 
     @app.post("/api/v1/runs/{run_id}/interactions/{interaction_id}:submit")
     async def submit_run_interaction(
@@ -2232,13 +2315,18 @@ def create_studio_app(
         run_id: str,
         request: Request,
         after: int = Query(default=0, ge=0),
+        presentation_profile: Literal["flat-v1", "agent-block-v1"] | None = Query(
+            default=None, alias="presentationProfile"
+        ),
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
-        events = await runtime.run_service.events(run_id, after=cursor)
+        events = await runtime.run_service.events(
+            run_id, after=cursor, presentation_profile=presentation_profile
+        )
         return _sse(events)
 
     @app.get("/api/v1/traces/overview")
@@ -2426,266 +2514,6 @@ def create_studio_app(
 
         return await studio.cloud.delete(deployment_id)
 
-    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions")
-    async def list_cloud_chat_sessions(
-        deployment_id: str,
-        page: int = Query(default=1, ge=1),
-        size: int = Query(default=50, ge=1, le=100),
-    ):
-        """List Server-owned sessions for this local deployment receipt only."""
-
-        return await studio.cloud.list_cloud_chat_sessions(deployment_id, page=page, size=size)
-
-    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/models")
-    async def list_cloud_chat_models(deployment_id: str):
-        """List models through Studio's signed Server client."""
-
-        return await studio.cloud.list_cloud_chat_models(deployment_id)
-
-    @app.post(
-        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions",
-        status_code=201,
-    )
-    async def create_cloud_chat_session(deployment_id: str):
-        """Create a cloud session via loopback-held AK/SK; no secret reaches JS."""
-
-        return await studio.cloud.create_cloud_chat_session(deployment_id)
-
-    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages")
-    async def list_cloud_chat_messages(
-        deployment_id: str,
-        session_id: str,
-        after_seq_id: int | None = Query(default=None, alias="afterSeqId", ge=0),
-        limit: int = Query(default=100, ge=1, le=200),
-    ):
-        return await studio.cloud.list_cloud_chat_messages(
-            deployment_id,
-            session_id=session_id,
-            after_seq_id=after_seq_id,
-            limit=limit,
-        )
-
-    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events")
-    async def list_cloud_chat_events(
-        deployment_id: str,
-        session_id: str,
-        after_seq_id: int | None = Query(default=None, alias="afterSeqId", ge=0),
-        offset: int | None = Query(default=None, ge=0),
-        limit: int = Query(default=200, ge=1, le=1000),
-    ):
-        return await studio.cloud.list_cloud_chat_events(
-            deployment_id,
-            session_id=session_id,
-            after_seq_id=after_seq_id,
-            offset=offset,
-            limit=limit,
-        )
-
-    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events/stream")
-    async def stream_cloud_chat_events(
-        request: Request,
-        deployment_id: str,
-        session_id: str,
-        after_seq_id: int = Query(default=0, alias="afterSeqId", ge=0),
-    ):
-        """Stream canonical cloud events to the loopback browser.
-
-        The public cloud control plane currently exposes cursor reads for this
-        surface.  Keep that cursor in the Studio backend and present one SSE
-        response to the browser, so assistant deltas arrive before the durable
-        terminal message projection without exposing cloud credentials to JS.
-        """
-
-        async def event_stream() -> AsyncIterator[str]:
-            cursor = after_seq_id
-            idle_polls = 0
-            while not await request.is_disconnected():
-                payload = await studio.cloud.list_cloud_chat_events(
-                    deployment_id,
-                    session_id=session_id,
-                    after_seq_id=cursor,
-                    limit=200,
-                )
-                events = payload.get("events") or []
-                if not isinstance(events, list):
-                    events = []
-                terminal = False
-                emitted = False
-                for event in events:
-                    if not isinstance(event, dict):
-                        continue
-                    event_payload = (
-                        event.get("payload") if isinstance(event.get("payload"), dict) else event
-                    )
-                    seq = int(
-                        event_payload.get("seq")
-                        or event_payload.get("seq_id")
-                        or event_payload.get("source_session_seq")
-                        or event.get("seq")
-                        or event.get("seq_id")
-                        or 0
-                    )
-                    if seq and seq <= cursor:
-                        continue
-                    if seq:
-                        cursor = max(cursor, seq)
-                    event_type = str(
-                        event.get("event_type")
-                        or event.get("eventType")
-                        or event_payload.get("event_type")
-                        or event_payload.get("eventType")
-                        or ""
-                    ).lower()
-                    content = (
-                        event_payload.get("content")
-                        if isinstance(event_payload.get("content"), dict)
-                        else {}
-                    )
-                    status = str(event_payload.get("status") or content.get("status") or "").lower()
-                    event_is_terminal = event_type in {
-                        "run.completed",
-                        "run.complete",
-                        "run.succeeded",
-                        "run.failed",
-                        "run.cancelled",
-                        "run.expired",
-                        "run.error",
-                    } or (
-                        event_type in {"run_status", "run.status"}
-                        and status
-                        in {
-                            "completed",
-                            "complete",
-                            "succeeded",
-                            "success",
-                            "failed",
-                            "cancelled",
-                            "canceled",
-                            "expired",
-                            "error",
-                            "aborted",
-                        }
-                    )
-                    terminal = terminal or event_is_terminal
-                    emitted = True
-                    projected_event = dict(event)
-                    conversation_item = _cloud_event_conversation_item(
-                        event,
-                        session_id=session_id,
-                    )
-                    if conversation_item is not None:
-                        projected_event["conversationItem"] = conversation_item
-                    yield (
-                        (f"id: {seq}\n" if seq else "")
-                        + "event: session.event\n"
-                        + f"data: {json.dumps(projected_event, ensure_ascii=False)}\n\n"
-                    )
-                if terminal or payload.get("session_deleted"):
-                    break
-                idle_polls = 0 if emitted else idle_polls + 1
-                if idle_polls and idle_polls % 20 == 0:
-                    yield ": keepalive\n\n"
-                await asyncio.sleep(0.25)
-
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    @app.delete(
-        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}",
-        status_code=204,
-    )
-    async def delete_cloud_chat_session(deployment_id: str, session_id: str):
-        await studio.cloud.delete_cloud_chat_session(deployment_id, session_id=session_id)
-        return Response(status_code=204)
-
-    @app.post(
-        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages",
-        status_code=202,
-    )
-    async def send_cloud_chat_message(
-        deployment_id: str,
-        session_id: str,
-        payload: CloudChatMessageRequest,
-    ):
-        """Admit one cloud message through Server; response is a durable receipt."""
-
-        return await studio.cloud.send_cloud_chat_message(
-            deployment_id,
-            session_id=session_id,
-            content=payload.content,
-            model=payload.model,
-            model_options=payload.model_options,
-            tool_approval_mode=payload.tool_approval_mode,
-            collaboration_mode=payload.collaboration_mode,
-            goal_objective=payload.goal_objective,
-        )
-
-    @app.post(
-        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages/stream"
-    )
-    async def stream_cloud_chat_message(
-        request: Request,
-        deployment_id: str,
-        session_id: str,
-        payload: CloudChatMessageRequest,
-    ):
-        """Proxy one signed foreground RunAgent SSE response to loopback UI."""
-
-        upstream = await studio.cloud.stream_cloud_chat_message(
-            deployment_id,
-            session_id=session_id,
-            content=payload.content,
-            model=payload.model,
-            model_options=payload.model_options,
-            tool_approval_mode=payload.tool_approval_mode,
-            collaboration_mode=payload.collaboration_mode,
-            goal_objective=payload.goal_objective,
-        )
-
-        async def proxy_stream() -> AsyncIterator[bytes]:
-            try:
-                while not await request.is_disconnected():
-                    try:
-                        chunk = await anext(upstream)
-                    except StopAsyncIteration:
-                        break
-                    if await request.is_disconnected():
-                        break
-                    yield chunk
-            finally:
-                close = getattr(upstream, "aclose", None)
-                if close is not None:
-                    await close()
-
-        return StreamingResponse(
-            proxy_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-        )
-
-    @app.post(
-        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/interactions",
-        status_code=202,
-    )
-    async def submit_cloud_chat_interaction(
-        deployment_id: str,
-        session_id: str,
-        payload: CloudChatInteractionSubmitRequest,
-    ):
-        return await studio.cloud.submit_cloud_chat_interaction(
-            deployment_id,
-            session_id=session_id,
-            run_id=payload.run_id,
-            interaction_id=payload.interaction_id,
-            expected_revision=payload.expected_revision,
-            action=payload.action,
-            response=payload.response,
-            idempotency_key=payload.idempotency_key,
-        )
-
     @app.post("/api/v1/deployments/{deployment_id}:rollback", status_code=202)
     async def rollback_deployment(
         deployment_id: str,
@@ -2733,6 +2561,8 @@ def create_studio_app(
         studio,
         runtime_model_catalog=runtime_model_catalog,
     )
+    register_cloud_chat_routes(app, studio)
+    register_a2a_routes(app, studio)
     register_memory_routes(app, studio)
     register_resource_connection_routes(app, studio)
     register_plugin_routes(app, studio)

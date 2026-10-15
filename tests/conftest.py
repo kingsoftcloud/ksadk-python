@@ -11,8 +11,10 @@ REPO_ROOT = TESTS_ROOT.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime  # noqa: E402
-
+# 模型路由变量快照必须在任何 ksadk 导入之前完成：`ksadk.cli.__init__` 会把
+# 仓库根 `.env`（override=False）注入 os.environ，若快照晚于该导入，开发者
+# 本地的自定义 OPENAI_BASE_URL 会被固化进每个测试的"初始"环境，codex 代理
+# 探测/注入相关测试随即失去封闭性（2026-09-18 全量 triage 实测）。
 _MODEL_ROUTE_ENV_NAMES = (
     "KSADK_CODEX_USE_PROXY",
     "KSADK_PROXY_UPSTREAM_BASE",
@@ -26,6 +28,8 @@ _MODEL_ROUTE_ENV_NAMES = (
 _INITIAL_MODEL_ROUTE_ENV = {
     name: os.environ.get(name) for name in _MODEL_ROUTE_ENV_NAMES
 }
+
+from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime  # noqa: E402
 
 
 def _restore_model_route_env() -> None:

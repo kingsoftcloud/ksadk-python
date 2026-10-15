@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
-import { ActivityRow, HarnessActivity, type Activity } from "./HarnessActivity";
+import { ActivityRow, compactCommentary, HarnessActivity, type Activity } from "./HarnessActivity";
 
 vi.mock("../api", () => ({ apiFetch: vi.fn() }));
 afterEach(() => vi.resetAllMocks());
@@ -65,6 +65,36 @@ describe("expandable human-friendly activity", () => {
     expect(text).not.toContain("个子智能体已完成");
     expect(text).not.toContain("下面是最终汇总");
   });
+  it("keeps routine tool bookkeeping behind one execution disclosure", async () => {
+    const user = userEvent.setup();
+    render(<HarnessActivity streaming={false} fallback={[
+      { id: "think", kind: "step", category: "reasoning", label: "思考", status: "completed", details: [] },
+      { id: "read", kind: "step", category: "tool", label: "读取文件", status: "completed", count: 34, details: [] },
+      { id: "mcp", kind: "step", category: "tool", label: "调用 MCP 工具", status: "completed", count: 2, details: [] },
+    ]} />);
+    expect(screen.queryByText("思考")).not.toBeInTheDocument();
+    expect(screen.getByText("读取文件、调用 MCP 工具 · 36 项")).toBeVisible();
+    expect(screen.getByText("读取文件", { exact: true })).not.toBeVisible();
+    await user.click(screen.getByText("执行记录"));
+    expect(screen.getByText("读取文件", { exact: true })).toBeVisible();
+  });
+  it("deduplicates near-identical progress and keeps only a short milestone trail", () => {
+    const commentary = [
+      "先检查工作区和已绑定资源。",
+      "已找到知识库，继续核对验收约束。",
+      "知识库检索完成，已确认种子、存档版本和离线约束，现在开始并行委派三个子任务。",
+      "知识库检索完成，关键约束已确认：种子、存档版本和离线约束。现在并行委派三个子任务。",
+      "三个子任务已返回，开始整合结果。",
+      "测试已通过，正在整理最终结果。",
+    ].map((text, index): Activity => ({
+      id: `progress-${index}`, kind: "commentary", label: "公开进展", status: "completed", text, details: [],
+    }));
+    const compacted = compactCommentary(commentary);
+    expect(compacted).toHaveLength(4);
+    expect(compacted[0].text).toBe("先检查工作区和已绑定资源。");
+    expect(compacted.at(-1)?.text).toBe("测试已通过，正在整理最终结果。");
+    expect(compacted.some(item => item.text === "知识库检索完成，已确认种子、存档版本和离线约束，现在开始并行委派三个子任务。")).toBe(false);
+  });
   it("does not retain another run's evidence when changing conversations", async () => {
     vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ runId: "run-1", status: "completed", activities: [row] }))).mockResolvedValueOnce(new Response("", { status: 404 }));
     const { rerender } = render(<HarnessActivity runId="run-1" streaming={false} fallback={[]} />);
@@ -78,8 +108,24 @@ describe("expandable human-friendly activity", () => {
     const openDetail = vi.fn();
     render(<ActivityRow activity={{ ...row, durationMs: 18000, callId: "call-1", provider: "Codex" }} onOpenDetail={openDetail} />);
     expect(screen.getByText("18s")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "详情" }));
+    await user.click(screen.getByRole("button", { name: /调研 Codex/ }));
     expect(openDetail).toHaveBeenCalledWith(expect.objectContaining({ callId: "call-1" }));
+  });
+  it("identifies observed timing for both activity rows and child detail", async () => {
+    vi.mocked(apiFetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const child = {
+        ...row, callId: "call-1", durationMs: 18000, durationSource: "studio_observed",
+      };
+      return new Response(JSON.stringify(String(input).endsWith("/subagents/call-1") ? {
+        ...child, runId: "run-1", parentStatus: "completed", facts: [],
+      } : { runId: "run-1", status: "completed", activities: [child] }));
+    });
+    render(<HarnessActivity runId="run-1" streaming={false} fallback={[]} />);
+    expect(await screen.findByText("观测耗时 18s")).toHaveAttribute(
+      "title", "按记录到的事件时间计算，包含传输与排队时间。",
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: /调研 Codex/ }));
+    await waitFor(() => expect(screen.getAllByText("观测耗时 18s")).toHaveLength(2));
   });
   it("distinguishes a partial tool group from a failed subagent", () => {
     render(<ActivityRow activity={{ ...row, kind: "step", label: "搜索资料", status: "partial" }} />);
@@ -99,13 +145,43 @@ describe("expandable human-friendly activity", () => {
       return new Response(JSON.stringify({ runId: "run-1", status: "completed", activities: [{ ...row, callId: "call-1", durationMs: 18000 }] }));
     });
     render(<HarnessActivity runId="run-1" streaming={false} fallback={[]} />);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "详情" }));
-    expect(await screen.findByText("执行事实")).toBeVisible();
+    await userEvent.setup().click(await screen.findByRole("button", { name: /调研 Codex/ }));
+    expect(await screen.findByText("进展摘要")).toBeVisible();
     expect(screen.getAllByText("18s").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Provider：Codex")).toBeVisible();
     expect(screen.getByText("模型：gpt-test")).toBeVisible();
     // 事实行默认折叠在 <details> 内，展开后才可见。
     expect(screen.getByText("已完成：第 1 次搜索资料")).toBeInTheDocument();
     expect(screen.queryByText("打开完整子会话")).not.toBeInTheDocument();
+  });
+});
+
+describe("G7 sandbox activity badge", () => {
+  it("renders sandbox backend id and capabilities summary", async () => {
+    const sandboxActivity: Activity & { capabilities?: Record<string, unknown>; rejected?: boolean } = {
+      id: "run-1:sandbox:evt-1", kind: "sandbox", label: "沙箱执行 · local-os", status: "completed",
+      details: [], capabilities: { filesystem_isolation: "scoped_workspace", network_control: "command_surface", process_boundary: false },
+      rejected: false,
+    };
+    const activities: Activity[] = [sandboxActivity];
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ runId: "run-1", status: "completed", activities })));
+    render(<HarnessActivity runId="run-1" streaming={false} fallback={[]} />);
+    await userEvent.setup().click(await screen.findByText("执行记录"));
+    await userEvent.setup().click(screen.getByText("沙箱执行 · local-os"));
+    // 成功沙箱归入执行记录，能力摘要仍可按需查看。
+    expect(screen.getByText(/无进程边界/)).toBeVisible();
+    expect(screen.getByText(/scoped_workspace/)).toBeVisible();
+  });
+
+  it("marks rejected sandbox execution as failed with rejection note", async () => {
+    const sandboxActivity: Activity & { capabilities?: Record<string, unknown>; rejected?: boolean } = {
+      id: "run-1:sandbox:evt-2", kind: "sandbox", label: "沙箱执行 · local-os", status: "failed",
+      details: [], capabilities: { filesystem_isolation: "scoped_workspace", network_control: "command_surface", process_boundary: false },
+      rejected: true,
+    };
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ runId: "run-1", status: "completed", activities: [sandboxActivity] })));
+    render(<HarnessActivity runId="run-1" streaming={false} fallback={[]} />);
+    expect(await screen.findByText("沙箱拒绝执行")).toBeInTheDocument();
+    expect(screen.getByText("执行失败")).toBeInTheDocument();
   });
 });

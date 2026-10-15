@@ -143,6 +143,24 @@ class RunRequest(ContractModel):
     sandbox: str | None = None
 
 
+class SteerRunRequest(ContractModel):
+    text: str = Field(min_length=1, max_length=32768)
+    delivery: Literal["replace", "guide"] = "replace"
+
+
+class PromoteChildRequest(ContractModel):
+    command_id: str = Field(min_length=1, max_length=256, pattern=r"\S")
+
+
+class CancelChildRequest(PromoteChildRequest):
+    """An idempotent command addressed to one original child."""
+
+
+class ChildInputRequest(PromoteChildRequest):
+    text: str = Field(min_length=1, max_length=32768, pattern=r"\S")
+    expected_goal_revision: int = Field(strict=True, ge=0)
+
+
 class ConversationTurnRequest(ContractModel):
     """A capability-gated local Studio turn.
 
@@ -315,6 +333,11 @@ class ToolPolicyPreviewRequest(ContractModel):
 
 class SkillDiscoveryRequest(ContractModel):
     scan_paths: list[str] = Field(default_factory=list, max_length=20)
+
+
+class SkillRemoteDiscoveryRequest(ContractModel):
+    source_url: str = Field(alias="sourceUrl", min_length=1, max_length=512)
+    ref: str = Field(default="main", min_length=1, max_length=128)
 
 
 class SkillDiscoveryCommitRequest(ContractModel):

@@ -16,13 +16,18 @@ from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
 
 
 def _managed_a2a_card() -> Any:
-    """Build the managed discovery-only card when the runtime opts in.
+    """Build discovery first, then the full composition after platform readiness.
 
-    Import is deferred so the A2A package is only loaded when
-    ``KSADK_A2A_RUNTIME_ID`` is configured.
+    ``KSADK_A2A_RUNTIME_ID`` is available before registration so the control
+    plane can fetch the discovery card.  Operator sets the separate bootstrap
+    marker only after the complete managed projection and Secret mounts exist.
     """
     if not os.getenv("KSADK_A2A_RUNTIME_ID", "").strip():
         return None
+    if os.getenv("KSADK_A2A_MANAGED_BOOTSTRAP_ENABLED", "").strip().lower() == "true":
+        from ksadk.a2a.platform import build_managed_a2a_bootstrap_from_env
+
+        return build_managed_a2a_bootstrap_from_env()
     from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
 
     return build_managed_a2a_card_if_configured()
@@ -53,18 +58,35 @@ def create_runtime_web_app(detection: Any, agent_path: Path) -> FastAPI:
         from ksadk.resource_runtime.managed_projection import apply_managed_platform_resources
 
         apply_managed_platform_resources(config)
+    if str(detection.type.value) == "codex":
+        from ksadk.plugins.providers.codex import _bundle_a2a_experts
+        experts = _bundle_a2a_experts(config)
+        if "a2a_experts" in config and config["a2a_experts"] != experts:
+            raise ValueError("A2A_BINDING_MANIFEST_CONFLICT")
+        if experts:
+            config["a2a_experts"] = experts
     context = RuntimeLaunchContext(
         runtime_type=str(detection.type.value),
         project_dir=agent_path,
         detection=detection,
         config=config,
     )
+    managed_a2a = _managed_a2a_card()
+    executor = RuntimeExecutor(build_default_runtime_registry())
+    adapter = None
+    if (
+        managed_a2a is not None
+        and os.getenv("KSADK_A2A_MANAGED_BOOTSTRAP_ENABLED", "").strip().lower() == "true"
+    ):
+        executor.configure_managed_a2a(managed_a2a)
+        adapter = executor.create_adapter(context)
     return create_runtime_app(
         RuntimeAppConfig(
-            runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
+            runtime_executor=executor,
             launch_context=context,
             agui=agui_config_for_detection(detection),
-            a2a=_managed_a2a_card(),
+            a2a=managed_a2a,
+            a2a_runtime_adapter=adapter,
         ),
         configure_runtime_app,
     )

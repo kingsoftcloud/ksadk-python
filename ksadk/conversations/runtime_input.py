@@ -750,10 +750,22 @@ async def _auto_save_ltm_turn(
 ) -> None:
     if prepared.resume_input is not None:
         return
-    memory_rollout = str(prepared.memory_write_rollout or "").strip().lower()
-    if memory_rollout in {"off", "shadow"}:
-        return
-    if not memory_rollout and not _ltm_auto_save_enabled():
+    from ksadk.memory.resolved_policy import resolve_memory_policy
+
+    memory_rollout = prepared.memory_write_rollout
+    if not str(memory_rollout or "").strip():
+        memory_rollout = "enabled" if _ltm_auto_save_enabled() else "off"
+    # Old callers have no MemorySpec and retain the SDK auto-save fallback.
+    # Explicit Build switches always govern before opening a memory service.
+    policy = resolve_memory_policy(
+        memory_enabled=True if prepared.memory_enabled is None else prepared.memory_enabled,
+        recall_enabled=prepared.memory_recall_enabled,
+        write_rollout=memory_rollout,
+        write_mode=prepared.memory_write_mode,
+        flush_before_compaction=prepared.flush_before_compaction,
+        provider_ref=prepared.provider_ref,
+    )
+    if not policy.should_flush:
         return
 
     metadata: dict[str, Any] = {

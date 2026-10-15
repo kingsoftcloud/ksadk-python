@@ -99,7 +99,7 @@ def platform_resource_mcp_manifest() -> PluginManifest:
                     "compatibility": {
                         "kernelApi": ">=1,<2",
                         "runtimeProtocols": ["agentkit.runtime/v1", "2025-06-18"],
-                        "python": ">=3.10,<3.15",
+                        "python": ">=3.12,<3.15",
                     },
                     "healthContract": "plugin.health/v1",
                     "provenance": {
@@ -126,8 +126,9 @@ def _activation_operations(
 ) -> tuple[str, ...]:
     """Narrow an admitted maximum to the immutable Agent memory policy."""
 
-    read_operations = tuple(operation for operation in allowed if operation != "save_memory")
-    if "save_memory" not in allowed or write_authorizer is None:
+    write_operations = {"save_memory", "update_memory", "delete_memory"}
+    read_operations = tuple(operation for operation in allowed if operation not in write_operations)
+    if not write_operations.intersection(allowed) or write_authorizer is None:
         return tuple(operation for operation in read_operations if operation != "memory_status")
     resolved = bundle.resolved_agent_spec
     memory = resolved.get("memory") if isinstance(resolved, Mapping) else None
@@ -144,9 +145,18 @@ def _activation_operations(
         or str(rollout.get("memoryWrite") or "off") != "enabled"
     ):
         return tuple(operation for operation in read_operations if operation != "memory_status")
-    return tuple(operation for operation in allowed if operation in {
-        "load_memory", "save_memory", "memory_status",
-    })
+    return tuple(
+        operation
+        for operation in allowed
+        if operation
+        in {
+            "load_memory",
+            "save_memory",
+            "update_memory",
+            "delete_memory",
+            "memory_status",
+        }
+    )
 
 
 def _profile_config(profile: CompositionProfile) -> Mapping[str, Any]:

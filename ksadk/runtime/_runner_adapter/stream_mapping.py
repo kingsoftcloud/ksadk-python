@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Optional, cast
 
 from pydantic import JsonValue
 
+from ksadk.common.diagnostics import safe_exception_detail
 from ksadk.conversations.runtime_input import _runner_name
 from ksadk.conversations.runtime_observability import (
     _set_conversation_input_attributes,
@@ -54,6 +55,9 @@ from ksadk.runtime.timing import extract_timing
 from ksadk.runtime.usage import canonical_usage_payload
 from ksadk.runtime_context import platform_invocation_scope
 from ksadk.tools.gateway import approval_interrupt_info_from_result
+
+from ksadk.runtime._runner_adapter.a2ui_surface import _a2ui_surface_event
+from ksadk.runtime._runner_adapter.gateway_approvals import _canonical_gateway_approvals
 
 if TYPE_CHECKING:
     from ksadk.runtime.runner_adapter import _ActiveRun
@@ -103,129 +107,6 @@ async def _pump_stream_in_one_context(
     await results.put(outcome)
 
 
-def _a2ui_surface_event(
-    self: Any,
-    handle: RunHandle,
-    chunk: Any,
-) -> tuple[RuntimeEvent, ...]:
-    """Recognize a validated A2UI tool envelope and emit a canonical data-item event.
-
-    The dynamic ``generate_a2ui`` tool returns official v0.9 operations as a
-    JSON tool result. Tool results are otherwise opaque to the runtime, which
-    would leave AG-UI with nothing to project until a page reload reconstructs
-    history. Convert exactly that envelope at the runtime boundary so it is
-    streamed, persisted, and replayed like every other A2UI surface.
-
-    In the canonical schema, A2UI surfaces are modeled as ``item_kind="data"``
-    items with ``source.protocol="a2ui"``.
-    """
-
-    if not isinstance(chunk, dict):
-        return ()
-    value = chunk.get("tool_output", chunk.get("output"))
-    if value is not None and hasattr(value, "content"):
-        value = value.content
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (TypeError, ValueError):
-            return ()
-    if not isinstance(value, Mapping):
-        return ()
-    operations_raw = value.get("a2ui_operations")
-    if not isinstance(operations_raw, list) or not operations_raw:
-        return ()
-    operations = [dict(operation) for operation in operations_raw if isinstance(operation, Mapping)]
-    if not operations:
-        return ()
-
-    known: list[tuple[str, str]] = []  # (surface_id, lifecycle)
-    for operation in operations:
-        for key, lifecycle in (
-            ("createSurface", "begin"),
-            ("updateComponents", "update"),
-            ("updateDataModel", "update"),
-            ("deleteSurface", "end"),
-        ):
-            detail = operation.get(key)
-            if isinstance(detail, Mapping) and isinstance(detail.get("surfaceId"), str):
-                surface_id = detail["surfaceId"].strip()
-                if surface_id:
-                    known.append((surface_id, lifecycle))
-                    break
-    if not known:
-        return ()
-    surface_ids = {surface_id for surface_id, _lifecycle in known}
-    if len(surface_ids) != 1:
-        logger.warning("ignoring A2UI tool result with multiple surfaces")
-        return ()
-    surface_id = known[0][0]
-    lifecycle = "begin" if any(lc == "begin" for _, lc in known) else known[0][1]
-
-    framework = self._runtime_type
-    run_id = handle.run_id
-    scope_id = stable_scope_id(framework, run_id)
-    # A dynamic A2UI tool result is a complete, immutable operation batch.  It
-    # must therefore be represented by a closed canonical item.  Reusing one
-    # long-lived item per surface leaves a create/update-only batch open at the
-    # run terminal and makes strict reducers reject the stream.
-    start_seq = self._next_seq()
-    batch_ref = str(chunk.get("call_id") or chunk.get("run_id") or chunk.get("id") or "")
-    if not batch_ref:
-        batch_ref = json.dumps(
-            operations,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    item_id = stable_item_id(framework, run_id, "a2ui-batch", surface_id, batch_ref)
-    source = SourceRef(
-        framework=framework,
-        protocol="a2ui",
-        native_run_id=run_id,
-        metadata={
-            "surface_id": surface_id,
-            "operation_batch": True,
-            "surface_lifecycle": lifecycle,
-        },
-    )
-    # TODO(runtime-event-v2): dict chunk 退化路径,chunk_ordinal 用 seq counter;
-    # LangGraph/Codex 切 stream_canonical_events 后清理
-    timestamp = time.time()
-    snapshot = ContentSnapshot(parts=(DataContent(part_id="a2ui-ops", data=operations),))
-    completed_seq = self._next_seq()
-    return (
-        ItemStarted(
-            schema_version=2,
-            event_id=stable_event_id(
-                framework, scope_id, item_id, "item.started", "a2ui", run_id, start_seq
-            ),
-            seq=start_seq,
-            timestamp=timestamp,
-            run_id=run_id,
-            scope_id=scope_id,
-            source=source,
-            item_id=item_id,
-            item_kind="data",
-            initial=snapshot,
-        ),
-        ItemCompleted(
-            schema_version=2,
-            event_id=stable_event_id(
-                framework, scope_id, item_id, "item.completed", "a2ui", run_id, completed_seq
-            ),
-            seq=completed_seq,
-            timestamp=timestamp,
-            run_id=run_id,
-            scope_id=scope_id,
-            source=source,
-            item_id=item_id,
-            item_kind="data",
-            snapshot=snapshot,
-        ),
-    )
-
-
 class _RunnerStreamMappingMixin:
     """``_map_runner_stream`` / ``_chunk_to_event`` 的实现载体(纯移动自 runner_adapter)。"""
 
@@ -263,6 +144,7 @@ class _RunnerStreamMappingMixin:
         pump_requests: asyncio.Queue[None] | None = None
         pump_queue: asyncio.Queue[tuple[str, Any]] | None = None
         pump_task: asyncio.Task[None] | None = None
+        saw_terminal_event = False
         # span scope 经 runner_adapter 模块属性间接解析,保持既有 monkeypatch
         # patch 点(tests/agui/test_runtime_preprocessing.py)继续生效。
         from ksadk.runtime import runner_adapter as _runner_adapter_module
@@ -283,14 +165,16 @@ class _RunnerStreamMappingMixin:
             try:
                 with scope:
                     canonical_stream = getattr(self._runner, "stream_canonical_events", None)  # type: ignore[attr-defined]
-                    # ToolGateway 语义续跑 runner(gateway approval 可能出现在终态
-                    # tool result 之后)仍走 chunk 路径:approval 识别逻辑在
-                    # _chunk_to_events 的 tool_result 分支,canonical 快速路径
-                    # (stream_canonical_events)不覆盖该语义。
+                    # Keep legacy semantic-resume runners on their chunk path.
+                    # Managed LangGraph requires canonical identity; its local
+                    # gateway results are handled by _canonical_gateway_approvals.
                     if getattr(
                         self._runner,
                         "supports_gateway_approval_semantic_resume",
                         False,  # type: ignore[attr-defined]
+                    ) and not (
+                        self._runtime_type == "langgraph"
+                        and getattr(self._runner, "_managed_a2a_bootstrap", None) is not None
                     ):
                         canonical_stream = None
                     stream_result = (
@@ -365,7 +249,9 @@ class _RunnerStreamMappingMixin:
                             # canonical 事件(来自 stream_canonical_events):直接转发,
                             # 追踪 output/usage 供 span 属性。
                             if isinstance(chunk, RunCompleted):
-                                evidence = extract_skill_eval_result(chunk.source.metadata.get("metrics"))
+                                evidence = extract_skill_eval_result(
+                                    chunk.source.metadata.get("metrics")
+                                )
                                 if evidence:
                                     _set_skill_eval_result_attributes(span, evidence)
                             if isinstance(chunk, ItemCompleted) and chunk.item_kind == "message":
@@ -413,9 +299,43 @@ class _RunnerStreamMappingMixin:
                             if isinstance(raw_usage, dict):
                                 usage.update(raw_usage)
                         for event in self._chunk_to_event(handle, run, chunk):  # type: ignore[attr-defined]
+                            if getattr(event, "event_type", "") in {
+                                "run.completed",
+                                "run.failed",
+                                "run.canceled",
+                                "run.interrupted",
+                            }:
+                                saw_terminal_event = True
                             yield event
                         for a2ui_surface in _a2ui_surface_event(self, handle, chunk):
                             yield a2ui_surface
+            except Exception as exc:
+                # 原始 runner 异常(如 GraphRecursionError)不走 "error" chunk 路径。
+                # 不转换则 canonical 事件流没有 run.failed 终态：下游按"流结束无终态"
+                # 报错，会话 run 状态缺失 canonical failed，前端只见干净收尾。这里
+                # 把异常转成 canonical RunFailed 后正常终止；runner 已自行发过终态
+                # 时不重复。CancelledError 是 BaseException，不经此处，保持取消语义。
+                if not saw_terminal_event:
+                    framework = self._runtime_type  # type: ignore[attr-defined]
+                    run_id = handle.run_id
+                    scope_id = stable_scope_id(framework, run_id)
+                    yield RunFailed(
+                        **self._canonical_kwargs(  # type: ignore[attr-defined]
+                            handle,
+                            scope_id=scope_id,
+                            item_id=stable_item_id(framework, run_id, "$run"),
+                            event_type="run.failed",
+                            part_id="run",
+                        ),
+                        status="failed",
+                        error=ErrorInfo(
+                            code="runner_failed",
+                            message=safe_exception_detail(exc),
+                            source=framework,
+                            scope_id=scope_id,
+                        ),
+                    )
+                return
             finally:
                 if accumulated_output:
                     _set_conversation_output_attributes(span, accumulated_output)
@@ -436,6 +356,8 @@ class _RunnerStreamMappingMixin:
                         run.chunk_task = None
                     run.cancellation_ack.set()
 
+    _canonical_gateway_approvals = _canonical_gateway_approvals
+
     def _chunk_to_event(
         self, handle: RunHandle, run: Optional[_ActiveRun], chunk: Any
     ) -> list[RuntimeEvent]:
@@ -444,6 +366,39 @@ class _RunnerStreamMappingMixin:
             # 抑制 runner 自己的 run.started(adapter 已发自己的)。
             if chunk.event_type == "run.started":
                 return []
+            if (
+                self._runtime_type == "langgraph"
+                and chunk.source.framework == "langgraph"
+                and isinstance(chunk, ContinuationCreated)
+                and chunk.continuation_kind == "graph_checkpoint"
+            ):
+                # The canonical continuation arrives before its interaction.
+                # Retain its native target just as the legacy checkpoint path
+                # does, so Kernel records and resumes the original interrupt.
+                checkpoint_id = chunk.ref.get("checkpoint_id")
+                thread_id = chunk.ref.get("thread_id")
+                if (
+                    isinstance(checkpoint_id, str)
+                    and checkpoint_id
+                    and isinstance(thread_id, str)
+                    and thread_id
+                ):
+                    native_ref = {key: chunk.ref[key] for key in (
+                        "checkpoint_id", "thread_id", "checkpoint_ns"
+                    ) if key in chunk.ref}
+                    handle.native_ref.update(native_ref)
+                    handle.native_ref["framework_ref"] = {"langgraph": native_ref}
+                    known = handle.native_ref.setdefault("known_checkpoint_ids", [])
+                    if checkpoint_id not in known:
+                        known.append(checkpoint_id)
+            if (
+                self._runtime_type == "langgraph"
+                and chunk.source.framework == "langgraph"
+                and isinstance(chunk, ItemCompleted)
+            ):
+                approvals = self._canonical_gateway_approvals(handle, run, chunk)
+                if approvals:
+                    return [chunk, *approvals]
             return [chunk]
         if not isinstance(chunk, dict):
             chunk = {"type": "text", "delta": str(chunk)}

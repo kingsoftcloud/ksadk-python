@@ -58,8 +58,10 @@ from ksadk.kernel.store import (
     now_iso,
 )
 
+from ksadk.kernel.memory_store_projection import _MemoryStoreProjectionMixin
 
-class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
+
+class InMemoryAgentKernelStore(_MemoryStoreProjectionMixin, MemoryExecutionGrantMixin):
     def __init__(self, session_event_store: SessionEventStore) -> None:
         self._events = session_event_store
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -147,23 +149,6 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
                 authorization_ref=command.authorization_ref,
                 command_id=command.command_id,
             ),
-        )
-
-    @staticmethod
-    def _receipt(
-        command: AgentControlCommand,
-        status: str,
-        *,
-        message_id: str | None = None,
-        accepted_seq: int | None = None,
-        error: ControlError | None = None,
-    ) -> AgentControlReceipt:
-        return AgentControlReceipt(
-            command_id=command.command_id,
-            status=status,  # type: ignore[arg-type]
-            message_id=message_id,
-            accepted_seq=accepted_seq,
-            error=error,
         )
 
     # --------------------------------------------------------------- commands
@@ -484,20 +469,6 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
             )
             return self._lease(request, row)
         return None
-
-    @staticmethod
-    def _to_message(row: dict[str, Any]) -> InboxMessage:
-        return InboxMessage(
-            message_id=row["message_id"],
-            agent_instance_id=row["agent_instance_id"],
-            session_id=row["session_id"],
-            idempotency_key=row["idempotency_key"],
-            request_digest=row["request_digest"],
-            accepted_seq=row["accepted_seq"],
-            status=InboxState(row["status"]),
-            claimed_fence=row["claimed_fence"],
-            command=row.get("command"),
-        )
 
     async def claim_next(
         self, agent_instance_id: str, session_id: str, fencing_token: int
@@ -948,18 +919,6 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
             self._activations[key] = new_row
             return self._lease(request, new_row)
 
-    @staticmethod
-    def _lease(request: ActivationLeaseRequest, row: dict[str, Any]) -> ActivationLease:
-        return ActivationLease(
-            agent_instance_id=request.agent_instance_id,
-            activation_id=row["activation_id"],
-            fencing_token=row["fencing_token"],
-            lease_expires_at=row["lease_expires_at_iso"],
-            bundle_digest=row["bundle_digest"],
-            runtime_type=row["runtime_type"],
-            capability_digest=row["capability_digest"],
-        )
-
     def _find_activation(self, activation_id: str) -> dict[str, Any]:
         for row in self._activations.values():
             if row["activation_id"] == activation_id:
@@ -1007,10 +966,6 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
                 )
             fresh["released"] = True
             fresh["lease_expires_at"] = time.time()
-
-    @staticmethod
-    def _activation_key(row: dict[str, Any]) -> tuple[str, str]:
-        return (row["agent_instance_id"], row["session_id"])
 
     # ------------------------------------------------------------------ events
 
@@ -1093,8 +1048,38 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
 
     # -------------------------------------------------------------------- runs
 
+    async def find_command_run(
+        self, agent_instance_id: str, session_id: str, command_id: str
+    ) -> RunRecord | None:
+        matches = [run for run in self._runs.values()
+                   if run.agent_instance_id == agent_instance_id
+                   and run.session_id == session_id
+                   and run.metadata.get("command_id") == command_id]
+        if len(matches) > 1:
+            raise InvalidCommandError("ambiguous runs for the same command")
+        return matches[0] if matches else None
+
     async def load_run(self, run_id: str) -> RunRecord | None:
         return self._runs.get(run_id)
+
+    async def save_runtime_checkpoint(
+        self, run_id: str, checkpoint: dict, *, agent_instance_id: str,
+        session_id: str, guard: ActivationWriteGuard,
+    ) -> None:
+        from ksadk.kernel.runtime_checkpoint import checkpoint_copy, require_checkpoint_owner
+
+        checkpoint = checkpoint_copy(checkpoint)
+        async with self._lock(agent_instance_id, session_id):
+            activation = self._check_fence(agent_instance_id, session_id, guard.fencing_token)
+            if activation["activation_id"] != guard.activation_id:
+                raise StaleFenceError("runtime checkpoint activation mismatch")
+            run = self._runs.get(run_id)
+            require_checkpoint_owner(
+                run, agent_instance_id=agent_instance_id, session_id=session_id,
+            )
+            self._runs[run_id] = run.model_copy(update={
+                "runtime_checkpoint": checkpoint, "updated_at": now_iso(),
+            })
 
     async def save_run_transition(
         self, run: RunRecord, *, expected_fence: int
@@ -1104,6 +1089,11 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
                 run.agent_instance_id, run.session_id, expected_fence
             )
             existing = self._runs.get(run.run_id)
+            from ksadk.kernel.runtime_checkpoint import preserve_runtime_checkpoint
+
+            run = run.model_copy(update={"metadata": preserve_runtime_checkpoint(
+                run.metadata, existing.metadata if existing else None,
+            )})
             assert_run_transition(existing.state if existing else None, run.state)
             if is_active_run(run.state):
                 for other in self._runs.values():

@@ -1424,6 +1424,7 @@ details[open] > summary .details-chevron { transform: rotate(180deg); }
 }
 .chat-run-state-icon.running { color: var(--info); }
 .chat-run-state-icon.completed { color: var(--success); }
+.chat-run-state-icon.unverified { color: var(--warning); }
 .chat-run-state-icon.failed { color: var(--danger); }
 .chat-run-identity { flex: 1; min-width: 0; }
 .chat-run-identity strong,
@@ -1455,6 +1456,7 @@ details[open] > summary .details-chevron { transform: rotate(180deg); }
 }
 .chat-run-state.running { color: var(--info); background: var(--info-soft); }
 .chat-run-state.completed { color: var(--success); background: var(--success-soft); }
+.chat-run-state.unverified { color: var(--warning-deep); background: var(--warning-soft); }
 .chat-run-state.failed { color: var(--danger); background: var(--danger-soft); }
 .chat-run-error {
   display: flex;
@@ -1858,3 +1860,9 @@ details[open] > summary .details-chevron { transform: rotate(180deg); }
   cursor: pointer;
 }
 .io-expand:hover { text-decoration: underline; }
+
+.run-steering-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; }
+.run-steering-control label { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 180px; }
+.run-steering-control input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--studio-border); border-radius: 6px; background: var(--studio-surface); color: inherit; }
+.run-steering-control button { padding: 6px 10px; }
+.run-steering-control [role="status"] { width: 100%; font-size: 12px; color: var(--studio-text-secondary); }

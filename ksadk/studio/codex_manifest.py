@@ -13,7 +13,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ksadk.builders.managed_runtime_builder import serialize_managed_runtime_manifest
-from ksadk.studio.contracts import ContextSpec, MemorySpec, NativePluginBinding, SoulDocument
+from ksadk.studio.contracts import ContextSpec, MemorySpec, NativePluginBinding, RemoteAgentBinding, SoulDocument
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.soul import soul_digest as compute_soul_digest
 from ksadk.studio.workspace import Workspace
@@ -53,6 +53,7 @@ class CodexAgentManifest(BaseModel):
     skills: list[str] | None = None
     mcp_servers: list[dict[str, Any]] | None = None
     plugins: list[NativePluginBinding] | None = None
+    remote_agents: list[RemoteAgentBinding] | None = None
     sandbox: str | None = None
     approval_mode: str | None = None
     # PCM 策略（方案 §5.1）：严格类型化，Build 不可变。
@@ -132,6 +133,9 @@ class CodexAgentManifest(BaseModel):
             from ksadk.resource_runtime.plugin_config import validate_resource_plugin_bindings
 
             validate_resource_plugin_bindings(self.plugins)
+        if self.remote_agents:
+            from ksadk.plugins.providers.codex import _bundle_a2a_experts
+            _bundle_a2a_experts({"remoteAgents": [b.model_dump(by_alias=True) for b in self.remote_agents]})
         if self.soul is None:
             if self.soul_source is not None or self.soul_digest is not None:
                 raise ValueError("soul source/digest require a SoulDocument")

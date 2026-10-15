@@ -39,6 +39,7 @@ class OperationManager:
         idempotency_key: str,
         metadata: dict | None = None,
         runner: Callable[[str], Awaitable[object]],
+        deferred_start: bool = False,
     ) -> Operation:
         existing = self._find_by_idempotency_key(idempotency_key)
         if existing is not None:
@@ -51,7 +52,7 @@ class OperationManager:
         )
         self._write(operation, [], idempotency_key)
         self.append(operation.id, "operation.queued", {"kind": kind})
-        task = asyncio.create_task(self._run(operation.id, runner))
+        task = asyncio.create_task(self._run(operation.id, runner, deferred_start=deferred_start))
         self._tasks[operation.id] = task
 
         def remove_completed(_task: asyncio.Task, op_id: str = operation.id) -> None:
@@ -64,13 +65,16 @@ class OperationManager:
         self,
         operation_id: str,
         runner: Callable[[str], Awaitable[object]],
+        *,
+        deferred_start: bool,
     ) -> None:
-        operation = self.get(operation_id)
-        operation.status = OperationStatus.RUNNING
-        self._save_record(operation)
-        self.append(operation_id, "operation.started", {})
+        if not deferred_start:
+            self.mark_started(operation_id)
         try:
             result = await runner(operation_id)
+            if deferred_start:
+                self.mark_started(operation_id)
+            operation = self.get(operation_id)
             result_id = getattr(result, "id", None)
             if result_id:
                 operation.resource_id = str(result_id)
@@ -83,21 +87,27 @@ class OperationManager:
                 {"resourceId": operation.resource_id},
             )
         except asyncio.CancelledError:
-            operation.status = OperationStatus.CANCELLED
-            operation.completed_at = datetime.now(timezone.utc)
-            self._save_record(operation)
-            self.append(operation_id, "operation.cancelled", {})
+            operation = self.get(operation_id)
+            if operation.status != OperationStatus.CANCELLED:
+                operation.status = OperationStatus.CANCELLED
+                operation.completed_at = datetime.now(timezone.utc)
+                self._save_record(operation)
+                self.append(operation_id, "operation.cancelled", {})
         except StudioError as exc:
+            operation = self.get(operation_id)
             operation.status = OperationStatus.FAILED
             operation.error = {
                 "code": exc.code,
                 "message": exc.message,
                 "field": exc.field,
             }
+            if exc.code in {"A2A_BINDING_TARGET_UNAVAILABLE", "A2A_BINDING_VERSION_DRIFT"} and exc.details:
+                operation.error["details"] = exc.details
             operation.completed_at = datetime.now(timezone.utc)
             self._save_record(operation)
             self.append(operation_id, "operation.failed", operation.error)
         except Exception as exc:
+            operation = self.get(operation_id)
             # Keep the browser response generic so an exception cannot leak a
             # credential, but retain the traceback in the local Studio log for
             # an operator to diagnose a failed deployment.
@@ -125,6 +135,17 @@ class OperationManager:
             operation.completed_at = datetime.now(timezone.utc)
             self._save_record(operation)
             self.append(operation_id, "operation.failed", operation.error)
+
+    def mark_started(self, operation_id: str) -> None:
+        """Admit a queued operation at the point its effectful owner starts."""
+        operation = self.get(operation_id)
+        if operation.status == OperationStatus.RUNNING:
+            return
+        if operation.status != OperationStatus.QUEUED:
+            raise asyncio.CancelledError()
+        operation.status = OperationStatus.RUNNING
+        self._save_record(operation)
+        self.append(operation_id, "operation.started", {})
 
     def get(self, operation_id: str) -> Operation:
         operation, _, _ = self._read(operation_id)
@@ -253,6 +274,10 @@ class OperationManager:
             except (OSError, ValueError, KeyError, ValidationError):
                 continue
         return None
+
+    def find_by_idempotency_key(self, key: str) -> Operation | None:
+        """Read the original persisted operation without submitting it again."""
+        return self._find_by_idempotency_key(key)
 
     def _recover_interrupted(self) -> None:
         directory = self.workspace.resolve(".agentkit/operations")

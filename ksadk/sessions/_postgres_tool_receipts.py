@@ -45,8 +45,9 @@ class _PostgresToolReceiptMixin:
         claim_id: str,
     ) -> ToolReceiptClaim:
         await self._ensure_schema()
-        async with self._pool.acquire() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
+                await self._set_lock_timeout(connection)
                 # Share the session parent fence with delete_session. The
                 # key-share lock permits parallel claims, while deletion's
                 # update lock waits until the claim is durable.
@@ -109,8 +110,9 @@ class _PostgresToolReceiptMixin:
         if state not in {"completed", "failed"}:
             raise ValueError("tool receipt terminal state invalid")
         await self._ensure_schema()
-        async with self._pool.acquire() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
+                await self._set_lock_timeout(connection)
                 row = await connection.fetchrow(
                     f"SELECT session_id,idempotency_key,tool_name,arguments_digest,state,claim_id,"
                     f"output_json FROM {pg_tool_receipts_table} "
@@ -155,7 +157,7 @@ class _PostgresToolReceiptMixin:
         self, session_id: str, *, idempotency_key: str
     ) -> ToolReceiptClaim | None:
         await self._ensure_schema()
-        async with self._pool.acquire() as connection:
+        async with self._connection() as connection:
             row = await connection.fetchrow(
                 f"SELECT session_id,idempotency_key,tool_name,arguments_digest,state,claim_id,"
                 f"output_json FROM {pg_tool_receipts_table} "

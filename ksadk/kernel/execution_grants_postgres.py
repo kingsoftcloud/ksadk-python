@@ -60,7 +60,7 @@ class PostgresExecutionGrantMixin:
         grant_deadline_budget(remaining_ttl_seconds)
         self._require_grant_tenant(spec.tenant_id)
         now = now_iso()
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 existing = await self._postgres_grant_record(connection, spec.grant_id)
                 if existing is not None:
@@ -141,7 +141,7 @@ class PostgresExecutionGrantMixin:
         digest = grant_renewal_digest(
             spec, expected_revision=expected_revision, expires_at=expires_at, renewal_id=renewal_id
         )
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 record = await self._postgres_grant_record(connection, spec.grant_id)
                 if record is None:
@@ -235,7 +235,7 @@ class PostgresExecutionGrantMixin:
         if not idempotency_key or not idempotency_key.strip():
             raise InvalidCommandError("grant mutation requires idempotency_key")
         digest = grant_operation_digest(spec, state, expected_revision)
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 record = await self._postgres_grant_record(connection, spec.grant_id)
                 if record is None:
@@ -296,7 +296,7 @@ class PostgresExecutionGrantMixin:
         if not idempotency_key or not idempotency_key.strip():
             raise InvalidCommandError("admission mutation requires idempotency_key")
         digest = admission_operation_digest(spec, allowed, expected_revision)
-        async with self._connection() as connection:
+        async with self._connection(write=True) as connection:
             async with connection.transaction():
                 record = await self._postgres_grant_record(connection, spec.grant_id)
                 if record is None:

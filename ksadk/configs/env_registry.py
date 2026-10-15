@@ -1,35 +1,68 @@
 from __future__ import annotations
 
+from ksadk.configs.env_registry_a2a import A2A_ENV_VAR_REGISTRY_ITEMS
 from ksadk.configs.env_registry_pcm import PCM_ENV_VAR_REGISTRY_ITEMS
 from ksadk.configs.env_registry_studio import STUDIO_ENV_VAR_REGISTRY_ITEMS
 from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+    EnvVarSpec(
+        "KSADK_TRAFFIC_SOURCE",
+        "cloud",
+        "Cloud resource request X-Traffic-Source header.",
+        "agentkit",
+    ),
     *STUDIO_ENV_VAR_REGISTRY_ITEMS,
+    EnvVarSpec("KSADK_DB_CONNECT_SECONDS", "sessions", "Database connect budget in seconds.", ".5"),
+    EnvVarSpec("KSADK_DB_READ_ACQUIRE_SECONDS", "sessions", "Database read acquire budget in seconds.", ".3"),
+    EnvVarSpec("KSADK_DB_READ_SQL_SECONDS", "sessions", "Database read sql budget in seconds.", "1"),
+    EnvVarSpec("KSADK_DB_WRITE_ACQUIRE_SECONDS", "sessions", "Database write acquire budget in seconds.", ".5"),
+    EnvVarSpec("KSADK_DB_WRITE_SQL_SECONDS", "sessions", "Database write sql budget in seconds.", "3"),
+    EnvVarSpec("KSADK_DB_WRITE_OPERATION_SECONDS", "sessions", "Database write operation budget in seconds.", "5"),
+    EnvVarSpec("KSADK_DB_LOCK_SECONDS", "sessions", "Database lock budget in seconds.", ".5"),
+    EnvVarSpec("KSADK_DB_CLEANUP_SECONDS", "sessions", "Database cleanup budget in seconds.", "1"),
+    EnvVarSpec("KSADK_DB_REPLAY_OPERATION_SECONDS", "sessions", "Database replay operation budget in seconds.", "30"),
+    EnvVarSpec("KSADK_DB_REPLAY_SQL_SECONDS", "sessions", "Database replay sql budget in seconds.", "3"),
+    EnvVarSpec("KSADK_HISTORY_INITIAL_EVENTS", "sessions", "Initial history projection window (32–256 events).", "256"),
+    EnvVarSpec("KSADK_HISTORY_READ_CONCURRENCY", "sessions", "Concurrent PostgreSQL history transfers per process (1–32).", "4"),
     EnvVarSpec(
         "AGENTENGINE_CHANNEL_URL",
         "studio",
         "Channel service HTTPS base URL used by Studio and Channel Connector defaults.",
     ),
     EnvVarSpec(
-        "KSADK_MEMORY_POSTGRES_DSN", "memory", "Harness memory PostgreSQL DSN.",
-        sensitive=True, documented=False,
-    ),
-    EnvVarSpec(
-        "KSADK_OTEL_ENDPOINT", "harness", "Optional Harness trace export endpoint.",
+        "KSADK_MEMORY_POSTGRES_DSN",
+        "memory",
+        "Harness memory PostgreSQL DSN.",
+        sensitive=True,
         documented=False,
     ),
     EnvVarSpec(
-        "KSADK_OTEL_SERVICE_NAME", "harness", "Harness trace service name.",
-        "ksadk-harness", documented=False,
+        "KSADK_OTEL_ENDPOINT",
+        "harness",
+        "Optional Harness trace export endpoint.",
+        documented=False,
     ),
     EnvVarSpec(
-        "KSADK_SANDBOX_API_KEY", "sandbox", "Legacy Skill MCP forwarded sandbox credential.",
-        sensitive=True, documented=False,
+        "KSADK_OTEL_SERVICE_NAME",
+        "harness",
+        "Harness trace service name.",
+        "ksadk-harness",
+        documented=False,
     ),
     EnvVarSpec(
-        "KSADK_SKILL_MANIFEST_TTL", "skills", "Skill manifest cache TTL in seconds.",
-        "60", documented=False,
+        "KSADK_SANDBOX_API_KEY",
+        "sandbox",
+        "Legacy Skill MCP forwarded sandbox credential.",
+        sensitive=True,
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_MANIFEST_TTL",
+        "skills",
+        "Skill manifest cache TTL in seconds.",
+        "60",
+        documented=False,
     ),
     EnvVarSpec(
         "KSADK_AGENT_EVAL",
@@ -44,122 +77,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True
     ),
-    EnvVarSpec(
-        "KSADK_A2A_AGENT_ID",
-        "a2a",
-        "Opaque registered A2A Agent id injected post-registration; "
-        "required to wire full inbound JSON-RPC in v2. v1 discovery-only card "
-        "does not depend on it.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_ACCOUNT_ID",
-        "a2a",
-        "Runtime owner account id injected by the deploy layer (ar-* agent's account).",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_RUNTIME_ID",
-        "a2a",
-        "Hosted Agent runtime resource id (ar-*) injected by the deploy layer; "
-        "the v1 discovery-only card mounts whenever this is non-empty.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_AGENT_NAME",
-        "a2a",
-        "AgentCard display name injected by the deploy layer; falls back to "
-        "AGENTENGINE_MANAGED_RUNTIME_NAME then to the agent id.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_AGENT_VERSION",
-        "a2a",
-        "AgentCard business version injected by the deploy layer; defaults to 0.1.0.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_CONTROL_PLANE_URL",
-        "a2a",
-        "AgentEngine A2A runtime control-plane base URL injected by the deploy layer.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_ENABLE_PUBLIC_EGRESS",
-        "a2a",
-        "Allow calling external (public-egress) agents in the A2A Space.",
-        "false when the deploy layer does not inject a value",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_EVENT_OUTBOX_PATH",
-        "a2a",
-        "SQLite path for durable A2A task-event delivery batches.",
-        ".agentengine/a2a_event_outbox.sqlite3",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_INTERNAL_BASE_URL",
-        "a2a",
-        "Internal HTTP(S) origin used as AgentCard base_url before the gateway rewrites it; "
-        "must be an absolute origin with no path/query/fragment.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_SPACE_ID",
-        "a2a",
-        "Primary A2A Space id configured for this Runtime Agent.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_SPACE_IDS",
-        "a2a",
-        "Compatibility JSON array of A2A Space ids configured for this Runtime Agent.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_TENANT_ID",
-        "a2a",
-        "Runtime tenant id injected by the deploy layer; falls back to account id.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_TOKEN_DIR",
-        "a2a",
-        "Directory containing audience-specific projected A2A workload JWT files.",
-        "/var/run/secrets/agentengine/a2a",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_SERVICE_URL",
-        "a2a",
-        "A2A control plane service URL (KOP public API); auto-detected if unset.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_SERVICE_TOKEN",
-        "a2a",
-        "Bearer token for A2A control plane service authentication.",
-        sensitive=True,
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_SERVICE_ENDPOINT",
-        "a2a",
-        "A2A service endpoint hostname (used for auto-detection with scheme).",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_SERVICE_SCHEME",
-        "a2a",
-        "A2A service URL scheme (http/https) for auto-detection.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_SERVICE_REGION",
-        "a2a",
-        "A2A service region for KOP signing.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_ACCESS_KEY",
-        "a2a",
-        "A2A KOP access key for signing; falls back to KSYUN_ACCESS_KEY.",
-        sensitive=True,
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_SECRET_KEY",
-        "a2a",
-        "A2A KOP secret key for signing; falls back to KSYUN_SECRET_KEY.",
-        sensitive=True,
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_SERVICE",
-        "a2a",
-        "A2A KOP signing service name (default: aicp).",
-    ),
+    *A2A_ENV_VAR_REGISTRY_ITEMS,
     EnvVarSpec(
         "KSADK_EVAL_JUDGE_API_KEY",
         "eval",
@@ -403,6 +321,17 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Internal bundled LangGraph PostgreSQL checkpointer requirement constant.",
     ),
     EnvVarSpec(
+        "KSADK_LANGGRAPH_RECURSION_LIMIT",
+        "sessions",
+        (
+            "Fallback LangGraph recursion limit carried by the hosted runner when the "
+            "graph's own with_config does not set one. Must be explicit: astream_events "
+            "otherwise fills LangChain's default 25, which overrides the graph-level "
+            "setting on the streaming path."
+        ),
+        "50",
+    ),
+    EnvVarSpec(
         "KSADK_LOCAL_PROCESS_ADDRESS_SPACE_BYTES",
         "skills",
         "Local-process RLIMIT_AS address-space bytes.",
@@ -544,6 +473,45 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_MODEL_CAPABILITY_FILE",
         "models",
         "Provider capability declaration file produced by the model matrix.",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_GATEWAY_METADATA_FILE",
+        "models",
+        "Platform-provided model metadata consumed before measured capability probes.",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_WIRE_API",
+        "models",
+        "Direct SDK model wire protocol: chat or responses.",
+        "chat",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_COMPAT_RULE",
+        "models",
+        "Explicit model endpoint compatibility profile override.",
+    ),
+    EnvVarSpec(
+        "KSADK_DELEGATION_DECISION_MAX_OUTPUT_TOKENS",
+        "harness",
+        "Maximum output-token budget for a delegation decision turn.",
+    ),
+    EnvVarSpec(
+        "KSADK_RUN_STALL_WARN_SECONDS",
+        "studio",
+        "Seconds without run progress before Studio emits a stall warning; <=0 disables it.",
+        "60",
+    ),
+    EnvVarSpec(
+        "KSADK_RUN_STALL_DUMP_SECONDS",
+        "studio",
+        "Seconds without run progress before Studio captures a diagnostic dump.",
+        "120",
+    ),
+    EnvVarSpec(
+        "KSADK_RUN_STALL_MAX_DUMPS",
+        "studio",
+        "Maximum diagnostic dumps retained for one continuously stalled run.",
+        "5",
     ),
     EnvVarSpec(
         "KSADK_MODEL_PROXY_AGENTS",
@@ -960,7 +928,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.12",
+        "0.3.13",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",
@@ -1067,6 +1035,17 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "tracing",
         "Maximum spans exported per OTLP batch to avoid oversized collector requests.",
         "64",
+    ),
+    EnvVarSpec(
+        "KSADK_HARNESS_SPEC",
+        "harness",
+        "Path to the HarnessSpec JSON consumed by `python -m ksadk.harness.rpc`.",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_REQUEST_IDLE_TIMEOUT_SECONDS",
+        "studio",
+        "Idle timeout in seconds for a single managed model request before failover.",
+        "60",
     ),
 )
 

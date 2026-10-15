@@ -28,6 +28,7 @@ jobs:
           --health-retries 5
     env:
       KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
     steps:
       - uses: actions/checkout@v7
 
@@ -37,10 +38,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install test dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra langgraph --extra a2a
 
       - name: Run live PostgreSQL persistence tests
         run: |
@@ -50,6 +51,14 @@ jobs:
             tests/server/test_postgres_jsonb_codec_guard.py \
             tests/server/test_checkpoint_resume_attempt_audit.py \
             tests/test_tool_receipt_claim_concurrency.py \
+            tests/test_canonical_write_budget_postgres.py \
+            tests/test_framework_db_budget_postgres.py \
+            tests/test_history_cache_postgres.py \
+            tests/test_mainline_history_merge_postgres.py \
+            tests/test_pool_release_budget_postgres.py \
+            tests/test_resilient_unknown_commit.py \
+            tests/test_runtime_db_history_contract.py \
+            tests/test_subscription_reads_postgres.py \
             -q --junitxml="$RUNNER_TEMP/postgres-junit.xml"
           test_code=$?
           set -e
@@ -69,7 +78,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.12"
+      KSADK_WEB_VERSION: "0.3.13"
     steps:
       - uses: actions/checkout@v7
 
@@ -79,7 +88,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
@@ -156,7 +165,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Set up Node
         if: ${{ hashFiles('ksadk/studio/react-ui/package-lock.json') != '' }}
@@ -191,8 +200,24 @@ jobs:
   test-adk-matrix:
     name: full pytest (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ksadk_ci
+          POSTGRES_PASSWORD: ksadk_ci_password
+          POSTGRES_DB: ksadk_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ksadk_ci -d ksadk_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
-      KSADK_WEB_VERSION: "0.3.12"
+      KSADK_WEB_VERSION: "0.3.13"
+      KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
     strategy:
       fail-fast: false
       matrix:
@@ -206,7 +231,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -220,12 +245,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra all
-
-      - name: Pin google-adk for this matrix leg
-        run: uv pip install "google-adk==${{ matrix.google-adk }}"
-
-      - name: Verify google-adk version
-        run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
 
       # Both internal and public branches compile Studio from source.
       # Generated assets belong in packages, never in the Git tree.
@@ -245,17 +264,24 @@ jobs:
       # 2-core runner 上进程表/内存耗尽(Cannot fork/超时)。
       # 这些测试由下方 test-local-process-heavy job 在干净进程表里单独跑,不丢覆盖。
       # -n auto: pytest-xdist 并行(实测 4 核 19:52→6:25, 7039 全过)。
-      - name: Run full test suite
-        run: uv run --no-sync pytest tests/ -q -m "not local_process_heavy" -n auto
+      - name: Pin google-adk for this matrix leg
+        run: uv pip install "google-adk==${{ matrix.google-adk }}"
 
-  # goal-00 补充:真实 fork 子进程的 sandbox/skill/browser 测试(local_process_heavy)。
+      - name: Run full test suite
+        env:
+          EXPECTED_GOOGLE_ADK: ${{ matrix.google-adk }}
+        run: |
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected)'
+          uv run --no-sync pytest tests/ -q -m "not local_process_heavy" -n auto
+
+  # 真实 fork 子进程的 Native recovery/sandbox/skill/browser 测试。
   # 与全量套件拆开跑——单独 pytest 进程没有前面 7000 测试累积的资源占用,不会 Cannot fork。
   # 版本矩阵对齐主套件,防止 adk 1.34/2.5 两端回归。
   test-local-process-heavy:
     name: local-process heavy tests (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.12"
+      KSADK_WEB_VERSION: "0.3.13"
     strategy:
       fail-fast: false
       matrix:
@@ -269,7 +295,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -283,9 +309,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra all
-
-      - name: Pin google-adk for this matrix leg
-        run: uv pip install "google-adk==${{ matrix.google-adk }}"
 
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
@@ -301,20 +324,20 @@ jobs:
       - name: Build package artifacts
         run: uv build
 
+      - name: Pin google-adk for this matrix leg
+        run: uv pip install "google-adk==${{ matrix.google-adk }}"
+
       - name: Run local_process_heavy tests
-        # 公开导出树不含 local_process_heavy 标记的私有测试（fork 子进程
-        # sandbox/skill/browser 用例留在内部 master）；零收集时 pytest 退出码
-        # 5 是预期状态，不能当作失败。
+        env:
+          EXPECTED_GOOGLE_ADK: ${{ matrix.google-adk }}
+        # Native SIGKILL 恢复用例也在公开导出树内，必须在这里串行执行。
+        # 公开候选缺少测试或零收集都必须失败，不能用绿色 job 掩盖漏测。
         run: |
-          set +e
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected)'
+          test -f tests/harness/native/test_partial_summary_process.py
+          test -f tests/harness/native/test_summary_recovery_process.py
+          test -f tests/harness/native/test_compaction_reserve_process_recovery.py
           uv run --no-sync pytest tests/ -q -m local_process_heavy
-          code=$?
-          set -e
-          if [ "$code" -eq 5 ]; then
-            echo "No local_process_heavy tests in the public export tree; skipping."
-            exit 0
-          fi
-          exit "$code"
 
   # goal-16: Windows a2a 命令 bug 回归(用户首报:"No such command 'a2a'")。
   # 在本机 macOS 无法闭环 Windows,故 CI 加 Windows runner 跑 CLI smoke:
@@ -335,7 +358,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: uv sync --extra all
@@ -362,7 +385,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install KsADK and native Codex runtime
         run: uv sync --extra dev --extra codex
@@ -389,7 +412,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Set up Node
         uses: actions/setup-node@v7

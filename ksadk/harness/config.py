@@ -1,8 +1,10 @@
 """HarnessApp yaml 配置 — 最小子集 + 严格校验 (goal-08)。
 
 本期硬边界(防膨胀):**只支持最小子集** ``model`` / ``prompt``(instruction)/
-``mcp_tools`` / ``sandbox``。超出子集的字段(memory/knowledge/workflow/tracing 等)
-**明确报"暂不支持"**,不硬翻、不静默忽略。
+``mcp_tools`` / ``sandbox``,以及已进入支持子集的 ``runtime``(yaml|codex,
+已在运行时接线)与 ``skill_paths``(外部 Skill 目录挂载声明;解析/校验已完成,
+运行时消费接线在后续里程碑交付)。超出子集的字段(memory/knowledge/workflow/
+tracing 等)**明确报"暂不支持"**,不硬翻、不静默忽略。
 """
 
 from __future__ import annotations
@@ -14,7 +16,9 @@ from typing import Any, Optional
 import yaml  # type: ignore[import-untyped]
 
 #: 顶层允许的最小子集字段。
-_ALLOWED_TOP_LEVEL = frozenset({"model", "prompt", "mcp_tools", "sandbox", "runtime"})
+_ALLOWED_TOP_LEVEL = frozenset(
+    {"model", "prompt", "mcp_tools", "sandbox", "runtime", "skill_paths"}
+)
 #: runtime 允许的值。
 _ALLOWED_RUNTIME = frozenset({"yaml", "codex"})
 #: mcp_tools 单项允许字段。
@@ -28,7 +32,7 @@ _KNOWN_UNSUPPORTED = {
     "knowledge": "knowledge(知识库)暂不支持,后续阶段提供",
     "workflow": "workflow(工作流编排)暂不支持,后续阶段提供",
     "tracing": "tracing(可观测)暂不支持,后续阶段提供",
-    "skills": "skills(技能)暂不支持,后续阶段提供",
+    "skills": "skills(技能)暂不支持,请使用 skill_paths 挂载本地技能目录",
 }
 
 
@@ -45,6 +49,9 @@ class McpToolSpec:
     api_key: Optional[str] = field(default=None, repr=False)
     tool_filter: tuple[str, ...] = ()
     tool_name_prefix: Optional[str] = None
+    #: 静态已知的服务描述（G9 §12.3.2）：来源为 Provider 声明而非 MCP initialize
+    #: 活体信息；为空时 L0 目录沿用 Provider 默认占位。
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,11 @@ class HarnessConfig:
     sandbox: SandboxPolicy = field(default_factory=SandboxPolicy)
     runtime: str = "yaml"
     """runtime 后端:``yaml``(HarnessRuntimeAdapter)| ``codex``(CodexRuntimeAdapter)。"""
+    skill_paths: tuple[str, ...] = ()
+    # G26 声明式注册面：hooks 固化在 Config→编译产物（不进 Spec 数据面；
+    # Spec 是 revision 冻结内容，不可含可执行对象）。元素为 HookDeclaration 或
+    # 裸 ProviderHook（后者自动包成默认 non_blocking 声明）。
+    hooks: list = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], *, source: str = "yaml") -> "HarnessConfig":
@@ -88,8 +100,19 @@ class HarnessConfig:
             )
         )
         sandbox = _parse_sandbox(data.get("sandbox", {}), source)
+        raw_skill_paths = data.get("skill_paths", [])
+        if not isinstance(raw_skill_paths, list) or any(
+            not isinstance(item, str) or not item.strip() for item in raw_skill_paths
+        ):
+            raise HarnessConfigError(f"{source}: 字段 'skill_paths' 必须是非空字符串列表")
+        skill_paths = tuple(item.strip() for item in raw_skill_paths)
         return cls(
-            model=model, prompt=prompt, mcp_tools=mcp_tools, sandbox=sandbox, runtime=runtime
+            model=model,
+            prompt=prompt,
+            mcp_tools=mcp_tools,
+            sandbox=sandbox,
+            runtime=runtime,
+            skill_paths=skill_paths,
         )
 
     @classmethod

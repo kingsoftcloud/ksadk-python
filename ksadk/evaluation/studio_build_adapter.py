@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 from ksadk.events.canonical import RuntimeEvent, parse_runtime_event
@@ -22,7 +24,12 @@ from .contracts import (
     TraceRef,
     UsageSnapshot,
 )
-from .evidence import EvidenceStore, project_tool_calls
+from .evidence import (
+    EvidenceStore,
+    project_file_checks,
+    project_runtime_facts,
+    project_tool_calls,
+)
 
 
 class _StudioRunService(Protocol):
@@ -51,6 +58,7 @@ class StudioBuildResolution:
     model: str | None
     run_spec: Any
     metadata: dict[str, Any]
+    verification_root: Path | None = None
 
 
 class StudioBuildTargetError(TargetAdapterError):
@@ -145,15 +153,65 @@ class StudioBuildTargetAdapter:
         trace_ref: TraceRef | None = None
         trace_refs: list[TraceRef] = []
         tool_calls: list[ToolCallEvidence] = []
+        runtime_facts = {
+            "maxTerminalEventsPerScope": 0,
+            "retryCount": 0,
+            "compactionCount": 0,
+            "subagentCount": 0,
+            "toolCallCount": 0,
+            "memoryRecallCount": 0,
+            "memoryWriteCount": 0,
+            "skillDisclosureCount": 0,
+            "mcpDisclosureCount": 0,
+        }
+        attempted_turns = 0
         for turn in case.turns:
-            record = await self._run_service.run(
-                resolved.run_spec,
-                turn.input,
-                session_id=session_id,
-            )
+            attempted_turns += 1
+            try:
+                record = await asyncio.wait_for(
+                    self._run_service.run(
+                        resolved.run_spec,
+                        turn.input,
+                        session_id=session_id,
+                    ),
+                    timeout=self._timeout_seconds,
+                )
+            except TimeoutError:
+                return TargetRun(
+                    status=TargetRunStatus.ERROR,
+                    duration_ms=self._timeout_seconds * 1000,
+                    usage=usage,
+                    error_code="EVALUATION_CASE_TIMEOUT",
+                    error_message="Studio Build evaluation case exceeded its timeout",
+                    trace_refs=trace_refs,
+                    tool_calls=tool_calls,
+                    file_checks=project_file_checks(case, resolved.verification_root),
+                    metadata={
+                        "runtime": resolved.runtime,
+                        "turnCount": attempted_turns,
+                        **runtime_facts,
+                    },
+                )
             events = _runtime_events(await self._run_service.events(record.id))
             if events:
-                tool_calls.extend(project_tool_calls(events))
+                turn_tool_calls = project_tool_calls(events)
+                tool_calls.extend(turn_tool_calls)
+                runtime_facts["toolCallCount"] += len(turn_tool_calls)
+                turn_facts = project_runtime_facts(events)
+                runtime_facts["maxTerminalEventsPerScope"] = max(
+                    runtime_facts["maxTerminalEventsPerScope"],
+                    turn_facts["maxTerminalEventsPerScope"],
+                )
+                for key in (
+                    "retryCount",
+                    "compactionCount",
+                    "subagentCount",
+                    "memoryRecallCount",
+                    "memoryWriteCount",
+                    "skillDisclosureCount",
+                    "mcpDisclosureCount",
+                ):
+                    runtime_facts[key] += turn_facts[key]
             trace_ref = _trace_ref(spec.id, record, events)
             if self._evidence_store is not None and events:
                 persisted_ref = self._evidence_store.write_trace(
@@ -184,7 +242,12 @@ class StudioBuildTargetAdapter:
                     trace_ref=trace_ref,
                     trace_refs=trace_refs,
                     tool_calls=tool_calls,
-                    metadata={"runtime": resolved.runtime, "turnCount": len(tool_calls)},
+                    file_checks=project_file_checks(case, resolved.verification_root),
+                    metadata={
+                        "runtime": resolved.runtime,
+                        "turnCount": attempted_turns,
+                        **runtime_facts,
+                    },
                 )
             output = str(getattr(record, "output", "") or "")
 
@@ -198,7 +261,8 @@ class StudioBuildTargetAdapter:
             trace_ref=trace_ref,
             trace_refs=trace_refs,
             tool_calls=tool_calls,
-            metadata={"runtime": resolved.runtime, "turnCount": len(case.turns)},
+            file_checks=project_file_checks(case, resolved.verification_root),
+            metadata={"runtime": resolved.runtime, "turnCount": attempted_turns, **runtime_facts},
         )
 
 

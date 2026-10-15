@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-dmg-existing studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-dmg-existing studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen studio-app-build studio-app-dmg kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
 
 KERNEL_CANARY_NAMESPACE ?= agent-kernel
 # Kernel runtime drills must run beside real Agent workloads in the preprod
@@ -27,7 +27,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.12"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.13"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
@@ -381,7 +381,11 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/studio/test_scheduler_runtime.py tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py tests/server/test_historical_agent_approval_and_blocks.py
+PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/studio/test_scheduler_runtime.py tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py tests/test_deploy_env_forward.py tests/server/test_historical_agent_approval_and_blocks.py
+PUBLIC_TEST_TARGETS += tests/a2a/test_public_imports.py tests/studio/test_shared_web_final_snapshot.py
+PUBLIC_TEST_TARGETS += tests/test_cloud_headers.py
+PUBLIC_TEST_TARGETS += tests/test_prepare_ksadk_python_export.py
+PUBLIC_TEST_TARGETS += tests/packaging/test_alias_distribution.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -488,8 +492,10 @@ docs-site-dev:
 
 public-test: sync-ksadk-web-static build-studio-static
 	@echo "==> test"
-	@uv sync --extra dev
-	@uv run pytest $(PUBLIC_TEST_TARGETS)
+	@# The SDK compatibility tests explicitly exercise the optional Managed engine.
+	@# Native cold-install tests separately reject all agent-framework imports.
+	@uv sync --extra dev --extra langgraph --extra skills
+	@uv run --no-sync pytest $(PUBLIC_TEST_TARGETS)
 
 public-sync-ksadk-web-static: sync-ksadk-web-static
 
@@ -553,7 +559,7 @@ release-candidate-gate:
 		--preprod "$(RELEASE_PREPROD_EVIDENCE)" \
 		--output "$(RELEASE_FINAL_EVIDENCE)"
 
-public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build release-preflight
+public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build release-preflight public-build-alias-check
 	@echo "✅ public preflight passed"
 
 # Lightweight preflight for the PyPI publish workflow.  The publish job runs
@@ -632,12 +638,12 @@ offline-linux: build
 	@cp dist/*.whl $(OFFLINE_DIR)/linux-x86_64/
 	pip download -d $(OFFLINE_DIR)/linux-x86_64 \
 		--platform $(LINUX_PLATFORM) \
-		--python-version 310 \
+		--python-version 312 \
 		--only-binary=:all: \
 		-r <(pip freeze --exclude-editable) 2>/dev/null || \
 	pip download -d $(OFFLINE_DIR)/linux-x86_64 \
 		--platform $(LINUX_PLATFORM) \
-		--python-version 310 \
+		--python-version 312 \
 		dist/*.whl
 	@echo "✅ Linux 离线包: $(OFFLINE_DIR)/linux-x86_64/"
 	@cd $(OFFLINE_DIR) && tar -czf ksadk-$(VERSION)-linux-x86_64.tar.gz linux-x86_64/
@@ -649,7 +655,7 @@ offline-macos-intel: build
 	@cp dist/*.whl $(OFFLINE_DIR)/macos-intel/
 	pip download -d $(OFFLINE_DIR)/macos-intel \
 		--platform $(MACOS_INTEL_PLATFORM) \
-		--python-version 310 \
+		--python-version 312 \
 		--only-binary=:all: \
 		dist/*.whl 2>/dev/null || true
 	@# 对于纯 Python 包，也下载一份
@@ -666,7 +672,7 @@ offline-macos-arm: build
 	@cp dist/*.whl $(OFFLINE_DIR)/macos-arm64/
 	pip download -d $(OFFLINE_DIR)/macos-arm64 \
 		--platform $(MACOS_ARM_PLATFORM) \
-		--python-version 310 \
+		--python-version 312 \
 		--only-binary=:all: \
 		dist/*.whl 2>/dev/null || true
 	@echo "✅ macOS ARM64 离线包: $(OFFLINE_DIR)/macos-arm64/"
@@ -679,7 +685,7 @@ offline-windows: build
 	@cp dist/*.whl $(OFFLINE_DIR)/windows-x64/
 	pip download -d $(OFFLINE_DIR)/windows-x64 \
 		--platform $(WINDOWS_PLATFORM) \
-		--python-version 310 \
+		--python-version 312 \
 		--only-binary=:all: \
 		dist/*.whl 2>/dev/null || true
 	@echo "✅ Windows 离线包: $(OFFLINE_DIR)/windows-x64/"
@@ -721,11 +727,11 @@ STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
 # The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
-# The shared Conversation v1 Web 0.3.12 release; a normal release build must
+# The shared Conversation v1 Web 0.3.13 release; a normal release build must
 # fail rather than silently substituting an older npm package when that release is not
 # visible.  A reviewed local tarball is permitted for a pre-release image
 # build, but remains explicit in the command and provenance output.
-KSADK_WEB_VERSION ?= 0.3.12
+KSADK_WEB_VERSION ?= 0.3.13
 export KSADK_WEB_VERSION
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
@@ -864,6 +870,20 @@ studio-app-run: studio-app-check
 studio-app-clean:
 	@rm -rf "$(STUDIO_APP_DIR)"
 	@echo "✅ Studio local bundle cleaned"
+
+# electron-builder: prepare assets → build DMG + zip + latest-mac.yml in one step.
+# Replaces the hand-rolled package_studio_app.sh + studio-app-dmg targets.
+studio-app-build: build-wheel
+	@test -f electron-builder.config.cjs || (echo "ERROR: electron-builder.config.cjs not found" >&2; exit 1)
+	@command -v npx >/dev/null 2>&1 || (echo "ERROR: npx (Node.js) is required" >&2; exit 1)
+	@command -v uv >/dev/null 2>&1 || (echo "ERROR: uv is required" >&2; exit 1)
+	npm install --no-audit --no-fund --loglevel=error
+	python3 scripts/patch_isbinaryfile.py
+	@STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" \
+	  STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" \
+	  sh scripts/prepare_studio_assets.sh
+	npx electron-builder --config electron-builder.config.cjs --mac --arm64
+	@echo "✅ Studio electron-builder DMG + zip: $(STUDIO_APP_DIR)/"
 
 # DMG:hdiutil UDZO(zlib 压缩只读镜像),含 Applications 软链接(拖拽安装)。
 # 输出 dist/studio-app/AgentKitStudio-<version>-macos-arm64.dmg

@@ -2,6 +2,19 @@ import { describe, expect, it } from "vitest";
 import { compactHarnessMessages } from "./compactHarnessMessages";
 
 describe("compact Harness presentation", () => {
+  it("keeps successful actions between the surrounding public text without exposing payloads", () => {
+    const [result] = compactHarnessMessages([{ id: "m", role: "model", content: "", timestamp: 0,
+      blocks: [
+        { id: "before", type: "text", status: "done", content: "先读取文件" },
+        { id: "read-1", type: "tool", toolName: "read_workspace_file", status: "completed",
+          args: "private-input", output: "private-output", extra: { privateMetadata: "private-value" } },
+        { id: "after", type: "text", status: "done", content: "读取后修改" },
+        { id: "write-1", type: "tool", toolName: "write_workspace_file", status: "completed", args: "private-write" },
+      ] }]);
+    expect(result.blocks?.filter(block => block.type !== "thinking").map(block => block.id))
+      .toEqual(["before", "read-1", "after", "write-1"]);
+    expect(JSON.stringify(result.blocks)).not.toContain("private-");
+  });
   it("keeps newer approval state from the shared tool map over a stale tool block", () => {
     const [result] = compactHarnessMessages([{ id: "m", role: "model", content: "", timestamp: 0,
       blocks: [{ id: "call-1", type: "tool", toolName: "write_workspace_file", args: "{}", status: "running" }],

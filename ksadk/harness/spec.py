@@ -41,10 +41,13 @@ class ModelProviderPolicy(_SpecModel):
     未知错误不会被此合同静默包装为可重试故障。
     """
 
-    max_attempts_per_model: int = Field(default=10, ge=1, le=10)
-    total_attempt_budget: int = Field(default=20, ge=1, le=40)
+    # Keep transient provider recovery visible and bounded.  The initial call
+    # counts as attempt 1, so the default gives two reconnects per model and
+    # allows the optional fallback model the same three-call window.
+    max_attempts_per_model: int = Field(default=3, ge=1, le=10)
+    total_attempt_budget: int = Field(default=6, ge=1, le=40)
     initial_backoff_ms: int = Field(default=1_000, ge=0, le=30_000)
-    max_backoff_ms: int = Field(default=60_000, ge=0, le=60_000)
+    max_backoff_ms: int = Field(default=4_000, ge=0, le=60_000)
     retryable_categories: tuple[ModelFailureCategory, ...] = (
         ModelFailureCategory.RATE_LIMIT,
         ModelFailureCategory.TIMEOUT,
@@ -57,6 +60,10 @@ class ModelProviderPolicy(_SpecModel):
         ModelFailureCategory.UNAVAILABLE,
         ModelFailureCategory.TRANSPORT,
     )
+    # 选中模型的结果必须可复现；只有 Agent 显式启用高可用策略时，才允许
+    # 使用 ModelBinding 中的备用 Profile。候选模型本身只是可选/可切换的
+    # 绑定，不等同于授权在一次对话中静默改用另一个模型。
+    allow_failover: bool = False
 
     @model_validator(mode="after")
     def validate_backoff(self) -> "ModelProviderPolicy":
@@ -111,7 +118,11 @@ class ContextPolicy(_SpecModel):
     budget_source_fallback: tuple[BudgetSource, ...] = Field(
         default=(BudgetSource.PROVIDER_MODELS, BudgetSource.SAFE_DEFAULT), max_length=3
     )
+    keep_recent_token_ratio: float = Field(default=0.15, ge=0.01, le=0.5)
     proactive_compaction_threshold: float = Field(default=0.72, ge=0.1, le=0.95)
+    # G18 预测式压缩：在 proactive_threshold 之前提前触发，留出余量。
+    # 复用 proactive 路径，不新增档位。
+    predictive_compaction_ratio: float = Field(default=0.6, ge=0.1, le=0.95)
     emergency_retry_limit: int = Field(default=1, ge=1, le=3)
     reserved_output_ratio: float = Field(default=0.15, ge=0.05, le=0.5)
     safety_buffer_ratio: float = Field(default=0.05, ge=0.01, le=0.2)
@@ -165,7 +176,8 @@ class SubAgentBinding(_SpecModel):
     description: str = Field(default="", max_length=1024)
     #: 允许使用的工具名（空 = 纯文本推理）。
     tools: tuple[str, ...] = Field(default=(), max_length=64)
-    #: 单次委派的墙钟超时；防止子 Agent 阻塞父 Run。
+    #: 单次委派时间上限；Native由子Kernel累计活跃执行时间，排除审批与已提交暂停。
+    #: 宿主准备／清理由父effect租约约束；其他Adapter沿其声明的超时合同执行。
     timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
     #: 子 Agent 自己可执行的最大模型轮数，独立于父 Agent。
     max_turns: int = Field(default=4, ge=1, le=32)
@@ -175,15 +187,15 @@ class SubAgentBinding(_SpecModel):
     max_artifacts: int | None = Field(default=None, ge=0, le=10_000)
     #: 子 Agent 最多完成的 Tool Call 数量。
     max_tool_calls: int | None = Field(default=None, ge=0, le=100_000)
+    #: Opt in to concurrent execution only for read-only, independent child tasks.
+    concurrent_safe: bool = False
     #: 子 Agent 最终输出的 JSON Schema；未声明时保留文本输出。
     output_schema: dict[str, Any] | None = None
     #: 同一委派批次内必须先完成的子 Agent 名称。
     depends_on: tuple[str, ...] = Field(default=(), max_length=32)
     #: ``propagate`` 将失败作为 Tool error 回流父 Agent；``return_error``
     #: 返回结构化失败文本，适合可选审查/检索子任务。
-    failure_policy: str = Field(
-        default="propagate", pattern=r"^(propagate|return_error|retry)$"
-    )
+    failure_policy: str = Field(default="propagate", pattern=r"^(propagate|return_error|retry)$")
     max_retries: int = Field(default=0, ge=0, le=3)
     #: Skill 属于只读知识能力，默认继承；MCP 默认不继承，避免子 Agent
     #: 在未显式授权时扩大外部系统访问面。
@@ -273,9 +285,7 @@ class HarnessSpec(_SpecModel):
         while remaining:
             ready = {name for name in remaining if dependencies[name] <= resolved}
             if not ready:
-                raise ValueError(
-                    f"sub-agent dependency cycle: {sorted(remaining)}"
-                )
+                raise ValueError(f"sub-agent dependency cycle: {sorted(remaining)}")
             resolved.update(ready)
             remaining -= ready
         return self
