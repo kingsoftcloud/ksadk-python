@@ -55,6 +55,9 @@ class WireModel(BaseModel):
 class EnqueuePayload(WireModel):
     content: JsonValue
     reply_to: str | None = None
+    # Trusted Server-only compatibility prefix. The worker imports it into the
+    # unified SessionEvent log before starting the first Kernel Run.
+    legacy_history: list[dict[str, JsonValue]] | None = None
     # Optional execution-grants/v1 extension. AgentControlCommand retains the
     # caller's original payload, so old command digests are unchanged.
     execution_grant_id: str | None = Field(default=None, min_length=1, max_length=512, strict=True)
@@ -76,6 +79,14 @@ class InjectPayload(WireModel):
 class InterruptPayload(WireModel):
     run_id: str | None = None
     reason: str | None = None
+    scope_id: str | None = Field(default=None, min_length=1, max_length=512, strict=True)
+    client_token: str | None = Field(default=None, min_length=1, max_length=512, strict=True)
+
+    @model_validator(mode="after")
+    def _require_scoped_run(self):
+        if self.scope_id is not None and (not self.scope_id.strip() or not self.run_id):
+            raise ValueError("scoped interrupt requires a scope and run_id")
+        return self
 
 
 class PausePayload(WireModel):
@@ -333,6 +344,17 @@ class RuntimeCapabilityMatrix(WireModel):
     plan: RuntimeCapability | None = None
     # Trusted host policy injection is independent of prompt/tool availability.
     execution_policy: RuntimeCapability | None = None
+    guide: RuntimeCapability | None = Field(default=None, exclude_if=lambda value: value is None)
+    child_promotion: RuntimeCapability | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    child_cancellation: RuntimeCapability | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    child_input: RuntimeCapability | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    scoped_cancel: RuntimeCapability | None = None
 
 
 class AgentStatusSnapshot(WireModel):

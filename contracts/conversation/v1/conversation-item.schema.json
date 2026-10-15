@@ -27,7 +27,7 @@
       "enum": [
         "user_message", "assistant_text", "reasoning", "tool_call",
         "approval", "progress", "plan", "goal", "artifact", "a2ui",
-        "error", "unknown"
+        "error", "unknown", "agent"
       ],
       "type": "string"
     },

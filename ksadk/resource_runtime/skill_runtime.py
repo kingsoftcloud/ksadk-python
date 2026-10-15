@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
+from ksadk.common.cloud_headers import DEFAULT_TRAFFIC_SOURCE
 from ksadk.resource_runtime.snapshots import ConnectionTarget, ResourceSnapshot
 from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
 from ksadk.skills.runtime.backends.e2b import E2BSkillRuntimeBackend
@@ -16,6 +17,7 @@ def create_bound_skill_runtime(
     current_connection: ConnectionTarget,
     api_key: SecretStr,
     artifact_directory: Path | None = None,
+    traffic_source: str = DEFAULT_TRAFFIC_SOURCE,
 ) -> E2BSkillRuntimeBackend:
     """Host revalidates account/grant first; only secret values may rotate here.
 
@@ -32,6 +34,7 @@ def create_bound_skill_runtime(
         api_url=target.connection.endpoint,
         domain=target.domain,
         api_key=api_key,
+        traffic_source=traffic_source,
     )
     return E2BSkillRuntimeBackend(
         template_id=target.template_id,

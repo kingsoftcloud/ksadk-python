@@ -22,6 +22,7 @@ from ksadk.conversations.runtime_streaming import (
     stream_runtime_conversation_turn,
     stream_runtime_responses_conversation_turn,
 )
+from ksadk.ids import new_run_id
 from ksadk.kernel.ingress import kernel_route_active
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
 from ksadk.runtime_context import PlatformIdentityContext
@@ -163,6 +164,7 @@ async def responses(
     invocation_id = _metadata_invocation_id(request_metadata)
 
     if request.stream:
+        invocation_id = invocation_id or new_run_id(resolved_session_id)
         runtime_preparation = (
             None if resume_input is not None else await executor.prepare_start(launch_context)
         )
@@ -190,6 +192,10 @@ async def responses(
                 runtime_preparation=runtime_preparation,
             ),
             invocation_id=invocation_id,
+            # 漏传会让 detached stream 的失败兜底无法写入 run 状态：异常只在
+            # 日志里出现，server 把流结束当成正常完成（生产 GraphRecursionError
+            # 被记成 completed 的直接原因之一）。
+            session_id=resolved_session_id,
             resume_key=resume_key,
             run_mode=RUN_MODE_FOREGROUND,
             run_trigger=trigger_from_resume_input(resume_input),

@@ -413,6 +413,7 @@ class SessionEventQuery:
     checkpoint_ids: list[str] | None = None
     from_start: bool = False
     order_by_seq: bool = False
+    receipt_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -576,6 +577,16 @@ class BaseSessionService(abc.ABC):
             session.events = []
         return session
 
+    async def has_events(
+        self, session_id: str, *, after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+    ) -> bool:
+        """Compatibility fallback for stores without a lightweight boundary probe."""
+        return bool(await self.get_events(
+            session_id, limit=1, after_seq_id=after_seq_id,
+            before_seq_id=before_seq_id,
+        ))
+
     @abc.abstractmethod
     async def list_sessions(
         self,
@@ -709,6 +720,7 @@ class BaseSessionService(abc.ABC):
             and query.checkpoint_id is None
             and not query.checkpoint_ids
             and not query.from_start
+            and not query.receipt_only
         ):
             return await self.get_events(
                 query.session_ids[0],
@@ -740,6 +752,28 @@ class BaseSessionService(abc.ABC):
         self, session_id: str, run_id: str, checkpoint_id: str
     ) -> dict[str, Any]:
         raise NotImplementedError("Backend must implement checkpoint lookup stats")
+
+    async def iter_resume_related_event_pages(
+        self, session_id: str, *, page_size: int = 256,
+        expected_session: Session | None = None,
+    ) -> AsyncIterator[list[SessionEvent]]:
+        """Internal fixed-view resume scan. Custom backends retain a compatible fallback."""
+        if expected_session is not None:
+            from ksadk.sessions.errors import HistoryReloadRequired
+
+            current = await self.get_session_metadata(session_id)
+            if (current is None or current.agent_id != expected_session.agent_id
+                    or current.user_id != expected_session.user_id
+                    or current.created_at != expected_session.created_at):
+                raise HistoryReloadRequired("Checkpoint session changed during lookup")
+        events = await self.get_events(session_id)
+        related = sorted(
+            (event for event in events if event.event_type in
+             {"run_checkpoint", "run_resume", "runtime_resume", "continuation.created", "continuation.resumed"}),
+            key=lambda event: (event.seq_id, event.id),
+        )
+        for start in range(0, len(related), page_size):
+            yield related[start : start + page_size]
 
     async def scan_checkpoint_events(
         self, query: CheckpointEventQuery

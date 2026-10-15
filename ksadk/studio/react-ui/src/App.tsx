@@ -15,7 +15,7 @@ import { useWorkspaceContributions } from "./plugins/workspaceSlots";
 import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
-import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
+import { SettingsPage, SETTINGS_SECTION_IDS, type SettingsSection } from "./pages/SettingsPage";
 import { MoreActionsMenu } from "./components/MoreActionsMenu";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
@@ -56,6 +56,7 @@ const VIEW_TITLE: Record<View, string> = {
   "runtime-resources": "运行资源",
   plugins: "已安装插件",
   automations: "自动化",
+  settings: "设置",
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
@@ -110,6 +111,7 @@ export function parseStudioLocationHash(hash: string): {
   editingAgentId: string;
   detailAgentId: string;
   evaluationRunId: string;
+  settingsSection: SettingsSection | "";
   conversationAgentId?: string;
   sessionId?: string;
 } {
@@ -136,8 +138,19 @@ export function parseStudioLocationHash(hash: string): {
   const resourceKind = view === "resources" && RESOURCE_KINDS.includes(parts[1] as ResourceKind)
     ? parts[1] as ResourceKind
     : "model";
+  const settingsSection = view === "settings" && SETTINGS_SECTION_IDS.includes(parts[1] as SettingsSection)
+    ? parts[1] as SettingsSection
+    : "";
   const params = new URLSearchParams(search);
-  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId, ...(view === "conversations" && params.has("agentId") ? { conversationAgentId: params.get("agentId") || "", sessionId: params.get("sessionId") || "" } : {}) };
+  return {
+    view,
+    resourceKind,
+    editingAgentId,
+    detailAgentId,
+    evaluationRunId,
+    settingsSection,
+    ...(view === "conversations" && params.has("agentId") ? { conversationAgentId: params.get("agentId") || "", sessionId: params.get("sessionId") || "" } : {}),
+  };
 }
 
 export function parseChatTargetValue(value: string): {
@@ -212,8 +225,7 @@ export default function App() {
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [runtimeChecked, setRuntimeChecked] = useState(false);
   const workspaceDiscoveryEpoch = useRef(0);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>(initialRoute.settingsSection || "models");
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>(() => readDiscoveryCache("cloudDeployments") || []);
   const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(() => Boolean(readDiscoveryCache("cloudDeployments")));
@@ -250,6 +262,9 @@ export default function App() {
         setCloudDeploymentId("");
       }
       setRequestedSessionId(route.sessionId || "");
+      if (route.view === "settings") {
+        setSettingsSection(route.settingsSection || "models");
+      }
       if (route.editingAgentId || route.detailAgentId) {
         setCurrentAgentId(route.editingAgentId || route.detailAgentId);
       }
@@ -264,13 +279,22 @@ export default function App() {
   }, []);
 
   // hash 深链：#/agents 等，便于刷新定位
-  function setView(v: View) {
+  function setView(v: View, sub?: string) {
     setViewState(v);
     if (v === "conversations") setChatMounted(true);
     if (v !== "create") setEditingAgentId("");
     setEvaluationRunId("");
-    const nextHash = v === "resources" ? `#/resources/${resourceKind}` : v.startsWith("plugin:") ? `#/workspace/${encodeURIComponent(v.slice(7))}` : `#/${v}`;
+    const nextHash = v === "resources" ? `#/resources/${resourceKind}`
+      : v === "settings" && sub ? `#/settings/${sub}`
+      : v.startsWith("plugin:") ? `#/workspace/${encodeURIComponent(v.slice(7))}`
+      : `#/${v}`;
     if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
+  }
+
+  function openSettings(section: SettingsSection = "models") {
+    setMobileNavOpen(false);
+    setSettingsSection(section);
+    setView("settings", section);
   }
 
   function openEvaluationRun(runId: string) {
@@ -513,8 +537,8 @@ export default function App() {
 
   // Keep the high frequency desktop actions available without making the
   // user leave the composer. Cmd/Ctrl+N creates a local draft through the
-  // same path as the rail action; Cmd/Ctrl+, opens settings without stealing
-  // focus until the overlay is ready.
+  // same path as the rail action; Cmd/Ctrl+, opens the settings page without
+  // stealing focus.
   useEffect(() => {
     const handleGlobalShortcut = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
@@ -555,7 +579,10 @@ export default function App() {
       } else if (event.key === ",") {
         event.preventDefault();
         setSettingsSection("general");
-        setSettingsOpen(true);
+        setViewState("settings");
+        if (window.location.hash !== "#/settings/general") {
+          window.history.pushState(null, "", "#/settings/general");
+        }
       }
     };
     window.addEventListener("keydown", handleGlobalShortcut);
@@ -623,6 +650,33 @@ export default function App() {
   const railExpanded = railCanExpand && (railExpandedPreference ?? true);
   useEffect(() => { setMobileNavOpen(false); }, [view, resourceKind, viewportMode]);
 
+  // 首次使用引导：工作区还没有任何模型配置时，把默认落地页接管到设置-模型分区。
+  // 仅在用户仍停留在 Agent 落地页时触发一次，之后可自由导航不再打扰。
+  const autoOnboardEpoch = useRef(0);
+  const viewRef = useRef(view);
+  useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => {
+    const epoch = ++autoOnboardEpoch.current;
+    let cancelled = false;
+    apiFetch("/api/v1/catalog/resources?limit=200")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (cancelled || epoch !== autoOnboardEpoch.current || !d) return;
+        const hasModel = (d.items || []).some(
+          (item: { kind?: string; source?: string }) =>
+            item.kind === "model" && (item.source === "local" || item.source === "market"),
+        );
+        if (hasModel || viewRef.current !== "agents") return;
+        setSettingsSection("models");
+        setViewState("settings");
+        if (window.location.hash !== "#/settings/models") {
+          window.history.pushState(null, "", "#/settings/models");
+        }
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
   function toggleRail() {
     if (!railCanExpand) { setMobileNavOpen(open => !open); return; }
     const next = !railExpanded;
@@ -661,11 +715,7 @@ export default function App() {
         runtimeReady={runtimeReady}
         workspaceRunCount={workspaceRunCount}
         onNavigate={navigateFromRail}
-        onOpenSettings={() => {
-          setMobileNavOpen(false);
-          setSettingsSection("general");
-          setSettingsOpen(true);
-        }}
+        onOpenSettings={() => openSettings("models")}
         onWorkspaceSwitch={async () => {
           setMobileNavOpen(false);
           try {
@@ -782,6 +832,8 @@ export default function App() {
                   historyHost={historyHost}
                   headerHost={conversationHeaderHost}
                   onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
+                  cloudTarget
+                  key={selectedCloudDeployment.id}
                   agentId={selectedCloudDeployment.agentId || "Agent"}
                   agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
                   workspacePath={workspace?.path}
@@ -812,10 +864,7 @@ export default function App() {
                   refreshTick={refreshTick}
                   onSessionChanged={setConversationSessionId}
                   onConfigureAgent={() => openEdit(currentAgentId)}
-                  onOpenSettings={() => {
-                    setSettingsSection("credentials");
-                    setSettingsOpen(true);
-                  }}
+                  onOpenSettings={() => openSettings("models")}
                 />
               )}
               {chatMounted && !isCloudChat && !currentAgentId && (
@@ -886,7 +935,7 @@ export default function App() {
                 onChanged={loadAgents}
               />
             )}
-            {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={openResources} refreshTick={refreshTick} />}
+            {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={openResources} refreshTick={refreshTick} onOpenModelSetup={() => openSettings("models")} />}
             {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={() => openCreate()} refreshTick={refreshTick} />}
             {view === "deployments" && (
               <DeploymentsPage
@@ -908,18 +957,23 @@ export default function App() {
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
             {view === "plugins" && <PluginsPage refreshTick={refreshTick} />}
             {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} refreshTick={refreshTick} />}
+            {view === "settings" && (
+              <SettingsPage
+                themePreference={studioTheme.preference}
+                onThemePreferenceChange={studioTheme.setPreference}
+                initialSection={settingsSection}
+                onSectionChange={section => {
+                  setSettingsSection(section);
+                  if (view === "settings" && window.location.hash !== `#/settings/${section}`) {
+                    window.history.replaceState(null, "", `#/settings/${section}`);
+                  }
+                }}
+              />
+            )}
           </div>
         </main>
       </div>
 
-        {settingsOpen && (
-          <SettingsOverlay
-            themePreference={studioTheme.preference}
-            onThemePreferenceChange={studioTheme.setPreference}
-            initialSection={settingsSection}
-            onClose={() => setSettingsOpen(false)}
-          />
-        )}
         <ToastRegion />
       </div>
     </>

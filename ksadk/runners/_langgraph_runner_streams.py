@@ -10,6 +10,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Mapping
 
+from langgraph.stream import ProtocolEvent, StreamTransformer
 from langgraph.types import Command
 
 from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
@@ -22,6 +23,26 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     pass
+
+
+class _CanonicalToolsTransformer(StreamTransformer):
+    """Subscribe the canonical adapter to native tool execution events.
+
+    The v3 default modes omit ``tools``. A call-site transformer requests
+    that mode without changing the compiled graph or taking ownership of
+    the user's ``tool_calls`` projection. Empty projections also coexist
+    with configured ToolCallTransformer factories without key collisions.
+    Native events pass through unchanged, including nested namespaces;
+    only native tool-finished/tool-error events determine tool outcomes.
+    """
+
+    required_stream_modes = ("tools",)
+
+    def init(self) -> dict[str, Any]:
+        return {}
+
+    def process(self, event: ProtocolEvent) -> bool:
+        return True
 
 
 class _LangGraphStreamMixin:
@@ -567,6 +588,19 @@ class _LangGraphStreamMixin:
     async def stream_canonical_events(
         self, input_data: Dict[str, Any]
     ) -> AsyncIterator[RuntimeEvent]:
+        from contextlib import aclosing
+
+        from ksadk.a2a.langgraph_runtime import managed_langgraph_events
+
+        async with aclosing(managed_langgraph_events(
+            self, self._stream_native_canonical_events(input_data)
+        )) as events:
+            async for event in events:
+                yield event
+
+    async def _stream_native_canonical_events(
+        self, input_data: Dict[str, Any]
+    ) -> AsyncIterator[RuntimeEvent]:
         """Emit canonical RuntimeEvent (schema_version=2) for a LangGraph run.
 
         Emits RunStarted/RunCompleted/RunFailed lifecycle events and uses
@@ -585,11 +619,13 @@ class _LangGraphStreamMixin:
         )
         from ksadk.events.canonical import (
             ContinuationCreated,
+            InteractionRequested,
             ErrorInfo,
             OutputRef,
             RunCompleted,
             RunFailed,
             RunInterrupted,
+            RunProgress,
             RunStarted,
             SourceRef,
             UsageReported,
@@ -614,6 +650,12 @@ class _LangGraphStreamMixin:
         resume_payload_provided = bool(payload.pop("resume_payload_provided", False))
         resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
         resume_value = payload.get("input")
+        is_gateway_approval_resume = bool(
+            is_resume and self._is_gateway_approval_semantic_resume(resume_value)
+        )
+        if is_gateway_approval_resume:
+            payload["input"] = self._gateway_approval_follow_up_input()
+            resume_value = payload["input"]
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         native_context = self.build_native_context(
             payload.get("platform_context"),
@@ -629,10 +671,32 @@ class _LangGraphStreamMixin:
                 enforce_bound_thread=bool(self._invocation_identity_scope_ref()),
             )
 
+        if payload.pop("_ksadk_managed_takeover", False):
+            from ksadk.events.run_authority import current_run_event_authority
+
+            authority = current_run_event_authority()
+            if (
+                not is_checkpoint_resume or resume_payload_provided
+                or getattr(self, "_managed_a2a_bootstrap", None) is None
+                or authority is None
+            ):
+                raise ValueError("A2A_NATIVE_TAKEOVER_CONTEXT_REQUIRED")
+            authority.require_session(session_id)
+            latest_config = {**config, "configurable": dict(config["configurable"])}
+            expected_checkpoint = latest_config["configurable"].pop("checkpoint_id")
+            latest, error = await self._read_graph_state(latest_config)
+            latest_ref = self._checkpoint_ref_from_state(latest).get("langgraph", {})
+            if error or latest_ref.get("checkpoint_id") != expected_checkpoint:
+                raise ValueError("A2A_NATIVE_TAKEOVER_CHECKPOINT_DRIFT")
+            # Passing an explicit checkpoint ID forks a historical replay in
+            # LangGraph. A fenced takeover must continue the validated latest
+            # branch so native task IDs and managed request identities survive.
+            config = latest_config
+
         # --- build state (same logic as stream()) ---
         if is_checkpoint_resume:
             state = resume_value
-        elif is_resume:
+        elif is_resume and not is_gateway_approval_resume:
             state = self._unwrap_resume_value(resume_value)
         elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(payload, session_id, history)
@@ -646,11 +710,32 @@ class _LangGraphStreamMixin:
                 interrupt_id=resume_interrupt_id,
             )
             if is_checkpoint_resume
-            else (Command(resume=state) if is_resume else state)
+            else (Command(resume=state) if is_resume and not is_gateway_approval_resume else state)
         )
+
+        # Public lifecycle ownership is separate from the native graph identity.
+        # Do this after preparing state so hooks, checkpoints and child/tool IDs
+        # continue to receive the original invocation input.
+        native_run_id = run_id
+        from ksadk.events.run_authority import current_run_event_authority
+
+        authority = current_run_event_authority()
+        if authority is not None and getattr(self, "_managed_a2a_bootstrap", None) is not None:
+            authority.require_session(session_id)
+            run_id = authority.run_id
 
         # --- identity ---
         run_scope_id = stable_scope_id("langgraph", run_id, "$run")
+        if authority is not None and getattr(self, "_managed_a2a_bootstrap", None) is not None:
+            for existing in await authority.list(session_id):
+                if (
+                    isinstance(existing, RunStarted)
+                    and existing.run_id == run_id
+                    and existing.parent_scope_id is None
+                    and existing.source.framework == "langgraph"
+                ):
+                    run_scope_id = existing.scope_id
+                    break
         run_item_id = stable_item_id("langgraph", run_id, "$run")
 
         source_metadata: dict[str, Any] = {}
@@ -668,7 +753,7 @@ class _LangGraphStreamMixin:
 
         run_source = SourceRef(
             framework="langgraph",
-            native_run_id=run_id,
+            native_run_id=native_run_id,
             metadata=source_metadata,
         )
 
@@ -696,7 +781,7 @@ class _LangGraphStreamMixin:
         if not hasattr(self._agent, "astream_events"):
             terminal_source = SourceRef(
                 framework="langgraph",
-                native_run_id=run_id,
+                native_run_id=native_run_id,
                 metadata={**source_metadata, "fallback": "no_astream_events"},
             )
             yield RunCompleted(
@@ -726,11 +811,22 @@ class _LangGraphStreamMixin:
             adapter_checkpoint_ref = dict(checkpoint_ref)
             adapter_checkpoint_ref.setdefault("checkpoint_ns", "")
 
+        publication_epoch = (
+            authority.publication_epoch
+            if authority is not None and getattr(self, "_managed_a2a_bootstrap", None) is not None
+            else None
+        )
+        if is_checkpoint_resume and resume_payload_provided:
+            publication_epoch = stable_item_id(
+                "langgraph", publication_epoch or run_id, "interaction-resume",
+                str(checkpoint_ref.get("checkpoint_id") or ""), resume_interrupt_id,
+            )
         adapter_context = LangGraphAdapterContext(
             run_id=run_id,
-            graph_run_id=run_id,
+            graph_run_id=native_run_id,
             initial_seq=1,
             checkpoint_ref=adapter_checkpoint_ref,
+            publication_epoch=publication_epoch,
         )
         adapter = LangGraphEventAdapter()
         reducer = StreamReducer()
@@ -739,15 +835,37 @@ class _LangGraphStreamMixin:
 
         # --- build stream kwargs (v3 rejects stream_mode/subgraphs) ---
         stream_kwargs: dict[str, Any] = {"version": "v3", "config": config}
+        if self._callable_accepts_keyword(self._agent.astream_events, "transformers"):
+            stream_kwargs["transformers"] = (_CanonicalToolsTransformer,)
         if native_context and self._callable_accepts_keyword(self._agent.astream_events, "context"):
             stream_kwargs["context"] = native_context
 
+        pending_interactions: list[InteractionRequested] = []
         was_interrupted = False
         last_timestamp = started_at
 
         try:
             run_stream = await self._agent.astream_events(stream_input, **stream_kwargs)
             async for event in adapter.stream_run(run_stream, adapter_context):
+                if isinstance(event, RunInterrupted) or (
+                    isinstance(event, RunProgress) and authority is not None
+                    and getattr(self, "_managed_a2a_bootstrap", None) is not None
+                ):
+                    # A native namespace is diagnostic source information, not
+                    # a second owner of the public run lifecycle.
+                    event = event.model_copy(update={
+                        "scope_id": run_scope_id,
+                        "parent_scope_id": None,
+                        "event_id": stable_event_id(
+                            "langgraph", run_scope_id, run_item_id, event.event_type,
+                            event.event_id, run_id, 0,
+                        ),
+                    })
+                if isinstance(event, InteractionRequested):
+                    # Native resume must be addressable before Kernel records
+                    # the interaction. Its checkpoint is read at interruption.
+                    pending_interactions.append(event)
+                    continue
                 if isinstance(event, UsageReported):
                     accumulated_usage = accumulate_usage(
                         accumulated_usage,
@@ -859,7 +977,7 @@ class _LangGraphStreamMixin:
                                 scope_id=run_scope_id,
                                 source=SourceRef(
                                     framework="langgraph",
-                                    native_run_id=run_id,
+                                    native_run_id=native_run_id,
                                     metadata=ckpt_source_metadata,
                                 ),
                                 continuation_id=continuation_id,
@@ -878,6 +996,10 @@ class _LangGraphStreamMixin:
                             "未发出（run 可标记为 interrupted 但不可恢复）: %s",
                             ckpt_error,
                         )
+                    for interaction in pending_interactions:
+                        reducer.apply(interaction)
+                        yield interaction
+                    pending_interactions.clear()
                     reducer.apply(event)
                     last_timestamp = float(getattr(event, "timestamp", 0.0) or last_timestamp)
                     yield event
@@ -891,7 +1013,7 @@ class _LangGraphStreamMixin:
         except Exception as exc:
             error_source = SourceRef(
                 framework="langgraph",
-                native_run_id=run_id,
+                native_run_id=native_run_id,
                 metadata={"error_type": type(exc).__name__},
             )
             error_code = exc.code if isinstance(exc, LangGraphMappingError) else "langgraph_failed"
@@ -936,7 +1058,7 @@ class _LangGraphStreamMixin:
 
         terminal_source = SourceRef(
             framework="langgraph",
-            native_run_id=run_id,
+            native_run_id=native_run_id,
             metadata={
                 **source_metadata,
                 **({"metrics": final_result_fields} if final_result_fields else {}),

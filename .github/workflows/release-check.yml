@@ -40,7 +40,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -68,7 +68,7 @@ jobs:
 
       - name: Build pinned frontend static assets
         env:
-          KSADK_WEB_VERSION: "0.3.12"
+          KSADK_WEB_VERSION: "0.3.13"
         run: make build-frontend
 
       - name: Verify clean release source

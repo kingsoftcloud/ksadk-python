@@ -71,6 +71,23 @@ class RunEventStore:
             self._write(record, events)
         return appended
 
+    def append_record_events(
+        self, record: RunRecord, entries: list[tuple[str, dict[str, Any]]],
+    ) -> list[RunEvent]:
+        """Publish facts and their explicit Run state in the same file replace.
+
+        The caller's updated record need not be the object in the read cache.
+        There is no intermediate terminal record without its public fact.
+        """
+        _, events = self._read(record.id)
+        appended = [
+            RunEvent(id=len(events) + offset, run_id=record.id, type=kind, data=data)
+            for offset, (kind, data) in enumerate(entries, 1)
+        ]
+        if appended:
+            self._write(record, [*events, *appended])
+        return appended
+
     def append_interaction_resolution(
         self,
         run_id: str,

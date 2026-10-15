@@ -44,6 +44,20 @@ def test_public_repo_audit_blocks_generated_and_internal_materials():
     assert result.counts["violations"] == 4
 
 
+def test_python_artifact_audit_blocks_test_tree_but_public_repo_allows_tests():
+    audit = _load_audit_module()
+    paths = ["ksadk/__init__.py", "tests/test_runtime.py"]
+
+    for target in ("wheel", "sdist"):
+        result = audit.audit_paths(target, paths)
+        assert not result.ok
+        assert [(item.path, item.rule) for item in result.violations] == [
+            ("tests/test_runtime.py", "test-tree")
+        ]
+
+    assert audit.audit_paths("public-repo", paths).ok
+
+
 def test_public_repo_audit_blocks_non_curated_docs_tree():
     audit = _load_audit_module()
 

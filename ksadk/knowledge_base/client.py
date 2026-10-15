@@ -33,9 +33,10 @@ import logging
 import os
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ksadk.common.aicp_env import resolve_aicp_connection
+from ksadk.common.cloud_headers import build_cloud_headers, resolve_traffic_source
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class KnowledgeBaseClient(BaseModel):
     access_key: str = ""
     secret_key: str = ""
     session_token: str = ""
+    traffic_source: str = Field(default_factory=resolve_traffic_source)
     region: str = "cn-beijing-6"
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
@@ -92,6 +94,11 @@ class KnowledgeBaseClient(BaseModel):
     _aicp_client: Any = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator("traffic_source")
+    @classmethod
+    def validate_traffic_source(cls, value):
+        return resolve_traffic_source(value)
 
     def model_post_init(self, __context: Any) -> None:
         if not self.dataset_id:
@@ -156,6 +163,13 @@ class KnowledgeBaseClient(BaseModel):
         owner = self
 
         class ObservedAicpClient(aicp_module.AicpClient):
+            def call(self, action, params, options=None):
+                options = dict(options or {})
+                options["CustomHeaders"] = build_cloud_headers(
+                    options.get("CustomHeaders"), traffic_source=owner.traffic_source
+                )
+                return super().call(action, params, options)
+
             def _check_status(self, response):
                 # The upstream SDK discards HTTP status when raising its generic
                 # ServerNetworkError. Capture only the status before delegation;

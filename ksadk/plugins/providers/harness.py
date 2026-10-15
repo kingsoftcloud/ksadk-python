@@ -10,20 +10,28 @@ not create another event stream or transcript store.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
-from collections.abc import Awaitable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from ksadk.harness.config import HarnessConfig, McpToolSpec, SandboxPolicy
-from ksadk.harness.reasoner import HarnessReasoner, LiteLLMHarnessReasoner
+from ksadk.harness.reasoner import HarnessReasoner, ModelGatewayHarnessReasoner
 from ksadk.harness.runtime import HarnessRuntimeAdapter
 from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginExecutionContext, PluginHostError
-from ksadk.plugins.providers.mcp_projection import project_mcp_capabilities
+from ksadk.plugins.memory_provider import MemoryProviderBinding
+from ksadk.plugins.providers.harness_context import HarnessContextContributorSource
+from ksadk.plugins.providers.harness_hooks import HarnessHookBinding, project_harness_hooks
+from ksadk.plugins.providers.mcp_projection import (
+    MCPResourcePin,
+    MCPRuntimeCredential,
+    project_mcp_capabilities,
+)
 from ksadk.runtime import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
     RuntimeAdapter,
@@ -44,6 +52,10 @@ class HarnessSkillContribution:
     name: str
     instructions: str
     resource_root: Path | None = None
+    # Built-in Bundle Skills carry their locked resource identity into Native.
+    # External sources may omit these until they offer an equivalent binding.
+    source_ref: str | None = None
+    content_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +67,44 @@ class HarnessProviderInventory:
     mcp_servers: tuple[str, ...]
     skills: tuple[str, ...]
     context_contributors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HarnessEngineActivationContext:
+    """Locked DSH inputs presented to a host-owned Native adapter builder.
+
+    The Bundle is already resolved by PluginHost; the builder must still bind
+    its own authenticated scope, model, tools and verifier for this activation.
+    Selection is never inferred from bundle text or a model response.
+    """
+
+    bundle: ResolvedPluginBundle
+    config: HarnessConfig
+    agent_name: str
+    workspace_root: Path
+    user_workspace_root: Path | None
+    skills: tuple[HarnessSkillContribution, ...]
+    profile_digest: str
+    plugin_lock_digest: str
+    activation_key: str
+    activation_claims: tuple[tuple[str, str], ...] = ()
+    activation_generation: str = ""
+    activation_available: Callable[[], bool] | None = None
+    mcp_available: Callable[[], Awaitable[bool]] | None = None
+    mcp_resource_pins: tuple[MCPResourcePin, ...] = ()
+    mcp_runtime_credentials: tuple[MCPRuntimeCredential, ...] = ()
+    context_sources: tuple[HarnessContextBinding, ...] = ()
+    hook_sources: tuple[HarnessHookBinding, ...] = ()
+    memory_sources: tuple[MemoryProviderBinding, ...] = ()
+
+
+HarnessEngineSelector = Callable[
+    [HarnessEngineActivationContext],
+    Literal["legacy", "native"] | Awaitable[Literal["legacy", "native"]],
+]
+HarnessNativeAdapterBuilder = Callable[
+    [HarnessEngineActivationContext], RuntimeAdapter | Awaitable[RuntimeAdapter]
+]
 
 
 @dataclass(frozen=True)
@@ -141,10 +191,30 @@ class HarnessSkillSource(Protocol):
 
 
 @runtime_checkable
+class HarnessSkillSetSource(Protocol):
+    def harness_skills(
+        self, bundle: ResolvedPluginBundle
+    ) -> Sequence[HarnessSkillContribution]: ...
+
+
+@runtime_checkable
 class HarnessContextSource(Protocol):
     async def harness_context(
         self, bundle: ResolvedPluginBundle, request: HarnessTurnRequest
     ) -> str: ...
+
+
+@dataclass(frozen=True)
+class HarnessContextBinding:
+    """Host-selected source identity; text returned by it grants no authority."""
+
+    plugin_id: str
+    plugin_version: str
+    runtime: HarnessContextSource | HarnessContextContributorSource
+    # Preserve positional SDK callers. A missing slot is admissible only when
+    # the locked graph has exactly one Context offer for this owner.
+    slot: str | None = None
+    contributor: bool = False
 
 
 class _ConversationHistoryReasoner:
@@ -195,6 +265,7 @@ class _ConversationHistoryReasoner:
         messages: Sequence[dict[str, Any]],
         tools: Sequence[Any],
         max_output_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Any:
         expanded = self._expand_messages(messages)
         kwargs: dict[str, Any] = {
@@ -205,6 +276,8 @@ class _ConversationHistoryReasoner:
         }
         if max_output_tokens is not None:
             kwargs["max_output_tokens"] = max_output_tokens
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
         return await self._delegate.complete(**kwargs)
 
     async def stream_complete(
@@ -215,6 +288,7 @@ class _ConversationHistoryReasoner:
         messages: Sequence[dict[str, Any]],
         tools: Sequence[Any],
         max_output_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ):
         """Forward incremental model events while preserving canonical history."""
         stream = getattr(self._delegate, "stream_complete", None)
@@ -231,6 +305,7 @@ class _ConversationHistoryReasoner:
                     if max_output_tokens is not None
                     else {}
                 ),
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
             )
             yield {"turn": turn}
             return
@@ -242,6 +317,8 @@ class _ConversationHistoryReasoner:
         }
         if max_output_tokens is not None:
             kwargs["max_output_tokens"] = max_output_tokens
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
         async for item in stream(**kwargs):
             yield item
 
@@ -299,6 +376,8 @@ class KsADKHarnessProviderRuntime:
         checkpoint_dsn: str | None = None,
         execution_policy_resolver: Any | None = None,
         user_workspace_root: Path | None = None,
+        engine_selector: HarnessEngineSelector | None = None,
+        native_adapter_builder: HarnessNativeAdapterBuilder | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
@@ -307,6 +386,8 @@ class KsADKHarnessProviderRuntime:
         self._checkpoint_dsn = checkpoint_dsn
         self._execution_policy_resolver = execution_policy_resolver
         self._user_workspace_root = user_workspace_root
+        self._engine_selector = engine_selector
+        self._native_adapter_builder = native_adapter_builder
         self._ready = False
         self._disposed = False
         self._last_inventory: HarnessProviderInventory | None = None
@@ -344,6 +425,7 @@ class KsADKHarnessProviderRuntime:
             raise PluginHostError("harness_provider_unavailable", "Harness provider is not ready")
 
         async with AsyncExitStack() as mcp_cleanup:
+            hook_bindings = project_harness_hooks(bundle, capabilities)
             projection = await project_mcp_capabilities(capabilities, bundle)
             mcp_cleanup.push_async_callback(projection.aclose)
             mcp_specs = list(projection.specs)
@@ -352,30 +434,59 @@ class KsADKHarnessProviderRuntime:
             skills: list[HarnessSkillContribution] = []
             skill_owners: list[str] = []
             for binding in capabilities.all("skill.source/v1"):
-                if not isinstance(binding.runtime, HarnessSkillSource):
+                plural = isinstance(binding.runtime, HarnessSkillSetSource)
+                if not plural and not isinstance(binding.runtime, HarnessSkillSource):
                     raise PluginHostError(
                         "harness_skill_incompatible",
                         f"plugin {binding.plugin_id} cannot project Harness instructions",
                     )
-                contribution = binding.runtime.harness_skill(bundle)
-                if not contribution.name.strip() or not contribution.instructions.strip():
+                contributions = (
+                    tuple(binding.runtime.harness_skills(bundle))
+                    if plural
+                    else (binding.runtime.harness_skill(bundle),)
+                )
+                if not contributions:
                     raise PluginHostError(
                         "harness_skill_invalid",
-                        f"plugin {binding.plugin_id} returned an empty Skill contribution",
+                        f"plugin {binding.plugin_id} returned no Skill contributions",
                     )
-                skills.append(contribution)
-                skill_owners.append(binding.plugin_id)
+                for contribution in contributions:
+                    if (
+                        not isinstance(contribution, HarnessSkillContribution)
+                        or not contribution.name.strip()
+                        or not contribution.instructions.strip()
+                    ):
+                        raise PluginHostError(
+                            "harness_skill_invalid",
+                            f"plugin {binding.plugin_id} returned an invalid Skill contribution",
+                        )
+                    skills.append(contribution)
+                    skill_owners.append(binding.plugin_id)
 
             context_sources: list[HarnessContextSource] = []
             context_owners: list[str] = []
+            context_bindings: list[HarnessContextBinding] = []
             for binding in capabilities.all("context.contributor/v1"):
-                if not isinstance(binding.runtime, HarnessContextSource):
+                declarations = [item for item in bundle.composition.profile.capabilities
+                                if item.ref == f"plugin://{binding.plugin_id}@{binding.plugin_version}"]
+                richer = bool(len(declarations) == 1 and declarations[0].config.get(
+                    "schema_version",
+                ) == "ksadk.harness-context-contributor-binding/v1")
+                required_protocol = (HarnessContextContributorSource if richer
+                                     else HarnessContextSource)
+                if not isinstance(binding.runtime, required_protocol):
                     raise PluginHostError(
                         "harness_context_incompatible",
                         f"plugin {binding.plugin_id} cannot contribute Harness context",
                     )
-                context_sources.append(binding.runtime)
+                if not richer:
+                    context_sources.append(binding.runtime)
                 context_owners.append(binding.plugin_id)
+                context_bindings.append(HarnessContextBinding(
+                    binding.plugin_id, binding.plugin_version, binding.runtime,
+                    slot=binding.slot,
+                    contributor=richer,
+                ))
 
             execution = bundle.resolved_agent_spec.get("execution")
             strategy = (
@@ -406,10 +517,63 @@ class KsADKHarnessProviderRuntime:
                 skills=tuple(item.name for item in skills),
                 context_contributors=tuple(context_owners),
             )
-            self._last_inventory = inventory
             workspace_root = bundle.root / "runtime"
             if not workspace_root.is_dir():
                 workspace_root = bundle.root
+            engine_context = HarnessEngineActivationContext(
+                bundle=bundle,
+                config=config,
+                agent_name=bundle.manifest.agent_id,
+                workspace_root=workspace_root,
+                user_workspace_root=self._user_workspace_root,
+                skills=tuple(skills),
+                profile_digest=capabilities.profile_digest,
+                plugin_lock_digest=capabilities.plugin_lock_digest,
+                activation_key=capabilities.activation_key,
+                activation_claims=capabilities.activation_claims,
+                activation_generation=capabilities.activation_generation,
+                activation_available=capabilities.activation_available,
+                mcp_available=projection.available,
+                mcp_resource_pins=projection.resource_pins,
+                context_sources=tuple(context_bindings),
+                hook_sources=hook_bindings,
+                memory_sources=tuple(
+                    MemoryProviderBinding(binding.plugin_id, binding.plugin_version,
+                                          binding.slot, binding.runtime)
+                    for binding in capabilities.all("memory.provider/v1")
+                ),
+            )
+            engine_kind: Literal["legacy", "native"] = "legacy"
+            if self._engine_selector is not None:
+                selected = self._engine_selector(engine_context)
+                if inspect.isawaitable(selected):
+                    selected = await selected
+                if selected not in {"legacy", "native"}:
+                    raise PluginHostError(
+                        "harness_engine_selection_invalid",
+                        "Harness engine selection must be legacy or native",
+                    )
+                engine_kind = selected
+            if hook_bindings and engine_kind != "native":
+                raise PluginHostError(
+                    "harness_hooks_native_required",
+                    "selected harness.hook/v1 capabilities require Native execution",
+                )
+            if any(binding.contributor for binding in context_bindings) and engine_kind != "native":
+                raise PluginHostError(
+                    "harness_context_native_required",
+                    "typed Context Contributors require the selected Native execution path",
+                )
+            if engine_kind == "native":
+                inventory = replace(inventory, history_owner="native_run_ledger")
+                # Only clients consuming the ephemeral callbacks may use the
+                # renewable probe. Legacy/static clients retain token expiry.
+                engine_context = replace(
+                    engine_context,
+                    mcp_available=projection.runtime_available,
+                    mcp_runtime_credentials=projection.runtime_credentials,
+                )
+            self._last_inventory = inventory
             return KsADKHarnessActivation(
                 bundle=bundle,
                 config=config,
@@ -425,6 +589,9 @@ class KsADKHarnessProviderRuntime:
                 checkpoint_dsn=self._checkpoint_dsn,
                 execution_policy_resolver=self._execution_policy_resolver,
                 user_workspace_root=self._user_workspace_root,
+                engine_context=engine_context,
+                engine_kind=engine_kind,
+                native_adapter_builder=self._native_adapter_builder,
             )
 
 
@@ -457,10 +624,20 @@ class KsADKHarnessProviderFactory:
             )
         reasoner = self._reasoner or services.get("harness_reasoner")
         if reasoner is None:
-            reasoner = LiteLLMHarnessReasoner()
+            reasoner = ModelGatewayHarnessReasoner()
         state_dir = services.get("harness_state_dir")
         checkpoint_dsn = services.get("checkpoint_dsn")
         user_workspace_root = services.get("harness_workspace_root")
+        engine_selector = services.get("harness_engine_selector")
+        native_adapter_builder = services.get("harness_native_adapter_builder")
+        if (engine_selector is None) != (native_adapter_builder is None) or (
+            engine_selector is not None
+            and (not callable(engine_selector) or not callable(native_adapter_builder))
+        ):
+            raise PluginHostError(
+                "harness_native_binding_invalid",
+                "Native Harness selection requires a host selector and adapter builder",
+            )
         self.runtime = KsADKHarnessProviderRuntime(
             plugin_id=manifest.metadata.id,
             session_service=service,
@@ -468,9 +645,9 @@ class KsADKHarnessProviderFactory:
             state_dir=str(state_dir) if state_dir else None,
             checkpoint_dsn=str(checkpoint_dsn) if checkpoint_dsn else None,
             execution_policy_resolver=services.get("execution_policy_resolver"),
-            user_workspace_root=(
-                Path(user_workspace_root) if user_workspace_root else None
-            ),
+            user_workspace_root=(Path(user_workspace_root) if user_workspace_root else None),
+            engine_selector=engine_selector,
+            native_adapter_builder=native_adapter_builder,
         )
         return self.runtime
 
@@ -493,6 +670,9 @@ class KsADKHarnessActivation:
         mcp_cleanup: AsyncExitStack | None = None,
         execution_policy_resolver: Any | None = None,
         user_workspace_root: Path | None = None,
+        engine_context: HarnessEngineActivationContext | None = None,
+        engine_kind: Literal["legacy", "native"] = "legacy",
+        native_adapter_builder: HarnessNativeAdapterBuilder | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
@@ -500,6 +680,9 @@ class KsADKHarnessActivation:
         self._workspace_root = workspace_root
         # 用户当前选择的 Studio 工作区（bundle 之外）；文件工具落盘目标。
         self._user_workspace_root = user_workspace_root
+        self._engine_context = engine_context
+        self._engine_kind = engine_kind
+        self._native_adapter_builder = native_adapter_builder
         self._reasoner = reasoner
         self._skills = skills
         self._context_sources = context_sources
@@ -542,6 +725,14 @@ class KsADKHarnessActivation:
         if not self._ready or self._disposed:
             raise PluginHostError(
                 "harness_activation_unavailable", "Harness activation is not ready"
+            )
+        if self._engine_kind == "native":
+            # The direct provider path owns separate Session/transcript state.
+            # Until it has a Native projection, only Scheduler's runtime_adapter
+            # path may execute this pinned Native activation.
+            raise PluginHostError(
+                "harness_native_direct_path_unavailable",
+                "Native Harness activation requires the Scheduler runtime adapter path",
             )
         turn = HarnessTurnRequest.parse(request)
         context_sections = [
@@ -609,24 +800,42 @@ class KsADKHarnessActivation:
                 error, self._warmup_error = self._warmup_error, None
                 raise error
         if self._kernel_adapter is None:
-            from ksadk.plugins.providers.harness_managed import (
-                build_managed_provider_adapter,
-            )
+            if self._engine_kind == "native":
+                from ksadk.harness.native_runtime import NativeRuntimeAdapter
 
-            self._kernel_adapter = await build_managed_provider_adapter(
-                self._config,
-                agent_name=self._agent_name,
-                reasoner=self._reasoner,
-                workspace_root=self._workspace_root,
-                user_workspace_root=self._user_workspace_root,
-                skills=self._skills,
-                tool_contracts=dict(self._bundle.resolved_agent_spec),
-                bundle_root=self._bundle.root,
-                state_dir=self._state_dir,
-                checkpoint_dsn=self._checkpoint_dsn,
-                execution_policy_resolver=self._execution_policy_resolver,
-            )
-            self._checkpoint_stack = getattr(self._kernel_adapter, "_checkpoint_stack", None)
+                if self._engine_context is None or self._native_adapter_builder is None:
+                    raise PluginHostError(
+                        "harness_native_binding_unavailable",
+                        "Native Harness host bindings are unavailable",
+                    )
+                adapter = self._native_adapter_builder(self._engine_context)
+                if inspect.isawaitable(adapter):
+                    adapter = await adapter
+                if not isinstance(adapter, NativeRuntimeAdapter):
+                    raise PluginHostError(
+                        "harness_native_adapter_invalid",
+                        "Native Harness host builder did not return a NativeRuntimeAdapter",
+                    )
+                self._kernel_adapter = adapter
+            else:
+                from ksadk.plugins.providers.harness_managed import (
+                    build_managed_provider_adapter,
+                )
+
+                self._kernel_adapter = await build_managed_provider_adapter(
+                    self._config,
+                    agent_name=self._agent_name,
+                    reasoner=self._reasoner,
+                    workspace_root=self._workspace_root,
+                    user_workspace_root=self._user_workspace_root,
+                    skills=self._skills,
+                    tool_contracts=dict(self._bundle.resolved_agent_spec),
+                    bundle_root=self._bundle.root,
+                    state_dir=self._state_dir,
+                    checkpoint_dsn=self._checkpoint_dsn,
+                    execution_policy_resolver=self._execution_policy_resolver,
+                )
+                self._checkpoint_stack = getattr(self._kernel_adapter, "_checkpoint_stack", None)
         return self._kernel_adapter
 
     async def drain(self) -> None:
@@ -768,8 +977,12 @@ def _chat_history(history: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 __all__ = [
     "HarnessContextSource",
+    "HarnessContextBinding",
+    "HarnessEngineActivationContext",
+    "HarnessEngineSelector",
     "HarnessMCPSource",
     "HarnessMCPActivationSource",
+    "HarnessNativeAdapterBuilder",
     "HarnessProviderInventory",
     "HarnessSkillContribution",
     "HarnessSkillSource",

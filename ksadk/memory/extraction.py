@@ -12,8 +12,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import uuid
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import Sequence
 
 from ksadk.memory.models import MemoryCandidate, MemoryScope
@@ -25,6 +29,23 @@ _EXPLICIT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)remember\s+(?:that\s+)?(.+)", re.IGNORECASE),
     re.compile(r"(?i)请记[:：]?\s*(.+)"),
 )
+# A declared conversation/turn horizon belongs to Session history, not the
+# cross-session Memory provider. Inspect the memory-bearing first statement:
+# a later "For this turn reply ACK" only scopes the answer format.
+_SESSION_RETENTION = re.compile(
+    r"\b(?:for|during|within|in)\s+(?:only\s+)?(?:this|the\s+current)\s+"
+    r"(?:conversation|chat|session|turn)\b"
+    r"|(?:本次|这次|此次|当前|这个|本)(?:会话|对话|聊天)"
+    r"|(?:本轮|这轮)",
+    re.IGNORECASE,
+)
+
+
+def _session_only_memory(text: str) -> bool:
+    statement = re.split(r"[。！？!?\r\n]|\.(?=\s|$)", text.strip(), maxsplit=1)[0]
+    return _SESSION_RETENTION.search(statement) is not None
+
+
 # 明确纠正同一偏好槽位。首期只覆盖语义边界清晰的动作型偏好，避免把
 # “喜欢音乐”和“喜欢运动”等无关事实误判为冲突。
 _PREFERENCE_CORRECTION = re.compile(
@@ -95,17 +116,44 @@ def derive_profile_slot_key(content: str) -> str:
     return f"profile.preference.{labels[action]}"
 
 
+def is_explicit_memory_instruction(text: str) -> bool:
+    """Recognize a complete durable instruction, not a quoted substring.
+
+    Candidate extraction intentionally searches larger transcripts. A host
+    granting an immediate explicit write needs the narrower whole-input test.
+    Unsupported wording can use the host's exact-call consent path; this is
+    not a general semantic intent classifier.
+    """
+    text = text.strip()
+    if _session_only_memory(text):
+        return False
+    if any(pattern.fullmatch(text) for pattern in _EXPLICIT_PATTERNS):
+        return True
+    if _PREFERENCE_CORRECTION.fullmatch(text) or _GENERAL_CORRECTION.fullmatch(text):
+        return True
+    hobby = _HOBBY_DECLARATION.fullmatch(text)
+    return bool(hobby and hobby.group("correction"))
+
+
 def propose_memory_candidates(
     events: Sequence[any],  # type: ignore[name-defined]
     *,
     scope: MemoryScope = "user",
     scope_id: str = "",
+    max_content_chars: int | None = 1000,
 ) -> list[MemoryCandidate]:
     """从待压缩事件提取记忆候选（方案 §9.2）。
 
     纯确定性、无 LLM。返回候选列表交 Coordinator flush；Policy 决定 commit/reject。
     """
     candidates: list[MemoryCandidate] = []
+    if max_content_chars is not None and (
+        type(max_content_chars) is not int or max_content_chars < 1
+    ):
+        raise ValueError("memory candidate limit must be a positive integer or None")
+
+    def bounded(content):
+        return content if max_content_chars is None else content[:max_content_chars]
     if not events:
         return candidates
     for event in events:
@@ -119,6 +167,8 @@ def propose_memory_candidates(
 
         # 1. 用户显式记忆意图
         if author == "user" or event_type == "user_message":
+            if _session_only_memory(text):
+                continue
             hobby = _HOBBY_DECLARATION.search(text)
             if hobby and hobby.group("correction"):
                 new_value = hobby.group("value").strip().strip("。.，, ")
@@ -131,7 +181,7 @@ def propose_memory_candidates(
                             memory_type="profile",
                             scope=scope,
                             scope_id=scope_id,
-                            content=content[:1000],
+                            content=bounded(content),
                             confidence=0.95,
                             importance=0.9,
                             source_event_ids=[event_id],
@@ -153,7 +203,7 @@ def propose_memory_candidates(
                             memory_type="profile",
                             scope=scope,
                             scope_id=scope_id,
-                            content=content[:1000],
+                            content=bounded(content),
                             confidence=0.9,
                             importance=0.8,
                             source_event_ids=[event_id],
@@ -175,7 +225,7 @@ def propose_memory_candidates(
                             memory_type="profile",
                             scope=scope,
                             scope_id=scope_id,
-                            content=content[:1000],
+                            content=bounded(content),
                             confidence=0.95,
                             importance=0.9,
                             source_event_ids=[event_id],
@@ -197,7 +247,7 @@ def propose_memory_candidates(
                             memory_type="profile",
                             scope=scope,
                             scope_id=scope_id,
-                            content=content[:1000],
+                            content=bounded(content),
                             confidence=0.9,
                             importance=0.8,
                             source_event_ids=[event_id],
@@ -221,7 +271,7 @@ def propose_memory_candidates(
                             memory_type="profile",
                             scope=scope,
                             scope_id=scope_id,
-                            content=content[:1000],
+                            content=bounded(content),
                             confidence=0.75,
                             importance=0.65,
                             source_event_ids=[event_id],
@@ -242,7 +292,7 @@ def propose_memory_candidates(
                     memory_type="fact",
                     scope=scope,
                     scope_id=scope_id,
-                    content=text[:1000],
+                    content=bounded(text),
                     confidence=0.7,
                     importance=0.6,
                     source_event_ids=[event_id],
@@ -251,6 +301,65 @@ def propose_memory_candidates(
                 )
             )
     return candidates
+
+
+def explicit_memory_target(text: str) -> tuple[str, str] | None:
+    """Decode one whole explicit goal without truncating its requested fact.
+
+    This is a pure intent interpretation. The synthetic extraction input never
+    supplies persisted provenance or write authorization; those remain the
+    host's actual goal, approval and Run event identities.
+    """
+    if not is_explicit_memory_instruction(text):
+        return None
+    candidates = propose_memory_candidates(
+        (SimpleNamespace(text=text, author="user", event_type="user_message"),),
+        max_content_chars=None,
+    )
+    explicit = [candidate for candidate in candidates
+                if candidate.reason.startswith("explicit_user")]
+    if len(explicit) != 1:
+        return None
+    return explicit[0].operation, explicit[0].content
+
+
+NATIVE_USER_EXTRACTION_POLICY = "native-original-user-profile/v2"
+
+
+def native_user_memory_candidate(
+    text: str, *, source_event_id: str, scope: MemoryScope, scope_id: str,
+) -> MemoryCandidate | None:
+    """Interpret a complete original user statement, never a transcript substring.
+
+    The host must supply canonical user input and its durable source identity.
+    Confidence describes known user authorship, not the truth of a preference
+    or permission to persist it. The existing Policy still requires independent
+    observations for implicit declarations. No model/summary/tool text is admitted.
+    """
+    text = text.strip()
+    explicit = is_explicit_memory_instruction(text)
+    implicit = any(pattern.fullmatch(text) for pattern in _IMPLICIT_PREFERENCE_PATTERNS)
+    hobby = _HOBBY_DECLARATION.fullmatch(text)
+    if not source_event_id.strip() or not (explicit or implicit or hobby):
+        return None
+    proposed = propose_memory_candidates(
+        (SimpleNamespace(text=text, author="user", event_type="user_message"),),
+        scope=scope, scope_id=scope_id, max_content_chars=None,
+    )
+    if not proposed and hobby and not hobby.group("correction"):
+        proposed = [MemoryCandidate(
+            candidate_id="pending", operation="add", memory_type="profile", scope=scope,
+            scope_id=scope_id, content=f"我的爱好是{hobby.group('value').strip()}",
+            confidence=1, importance=0.65, source_event_ids=[source_event_id],
+            reason="implicit_user_preference", slot_key="profile.preference.hobby",
+        )]
+    if len(proposed) != 1 or (not explicit and proposed[0].reason != "implicit_user_preference"):
+        return None
+    value = proposed[0]
+    identity = json.dumps((NATIVE_USER_EXTRACTION_POLICY, scope, scope_id, source_event_id,
+                           value.operation, value.content), ensure_ascii=False)
+    return replace(value, candidate_id="candidate_" + hashlib.sha256(identity.encode()).hexdigest(),
+                   confidence=1, source_event_ids=[source_event_id])
 
 
 class MemoryExtractor:
@@ -264,4 +373,8 @@ class MemoryExtractor:
         return propose_memory_candidates(events, scope=self._scope, scope_id=self._scope_id)
 
 
-__all__ = ["MemoryExtractor", "derive_profile_slot_key", "propose_memory_candidates"]
+__all__ = [
+    "MemoryExtractor", "derive_profile_slot_key", "explicit_memory_target",
+    "is_explicit_memory_instruction", "propose_memory_candidates",
+    "native_user_memory_candidate", "NATIVE_USER_EXTRACTION_POLICY",
+]

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { ResourceBridge } from '../../../ksadk/plugins/providers/bundles/dsh-platform-resources/client.mjs'
@@ -9,8 +8,11 @@ import { ResourceBridge } from '../../../ksadk/plugins/providers/bundles/dsh-pla
 const context = () => ({ handle: 'h'.repeat(43), deadline: Date.now() + 5000 })
 
 async function serverRun(handler, run) {
-  const directory = await mkdtemp(join(tmpdir(), 'ksrn-'))
+  // Only this fixture-owned IPC endpoint needs a short Unix socket path.
+  // Keep the cohort's long TMPDIR and all workspace locations unchanged.
+  const directory = await mkdtemp(join('/tmp', 'ksrn-'))
   const path = join(directory, 's')
+  assert.ok(Buffer.byteLength(path, 'utf8') <= 103)
   const sockets = new Set()
   const server = createServer(socket => {
     sockets.add(socket)

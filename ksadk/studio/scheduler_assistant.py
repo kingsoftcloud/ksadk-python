@@ -41,7 +41,10 @@ _SCHEDULE_TOPIC = re.compile(
     r"定时|周期|自动化|计划任务|每天|每日|每周|每星期|每月|工作日|"
     r"每(?:隔)?\s*[\d一二两三四五六七八九十百半几多少]+\s*(?:分|小时|天|日|周)|"
     r"(?:明天|后天|今晚|今天).{0,16}(?:点|时|[:：])|"
-    r"\b(?:schedul\w*|automation\w*|cron|every\s|daily|weekly|hourly|tomorrow)\b",
+    r"\b(?:schedul\w*|automation\w*|cron|daily|weekly|hourly|tomorrow)\b|"
+    r"\bevery\s+(?:\d+\s+)?(?:seconds?|minutes?|hours?|days?|weeks?|months?|"
+    r"weekdays?|mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|"
+    r"saturdays?|sundays?)\b",
     re.IGNORECASE,
 )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -28,8 +29,6 @@ from ..invocation_identity import resolve_trusted_invocation_identity
 from . import dependencies as deps
 from .common import (
     _action_response,
-    _ensure_session,
-    _hydrate_session,
     _resolve_ui_static_response,
 )
 from .models import ResponseFeedbackRefActionRequest, UpsertResponseFeedbackActionRequest
@@ -63,6 +62,28 @@ async def _require_misc_session(
         session_service_provider=lambda: service,
         invocation_identity=invocation_identity,
     )
+
+
+async def _adk_session_with_events(service, session_id: str, session=None):
+    """Return a complete legacy session with ownership bound to its transcript."""
+    snapshot = getattr(service, "get_adk_session_snapshot", None)
+    if callable(snapshot):
+        return await snapshot(session_id, session)
+    # Older custom services keep the metadata/events protocol. Recheck their
+    # incarnation after reading; they cannot guarantee a database snapshot.
+    session = session or await service.get_session_metadata(session_id)
+    if session is None:
+        return None
+    events = await service.get_events(session_id)
+    current = await service.get_session_metadata(session_id)
+    if (current is None or current.agent_id != session.agent_id
+            or current.user_id != session.user_id
+            or current.created_at != session.created_at):
+        from ksadk.sessions.errors import HistoryReloadRequired
+
+        raise HistoryReloadRequired("Session changed during legacy read")
+    current.events = events
+    return current
 
 
 @health_meta_router.get("/{requested_path:path}", include_in_schema=False)
@@ -455,7 +476,22 @@ async def create_session(
         if not matches:
             raise HTTPException(status_code=404, detail="Session not found")
     elif invocation_identity.is_empty:
-        session = await _ensure_session(app_name, user_id, requested_session_id)
+        if existing is not None:
+            if existing.agent_id != app_name or existing.user_id != user_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Session id belongs to a different agent or user",
+                )
+            session = existing
+        else:
+            session = await service.create_session(
+                app_name, user_id, session_id=requested_session_id
+            )
+            if session.agent_id != app_name or session.user_id != user_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Session id belongs to a different agent or user",
+                )
     else:
         session = await ensure_conversation_session(
             agent_id=app_name,
@@ -467,10 +503,35 @@ async def create_session(
 
     for raw_event in body.get("events", []):
         session_event = SessionEvent.from_dict(raw_event, session_id=session.id)
-        await service.append_event(session.id, session_event)
+        guarded_append = getattr(service, "append_event_if_session_matches", None)
+        if callable(guarded_append):
+            await guarded_append(session.id, session_event, session)
+        else:
+            current = await service.get_session_metadata(session.id)
+            if (current is None or current.agent_id != session.agent_id
+                    or current.user_id != session.user_id
+                    or current.created_at != session.created_at):
+                from ksadk.sessions.errors import HistoryReloadRequired
 
-    hydrated = await _hydrate_session(await service.get_session(session.id))
-    return hydrated.to_legacy_dict() if hydrated else session.to_legacy_dict()
+                raise HistoryReloadRequired("Session changed during legacy import")
+            await service.append_event(session.id, session_event)
+
+    hydrated = await _adk_session_with_events(
+        service, session.id, session
+    )
+    if hydrated is not None and not invocation_identity.is_empty:
+        matches = await session_identity_binding_matches(
+            service=service, session=hydrated, identity=invocation_identity,
+        )
+        if not matches:
+            from ksadk.sessions.errors import HistoryReloadRequired
+
+            raise HistoryReloadRequired("Session identity changed during legacy read")
+    if hydrated is None:
+        from ksadk.sessions.errors import HistoryReloadRequired
+
+        raise HistoryReloadRequired("Session disappeared during legacy read")
+    return hydrated.to_legacy_dict()
 
 
 @sessions_adk_compat_router.get("/apps/{app_name}/users/{user_id}/sessions")
@@ -482,7 +543,7 @@ async def list_sessions(
     """List all sessions for a user"""
     service = deps.resolve_session_service()
     if invocation_identity.is_empty:
-        sessions = await service.list_sessions(app_name, user_id)
+        sessions = await service.list_session_metadata(app_name, user_id)
     else:
         sessions = []
         seen: set[str] = set()
@@ -518,10 +579,33 @@ async def list_sessions(
                 if matches:
                     sessions.append(candidate)
                     seen.add(candidate.id)
+    async def load_one(session) -> Dict[str, Any]:
+        complete = await _adk_session_with_events(service, session.id, session)
+        if complete is None or complete.agent_id != app_name:
+            from ksadk.sessions.errors import HistoryReloadRequired
+
+            raise HistoryReloadRequired("Session changed during legacy read")
+        if not invocation_identity.is_empty:
+            matches = await session_identity_binding_matches(
+                service=service, session=complete, identity=invocation_identity,
+            )
+            if not matches:
+                from ksadk.sessions.errors import HistoryReloadRequired
+
+                raise HistoryReloadRequired("Session identity changed during legacy read")
+        return complete.to_legacy_dict()
+
     hydrated: List[Dict[str, Any]] = []
-    for session in sessions:
-        session.events = await service.get_events(session.id)
-        hydrated.append(session.to_legacy_dict())
+    for index in range(0, len(sessions), 2):
+        tasks = [asyncio.create_task(load_one(session))
+                 for session in sessions[index : index + 2]]
+        try:
+            hydrated.extend(await asyncio.gather(*tasks))
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
     return hydrated
 
 
@@ -535,7 +619,7 @@ async def get_session(
     """Get a specific session with its events"""
     service = deps.resolve_session_service()
     if invocation_identity.is_empty:
-        session = await _hydrate_session(await service.get_session(session_id))
+        session = await _adk_session_with_events(service, session_id)
     else:
         existing = await service.get_session_metadata(session_id)
         if existing is None or existing.agent_id != app_name:
@@ -556,7 +640,13 @@ async def get_session(
             matches = True
         if not matches:
             raise HTTPException(status_code=404, detail="Session not found")
-        session = await _hydrate_session(existing)
+        session = await _adk_session_with_events(service, existing.id, existing)
+        if session is not None and not await session_identity_binding_matches(
+            service=service, session=session, identity=invocation_identity,
+        ):
+            from ksadk.sessions.errors import HistoryReloadRequired
+
+            raise HistoryReloadRequired("Session identity changed during legacy read")
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return session.to_legacy_dict()

@@ -2,6 +2,7 @@
 # ruff: noqa: I001
 from __future__ import annotations
 
+import heapq
 import os
 from collections.abc import Mapping
 from typing import Any
@@ -18,6 +19,7 @@ from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import SessionEvent
 from ksadk.sessions.base import CheckpointEventQuery, SessionEventQuery
 from ksadk.sessions.errors import CheckpointScanRestartRequired, SessionBackendUnavailable
+from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.invocation_identity import (
     bind_or_validate_session_identity,
     identity_can_adopt_any_legacy_user,
@@ -37,7 +39,6 @@ from .common import (
     _build_bootstrap_model_payload,
     _build_native_terminal_capability,
     _ensure_session,
-    _hydrate_session,
     _resolve_agent_ui_spec,
 )
 from .models import (
@@ -52,6 +53,7 @@ from .models import (
     _runtime_agent_id,
 )
 from .projection import (
+    _HISTORY_INITIAL_EVENTS,
     _apply_adk_only_latest_resumable,
     _apply_checkpoint_resume_audit,
     _apply_latest_checkpoint_policy,
@@ -60,11 +62,13 @@ from .projection import (
     _event_to_action_payload,
     _extend_invocation_after_window,
     _extend_invocation_before_window,
-    _iter_session_event_pages,
+    _history_identity,
+    _HistoryProjectionBudget,
     _require_action_session,
     _resume_audit_by_checkpoint,
     _session_to_action_payload,
     _tool_receipt_event_to_action_payload,
+    _validate_history_cursor,
 )
 from .routers import sessions_router, tools_router, ui_bootstrap_router
 from .streaming import _cancel_detached_streams_for_session
@@ -78,7 +82,25 @@ async def _require_identity_action_session(
     agent_id: str | None,
     user_id: str | None,
     invocation_identity: PlatformIdentityContext,
+    history_only: bool = False,
+    history_header_loader: Any = None,
 ):
+    if history_only:
+        loader = history_header_loader or getattr(service, "get_session_header", service.get_session_metadata)
+        session = await loader(session_id)
+        from ksadk.sessions.agent_identity import session_agent_ids
+        if (session is None or (agent_id is not None and session.agent_id not in session_agent_ids(agent_id))
+                or (user_id is not None and invocation_identity.is_empty and session.user_id != user_id)):
+            raise HTTPException(status_code=404, detail="Session not found")
+        if invocation_identity.is_empty:
+            return session
+        if not agent_id:
+            raise HTTPException(status_code=400, detail="AgentId is required")
+        from ksadk.sessions.invocation_identity import bind_or_validate_session_identity
+        return await bind_or_validate_session_identity(
+            service=service, session=session, identity=invocation_identity,
+            requested_user_id=str(user_id or ""),
+        )
     if invocation_identity.is_empty:
         return await _require_action_session(
             service,
@@ -108,6 +130,7 @@ async def _list_identity_session_metadata(
 
     if invocation_identity.is_empty:
         return await service.list_session_metadata(agent_id, user_id)
+    from ksadk.sessions.agent_identity import session_agent_ids
     from ksadk.sessions.invocation_identity import identity_native_user_id
 
     candidate_users: set[str | None] = {identity_native_user_id(invocation_identity)}
@@ -121,7 +144,12 @@ async def _list_identity_session_metadata(
     sessions: list[Any] = []
     seen: set[str] = set()
     for candidate_user in candidate_users:
-        for session in await service.list_session_metadata(agent_id, candidate_user):
+        candidates = [
+            session
+            for owner_id in session_agent_ids(agent_id)
+            for session in await service.list_session_metadata(owner_id, candidate_user)
+        ]
+        for session in candidates:
             if session.id in seen:
                 continue
             matches = await session_identity_binding_matches(
@@ -248,6 +276,29 @@ async def get_agent_ui_bootstrap(
         and bool(getattr(state.agui_config, "preferred", False))
         else "responses"
     )
+    # Producer declaration is separate from transport availability. Consumers
+    # intersect this surface with their renderer catalogue before selecting a
+    # presentation profile; an older runtime has no such declaration.
+    presentation_capabilities: dict[str, Any] = {}
+    managed_remote_surface = (
+        framework in {"codex", "langgraph"}
+        and bool(getattr(state.a2a_bootstrap, "outbound_enabled", False))
+    )
+    if framework == "adk" or managed_remote_surface:
+        from ksadk.conversations.contracts import ConversationCapability, ConversationSurface
+
+        presentation_capabilities["ConversationSurface"] = ConversationSurface(
+            surface_id=f"runtime:{agent_id}",
+            session_id=request.SessionId or "new-session",
+            provider_ref=framework,
+            inputs=(ConversationCapability(name="ksadk.presentation", mode="native"),),
+            outputs=(
+                ConversationCapability(
+                    name="agent.block",
+                    mode="native" if framework == "adk" else "translated",
+                ),
+            ),
+        ).model_dump(mode="json", by_alias=True)
     return _action_response(
         "GetAgentUiBootstrap",
         {
@@ -259,6 +310,15 @@ async def get_agent_ui_bootstrap(
             },
             "Modules": ["Chat", "Build", "Deploy"],
             "Capabilities": {
+                # Lightweight protocol negotiation; it does not hydrate a
+                # session or require historical Agent packages to be patched.
+                "HistoryRead": {
+                    "Protocol": "ksadk.history/v2",
+                    "SessionContractVersion": 2,
+                    "SupportsEpoch": True,
+                    "SupportsSnapshot": True,
+                },
+                **presentation_capabilities,
                 "Attachments": True,
                 "WorkspaceFiles": workspace_enabled,
                 "Approval": True,
@@ -317,6 +377,7 @@ async def create_session_action(
     request: CreateSessionActionRequest,
     invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
 ):
+    service = deps.resolve_session_service()
     if invocation_identity.is_empty:
         session = await _ensure_session(
             request.AgentId, request.UserId or "user", request.SessionId
@@ -329,7 +390,7 @@ async def create_session_action(
             session_service_provider=deps.resolve_session_service,
             invocation_identity=invocation_identity,
         )
-    return _action_response("CreateSession", {"Session": await _session_to_action_payload(session)})
+    return _action_response("CreateSession", {"Session": await _session_to_action_payload(session, service)})
 
 
 @sessions_router.post("/agentengine/api/v1/ListSessions")
@@ -340,12 +401,13 @@ async def list_sessions_action(
     service = deps.resolve_session_service()
     offset = (request.Page - 1) * request.PageSize
     if invocation_identity.is_empty:
-        sessions = await service.list_sessions(
-            request.AgentId,
-            request.UserId,
-            offset=offset,
-            limit=request.PageSize,
-        )
+        if isinstance(service, InMemorySessionService):
+            all_metadata = await service.list_session_metadata(request.AgentId, request.UserId)
+            sessions = all_metadata[offset:offset + request.PageSize]
+        else:
+            sessions = await service.list_sessions(
+                request.AgentId, request.UserId, offset=offset, limit=request.PageSize,
+            )
         total = await service.count_sessions(request.AgentId, request.UserId)
     else:
         all_sessions = await _list_identity_session_metadata(
@@ -356,7 +418,7 @@ async def list_sessions_action(
         )
         total = len(all_sessions)
         sessions = all_sessions[offset : offset + request.PageSize]
-    session_payloads = [await _session_to_action_payload(session) for session in sessions]
+    session_payloads = [await _session_to_action_payload(session, service) for session in sessions]
     return _action_response(
         "ListSessions",
         {
@@ -384,10 +446,7 @@ async def get_session_action(
         user_id=request.UserId,
         invocation_identity=invocation_identity,
     )
-    hydrated = await _hydrate_session(session)
-    if hydrated is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return _action_response("GetSession", {"Session": await _session_to_action_payload(hydrated)})
+    return _action_response("GetSession", {"Session": await _session_to_action_payload(session, service)})
 
 
 @sessions_router.post("/agentengine/api/v1/DeleteSession")
@@ -485,38 +544,66 @@ async def list_session_events_action(
                 "ScopedAllSessions": True,
             },
         )
-    await _require_identity_action_session(
+    session = await _require_identity_action_session(
         service,
         session_id=session_id,
         agent_id=request.AgentId,
         user_id=request.UserId,
         invocation_identity=invocation_identity,
+        history_only=True,
+    )
+    epoch, is_live = _history_identity(service, session)
+    _validate_history_cursor(
+        epoch=epoch, is_live=is_live, requested_epoch=request.HistoryEpoch,
+        cursor_source=request.CursorSource,
+        has_cursor=(request.AfterSeqId or 0) > 0 or (request.BeforeSeqId or 0) > 0,
+    )
+    forward = request.EventOrder == "session_seq"
+    seq_page = forward or (request.BeforeSeqId is not None and not request.Offset)
+    max_seq = getattr(service, "get_max_seq_id", None)
+    newest_seq = (await max_seq(session_id) if callable(max_seq)
+                  else max((event.seq_id for event in await service.get_events(
+                      session_id, limit=1)), default=0))
+    snapshot_seq = (request.SnapshotSeqId if request.SnapshotSeqId is not None
+                    else newest_seq)
+    snapshot_upper = min(
+        value for value in (request.BeforeSeqId, snapshot_seq + 1) if value is not None
     )
     query = SessionEventQuery(
         session_ids=[session_id],
-        agent_id=request.AgentId,
+        agent_id=session.agent_id,
         offset=request.Offset or 0,
-        limit=request.Limit,
+        limit=request.Limit + 1 if seq_page else request.Limit,
         after_seq_id=request.AfterSeqId,
-        before_seq_id=request.BeforeSeqId,
+        before_seq_id=snapshot_upper,
         event_types=event_types,
         checkpoint_ids=checkpoint_ids,
+        from_start=forward,
+        order_by_seq=seq_page,
     )
     events = await service.query_events(query)
+    has_more = seq_page and len(events) > request.Limit
+    if seq_page:
+        events = events[:request.Limit] if forward else events[-request.Limit:]
     total = await service.count_event_query(
         SessionEventQuery(
             session_ids=[session_id],
-            agent_id=request.AgentId,
+            agent_id=session.agent_id,
             after_seq_id=request.AfterSeqId,
-            before_seq_id=request.BeforeSeqId,
+            before_seq_id=snapshot_upper,
             event_types=event_types,
             checkpoint_ids=checkpoint_ids,
         )
     )
-    events.sort(
-        key=lambda event: (event.timestamp, event.session_id, event.seq_id, event.id),
-        reverse=True,
-    )
+    if forward:
+        events.sort(key=lambda event: (event.seq_id, event.id))
+    elif seq_page:
+        events.sort(key=lambda event: (event.seq_id, event.id), reverse=True)
+    elif not seq_page:
+        events.sort(
+            key=lambda event: (event.timestamp, event.session_id, event.seq_id, event.id),
+            reverse=True,
+        )
     return _action_response(
         "ListSessionEvents",
         {
@@ -528,6 +615,21 @@ async def list_session_events_action(
             "BeforeSeqId": request.BeforeSeqId,
             "CheckpointIds": request.CheckpointIds,
             "EventTypes": request.EventTypes,
+            "HistoryEpoch": epoch,
+            "SnapshotSeqId": snapshot_seq,
+            "PersistenceDegraded": is_live,
+            "DataSource": "runtime",
+            "Degraded": False,
+            "CursorSource": "runtime",
+            "CursorCompatibleWithRuntime": True,
+            "SessionContractVersion": 2,
+            **({
+                "NextCursor": events[-1].seq_id if events else (request.AfterSeqId or 0) if forward else None,
+                "HasMore": has_more,
+            } if seq_page else {}),
+            **({
+                "EventOrder": "session_seq",
+            } if forward else {}),
         },
     )
 
@@ -537,58 +639,160 @@ async def list_session_messages_action(
     request: ListSessionMessagesActionRequest,
     invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
 ):
-    from ksadk.conversations.message_projection import project_session_messages
-
     service = deps.resolve_session_service()
-    await _require_identity_action_session(
-        service,
-        session_id=request.SessionId,
-        agent_id=request.AgentId,
-        user_id=request.UserId,
-        invocation_identity=invocation_identity,
-    )
-    total_events = await service.count_events(
-        request.SessionId,
-        after_seq_id=request.AfterSeqId,
-        before_seq_id=request.BeforeSeqId,
-    )
-    event_offset = 0
-    if request.AfterSeqId is not None and total_events > 2000:
-        # Storage pagination is tail-based. Offset past the newest surplus so
-        # reconnect starts with the oldest unseen window and cannot skip gaps.
-        event_offset = total_events - 2000
-    events = await service.get_events(
-        request.SessionId,
-        offset=event_offset,
-        limit=2000,
-        after_seq_id=request.AfterSeqId,
-        before_seq_id=request.BeforeSeqId,
-    )
+    from ksadk.server.history_page_cache import cache_for, eligible, bounded_pg_read
 
-    def project(
+    async def load_scope():
+        newest_seq = None
+        combined = getattr(service, 'get_session_header_with_watermark', None)
+
+        async def header_with_watermark(session_id):
+            nonlocal newest_seq
+            header, newest_seq = await combined(session_id)
+            return header
+
+        session = await _require_identity_action_session(
+            service,
+            session_id=request.SessionId,
+            agent_id=request.AgentId,
+            user_id=request.UserId,
+            invocation_identity=invocation_identity,
+            history_only=True,
+            history_header_loader=(header_with_watermark
+                                   if callable(combined) and bounded_pg_read(service, False) else None),
+        )
+        epoch, is_live = _history_identity(service, session)
+        max_seq = getattr(service, "get_max_seq_id", None)
+        if newest_seq is None:
+            newest_seq = (await max_seq(request.SessionId) if callable(max_seq)
+                          else max((event.seq_id for event in await service.get_events(
+                              request.SessionId, limit=1)), default=0))
+        return session, epoch, is_live, newest_seq
+
+    if eligible(service, False):
+        # Includes the full verified principal (including actor), Agent and
+        # legacy UserId hint. Never reuse authorization after the SQL finishes.
+        scope_key = (request.SessionId, request.AgentId, request.UserId, invocation_identity)
+        session, epoch, is_live, newest_seq = await cache_for(service).lookup(scope_key, load_scope)
+    else:
+        session, epoch, is_live, newest_seq = await load_scope()
+    _validate_history_cursor(
+        epoch=epoch, is_live=is_live, requested_epoch=request.HistoryEpoch,
+        cursor_source=request.CursorSource,
+        has_cursor=(request.AfterSeqId or 0) > 0 or (request.BeforeSeqId or 0) > 0,
+    )
+    snapshot_seq = (request.SnapshotSeqId if request.SnapshotSeqId is not None
+                    else newest_seq)
+    if eligible(service, is_live):
+        import json
+        from starlette.responses import Response
+
+        key = (epoch, newest_seq, snapshot_seq, invocation_identity.user_scope,
+               request.model_dump_json())
+
+        async def produce():
+            # Eligible clean PostgreSQL reads complete several adjacent event
+            # windows serially. Avoid a pool reset/network round trip between
+            # every window; retain normal cleanup once the projection ends.
+            primary = getattr(service, 'primary', service)
+            async with primary.history_read_scope():
+                result = await _project_session_message_page(
+                    request, service, invocation_identity, epoch, is_live, snapshot_seq)
+            if _history_identity(service, session) != (epoch, is_live):
+                from ksadk.sessions.errors import HistoryReloadRequired
+                raise HistoryReloadRequired("History source changed during projection")
+            return result["Data"]
+
+        body = await cache_for(service).read(key, produce)
+        if _history_identity(service, session) != (epoch, is_live):
+            from ksadk.sessions.errors import HistoryReloadRequired
+            raise HistoryReloadRequired("History source changed during read")
+        # Each request keeps its own envelope/request id. The immutable Data
+        # bytes are serialized once, rather than encoding the same MiB of
+        # tools independently for every concurrent reader.
+        envelope = _action_response("ListSessionMessages", None)
+        del envelope["Data"]
+        prefix = json.dumps(envelope, separators=(",", ":"))[:-1].encode()
+        return Response(prefix + b',"Data":' + body + b'}', media_type="application/json")
+    return await _project_session_message_page(
+        request, service, invocation_identity, epoch, is_live, snapshot_seq)
+
+
+async def _project_session_message_page(request, service, invocation_identity, epoch, is_live, snapshot_seq):
+    from ksadk.conversations.message_projection import project_session_messages
+    from ksadk.server.history_page_cache import bounded_pg_read
+    snapshot_upper = min(
+        value for value in (request.BeforeSeqId, snapshot_seq + 1) if value is not None
+    )
+    message_window = getattr(service, 'get_message_event_window', None)
+    if callable(message_window) and bounded_pg_read(service, is_live):
+        events = await message_window(
+            request.SessionId, limit=_HISTORY_INITIAL_EVENTS,
+            from_start=request.AfterSeqId is not None,
+            after_seq_id=request.AfterSeqId, before_seq_id=snapshot_upper,
+        )
+    elif request.AfterSeqId is not None:
+        events = await service.query_events(SessionEventQuery(
+            session_ids=[request.SessionId], from_start=True, order_by_seq=True,
+            limit=_HISTORY_INITIAL_EVENTS, after_seq_id=request.AfterSeqId,
+            before_seq_id=snapshot_upper,
+        ))
+    else:
+        events = await service.get_events(
+            request.SessionId, limit=_HISTORY_INITIAL_EVENTS,
+            before_seq_id=snapshot_upper,
+        )
+    budget = _HistoryProjectionBudget()
+    budget.account(events)
+    boundary_hint: dict[str, bool] = {}
+    projection_cache: dict[str, dict[str, Any]] = {}
+
+    async def project(
         events_to_project: list[SessionEvent],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         serialized = [_event_to_action_payload(event) for event in events_to_project]
+        from ksadk.kernel.bootstrap import get_agent_kernel_runtime
+        from ksadk.kernel.history_projection import project_inbox_inputs
+
+        message_events = await project_inbox_inputs(
+            serialized, runtime=get_agent_kernel_runtime(), session_id=request.SessionId,
+            tenant_id=invocation_identity.tenant_id,
+            request_cache=projection_cache,
+        )
+        budget.account_enrichment(serialized, message_events)
         return serialized, project_session_messages(
-            serialized,
+            message_events,
             include_reasoning=request.IncludeReasoning,
             include_tool_events=request.IncludeToolEvents,
             include_attachments=request.IncludeAttachments,
             session_id=request.SessionId,
         )
 
-    serialized_events, messages = project(events)
+    serialized_events, messages = await project(events)
     if request.AfterSeqId is not None:
-        if total_events > len(events):
+        if events:
             events = await _extend_invocation_after_window(
                 service,
                 request.SessionId,
                 events,
-                before_seq_id=request.BeforeSeqId,
+                before_seq_id=snapshot_upper,
+                budget=budget,
             )
-            serialized_events, messages = project(events)
+            serialized_events, messages = await project(events)
         page = messages
-        has_more = total_events > len(serialized_events)
+        # Keep complete invocation groups, including a first group larger than
+        # the requested message limit.
+        if len(page) > request.Limit:
+            end = request.Limit
+            boundary = int(page[end - 1].get("StartSeqId") or 0)
+            while end < len(page) and int(page[end].get("StartSeqId") or 0) == boundary:
+                end += 1
+            page = page[:end]
+        last_seq = events[-1].seq_id if events else request.AfterSeqId
+        has_more = len(page) < len(messages) or bool(await service.query_events(SessionEventQuery(
+            session_ids=[request.SessionId], from_start=True, order_by_seq=True,
+            limit=1, after_seq_id=last_seq, before_seq_id=snapshot_upper,
+        )))
         next_cursor = None
     else:
         page_start = len(messages)
@@ -613,7 +817,6 @@ async def list_session_messages_action(
         if (
             page
             and events
-            and total_events > len(events)
             and _event_invocation_id(events[0])
             and any(
                 str(message.get("InvocationId") or "") == _event_invocation_id(events[0])
@@ -625,8 +828,10 @@ async def list_session_messages_action(
                 request.SessionId,
                 events,
                 after_seq_id=request.AfterSeqId,
+                budget=budget,
+                boundary_hint=boundary_hint,
             )
-            serialized_events, messages = project(events)
+            serialized_events, messages = await project(events)
             page_start = len(messages)
             while page_start > 0:
                 group_start_seq_id = int(messages[page_start - 1].get("StartSeqId") or 0)
@@ -647,10 +852,17 @@ async def list_session_messages_action(
                     break
             page = messages[page_start:]
         minimum_start_seq_id = int(page[0].get("StartSeqId") or 0) if page else 0
-        has_more = page_start > 0 or total_events > len(serialized_events)
+        has_more = page_start > 0
+        if not has_more and 'has_more' in boundary_hint:
+            has_more = boundary_hint['has_more']
+        elif not has_more and events:
+            probe = getattr(service, "has_events", None)
+            bounds = dict(after_seq_id=request.AfterSeqId, before_seq_id=events[0].seq_id)
+            has_more = (await probe(request.SessionId, **bounds) if callable(probe)
+                        else bool(await service.get_events(request.SessionId, limit=1, **bounds)))
         # BeforeSeqId is exclusive. Use the invocation group boundary so the
         # next page cannot duplicate reasoning/tools or skip its user message.
-        next_cursor = minimum_start_seq_id if has_more else None
+        next_cursor = (minimum_start_seq_id or (events[0].seq_id if events else 0)) if has_more else None
     latest_seq_id = (
         int(page[-1].get("SeqId") or 0)
         if page
@@ -667,6 +879,14 @@ async def list_session_messages_action(
             "LatestSeqId": latest_seq_id,
             "HasMore": has_more,
             "NextCursor": next_cursor,
+            "DataSource": "runtime",
+            "CursorSource": "runtime",
+            "HistoryEpoch": epoch,
+            "SnapshotSeqId": snapshot_seq,
+            "PersistenceDegraded": is_live,
+            "Degraded": False,
+            "CursorCompatibleWithRuntime": True,
+            "SessionContractVersion": 2,
         },
     )
 
@@ -802,6 +1022,7 @@ async def _list_checkpoints_payload(
                 agent_id=request.AgentId,
                 user_id=request.UserId,
                 invocation_identity=invocation_identity,
+                history_only=True,
             )
     elif request.UserId is not None or not invocation_identity.is_empty:
         session_ids = [
@@ -840,7 +1061,9 @@ async def _list_checkpoints_payload(
     for attempt in range(2):
         total = 0
         resumable_total = 0
-        checkpoints: list[dict[str, Any]] = []
+        top_checkpoints: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        page_capacity = offset + int(request.Limit)
+        sequence = 0
         batches = service.iter_checkpoint_event_chunks(query)
         try:
             async for batch in batches:
@@ -891,7 +1114,17 @@ async def _list_checkpoints_payload(
                     resumable_total += int(_is_checkpoint_resumable(checkpoint))
                     if request.OnlyResumable and not _is_checkpoint_resumable(checkpoint):
                         continue
-                    checkpoints.append(checkpoint)
+                    if page_capacity:
+                        sequence += 1
+                        rank = (
+                            checkpoint["Timestamp"], checkpoint["SessionId"],
+                            checkpoint["SeqId"], sequence,
+                        )
+                        item = (rank, checkpoint)
+                        if len(top_checkpoints) < page_capacity:
+                            heapq.heappush(top_checkpoints, item)
+                        elif rank > top_checkpoints[0][0]:
+                            heapq.heapreplace(top_checkpoints, item)
                     total += 1
         except CheckpointScanRestartRequired as exc:
             if attempt == 0:
@@ -908,11 +1141,8 @@ async def _list_checkpoints_payload(
             if callable(close):
                 await close()
         break
-    checkpoints.sort(
-        key=lambda item: (item["Timestamp"], item["SessionId"], item["SeqId"]),
-        reverse=True,
-    )
-    checkpoints = checkpoints[offset : offset + int(request.Limit)]
+    checkpoints = [item for _, item in sorted(top_checkpoints, reverse=True)]
+    checkpoints = checkpoints[offset:offset + int(request.Limit)]
     return {
         "Checkpoints": checkpoints,
         "Total": total,
@@ -950,44 +1180,25 @@ async def list_tool_receipts_action(
         agent_id=request.AgentId,
         user_id=request.UserId,
         invocation_identity=invocation_identity,
+        history_only=True,
     )
 
     run_id_filter = str(request.RunId or "").strip()
     checkpoint_id_filter = str(request.CheckpointId or "").strip()
-    total = 0
-    async for page in _iter_session_event_pages(service, request.SessionId):
-        for event in page:
-            receipt = _tool_receipt_event_to_action_payload(event)
-            if receipt is None:
-                continue
-            if run_id_filter and receipt["RunId"] != run_id_filter:
-                continue
-            if checkpoint_id_filter and receipt["CheckpointId"] != checkpoint_id_filter:
-                continue
-            total += 1
-
     offset = int(request.Offset)
     limit = int(request.Limit)
-    window_end = max(total - offset, 0)
-    window_start = max(window_end - limit, 0)
-    receipts: list[dict[str, Any]] = []
-    filtered_index = 0
-    async for page in _iter_session_event_pages(service, request.SessionId):
-        for event in page:
-            receipt = _tool_receipt_event_to_action_payload(event)
-            if receipt is None:
-                continue
-            if run_id_filter and receipt["RunId"] != run_id_filter:
-                continue
-            if checkpoint_id_filter and receipt["CheckpointId"] != checkpoint_id_filter:
-                continue
-            if window_start <= filtered_index < window_end:
-                receipts.append(receipt)
-            filtered_index += 1
-            if filtered_index >= window_end:
-                break
-        if filtered_index >= window_end:
-            break
+    filtered_query = SessionEventQuery(
+        session_ids=[request.SessionId], receipt_only=True,
+        run_id=run_id_filter or None,
+        checkpoint_id=checkpoint_id_filter or None,
+    )
+    total = await service.count_event_query(filtered_query)
+    events = await service.query_events(SessionEventQuery(
+        **{**filtered_query.__dict__, "offset": offset, "limit": limit}
+    ))
+    receipts = [receipt for event in events
+                if (receipt := _tool_receipt_event_to_action_payload(event)) is not None]
+    receipts.reverse()
 
     return _action_response(
         "ListToolReceipts",

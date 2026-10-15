@@ -5,7 +5,51 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+
 ## [未发布]
+
+## [0.8.6] - 2026-10-15
+
+### 升级须知
+
+- **最低 Python 版本提高到 3.12**。请在新虚拟环境安装并验证依赖；已有 Agent 可保留原 SDK 与镜像，不会随本地升级自动重建或重新部署。
+- 本版本配套 `@kingsoftcloud/ksadk-web@0.3.13`。wheel/sdist 内嵌已构建的 Web 与 Studio 静态资源，安装后无需现场构建前端；Python 依赖和 Node/Codex/DSH 工具链仍需分别安装或预缓存。
+- 普通本地 Studio 默认选择 Native Harness 与 SQLite 持久化执行账本；显式 Agent 选择、自定义执行宿主和兼容模式继续按配置生效。可用 `KSADK_STUDIO_NATIVE_DEFAULT=0` 选择 Managed 兼容路径；这不改变云端既有 Agent 的执行内核。
+- `agentengine-sdk-python` 别名包与 `ksadk` 同步为 0.8.6，并精确依赖主包；不要在同一环境混装不同版本。
+
+### Native Harness 与 Studio
+
+- 新增 Native 执行内核、事件账本、工具策略、工作区边界、上下文规划、compaction、任务验证与子 Agent 生命周期；Studio 接入 Native 模型、工具、插件能力及执行控制，保留框架原生 Provider 的独立执行语义。
+- Native 工具调用按授权、审批与审计边界执行；hard deny 不因完全访问模式放行。上下文、Hook、Skill、Browser、Memory 和子 Agent 恢复需要宿主显式装配及匹配的策略，不因接口存在就自动获得生产权限。
+- 增加持久化运行恢复、暂停/继续、子任务状态和验证结果投影，收紧崩溃恢复、未知副作用、模型切换和结果发布边界。Native 云端启用、多副本恢复与所有外部服务兼容性仍需目标环境单独验收。
+
+### A2A、Kernel 与恢复
+
+- 完善 A2A 1.0 的工具、专家调用、流式文本制品和结构化输入；按子 scope 隔离取消与失败，避免子任务终态停止根任务。
+- Codex 专家等待和原生 checkpoint 支持带 fence 的持久化恢复；恢复前核对 Agent、scope 和执行归属，已提交结果可回放，结果不确定的启动不自动重发。
+- checkpoint 保留类型化 envelope、时间戳、carrier 完整性与规范恢复审计；内存、SQLite、PostgreSQL 与 resilient 服务对工具执行回执进行身份、参数、输出和冲突校验。
+- 通过 durable claim 防止同一工具回执键被并发重复执行；外部副作用已发生但尚未确认提交的情况仍可为 `unknown`，必须显式对账，不宣称 exactly-once，也不自动重试。
+
+### 历史读取与数据库预算
+
+- 历史分页优先读取有界投影，保留 session sequence、来源、epoch 和 snapshot 边界；按能力声明支持新 Runtime 协议，旧 Runtime 沿用既有游标语义。
+- 新增连接、读写、锁、完整 replay 和清理预算，以及历史读取并发/初始窗口配置。普通历史请求的预算与 Agent 执行时长分离；超时或读取失败明确返回状态，不伪造空历史或已完成结果。
+- PostgreSQL 连接取消、事务回滚和 pool reset 共用清理预算；reset 失败或超时会丢弃连接，不覆盖已确认的读取/提交结果或原始数据库错误。
+- 持久写入结果未知时隔离不安全的本地镜像与降级缓存；确认提交结果并恢复完整快照后才允许继续使用，避免重复事件序号和错误回放。
+
+### CLI、运行时与 Web
+
+- Studio 增加跨工作区操作聚合、原生目录选择、可选工作区启动与无重启切换，支持会话内搜索、草稿冲突处理、快捷创建 Agent、快捷键和未决提交重试提示；链接目录通过显式授权策略控制。
+- Studio 新增云端 Teams 的契约、客户端、协作界面与持久执行集成；资源绑定、permit、签名和云服务可用性仍由对应控制面及宿主负责。
+- 模型配置支持完整设置页、最小配置流程，以及 Anthropic Messages、Chat Completions、Responses 的探测与执行；新增 SDK 版本和 PyPI 更新检查，完善原生 Responses 代理及有限重试预算/限流诊断。
+- 本地进程资源限制成为共享 runtime 能力；运行时镜像区分经过构建验证的镜像标识与原生版本。Studio 首屏避免等待逐 Agent 发现，工作区切换、云控制面读取和静态资源缓存减少重复请求。
+- LangGraph 显式图配置的 `recursion_limit` 优先于 `KSADK_LANGGRAPH_RECURSION_LIMIT`，未配置时使用默认 50；异常及断开的 SSE 进入失败终态，公开错误脱敏并保留调用身份。
+- 修复托管 Agent 的 admitted session actions 调用、完整事件翻页、已接受调用的中断读取重连，以及 Agent Update 的同步响应/持久操作等待和 busy 冲突提示。
+- 修复 Code 包的 framework manifest、LangGraph SQLite saver、基础运行时 rich 依赖、Unicode 附件与归档文件名，以及 Codex 原生线程指令和根运行身份。
+- 云资源请求统一透传 `X-Traffic-Source`，通过 `KSADK_TRAFFIC_SOURCE` 配置，默认 `agentkit`；该字段用于来源标识，不替代鉴权。
+- 配套 Web 修复历史分页与实时消息合并、草稿/Agent 切换隔离、原始提问顺序、原生工具日志、LangGraph 审批历史、输入法确认键误发送和永久订阅错误重试；工具审批统一呈现在输入框上方，保留拒绝、取消、未知及投递失败状态。
+- Studio 桌面签名、更新 feed 和发布工作流补齐来源固定、完整性与安装后验证；Python/npm 发布不等于新桌面安装包或云端镜像已部署。
+- Python 源码包显式排除测试目录，wheel/sdist 审计新增测试目录阻断规则；CI 补齐真实 PostgreSQL 历史/恢复测试环境与并行测试依赖，防止内部测试误入发布包或新门禁无法运行。
 
 ### 修复
 
@@ -13,18 +57,19 @@
 - 恢复审计统一识别 `run_resume`、`runtime_resume` 与 `continuation.resumed`，同一恢复尝试的新旧载荷只计一次；没有尝试 ID 的历史记录保持独立计数。
 - 审批已拒绝、取消或不存在时，迟到批准不能新建工具执行占位；规范与历史事件按审批 ID 匹配，多条审批并存时不会错移终态；崩溃重试仅回放匹配的既有 claim 或合法回执。
 - SQLite 与 PostgreSQL 的会话删除和执行占位插入使用数据库级互斥，避免删除在途 claim；SQLite 并发插入输家统一校验工具与参数摘要。
-- Studio、Hosted UI、构建门禁和环境变量文档统一绑定已发布 Web 0.3.12，修复旧依赖缺少云团队导出导致的公开预检构建失败。
+- Studio、Hosted UI、构建门禁和环境变量文档统一固定 Web 依赖版本，修复旧依赖缺少云团队导出导致的公开预检构建失败。
 - 托管 DSH 工具链统一固定官方 0.1.7-rc.1 与完整 Core/HMR 依赖图，修复旧版本的实时 profile 启动错误；保留上游插件的依赖与兼容性保护。
 - 公开预检与 Studio 浏览器 CI 在隔离目录初始化官方 Provider 工具链，测试 Agent 显式声明宿主进程权限；响应式和前端子检查失败会阻断验证。
 - Studio 导航回归覆盖先建本地草稿、首次发送再创建服务端会话，防止迟到列表恢复旧会话；更新当前导航尺寸与固定运行时的浏览器断言。
 - 恢复桌面展开导航时的收起按钮，浏览器回归验证收起、展开和刷新后的选择保留。
-- 发布候选的 Web 身份校验、桌面打包子脚本和 manifest 统一使用 Web 0.3.12；默认 Make 版本会传给子进程，旧版本即使所有证据一致也会被拒绝。
+- 发布候选的 Web 身份校验、桌面打包子脚本和 manifest 统一使用固定 Web 版本；默认 Make 版本会传给子进程，旧版本即使所有证据一致也会被拒绝。
 - 实时审批确认使用与持久化恢复一致的公开 interaction_id，修复内部审批 ID 导致合法批准/拒绝无法恢复的问题。
 - 历史正文块累计增量文本后再处理终态快照，避免长会话刷新或分页回退时重复追加整段回复。
 
 ### 文档
 
 - 补齐工具执行占位查询、显式对账的请求、响应、鉴权和失败语义；`unknown` 不会自动重执行，对账后同键回放失败结果。
+
 
 
 ## [0.8.5] - 2026-09-19
@@ -43,7 +88,7 @@
 - Connector 支持 JWT 身份校验、`register` / `invoke` / `cancel`、deadline、idempotency key、心跳、指数退避重连、有限终态缓存和取消回收；连接断开且结果未知时不自动重放可能带副作用的 Agent 调用。
 - Channel API 支持多副本 owner/relay 路由和 workspace 隔离；跨副本 relay 使用 Redis Pub/Sub，不宣称 durable queue 或 exactly-once，业务重试由宿主按 `idempotency_key` 实现。
 - Channels 页面从 Studio 静态路由迁移为 DSH workspace 插件；公开协议参考为 `docs/connector/channel-connector-protocol-v1.md`。默认插件激活失败时只影响 Channel 页面，不阻塞 Studio 主服务。
-- 公开 `pyproject.toml` 移除未发布的 channel extra；wheel 构建不再解析 `agentengine-channel`。Web companion 固定使用 `@kingsoftcloud/ksadk-web@0.3.11`。
+- 公开 `pyproject.toml` 移除未发布的 channel extra；wheel 构建不再解析 `agentengine-channel`。Web companion 固定使用 `@kingsoftcloud/ksadk-web@0.3.12`。
 - harness 流式输出透传到 reasoner 包装层，live-tail canonical 事件按 seq 去重；MCP envRefs 凭据回退、Codex bearer 合并、`tool_search` 目录隐藏和 `mcp_tool_call` 审批放行保持统一。
 - `tool_approval_mode=full` 时 composer 完全访问不再被 Harness 审批门重复拦截；新建会话互斥、切 Agent 回欢迎页、流式删除先取消、僵尸 RUNNING 回收和稳定排序继续生效。
 - 增加 prewarm 端点与跨轮激活复用；裁剪孤儿依赖和其他平台产物；默认模型为 `deepseek-v4.1-flash`，回退 `glm-5.3-flash`；Codex Runtime 升级至 `openai-codex==0.154.0`。
@@ -62,7 +107,9 @@
 
 - KsADK 重点 Python、Studio connector、插件生命周期、前端 Vitest 与生产 Vite 构建已通过；完整发布门禁仍以最终 workflow 日志为准。
 - Channel Connector gateway、JWT、Redis 双副本、heartbeat、Studio inbound pipeline、真实 Harness 执行和浏览器 Channel workspace E2E 已在隔离临时环境通过；IM 投递和模型响应使用确定性替身，未宣称真实账号验收。
-- 正式版本：`v0.8.5`，GitHub Release 已发布，PyPI 已发布 `ksadk==0.8.5`；`@kingsoftcloud/ksadk-web@0.3.11` 与本版本配套。
+
+- 正式版本：`v0.8.5`，GitHub Release 已发布，PyPI 已发布 `ksadk==0.8.5`；`@kingsoftcloud/ksadk-web@0.3.12` 与本版本配套。
+
 - 发布源：GitHub commit [`5128ff1e`](https://github.com/kingsoftcloud/ksadk-python/commit/5128ff1e57d1c37bc16f780028698da433c12a7e)，对应 tag [`v0.8.5`](https://github.com/kingsoftcloud/ksadk-python/releases/tag/v0.8.5)。wheel/sdist 均包含生成后的 Studio/Web 静态资源；发布制品应以 PyPI 文件和 Release 中同校验和的附件为准。
 
 ## [0.8.4] - 2026-09-09

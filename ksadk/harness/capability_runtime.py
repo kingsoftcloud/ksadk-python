@@ -24,6 +24,17 @@ from ksadk.harness.tool_policy import ToolCallContext, ToolDecision, ToolPolicy
 from ksadk.harness.tool_receipts import ToolReceipt, ToolReceiptStore
 from ksadk.harness.tool_reliability import ToolReliability, classify_tool_reliability
 
+# G23 ① bypass 免疫默认清单（ApprovalPolicy.immune_prefixes/paths 可覆盖）
+_DEFAULT_IMMUNE_PREFIXES: tuple[str, ...] = (
+    "delete", "drop", "rm", "remove", "truncate", "purge", "wipe",
+    "sudo", "chmod", "chown", "shutdown", "reboot",
+)
+_DEFAULT_IMMUNE_PATHS: tuple[str, ...] = (
+    "~/.ssh", "~/.aws", "~/.config/gcloud", "~/.kube",
+    "/etc/", "/root/", "~/.bashrc", "~/.zshrc", "~/.profile",
+    ".env", "id_rsa", "credentials", "secrets",
+)
+
 #: side_effect（Studio ToolContract）→ 是否存在外部副作用。
 _SIDE_EFFECT_EXTERNAL = frozenset({"write", "external"})
 
@@ -69,12 +80,22 @@ class CapabilityRuntime:
         profiles: dict[str, ToolProfile] | None = None,
         environment: str = "draft",
         approval_mode: str = "policy",
+        classifier_available: bool = True,
+        immune_prefixes: tuple[str, ...] = (),
+        immune_paths: tuple[str, ...] = (),
     ) -> None:
         self._policy = policy or ToolPolicy()
         self._receipts = receipts
         self._profiles = dict(profiles or {})
         self._environment = environment
         self._approval_mode = approval_mode
+        # G23 审批治理面
+        self._classifier_available = classifier_available
+        self._immune_prefixes = immune_prefixes or _DEFAULT_IMMUNE_PREFIXES
+        self._immune_paths = immune_paths or _DEFAULT_IMMUNE_PATHS
+        # 熔断状态（per-runtime 内存，不跨进程；G32 范围才做跨进程）
+        self._consecutive_denials: dict[str, int] = {}
+        self._total_denials: dict[str, int] = {}
 
     # -------------------------------------------------------------- policy
 
@@ -116,22 +137,17 @@ class CapabilityRuntime:
         arguments: dict[str, Any] | None = None,
     ) -> ToolDecision:
         profile = self._profiles.get(tool_name)
-        if self._approval_mode == "never":
-            return ToolDecision(
-                action="allow",
-                reason="approval_policy.mode=never",
-                policy_ref=self._policy.policy_ref,
-                risk_level=profile.risk_level if profile else RiskLevel.LOW,
-            )
+        risk = profile.risk_level if profile else RiskLevel.LOW
+        policy_ref = self._policy.policy_ref
         prior = self.check_receipt_idempotency_only(tenant_id, tool_name)
-        return self._policy.decide(
+        policy_decision = self._policy.decide(
             ToolCallContext(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 agent_id=agent_id,
                 tool_name=tool_name,
                 tool_version=profile.version if profile else "1.0.0",
-                risk_level=profile.risk_level if profile else RiskLevel.LOW,
+                risk_level=risk,
                 has_external_side_effects=(
                     profile.side_effect in _SIDE_EFFECT_EXTERNAL if profile else False
                 ),
@@ -141,6 +157,85 @@ class CapabilityRuntime:
                 prior_receipt_id=prior or "",
             )
         )
+        # Approval can authorize an ask, never override a revision's hard deny.
+        # This also applies to never mode and an unavailable classifier.
+        if policy_decision.action == "deny":
+            return policy_decision
+        # G23 ③ 熔断：连续 3 拒/累计 20 拒 → deny
+        breaker_key = f"{tenant_id}:{user_id}:{agent_id}"
+        if (
+            self._consecutive_denials.get(breaker_key, 0) >= 3
+            or self._total_denials.get(breaker_key, 0) >= 20
+        ):
+            return ToolDecision(
+                action="deny",
+                reason="approval circuit breaker open (3 consecutive or 20 total denials)",
+                policy_ref=policy_ref,
+                risk_level=risk,
+                disclosure="熔断器打开，拒绝调用",
+                decided_by="circuit_breaker",
+            )
+        # G23 ① bypass 免疫：敏感路径/敏感动词不得被 never 模式覆盖
+        immune_reason = self._check_immune(tool_name, arguments)
+        if immune_reason:
+            return ToolDecision(
+                action="require_approval",
+                reason=immune_reason,
+                policy_ref=policy_ref,
+                risk_level=risk,
+                disclosure="bypass 免疫：敏感面不可被 never 模式覆盖",
+                decided_by="immune",
+            )
+        # G23 ③ fail-closed：分类器不可用 → require_approval（不 allow）
+        if not self._classifier_available:
+            return ToolDecision(
+                action="require_approval",
+                reason="classifier unavailable (fail-closed)",
+                policy_ref=policy_ref,
+                risk_level=risk,
+                disclosure="分类器不可用，fail-closed",
+                decided_by="config",
+            )
+        if self._approval_mode == "never":
+            return ToolDecision(
+                action="allow",
+                reason="approval_policy.mode=never",
+                policy_ref=policy_ref,
+                risk_level=risk,
+                decided_by="config",
+            )
+        return policy_decision
+
+    def _check_immune(self, tool_name: str, arguments: dict[str, Any] | None) -> str:
+        """G23 ① bypass 免疫检查：敏感动词/敏感路径/敏感命令。"""
+        name_lower = tool_name.lower()
+        for prefix in self._immune_prefixes:
+            if name_lower.startswith(prefix):
+                return f"immune: tool name matches sensitive prefix {prefix!r}"
+        if arguments:
+            for key in ("path", "file_path", "command", "script"):
+                val = str(arguments.get(key) or "")
+                for immune_path in self._immune_paths:
+                    if immune_path in val:
+                        return f"immune: argument {key} matches sensitive path {immune_path!r}"
+                # command/script 参数内的敏感命令动词（rm -rf / 、sudo ... 等）
+                if key in ("command", "script"):
+                    val_lower = val.lower()
+                    for verb in self._immune_prefixes:
+                        if verb in val_lower:
+                            return f"immune: {key} contains sensitive command {verb!r}"
+        return ""
+
+    def record_denial(self, tenant_id: str, user_id: str, agent_id: str) -> None:
+        """G23 ③ 记录一次拒绝（供熔断计数）。外部审批 denied 后调用。"""
+        key = f"{tenant_id}:{user_id}:{agent_id}"
+        self._consecutive_denials[key] = self._consecutive_denials.get(key, 0) + 1
+        self._total_denials[key] = self._total_denials.get(key, 0) + 1
+
+    def reset_denials(self, tenant_id: str, user_id: str, agent_id: str) -> None:
+        """审批通过后重置连续拒绝计数（总计数保留，用于累计熔断）。"""
+        key = f"{tenant_id}:{user_id}:{agent_id}"
+        self._consecutive_denials.pop(key, None)
 
     # ------------------------------------------------------------- receipts
 

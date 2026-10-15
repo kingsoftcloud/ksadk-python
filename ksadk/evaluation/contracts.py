@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -59,6 +60,24 @@ class AssertionType(str, Enum):
     RUNTIME_MAX_INPUT_TOKENS = "runtime.maxInputTokens"
     RUNTIME_MAX_OUTPUT_TOKENS = "runtime.maxOutputTokens"
     RUNTIME_MAX_TOTAL_TOKENS = "runtime.maxTotalTokens"
+    RUNTIME_MAX_TERMINAL_EVENTS_PER_SCOPE = "runtime.maxTerminalEventsPerScope"
+    RUNTIME_MAX_RETRIES = "runtime.maxRetries"
+    RUNTIME_MAX_COMPACTIONS = "runtime.maxCompactions"
+    RUNTIME_MAX_SUBAGENTS = "runtime.maxSubagents"
+    RUNTIME_MAX_TOOL_CALLS = "runtime.maxToolCalls"
+    RUNTIME_MAX_SKILL_DISCLOSURES = "runtime.maxSkillDisclosures"
+    RUNTIME_MAX_MCP_DISCLOSURES = "runtime.maxMcpDisclosures"
+    RUNTIME_MIN_RETRIES = "runtime.minRetries"
+    RUNTIME_MIN_COMPACTIONS = "runtime.minCompactions"
+    RUNTIME_MIN_SUBAGENTS = "runtime.minSubagents"
+    RUNTIME_MIN_MEMORY_RECALLS = "runtime.minMemoryRecalls"
+    RUNTIME_MIN_MEMORY_WRITES = "runtime.minMemoryWrites"
+    RUNTIME_MIN_SKILL_DISCLOSURES = "runtime.minSkillDisclosures"
+    RUNTIME_MIN_MCP_DISCLOSURES = "runtime.minMcpDisclosures"
+    ARTIFACT_FILE_EXISTS = "artifact.fileExists"
+    ARTIFACT_FILE_EQUALS = "artifact.fileEquals"
+    ARTIFACT_FILE_CONTAINS = "artifact.fileContains"
+    SESSION_SAME_ACROSS_TURNS = "session.sameAcrossTurns"
     TOOL_CALLED = "tool.called"
     TOOL_NOT_CALLED = "tool.notCalled"
     TOOL_SUCCEEDED = "tool.succeeded"
@@ -132,6 +151,21 @@ class AssertionSpec(EvaluationModel):
         if self.type is AssertionType.RESPONSE_JSON_SCHEMA:
             if not isinstance(self.value, dict):
                 raise ValueError("response.jsonSchema 的 value 必须是对象")
+        elif self.type is AssertionType.ARTIFACT_FILE_EXISTS:
+            _validate_workspace_path(self.value, assertion_type=self.type.value)
+        elif self.type in {
+            AssertionType.ARTIFACT_FILE_EQUALS,
+            AssertionType.ARTIFACT_FILE_CONTAINS,
+        }:
+            if not isinstance(self.value, dict) or set(self.value) != {"path", "content"}:
+                raise ValueError(f"{self.type.value} 的 value 必须只包含 path 和 content")
+            _validate_workspace_path(self.value.get("path"), assertion_type=self.type.value)
+            content = self.value.get("content")
+            if not isinstance(content, str) or len(content) > 1_048_576:
+                raise ValueError(f"{self.type.value} 的 content 必须是不超过 1 MiB 的字符串")
+        elif self.type is AssertionType.SESSION_SAME_ACROSS_TURNS:
+            if self.value is not True:
+                raise ValueError("session.sameAcrossTurns 的 value 必须是 true")
         elif self.type.value.startswith("runtime."):
             if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
                 raise ValueError(f"{self.type} 的 value 必须是非负数字")
@@ -147,6 +181,23 @@ class AssertionSpec(EvaluationModel):
         elif not isinstance(self.value, str):
             raise ValueError(f"{self.type} 的 value 必须是字符串")
         return self
+
+
+def _validate_workspace_path(value: Any, *, assertion_type: str) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > 1024:
+        raise ValueError(f"{assertion_type} 的路径必须是 1..1024 字符的字符串")
+    path = value
+    parsed = PurePosixPath(path)
+    if (
+        path != path.strip()
+        or "\\" in path
+        or "\x00" in path
+        or parsed.is_absolute()
+        or parsed.as_posix() != path
+        or any(part in {"", ".", ".."} for part in parsed.parts)
+    ):
+        raise ValueError(f"{assertion_type} 的路径必须是工作区内的规范相对路径")
+    return path
 
 
 class EvalCase(EvaluationModel):
@@ -280,6 +331,7 @@ class EvaluationConfig(EvaluationModel):
     fail_fast: bool = False
     evaluators: list[str] = Field(default_factory=list)
     data_policy: DataPolicy = DataPolicy.LOCAL_ONLY
+    tool_approval_mode: Literal["ask", "risk", "full"] = "risk"
     judge_model: str | None = Field(default=None, min_length=1, max_length=256)
     judge_api_base: str | None = Field(default=None, min_length=1, max_length=2048)
     judge_api_key_env: str = Field(
@@ -366,6 +418,30 @@ class ToolCallEvidence(EvaluationModel):
     seq_end: int | None = Field(default=None, ge=1)
 
 
+class FileCheckEvidence(EvaluationModel):
+    """Content-free result of checking one declared workspace file assertion."""
+
+    assertion_type: Literal[
+        "artifact.fileExists",
+        "artifact.fileEquals",
+        "artifact.fileContains",
+    ]
+    path: str = Field(min_length=1, max_length=1024)
+    expected_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    status: Literal[
+        "PRESENT",
+        "MATCH",
+        "MISMATCH",
+        "MISSING",
+        "NOT_FILE",
+        "TOO_LARGE",
+        "UNAVAILABLE",
+        "ERROR",
+    ]
+    actual_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    size_bytes: int | None = Field(default=None, ge=0)
+
+
 class TargetRun(EvaluationModel):
     """Normalized result returned by a target adapter for one case."""
 
@@ -378,6 +454,7 @@ class TargetRun(EvaluationModel):
     trace_ref: TraceRef | None = None
     trace_refs: list[TraceRef] = Field(default_factory=list)
     tool_calls: list[ToolCallEvidence] = Field(default_factory=list)
+    file_checks: list[FileCheckEvidence] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -439,9 +516,7 @@ class EvalRunReport(EvaluationModel):
         self.summary = self._summarize_cases()
         expected = self.compute_digest()
         if self.report_digest and self.report_digest != expected:
-            legacy_payload = self.model_dump(
-                mode="json", by_alias=False, exclude={"report_digest"}
-            )
+            legacy_payload = self.model_dump(mode="json", by_alias=False, exclude={"report_digest"})
             legacy_payload["spec"].pop("cloud_dataset", None)
             if self.spec.cloud_dataset is not None or self.report_digest != _content_digest(
                 legacy_payload

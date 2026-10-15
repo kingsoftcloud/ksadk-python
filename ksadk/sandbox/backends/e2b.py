@@ -4,8 +4,10 @@ import logging
 import os
 import posixpath
 import time
+from collections.abc import Callable
 from typing import Any
 
+from ksadk.common.cloud_headers import build_cloud_headers, resolve_traffic_source
 from ksadk.sandbox.base import (
     ReconnectableSandboxCommandHandle,
     SandboxCommandResult,
@@ -178,6 +180,7 @@ class E2BSandboxSession:
         timeout: int | None = None,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        on_output: Callable[[str, str], None] | None = None,
     ) -> SandboxCommandResult:
         kwargs: dict[str, Any] = {}
         if timeout is not None:
@@ -186,12 +189,27 @@ class E2BSandboxSession:
             kwargs["envs"] = env
         if cwd is not None:
             kwargs["cwd"] = cwd
+        if on_output is not None:
+            def observed(channel: str, text: str) -> None:
+                try:
+                    on_output(channel, text)
+                except Exception:
+                    pass  # Presentation does not alter remote command outcomes.
+            kwargs["on_stdout"] = lambda text: observed("stdout", text)
+            kwargs["on_stderr"] = lambda text: observed("stderr", text)
         result = self._sandbox.commands.run(command, **kwargs)
         return SandboxCommandResult(
             stdout=str(getattr(result, "stdout", "") or ""),
             stderr=str(getattr(result, "stderr", "") or ""),
             exit_code=getattr(result, "exit_code", None),
         )
+
+    def run_command_observed(
+        self, command: str, *, on_output: Callable[[str, str], None],
+        timeout: int | None = None, env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> SandboxCommandResult:
+        return self.run_command(command, timeout=timeout, env=env, cwd=cwd, on_output=on_output)
 
     def start_command(
         self,
@@ -287,6 +305,16 @@ class E2BSandboxBackend:
             if connection is not None
             else None
         )
+        self.traffic_source = (
+            self.connection.traffic_source
+            if self.connection is not None
+            else resolve_traffic_source()
+        )
+
+    def _connection_options(self) -> dict[str, Any]:
+        if self.connection is not None:
+            return self.connection.sdk_options()
+        return {"headers": build_cloud_headers(traffic_source=self.traffic_source)}
 
     def _get_sandbox_cls(self) -> Any:
         sandbox_cls = self.sandbox_cls
@@ -325,7 +353,7 @@ class E2BSandboxBackend:
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
     ) -> SandboxSession:
-        connection_options = self.connection.sdk_options() if self.connection is not None else {}
+        connection_options = self._connection_options()
         sandbox_cls = self._sandbox_class()
 
         metadata = {
@@ -400,9 +428,7 @@ class E2BSandboxBackend:
         # existing instance that may still be running another process's work.
         with self._diagnostic_step("reconnect", runtime_id=locator):
             sandbox_cls = self._get_sandbox_cls()
-            connection_options = (
-                self.connection.sdk_options() if self.connection is not None else {}
-            )
+            connection_options = self._connection_options()
             sandbox = sandbox_cls.connect(locator, timeout=self.spec.timeout, **connection_options)
             session = self._wrap_sandbox(sandbox)
             with self._diagnostic_step("reconnect.ready.command", runtime_id=session.sandbox_id):

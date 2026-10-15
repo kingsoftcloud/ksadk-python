@@ -56,6 +56,9 @@ class ToolDecision:
     policy_ref: str
     risk_level: RiskLevel
     disclosure: str = ""
+    # G23 审批治理：审计维度（§9 开放问题 7：合同先落，UI 后置）。
+    # user_permanent/user_temporary/user_reject/user_abort/hook/classifier/config/policy/immune
+    decided_by: str = "classifier"
 
 
 @dataclass

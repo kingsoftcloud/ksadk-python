@@ -15,6 +15,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 
@@ -31,12 +32,15 @@ class ArtifactRecord:
 
 
 class ArtifactStore:
-    """Run 作用域 Artifact 持久化（线程安全由 SQLite 连接锁保证）。"""
+    """Run 作用域持久化；同一 owner 的版本分配、索引和关闭使用同一锁。"""
 
     def __init__(self, root: str | Path, db_path: str | Path | None = None) -> None:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(db_path or self._root / "artifacts.sqlite3"))
+        self._lock = RLock()
+        self._db = sqlite3.connect(
+            str(db_path or self._root / "artifacts.sqlite3"), check_same_thread=False,
+        )
         self._db.execute(
             """
             CREATE TABLE IF NOT EXISTS artifacts (
@@ -57,6 +61,12 @@ class ArtifactStore:
     # ------------------------------------------------------------- 写入
 
     def save(
+        self, *, run_id: str, name: str, content: bytes, mime: str = "text/plain"
+    ) -> ArtifactRecord:
+        with self._lock:
+            return self._save(run_id=run_id, name=name, content=content, mime=mime)
+
+    def _save(
         self, *, run_id: str, name: str, content: bytes, mime: str = "text/plain"
     ) -> ArtifactRecord:
         name = _safe_name(name)
@@ -111,7 +121,8 @@ class ArtifactStore:
             query += " AND name = ?"
             params.append(_safe_name(name))
         query += " ORDER BY name, version"
-        rows = self._db.execute(query, params).fetchall()
+        with self._lock:
+            rows = self._db.execute(query, params).fetchall()
         return [_record(row) for row in rows]
 
     def latest(self, run_id: str, name: str) -> ArtifactRecord | None:
@@ -120,6 +131,10 @@ class ArtifactStore:
 
     def read(self, record: ArtifactRecord) -> bytes:
         return self._read_uri(record.uri)
+
+    def read_uri(self, uri: str) -> bytes:
+        """按 URI 读取 artifact 内容（G10 artifact_read 取回路径）。"""
+        return self._read_uri(uri)
 
     def read_latest(self, run_id: str, name: str) -> bytes | None:
         record = self.latest(run_id, name)
@@ -149,7 +164,8 @@ class ArtifactStore:
         return (row[0] or 0) + 1
 
     def close(self) -> None:
-        self._db.close()
+        with self._lock:
+            self._db.close()
 
 
 class BudgetedArtifactStore:
@@ -163,11 +179,12 @@ class BudgetedArtifactStore:
     def save(self, *, run_id: str, name: str, content: bytes, mime: str = "text/plain"):
         if run_id != self._run_id:
             raise ValueError("budgeted artifact store run_id mismatch")
-        if len(self._store.list(run_id)) >= self._max_artifacts:
-            raise ArtifactBudgetExceeded(
-                f"artifact budget {self._max_artifacts} exhausted before write"
-            )
-        return self._store.save(run_id=run_id, name=name, content=content, mime=mime)
+        with self._store._lock:
+            if len(self._store.list(run_id)) >= self._max_artifacts:
+                raise ArtifactBudgetExceeded(
+                    f"artifact budget {self._max_artifacts} exhausted before write"
+                )
+            return self._store.save(run_id=run_id, name=name, content=content, mime=mime)
 
     def list(self, run_id: str, *, name: str | None = None):
         return self._store.list(run_id, name=name)

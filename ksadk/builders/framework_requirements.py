@@ -19,6 +19,8 @@ LANGCHAIN_ECOSYSTEM_REQUIREMENTS = (
     "langchain-openai>=1.4.0,<2.0.0",
     "langchain-core>=1.5.0,<2.0.0",
     "langgraph>=1.2.0,<1.3.0",
+    # Plain Code runtimes use the local SQLite checkpoint backend by default.
+    "langgraph-checkpoint-sqlite>=2.0.0",
 )
 
 DEEPAGENTS_REQUIREMENTS = ("deepagents>=0.6.2,<1.0.0",)

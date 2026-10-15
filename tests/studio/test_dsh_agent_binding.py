@@ -15,7 +15,12 @@ from ksadk.mcp_runtime import MCPServerConfig, build_connection_params
 from ksadk.plugins.builtins import builtin_capability_manifests
 from ksadk.plugins.bundle import PluginBundleResolver
 from ksadk.plugins.contracts import PluginManifest
-from ksadk.plugins.host import PluginCapabilityBinding, PluginExecutionContext, PluginHost
+from ksadk.plugins.host import (
+    PluginCapabilityBinding,
+    PluginExecutionContext,
+    PluginHost,
+    PluginHostError,
+)
 from ksadk.plugins.providers.dsh_capabilities import (
     DshCapabilityTool,
     DshMcpConnectorLease,
@@ -775,8 +780,9 @@ async def test_harness_prepare_rolls_back_a_minted_dsh_scope_on_later_failure(
         ),
     )
 
-    with pytest.raises(Exception, match="empty Skill contribution"):
+    with pytest.raises(PluginHostError) as exc_info:
         await provider.prepare(bundle, capabilities=context)
+    assert exc_info.value.code == "harness_skill_invalid"
 
     assert len(service.revoked_tokens) == 1
     await provider.dispose()

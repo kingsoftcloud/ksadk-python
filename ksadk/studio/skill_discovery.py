@@ -8,11 +8,15 @@ import os
 import re
 import shutil
 import stat
+import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from io import BytesIO
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
+from urllib.parse import quote
 from uuid import uuid4
 
+import httpx
 import yaml  # type: ignore[import-untyped]
 
 from ksadk.studio.capabilities import canonical_json, require_exact_version, sha256_digest
@@ -22,6 +26,9 @@ from ksadk.studio.workspace import Workspace
 MAX_SKILL_BYTES = 100 * 1024 * 1024
 MAX_SKILL_FILES = 1000
 MAX_PREVIEW_BYTES = 512 * 1024
+MAX_REMOTE_ARCHIVE_BYTES = 50 * 1024 * 1024
+MAX_REMOTE_ARCHIVE_FILES = 5000
+MAX_REMOTE_UNPACKED_BYTES = 200 * 1024 * 1024
 SCRIPT_SUFFIXES = frozenset({".py", ".sh", ".js", ".ts", ".tsx", ".ps1", ".rb"})
 TEXT_SUFFIXES = frozenset(
     {".md", ".txt", ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".css", ".html", ".xml"}
@@ -106,6 +113,134 @@ class SkillDiscoveryService:
         )
         return record
 
+    def discover_github(self, source_url: str, *, ref: str = "main") -> dict[str, Any]:
+        """Inspect Agent Skills from one GitHub repository without executing it.
+
+        The mutable branch name is resolved to a commit SHA before downloading.
+        Installation remains a separate, explicit commit step so model output
+        can never turn an arbitrary public repository into executable host code.
+        """
+
+        owner, repository = self._github_repository(source_url)
+        requested_ref = self._github_ref(ref)
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "ksadk-studio-skill-inspector/1",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        try:
+            with httpx.Client(timeout=20, follow_redirects=True, headers=headers) as client:
+                commit_sha = (
+                    requested_ref.lower()
+                    if re.fullmatch(r"[0-9a-fA-F]{40}", requested_ref)
+                    else self._resolve_github_commit(
+                        client,
+                        owner=owner,
+                        repository=repository,
+                        requested_ref=requested_ref,
+                    )
+                )
+                if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+                    raise ValueError("GitHub response omitted an immutable commit SHA")
+                content = self._download_remote_archive(
+                    client,
+                    f"https://codeload.github.com/{owner}/{repository}/zip/{commit_sha}",
+                )
+        except (httpx.HTTPError, ValueError) as exc:
+            raise StudioError(
+                "SKILL_REMOTE_FETCH_FAILED",
+                "无法读取 GitHub Skill 仓库，请检查地址、版本和网络连接",
+                status_code=422,
+                details={
+                    "source": f"https://github.com/{owner}/{repository}",
+                    "ref": requested_ref,
+                },
+            ) from exc
+        token = f"skd_{uuid4().hex}"
+        cache_root = self._remote_cache_root(token)
+        try:
+            self._extract_remote_archive(content, cache_root)
+            manifests = self._scan_manifests(cache_root)
+            candidates = [
+                self.inspect_candidate(
+                    manifest.parent,
+                    source="remote-github",
+                    root=cache_root,
+                    display_root=f"github:{owner}/{repository}@{commit_sha[:12]}",
+                )
+                for manifest in sorted(set(manifests), key=lambda item: item.as_posix())
+            ]
+            candidates.sort(key=lambda item: (item.get("name", ""), item["path"]))
+            record = {
+                "format": "agentkit.skill-discovery/v1",
+                "inspectionToken": token,
+                "source": {
+                    "kind": "github",
+                    "url": f"https://github.com/{owner}/{repository}",
+                    "requestedRef": requested_ref,
+                    "commitSha": commit_sha,
+                },
+                "candidates": candidates,
+                "requiresConfirmation": True,
+            }
+            self.workspace.atomic_write_text(
+                self._record_path(token),
+                json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            )
+        except Exception:
+            shutil.rmtree(cache_root, ignore_errors=True)
+            raise
+        return record
+
+    @staticmethod
+    def _resolve_github_commit(
+        client: httpx.Client,
+        *,
+        owner: str,
+        repository: str,
+        requested_ref: str,
+    ) -> str:
+        """Resolve a mutable GitHub ref without making REST rate limits fatal.
+
+        The REST endpoint remains preferred.  Public GitHub egress often
+        shares one unauthenticated REST quota, however, while the repository's
+        read-only Git advertisement is still available.  That advertisement
+        contains only ref names and immutable object IDs; parsing it neither
+        executes repository content nor weakens the later archive checks.
+        """
+
+        try:
+            revision = client.get(
+                "https://api.github.com/repos/"
+                f"{owner}/{repository}/commits/{quote(requested_ref, safe='')}"
+            )
+            revision.raise_for_status()
+            payload = revision.json()
+            commit_sha = str(payload.get("sha") or "").lower()
+            if re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+                return commit_sha
+        except (httpx.HTTPError, ValueError):
+            pass
+
+        advertised = client.get(
+            f"https://github.com/{owner}/{repository}.git/info/refs?service=git-upload-pack"
+        )
+        advertised.raise_for_status()
+        content = bytes(advertised.content)
+        if len(content) > 5 * 1024 * 1024:
+            raise ValueError("Git ref advertisement exceeds size limit")
+        escaped = re.escape(requested_ref.encode("utf-8"))
+        candidates = (
+            rb"([0-9a-f]{40}) refs/tags/" + escaped + rb"\^\{}(?:\x00|\n)",
+            rb"([0-9a-f]{40}) refs/heads/" + escaped + rb"(?:\x00|\n)",
+            rb"([0-9a-f]{40}) refs/tags/" + escaped + rb"(?:\x00|\n)",
+        )
+        for pattern in candidates:
+            match = re.search(pattern, content)
+            if match is not None:
+                return match.group(1).decode("ascii")
+        raise ValueError("GitHub ref advertisement omitted the requested ref")
+
     def commit(
         self,
         inspection_token: str,
@@ -144,7 +279,7 @@ class SkillDiscoveryService:
                 details={"candidateId": candidate_id},
             )
         source, source_kind, source_root, display_root = self._resolve_candidate_directory(
-            candidate
+            candidate, inspection_token=inspection_token
         )
         current = self.inspect_candidate(
             source,
@@ -215,6 +350,7 @@ class SkillDiscoveryService:
             )
         else:
             record_path.unlink(missing_ok=True)
+            shutil.rmtree(self._remote_cache_root(inspection_token), ignore_errors=True)
         return slug, str(candidate["version"])
 
     def preview_candidate(
@@ -225,8 +361,19 @@ class SkillDiscoveryService:
         path: str | None = None,
     ) -> dict[str, Any]:
         candidate = self._candidate_from_record(inspection_token, candidate_id)
-        directory, _, _, _ = self._resolve_candidate_directory(candidate)
+        directory, _, _, _ = self._resolve_candidate_directory(
+            candidate, inspection_token=inspection_token
+        )
         return self.preview_directory(directory, path=path)
+
+    def discard(self, inspection_token: str) -> None:
+        """Discard an uncommitted inspection and any downloaded remote bytes."""
+
+        record_path = self._record_path(inspection_token, validate=True)
+        if not record_path.exists():
+            return
+        record_path.unlink(missing_ok=True)
+        shutil.rmtree(self._remote_cache_root(inspection_token), ignore_errors=True)
 
     def preview_directory(
         self,
@@ -474,12 +621,30 @@ class SkillDiscoveryService:
     def _resolve_candidate_directory(
         self,
         candidate: dict[str, Any],
+        *,
+        inspection_token: str | None = None,
     ) -> tuple[Path, str, Path, str]:
         source = str(candidate.get("source") or "workspace")
         relative = str(candidate.get("relativePath") or candidate.get("path") or "")
         if source == "workspace":
             directory = self.workspace.resolve(relative, must_exist=True)
             return directory, source, self.workspace.root, ""
+        if source == "remote-github":
+            if inspection_token is None:
+                raise StudioError(
+                    "SKILL_DISCOVERY_NOT_FOUND",
+                    "远程 Skill 候选缺少发现记录",
+                    status_code=404,
+                )
+            root = self._remote_cache_root(inspection_token, validate=True)
+            directory = (root / relative).resolve(strict=True)
+            if not directory.is_relative_to(root):
+                raise StudioError(
+                    "SKILL_DISCOVERY_PATH_FORBIDDEN",
+                    "远程 Skill 候选路径越界",
+                    status_code=403,
+                )
+            return directory, source, root, "remote-github"
         configured = self._user_skill_roots().get(source)
         if configured is None:
             raise StudioError(
@@ -507,6 +672,8 @@ class SkillDiscoveryService:
     def _candidate_relative(self, directory: Path, *, source: str, root: Path) -> str:
         if source == "workspace":
             return self.workspace.relative(directory)
+        if source == "remote-github":
+            return directory.resolve().relative_to(root.resolve()).as_posix()
         configured = self._user_skill_roots().get(source)
         source_root = configured[0] if configured is not None else root
         try:
@@ -623,6 +790,141 @@ class SkillDiscoveryService:
                 status_code=404,
             )
         return self.workspace.resolve(Path(".agentkit/skill-discoveries") / f"{token}.json")
+
+    def _remote_cache_root(self, token: str, *, validate: bool = False) -> Path:
+        if validate and not re.fullmatch(r"skd_[0-9a-f]{32}", token):
+            raise StudioError(
+                "SKILL_DISCOVERY_NOT_FOUND",
+                "Skill 发现记录不存在或已失效",
+                status_code=404,
+            )
+        return self.workspace.resolve(Path(".agentkit/skill-discoveries-cache") / token)
+
+    @staticmethod
+    def _github_repository(source_url: str) -> tuple[str, str]:
+        match = re.fullmatch(
+            r"https://github\.com/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})(?:\.git)?/?",
+            source_url.strip(),
+        )
+        if not match:
+            raise StudioError(
+                "SKILL_REMOTE_SOURCE_INVALID",
+                "仅支持 https://github.com/<owner>/<repo> 仓库地址",
+                status_code=422,
+            )
+        owner, repository = match.groups()
+        return owner, repository.removesuffix(".git")
+
+    @staticmethod
+    def _github_ref(ref: str) -> str:
+        value = ref.strip()
+        if (
+            not value
+            or len(value) > 128
+            or value.startswith("/")
+            or ".." in value.split("/")
+            or not re.fullmatch(r"[A-Za-z0-9._/-]+", value)
+        ):
+            raise StudioError(
+                "SKILL_REMOTE_REF_INVALID",
+                "GitHub 版本必须是安全的分支、标签或 commit",
+                status_code=422,
+            )
+        return value
+
+    def _extract_remote_archive(self, content: bytes, destination: Path) -> None:
+        try:
+            archive = zipfile.ZipFile(BytesIO(content))
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise StudioError(
+                "SKILL_REMOTE_ARCHIVE_INVALID",
+                "GitHub Skill 仓库不是有效 ZIP",
+                status_code=422,
+            ) from exc
+        with archive:
+            files = [item for item in archive.infolist() if not item.is_dir()]
+            if not files or len(files) > MAX_REMOTE_ARCHIVE_FILES:
+                raise StudioError(
+                    "SKILL_REMOTE_ARCHIVE_TOO_LARGE",
+                    "GitHub Skill 仓库文件数超限",
+                    status_code=422,
+                )
+            roots: set[str] = set()
+            unpacked = 0
+            safe_entries: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
+            for info in files:
+                path = PurePosixPath(info.filename)
+                mode = (info.external_attr >> 16) & 0o170000
+                if (
+                    path.is_absolute()
+                    or len(path.parts) < 2
+                    or ".." in path.parts
+                    or "\\" in info.filename
+                    or any(":" in part for part in path.parts)
+                    or mode == stat.S_IFLNK
+                    or (info.compress_size == 0 and info.file_size > 0)
+                    or (info.compress_size > 0 and info.file_size / info.compress_size > 200)
+                ):
+                    raise StudioError(
+                        "SKILL_REMOTE_ARCHIVE_UNSAFE",
+                        "GitHub Skill 仓库包含不安全路径、链接或压缩条目",
+                        status_code=422,
+                        details={"entry": info.filename},
+                    )
+                roots.add(path.parts[0])
+                unpacked += info.file_size
+                if unpacked > MAX_REMOTE_UNPACKED_BYTES:
+                    raise StudioError(
+                        "SKILL_REMOTE_ARCHIVE_TOO_LARGE",
+                        "GitHub Skill 仓库解压后超过 200 MiB 上限",
+                        status_code=422,
+                    )
+                relative = PurePosixPath(*path.parts[1:])
+                if any(part in EXCLUDED_PARTS for part in relative.parts):
+                    continue
+                safe_entries.append((info, relative))
+            if len(roots) != 1:
+                raise StudioError(
+                    "SKILL_REMOTE_ARCHIVE_UNSAFE",
+                    "GitHub Skill 仓库缺少唯一根目录",
+                    status_code=422,
+                )
+            destination.mkdir(parents=True, exist_ok=False)
+            for info, relative in safe_entries:
+                target = destination / Path(*relative.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(info))
+
+    @staticmethod
+    def _download_remote_archive(client: httpx.Client, url: str) -> bytes:
+        """Download a remote archive without allowing an oversized body in memory."""
+
+        chunks: list[bytes] = []
+        total = 0
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            content_length = response.headers.get("content-length")
+            if content_length:
+                try:
+                    declared_size = int(content_length)
+                except ValueError:
+                    declared_size = 0
+                if declared_size > MAX_REMOTE_ARCHIVE_BYTES:
+                    raise StudioError(
+                        "SKILL_REMOTE_ARCHIVE_TOO_LARGE",
+                        "GitHub Skill 仓库压缩包超过 50 MiB 上限",
+                        status_code=422,
+                    )
+            for chunk in response.iter_bytes():
+                total += len(chunk)
+                if total > MAX_REMOTE_ARCHIVE_BYTES:
+                    raise StudioError(
+                        "SKILL_REMOTE_ARCHIVE_TOO_LARGE",
+                        "GitHub Skill 仓库压缩包超过 50 MiB 上限",
+                        status_code=422,
+                    )
+                chunks.append(chunk)
+        return b"".join(chunks)
 
 
 __all__ = ["SkillDiscoveryService"]

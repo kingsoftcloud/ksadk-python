@@ -1,9 +1,10 @@
-"""Google ADK 2.6.3+ events to canonical RuntimeEvent schema v2."""
+"""Google ADK events to canonical RuntimeEvent schema v2."""
 
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from importlib.metadata import version
 from typing import Any, TypeAlias, cast
 
 from google.adk.events import Event
@@ -37,6 +38,7 @@ class ADKAdapterContext:
 
     run_id: str
     initial_seq: int = 1
+    max_native_events: int = 32768
     _next_seq: int = field(init=False, repr=False)
     _ordinals: dict[_OrdinalKey, int] = field(
         default_factory=lambda: defaultdict(int), init=False, repr=False
@@ -44,14 +46,29 @@ class ADKAdapterContext:
     _open_items: set[_ItemKey] = field(default_factory=set, init=False, repr=False)
     _open_item_kinds: dict[_ItemKey, ItemKind] = field(default_factory=dict, init=False, repr=False)
     _completed_items: set[_ItemKey] = field(default_factory=set, init=False, repr=False)
+    _remote_completed_text: dict[_ItemKey, str] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _output_refs: list[OutputRef] = field(default_factory=list, init=False, repr=False)
     _output_replacement_items: set[_ItemKey] = field(default_factory=set, init=False, repr=False)
+    _active_text_items: dict[tuple[str, str], str] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _pending_text: dict[_ItemKey, tuple[dict[str, Any], str]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _partial_deliveries: int = field(default=0, init=False, repr=False)
+    _seen_native_events: set[tuple[str, str, str]] = field(
+        default_factory=set, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():
             raise ValueError("ADK adapter run_id must not be empty")
         if self.initial_seq < 0:
             raise ValueError("ADK adapter initial_seq must be non-negative")
+        if self.max_native_events <= 0:
+            raise ValueError("ADK adapter max_native_events must be positive")
         self._next_seq = self.initial_seq
 
     def allocate_seq(self) -> int:
@@ -96,6 +113,7 @@ class ADKAdapterContext:
     def mark_completed(self, key: _ItemKey, *, output: bool) -> None:
         self._open_items.discard(key)
         self._open_item_kinds.pop(key, None)
+        self._pending_text.pop(key, None)
         self._completed_items.add(key)
         if output:
             if key in self._output_replacement_items:
@@ -106,21 +124,88 @@ class ADKAdapterContext:
     def mark_output_replacement(self, key: _ItemKey) -> None:
         self._output_replacement_items.add(key)
 
+    def accept_native_event(
+        self, native_run_id: str, path_key: str, native_event_id: str, *, deduplicate: bool = True
+    ) -> bool:
+        key = (native_run_id, path_key, native_event_id)
+        if deduplicate and key in self._seen_native_events:
+            return False
+        if len(self._seen_native_events) + self._partial_deliveries >= self.max_native_events:
+            raise ValueError("ADK native event budget exceeded")
+        if deduplicate:
+            self._seen_native_events.add(key)
+        else:
+            self._partial_deliveries += 1
+        return True
+
+    def resolve_text_item(self, scope_id: str, lane: str, candidate_item_id: str) -> str:
+        """Reuse the open ADK response lane across per-chunk native Event IDs."""
+
+        return self._active_text_items.get((scope_id, lane), candidate_item_id)
+
+    def mark_text_started(self, key: _ItemKey, lane: str, item_kind: ItemKind) -> None:
+        self.mark_started(key, item_kind)
+        self._active_text_items[(key[0], lane)] = key[1]
+
+    def mark_text_completed(self, key: _ItemKey, lane: str, *, output: bool) -> None:
+        active_key = (key[0], lane)
+        if self._active_text_items.get(active_key) == key[1]:
+            self._active_text_items.pop(active_key, None)
+        self.mark_completed(key, output=output)
+
     def mark_failed(self, key: _ItemKey) -> None:
         self._open_items.discard(key)
         self._open_item_kinds.pop(key, None)
+        self._pending_text.pop(key, None)
         self._output_replacement_items.discard(key)
+        for active_key, active_item_id in tuple(self._active_text_items.items()):
+            if active_key[0] == key[0] and active_item_id == key[1]:
+                self._active_text_items.pop(active_key, None)
 
 
 class ADKEventAdapter:
     """Map ADK native response identities without author/text inference."""
 
+    def __init__(self, *, partial_ids_identify_response: bool | None = None):
+        if partial_ids_identify_response is None:
+            release = tuple(int(part) for part in version("google-adk").split(".")[:2])
+            partial_ids_identify_response = release >= (2, 6)
+        self._partial_ids_identify_response = partial_ids_identify_response
+
     def map(self, event: Event, context: ADKAdapterContext) -> tuple[RuntimeEvent, ...]:
+        if getattr(event, "_canonical", None) is not None:
+            # Only our in-process event type can carry an already persisted
+            # fact. Public custom_metadata cannot opt into this bypass.
+            from ksadk.a2a.adk import canonical_event_from_adk
+
+            canonical = canonical_event_from_adk(event)
+            if canonical is not None:
+                if canonical.run_id != context.run_id or canonical.event_type.startswith("run."):
+                    raise ValueError("A2A_CANONICAL_REFERENCE_CONFLICT")
+                if not context.accept_native_event(
+                    canonical.run_id, canonical.scope_id, canonical.event_id
+                ):
+                    return ()
+                context._next_seq = max(context.next_seq, canonical.seq + 1)
+                return (canonical,)
         native_event_id = _required_string(getattr(event, "id", None), "event id")
         native_run_id = _required_string(getattr(event, "invocation_id", None), "invocation id")
         path = str(getattr(getattr(event, "node_info", None), "path", "") or "")
         branch = str(getattr(event, "branch", "") or "")
         path_key = path or branch or "$root"
+        # ADK >= 2.6 reuses one response ID for every transient partial and
+        # its aggregate. These partials are not persisted by native sessions;
+        # their ordered deliveries, including equal text, must remain distinct.
+        # Canonical references and A2A artifact observations keep their own IDs.
+        shared_partial = (
+            self._partial_ids_identify_response
+            and bool(getattr(event, "partial", False))
+            and not (getattr(event, "custom_metadata", None) or {}).get("ksadk_a2a_stream")
+        )
+        if not context.accept_native_event(
+            native_run_id, path_key, native_event_id, deduplicate=not shared_partial
+        ):
+            return ()
         scope_id = stable_scope_id("adk", native_run_id, path_key)
         source_metadata: dict[str, JsonValue] = {"path": path, "path_key": path_key}
         author = str(getattr(event, "author", "") or "")
@@ -144,30 +229,49 @@ class ADKEventAdapter:
             ),
         }
         is_partial = bool(getattr(event, "partial", False))
-        for lane in ("reasoning", "message"):
-            text = text_by_lane[lane]
-            if not text:
-                continue
-            mapped.extend(
-                self._map_text_lane(
-                    event=event,
-                    context=context,
-                    native_event_id=native_event_id,
-                    native_run_id=native_run_id,
-                    path_key=path_key,
-                    scope_id=scope_id,
-                    source_metadata=source_metadata,
-                    lane=cast("_TextLane", lane),
-                    text=text,
-                    partial=is_partial,
-                    replace=any(
-                        getattr(part, "text", None)
-                        and bool(getattr(part, "thought", False)) == (lane == "reasoning")
-                        and _metadata_flag(part, "ksadk_output_snapshot")
-                        for part in parts
+        observations = (getattr(event, "custom_metadata", None) or {}).get("ksadk_a2a_stream") or [
+            None
+        ]
+        for remote in observations:
+            remote_item_id = None
+            if remote is not None:
+                remote_item_id = stable_item_id(
+                    "a2a", str(remote["task_id"]), str(remote["artifact_id"])
+                )
+            for lane in ("reasoning", "message"):
+                text = remote["text"][lane] if remote else text_by_lane[lane]
+                candidate_key = (
+                    scope_id,
+                    stable_item_id(
+                        "adk", native_run_id, path_key, remote_item_id or native_event_id, lane
                     ),
                 )
-            )
+                if not text and not (remote and context.is_open(candidate_key)):
+                    continue
+                mapped.extend(
+                    self._map_text_lane(
+                        event=event,
+                        context=context,
+                        native_event_id=native_event_id,
+                        native_run_id=native_run_id,
+                        path_key=path_key,
+                        scope_id=scope_id,
+                        source_metadata=source_metadata,
+                        lane=cast("_TextLane", lane),
+                        text=text,
+                        partial=(not remote["snapshot"]) if remote else is_partial,
+                        native_item_id=remote_item_id,
+                        close_at_end=bool(remote["last_chunk"]) if remote else False,
+                        replace=(not remote["append"])
+                        if remote
+                        else any(
+                            getattr(part, "text", None)
+                            and bool(getattr(part, "thought", False)) == (lane == "reasoning")
+                            and _metadata_flag(part, "ksadk_output_snapshot")
+                            for part in parts
+                        ),
+                    )
+                )
 
         if not is_partial:
             for part in parts:
@@ -207,6 +311,24 @@ class ADKEventAdapter:
                     )
         return tuple(mapped)
 
+    def finish(self, context: ADKAdapterContext) -> tuple[RuntimeEvent, ...]:
+        """Close a partial reasoning lane omitted from the terminal response."""
+
+        mapped: list[RuntimeEvent] = []
+        for _key, (kwargs, text) in list(context._pending_text.items()):
+            if (kwargs["lane"] == "reasoning" and not kwargs.get("native_item_id")) or kwargs.get(
+                "close_at_end", False
+            ):
+                mapped.extend(
+                    self._map_text_lane(
+                        **kwargs,
+                        text=text,
+                        partial=False,
+                        replace=False,
+                    )
+                )
+        return tuple(mapped)
+
     def _map_text_lane(
         self,
         *,
@@ -221,10 +343,21 @@ class ADKEventAdapter:
         text: str,
         partial: bool,
         replace: bool,
+        native_item_id: str | None = None,
+        close_at_end: bool = False,
     ) -> list[RuntimeEvent]:
-        item_id = stable_item_id("adk", native_run_id, path_key, native_event_id, lane)
+        candidate_item_id = stable_item_id(
+            "adk", native_run_id, path_key, native_item_id or native_event_id, lane
+        )
+        item_id = (
+            candidate_item_id
+            if native_item_id
+            else context.resolve_text_item(scope_id, lane, candidate_item_id)
+        )
         key = (scope_id, item_id)
         if context.is_completed(key):
+            if native_item_id and context._remote_completed_text.get(key) != text:
+                raise ValueError("A2A_TERMINAL_CONTENT_CONFLICT")
             return []
         part_id = f"{lane}.text"
         item_kind: ItemKind = "reasoning" if lane == "reasoning" else "message"
@@ -232,8 +365,11 @@ class ADKEventAdapter:
         source = _source(
             native_event_id=native_event_id,
             native_run_id=native_run_id,
-            native_item_id=native_event_id,
-            metadata=source_metadata,
+            native_item_id=native_item_id or native_event_id,
+            metadata={
+                **source_metadata,
+                **({"ksadk_output_snapshot": True} if replace and not native_item_id else {}),
+            },
         )
         mapped: list[RuntimeEvent] = []
         if not context.is_open(key):
@@ -254,11 +390,30 @@ class ADKEventAdapter:
                     phase=phase,
                 )
             )
-            context.mark_started(key, item_kind)
+            if native_item_id:
+                context.mark_started(key, item_kind)
+            else:
+                context.mark_text_started(key, lane, item_kind)
         content = TextContent(part_id=part_id, text=text)
-        if replace and lane == "message":
+        if replace and lane == "message" and not native_item_id:
             context.mark_output_replacement(key)
         if partial:
+            previous = context._pending_text.get(key, ({}, ""))[1]
+            context._pending_text[key] = (
+                {
+                    "event": event,
+                    "context": context,
+                    "native_event_id": native_event_id,
+                    "native_run_id": native_run_id,
+                    "path_key": path_key,
+                    "scope_id": scope_id,
+                    "source_metadata": source_metadata,
+                    "lane": lane,
+                    "native_item_id": native_item_id,
+                    "close_at_end": close_at_end,
+                },
+                ("" if replace else previous) + text,
+            )
             mapped.append(
                 ItemUpdated(
                     **_envelope(
@@ -295,9 +450,12 @@ class ADKEventAdapter:
                     snapshot=ContentSnapshot(parts=(content,)),
                 )
             )
-            context.mark_completed(
+            if native_item_id:
+                context._remote_completed_text[key] = text
+            context.mark_text_completed(
                 key,
-                output=lane == "message" and event.is_final_response(),
+                lane,
+                output=lane == "message" and (bool(native_item_id) or event.is_final_response()),
             )
         return mapped
 

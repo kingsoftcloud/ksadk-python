@@ -50,6 +50,7 @@ from ksadk.events.adapters._langgraph_support import (
 )
 from ksadk.events.canonical import (
     ApprovalRequest,
+    StructuredInputRequest,
     ContinuationCreated,
     ErrorInfo,
     InteractionRequested,
@@ -446,6 +447,10 @@ class LangGraphEventAdapter:
     ) -> tuple[RuntimeEvent, ...]:
         payload, metadata = _message_data(params.get("data"))
         node = _required_string(metadata.get("langgraph_node"), "messages metadata.langgraph_node")
+        if isinstance(payload, ToolMessage):
+            # LangGraph 1.2.0 also echoes tool outcomes on the messages lane.
+            # The tools lane owns their canonical result and error identity.
+            return ()
         if isinstance(payload, AIMessage):
             return _map_whole_message(
                 payload=payload,
@@ -628,6 +633,9 @@ class LangGraphEventAdapter:
         interaction_events = self._interaction_events_from_interrupts(
             context=context, frame=frame, source=source, env=env, interrupts=interrupts
         )
+        # Associate the companion pause with the pending interaction so Kernel
+        # preserves WAITING instead of publishing a terminal interruption.
+        interaction_id = interaction_events[0].interaction_id if interaction_events else None
         if context.checkpoint_ref is None:
             return (
                 *interaction_events,
@@ -642,6 +650,7 @@ class LangGraphEventAdapter:
                     ),
                     status="interrupted",
                     reason=reason,
+                    interaction_id=interaction_id,
                 ),
             )
 
@@ -697,6 +706,7 @@ class LangGraphEventAdapter:
                 ),
                 status="interrupted",
                 reason=reason,
+                interaction_id=interaction_id,
                 continuation_id=continuation_id,
             ),
         )
@@ -730,6 +740,10 @@ class LangGraphEventAdapter:
                 if isinstance(detail_value, (dict, list, str, int, float, bool, type(None)))
                 else None
             )
+            is_input = isinstance(detail_json, dict) and detail_json.get("kind") == "structured_input"
+            request = (StructuredInputRequest(
+                prompt=detail_json.get("prompt"), schema=detail_json.get("schema", {}),
+            ) if is_input else ApprovalRequest(call_id=intr_id or None, kind="tool", detail=detail_json))
             events.append(
                 InteractionRequested(
                     **env(
@@ -741,12 +755,8 @@ class LangGraphEventAdapter:
                         source,
                     ),
                     interaction_id=interaction_id,
-                    interaction_kind="approval",
-                    request=ApprovalRequest(
-                        call_id=intr_id or None,
-                        kind="tool",
-                        detail=detail_json,
-                    ),
+                    interaction_kind="structured_input" if is_input else "approval",
+                    request=request,
                 )
             )
         return tuple(events)

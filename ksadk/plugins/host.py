@@ -8,7 +8,7 @@ healthy, and disposes owned effects in reverse dependency order.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
@@ -34,6 +34,26 @@ class PluginHostError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _activation_claims(value: Mapping[str, str] | None) -> tuple[tuple[str, str], ...]:
+    """Freeze host-signed activation identity without accepting request payloads."""
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping) or len(value) > 32:
+        raise PluginHostError("agent_activation_claims_invalid", "invalid activation claims")
+    claims = tuple(sorted(value.items()))
+    if any(
+        type(key) is not str
+        or type(item) is not str
+        or not key
+        or not item
+        or len(key) > 80
+        or len(item) > 16_384
+        for key, item in claims
+    ):
+        raise PluginHostError("agent_activation_claims_invalid", "invalid activation claims")
+    return claims
 
 
 @runtime_checkable
@@ -83,6 +103,11 @@ class PluginExecutionContext:
     # The host owns this key. Capability plugins may use it to bind ephemeral
     # leases to the same provider activation without learning request payloads.
     activation_key: str = ""
+    activation_claims: tuple[tuple[str, str], ...] = ()
+    activation_generation: str = ""
+    # Checks the exact owning host generation, including retained old graphs.
+    # Code/configuration digests alone cannot establish resource liveness.
+    activation_available: Callable[[], bool] | None = None
 
     def all(
         self,
@@ -156,8 +181,10 @@ class _ActiveGraph:
 @dataclass
 class _ActiveActivation:
     key: str
+    generation: str
     graph: _ActiveGraph
     bundle_digest: str
+    activation_claims: tuple[tuple[str, str], ...]
     runtime: PreparedAgent
     operation_lock: asyncio.Lock
     operation_task: asyncio.Task[Any] | None = None
@@ -184,6 +211,10 @@ class PluginActivationSession:
     @property
     def bundle_digest(self) -> str:
         return self._active.bundle_digest
+
+    @property
+    def generation(self) -> str:
+        return self._active.generation
 
     @property
     def closed(self) -> bool:
@@ -343,6 +374,7 @@ class PluginHost:
         bundle: ResolvedPluginBundle,
         *,
         activation_key: str,
+        activation_claims: Mapping[str, str] | None = None,
     ) -> PluginActivationSession:
         """Open or reuse one profile-fenced, provider-owned activation.
 
@@ -357,9 +389,15 @@ class PluginHost:
                 "agent_activation_key_invalid",
                 "activation_key must be a non-empty value of at most 512 characters",
             )
+        claims = _activation_claims(activation_claims)
         async with self._transaction_lock:
             existing = self._activations.get(key)
             if existing is not None:
+                if not existing.closed and existing.activation_claims != claims:
+                    raise PluginHostError(
+                        "agent_activation_claims_mismatch",
+                        "session activation claims changed",
+                    )
                 if (
                     not existing.closed
                     and existing.bundle_digest == bundle.bundle_digest
@@ -374,15 +412,30 @@ class PluginHost:
                 await self._finish_cleanup(self._dispose_unpinned_retired_graphs())
 
             graph = self._require_bundle_graph(bundle)
+            generation = uuid4().hex
+
+            def available() -> bool:
+                current = self._activations.get(key)
+                return (
+                    current is not None
+                    and current.generation == generation
+                    and not current.closed
+                )
+
             runtime = await self._prepare_activation(
                 graph,
                 bundle,
                 activation_key=key,
+                activation_claims=claims,
+                activation_generation=generation,
+                activation_available=available,
             )
             active = _ActiveActivation(
                 key=key,
+                generation=generation,
                 graph=graph,
                 bundle_digest=bundle.bundle_digest,
+                activation_claims=claims,
                 runtime=runtime,
                 operation_lock=asyncio.Lock(),
             )
@@ -516,8 +569,17 @@ class PluginHost:
         bundle: ResolvedPluginBundle,
         *,
         activation_key: str,
+        activation_claims: tuple[tuple[str, str], ...],
+        activation_generation: str,
+        activation_available: Callable[[], bool],
     ) -> PreparedAgent:
-        capabilities = self._execution_context(graph, activation_key=activation_key)
+        capabilities = self._execution_context(
+            graph,
+            activation_key=activation_key,
+            activation_claims=activation_claims,
+            activation_generation=activation_generation,
+            activation_available=activation_available,
+        )
         provider_binding = capabilities.require("agent.provider/v1", slot="agent.execution")
         provider = provider_binding.runtime
         if not isinstance(provider, ExecutableAgentProvider):
@@ -581,19 +643,19 @@ class PluginHost:
                 result = await active.runtime.execute(request)
             except asyncio.CancelledError:
                 if not active.closed:
+                    active.closed = True
                     await self._dispose_activation(active.runtime)
-                active.closed = True
                 raise
             except PluginHostError as error:
                 self._last_failure = error
-                await self._dispose_activation(active.runtime)
                 active.closed = True
+                await self._dispose_activation(active.runtime)
                 raise
             except Exception as error:  # noqa: BLE001 - provider boundary
                 failure = PluginHostError("agent_execution_failed", str(error))
                 self._last_failure = failure
-                await self._dispose_activation(active.runtime)
                 active.closed = True
+                await self._dispose_activation(active.runtime)
                 raise failure from error
             finally:
                 if active.operation_task is task:
@@ -706,6 +768,9 @@ class PluginHost:
         graph: _ActiveGraph,
         *,
         activation_key: str = "",
+        activation_claims: tuple[tuple[str, str], ...] = (),
+        activation_generation: str = "",
+        activation_available: Callable[[], bool] | None = None,
     ) -> PluginExecutionContext:
         bindings = tuple(
             PluginCapabilityBinding(
@@ -723,6 +788,9 @@ class PluginHost:
             plugin_lock_digest=graph.resolved.plugin_lock_digest,
             bindings=bindings,
             activation_key=activation_key,
+            activation_claims=activation_claims,
+            activation_generation=activation_generation,
+            activation_available=activation_available,
         )
 
     @staticmethod

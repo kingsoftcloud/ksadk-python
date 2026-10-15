@@ -41,8 +41,28 @@ async def invoke_graph_with_control(
 
 def completion_payload(run: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"status": "completed"}
+    # 会话串轮修复（交接记录 2026-09-22 §7）：把当前 turn_id 写进 RUN_COMPLETED
+    # payload，让 managed_runtime._project_event 把 output_refs 指向当前轮的
+    # turn 级 final item_id，而不是无 turn 分量的 run 级身份。
+    turn_count = int(getattr(run.state, "turn_count", 0) or 0)
+    if turn_count > 0:
+        run_id = getattr(run.handle, "run_id", "") or ""
+        payload["turn_id"] = f"{run_id}:t{turn_count}"
     if run.controller is not None:
-        payload.update(run.controller.finalize(run.control_events).to_payload())
+        result = run.controller.finalize(run.control_events)
+        payload.update(result.to_payload())
+        # A model response produced only because the controller asked it to
+        # close at a soft budget boundary is a useful partial delivery, not a
+        # verified task completion.  Preserve that distinction for runtime
+        # adapters and Studio instead of flattening it into ``completed``.
+        # Explicit acceptance failures receive the same treatment even when
+        # the model stopped before a budget boundary.
+        if result.outcome.value != "verified" and (
+            run.controller.closing_requested or run.controller.spec.acceptance
+        ):
+            payload["control_reason"] = (
+                run.controller.closing_reason or result.reason
+            )
     return payload
 
 

@@ -9,24 +9,74 @@ contract; it does not introduce another event or transcript pipeline.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import threading
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+from pathlib import PurePosixPath as PurePosixPath
 from typing import Any, cast
 
 from ksadk.conversations.contracts import ConversationItem
 from ksadk.events.session_event import SessionServiceEventStore
 from ksadk.harness.config import McpToolSpec
+from ksadk.plugins.builtin_resources import (
+    _bound_capability_config as _bound_capability_config,
+)
+from ksadk.plugins.builtin_resources import (
+    _directory_digest as _directory_digest,
+)
+from ksadk.plugins.builtin_resources import (
+    _directory_resource_digests as _directory_resource_digests,
+)
+from ksadk.plugins.builtin_resources import (
+    _is_secret_reference as _is_secret_reference,
+)
+from ksadk.plugins.builtin_resources import (
+    _mapping as _mapping,
+)
+from ksadk.plugins.builtin_resources import (
+    _match_resource as _match_resource,
+)
+from ksadk.plugins.builtin_resources import (
+    _optional_string as _optional_string,
+)
+from ksadk.plugins.builtin_resources import (
+    _required_string as _required_string,
+)
+from ksadk.plugins.builtin_resources import (
+    _resolved_resources as _resolved_resources,
+)
+from ksadk.plugins.builtin_resources import (
+    _resource_entries as _resource_entries,
+)
+from ksadk.plugins.builtin_resources import (
+    _safe_bundle_path as _safe_bundle_path,
+)
+from ksadk.plugins.builtin_resources import (
+    _string_list as _string_list,
+)
 from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import (
     CompositionProfile,
     PluginManifest,
-    plugin_lock_digest,
+)
+from ksadk.plugins.contracts import (
+    plugin_lock_digest as plugin_lock_digest,
 )
 from ksadk.plugins.host import PluginHostError
+from ksadk.plugins.memory_provider import (
+    MemoryFlushRequest,
+    MemoryMutationRequest,
+    MemoryRecallRequest,
+    MemoryReceiptRequest,
+    MemoryRecordRequest,
+    memory_db_path,
+    memory_scope_bindings,
+)
 from ksadk.plugins.providers.harness import HarnessSkillContribution, HarnessTurnRequest
-from ksadk.plugins.resolver import composition_profile_digest
+from ksadk.plugins.resolver import composition_profile_digest as composition_profile_digest
 from ksadk.sessions.base import BaseSessionService
 from ksadk.sessions.local_service import LocalSessionService
 
@@ -72,7 +122,7 @@ def _manifest(
                     "compatibility": {
                         "kernelApi": ">=1,<2",
                         "runtimeProtocols": ["agentkit.runtime/v1"],
-                        "python": ">=3.10,<3.15",
+                        "python": ">=3.12,<3.15",
                     },
                     "healthContract": "plugin.health/v1",
                     "provenance": {
@@ -124,6 +174,7 @@ def builtin_capability_manifests() -> tuple[PluginManifest, ...]:
             definition="memory.provider/v1",
             slot="memory.primary",
             mode="unique",
+            permissions=("filesystem:memory-store",),
         ),
         _manifest(
             CORE_RENDERER_PLUGIN_ID,
@@ -241,6 +292,277 @@ class SQLiteSessionStoreRuntime(_BuiltinRuntime):
             await service.aclose()
 
 
+class LocalMemoryProviderRuntime(_BuiltinRuntime):
+    """Own lazy tenant databases; the immutable Build grants each recall scope."""
+
+    def __init__(self, plugin_id: str, version: str, *, state_root: Path):
+        super().__init__(plugin_id, version)
+        self._state_root = state_root.resolve()
+        self._providers: dict[str, Any] = {}
+        self._provider_lock = threading.Lock()
+        self._pending: set[asyncio.Task] = set()
+
+    async def memory_recall(self, bundle: ResolvedPluginBundle, request: MemoryRecallRequest):
+        from ksadk.memory.models import MemorySearchResult
+        from ksadk.studio.contracts import MemorySpec
+
+        self._config(bundle)
+        request = MemoryRecallRequest.model_validate_json(request.model_dump_json())
+        policy = MemorySpec.model_validate(bundle.resolved_agent_spec.get("memory") or {})
+        if (not policy.enabled or not policy.recall.enabled or not request.max_tokens
+                or not request.query.strip() or not request.scopes):
+            return MemorySearchResult("not_configured", [], None, "local-default", 0, "exact")
+        if (request.principal.agent_id != bundle.manifest.agent_id
+                or policy.provider_ref != "local-default"
+                or set(request.scopes) - set(policy.scopes)
+                or request.top_k > policy.recall.top_k
+                or request.max_tokens > policy.recall.max_tokens
+                or request.min_score != policy.recall.min_score):
+            raise PluginHostError("memory_recall_unbound", "Memory recall exceeds its Build grant")
+        return await self._owned(self._recall, request)
+
+    async def memory_search(self, bundle: ResolvedPluginBundle, request: MemoryRecallRequest):
+        """A model-directed read retains Build bounds without automatic injection."""
+        request = MemoryRecallRequest.model_validate_json(request.model_dump_json())
+        policy = self._memory_policy(bundle, request.principal)
+        if (set(request.scopes) - set(policy.scopes)
+                or request.top_k > policy.recall.top_k
+                or request.max_tokens > policy.recall.max_tokens
+                or request.min_score != policy.recall.min_score):
+            raise PluginHostError("memory_search_unbound", "Memory search exceeds its Build grant")
+        if not request.query.strip():
+            raise PluginHostError("memory_search_query_missing", "Memory search requires a query")
+        if not request.max_tokens or not request.scopes:
+            from ksadk.memory.models import MemorySearchResult
+
+            return MemorySearchResult("not_configured", [], None, "local-default", 0, "exact")
+        return await self._owned(self._recall, request)
+
+    async def _owned(self, callback, request):
+        task = asyncio.create_task(asyncio.to_thread(callback, request))
+        self._pending.add(task)
+        task.add_done_callback(self._drain_read)
+        # Cancellation cannot detach a database operation from its owner.
+        return await asyncio.shield(task)
+
+    def _drain_read(self, task):
+        self._pending.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    def _provider(self, principal):
+        from ksadk.memory.providers.local_sqlite import SqliteMemoryProvider
+
+        with self._provider_lock:
+            self._require_ready()
+            tenant = principal.tenant_id
+            if tenant not in self._providers:
+                self._providers[tenant] = SqliteMemoryProvider(
+                    db_path=memory_db_path(self._state_root, principal),
+                    tenant_id=tenant, workspace_id=principal.workspace_id,
+                )
+            return self._providers[tenant]
+
+    def _recall(self, request):
+        from dataclasses import replace
+
+        from ksadk.memory.models import MemorySearchRequest
+
+        provider = self._provider(request.principal)
+        result = provider.search(MemorySearchRequest(
+            query=request.query,
+            scopes=list(memory_scope_bindings(request.principal, request.scopes)),
+            memory_types=["profile", "fact", "episode"], top_k=request.top_k,
+            max_tokens=request.max_tokens, min_score=request.min_score,
+            filters={"keyword_relevance": True, "defer_token_budget": True,
+                     "tenant_id": request.principal.tenant_id},
+        ))
+        return replace(result, provider="local-default",
+                       retrieval_strategy="keyword")
+
+    def _memory_policy(self, bundle, principal):
+        from ksadk.studio.contracts import MemorySpec
+
+        self._config(bundle)
+        policy = MemorySpec.model_validate(bundle.resolved_agent_spec.get("memory") or {})
+        if (not policy.enabled or policy.provider_ref != "local-default"
+                or principal.agent_id != bundle.manifest.agent_id):
+            raise PluginHostError("memory_unbound", "Memory is outside its Build grant")
+        return policy
+
+    async def memory_read(self, bundle, request: MemoryRecordRequest):
+        request = MemoryRecordRequest.model_validate_json(request.model_dump_json())
+        policy = self._memory_policy(bundle, request.principal)
+        if set(request.scopes) - set(policy.scopes):
+            raise PluginHostError("memory_unbound", "Memory is outside its Build scopes")
+        return await self._owned(self._read_record, request)
+
+    def _read_record(self, request):
+        record = self._provider(request.principal).get(request.memory_id)
+        allowed = memory_scope_bindings(request.principal, request.scopes)
+        if (record is None or record.tenant_id != request.principal.tenant_id
+                or (record.scope != "org" and record.workspace_id != request.principal.workspace_id)
+                or (record.scope, record.scope_id) not in allowed
+                or record.status != "active" or record.sensitivity == "high"):
+            return None
+        return record
+
+    async def memory_mutate(self, bundle, request: MemoryMutationRequest):
+        from ksadk.memory.models import MemoryCandidate
+        from ksadk.memory.policy import MemoryPolicy
+        from ksadk.studio.contracts import ContextSpec
+
+        request = MemoryMutationRequest.model_validate_json(request.model_dump_json())
+        policy = self._memory_policy(bundle, request.principal)
+        rollout = ContextSpec.model_validate(
+            bundle.resolved_agent_spec.get("context") or {}
+        ).rollout.memory_write
+        if (policy.write.mode == "off" or rollout == "off" or request.scope not in policy.scopes
+                or (policy.write.mode == "explicit_only" and request.authority == "candidate")
+                or (request.action == "forget" and request.authority == "candidate")):
+            raise PluginHostError("memory_write_disabled", "Memory write is not granted")
+        scope, scope_id = memory_scope_bindings(request.principal, (request.scope,))[0]
+        reason = "explicit_user_request" if request.authority != "candidate" else "model_guess"
+        candidate = MemoryCandidate(
+            candidate_id=request.operation_key, operation={"remember": "add", "correct": "update",
+                                                        "forget": "delete"}[request.action],
+            memory_type="profile", scope=scope, scope_id=scope_id, content=request.content,
+            confidence=1 if request.authority != "candidate" else 0, importance=0.8,
+            source_event_ids=[request.source_event_id], reason=reason,
+            conflicts_with=[request.memory_id] if request.memory_id else [],
+        )
+        evaluation = MemoryPolicy().evaluate(candidate)
+        if evaluation.decision != "commit":
+            return {"committed": False, "decision": evaluation.decision,
+                    "code": evaluation.reason}
+        if rollout == "shadow":
+            return {"committed": False, "decision": "shadow", "action": request.action}
+        return await self._owned(self._mutate, request)
+
+    def _mutate(self, request):
+        from ksadk.memory.extraction import native_user_memory_candidate
+        from ksadk.memory.models import MemoryRecord
+        from ksadk.memory.policy import content_hash
+
+        scope, scope_id = memory_scope_bindings(request.principal, (request.scope,))[0]
+        record = MemoryRecord(
+            memory_id=request.memory_id or "", tenant_id=request.principal.tenant_id,
+            workspace_id=request.principal.workspace_id, scope=scope, scope_id=scope_id,
+            memory_type="profile", content=request.content, summary=request.content,
+            status="active", confidence=1, importance=0.8,
+            valid_from="", valid_to="", expires_at="",
+            source_session_id=request.source_session_id, source_event_ids=[request.source_event_id],
+            source_seq_range=None, content_hash=content_hash(request.content), version=1,
+            metadata={"source_goal_revision": request.source_goal_revision,
+                      "source_goal_digest": request.source_goal_digest,
+                      "mutation_session_id": request.source_session_id},
+            write_policy="user_confirm",
+        )
+        consumed = []
+        if request.scope == "user":
+            for source in request.source_user_observations:
+                candidate = native_user_memory_candidate(
+                    source.content, source_event_id=source.source_event_id,
+                    scope=scope, scope_id=scope_id,
+                )
+                if candidate is not None:
+                    consumed.append((candidate, source.source_digest))
+        return self._provider(request.principal).apply_mutation(
+            record, action=request.action, expected_version=request.expected_version,
+            operation_key=request.operation_key, request_digest=request.request_digest,
+            consumed_user_candidates=tuple(consumed),
+        )
+
+    async def memory_receipt(self, bundle, request: MemoryReceiptRequest):
+        request = MemoryReceiptRequest.model_validate_json(request.model_dump_json())
+        self._memory_policy(bundle, request.principal)
+        return await self._owned(self._receipt, request)
+
+    async def memory_flush(self, bundle, request: MemoryFlushRequest):
+        """Evaluate actual user observations under the locked Native write policy."""
+        from ksadk.memory.extraction import native_user_memory_candidate
+        from ksadk.memory.policy import MemoryPolicy
+        from ksadk.studio.contracts import ContextSpec
+
+        request = MemoryFlushRequest.model_validate_json(request.model_dump_json())
+        policy = self._memory_policy(bundle, request.principal)
+        rollout = ContextSpec.model_validate(
+            bundle.resolved_agent_spec.get("context") or {},
+        ).rollout.memory_write
+        if (policy.write.mode == "off" or rollout == "off" or "user" not in policy.scopes
+                or request.trigger == "pre_compaction"
+                and not policy.write.flush_before_compaction
+                or request.trigger == "completed_turn" and not policy.write.flush_after_turn):
+            return {"status": "disabled", "proposed": 0, "committed": 0, "results": []}
+        scope, scope_id = memory_scope_bindings(request.principal, ("user",))[0]
+        candidates = []
+        for observation in request.observations:
+            candidate = native_user_memory_candidate(
+                observation.content, source_event_id=observation.source_event_id,
+                scope=scope, scope_id=scope_id,
+            )
+            if candidate is not None and (
+                policy.write.mode != "explicit_only" or candidate.reason.startswith("explicit_user")
+            ):
+                candidates.append((observation, candidate))
+        if not candidates:
+            return {"status": "empty", "proposed": 0, "committed": 0, "results": []}
+        if rollout == "shadow":
+            # Shadow decisions live in the caller's effect receipt, not in a
+            # Provider database, pending-observation counter or durable fact.
+            return {"status": "shadow", "proposed": len(candidates), "committed": 0,
+                    "results": [{"decision": MemoryPolicy().evaluate(item).decision}
+                                for _source, item in candidates]}
+        return await self._owned(self._flush, (request, policy, candidates))
+
+    def _flush(self, data):
+        from ksadk.memory.extraction import NATIVE_USER_EXTRACTION_POLICY
+
+        request, policy, candidates = data
+        provider = self._provider(request.principal)
+        results = []
+        for observation, candidate in candidates:
+            identity = {"principal": request.principal.model_dump(mode="json"),
+                        "source_event_id": observation.source_event_id,
+                        "policy": NATIVE_USER_EXTRACTION_POLICY,
+                        "memory": policy.model_dump(mode="json")}
+            # The original source identity is stable across compaction/Turn
+            # consumers under the same grant. Changed grants need a distinct
+            # evaluation receipt; the original source marker still prevents
+            # counting that evaluation as another user observation.
+            key = "native-memory-candidate:" + hashlib.sha256(
+                json.dumps(identity, sort_keys=True, ensure_ascii=False).encode(),
+            ).hexdigest()
+            payload = {**identity, "source": observation.model_dump(mode="json")}
+            request_digest = "sha256:" + hashlib.sha256(
+                json.dumps(payload, sort_keys=True, ensure_ascii=False).encode(),
+            ).hexdigest()
+            results.append(provider.apply_candidate(
+                candidate, operation_key=key, request_digest=request_digest,
+                source_session_id=observation.source_session_id,
+                source_digest=observation.source_digest,
+                tenant_id=request.principal.tenant_id,
+                workspace_id=request.principal.workspace_id,
+            ))
+        return {"status": "evaluated", "proposed": len(candidates),
+                "committed": sum(item["committed"] for item in results), "results": results}
+
+    def _receipt(self, request):
+        return self._provider(request.principal).mutation_receipt(
+            request.operation_key, request.request_digest
+        )
+
+    async def dispose(self):
+        self._ready = False
+        self._disposed = True
+        if self._pending:
+            await asyncio.gather(*tuple(self._pending), return_exceptions=True)
+        with self._provider_lock:
+            for provider in self._providers.values():
+                provider.close()
+            self._providers.clear()
+
+
 class WorkspaceMCPRuntime(_BuiltinRuntime):
     """Materialize locked workspace MCP resources for the Harness provider."""
 
@@ -334,6 +656,9 @@ class WorkspaceMCPRuntime(_BuiltinRuntime):
                     api_key=api_key,
                     tool_filter=tuple(_string_list(materializer.get("toolFilter"))),
                     tool_name_prefix=_optional_string(materializer.get("toolNamePrefix")),
+                    # McpToolSpec.description 声明为 str：无静态描述时给 ""，
+                    # 不要传 None（下游按 str 消费）。
+                    description=_optional_string(materializer.get("description")) or "",
                 )
             )
         return tuple(specs)
@@ -356,7 +681,9 @@ class WorkspaceMCPRuntime(_BuiltinRuntime):
 class WorkspaceSkillRuntime(_BuiltinRuntime):
     """Expose integrity-checked Skill instructions copied into the Bundle."""
 
-    def harness_skill(self, bundle: ResolvedPluginBundle) -> HarnessSkillContribution:
+    def harness_skills(
+        self, bundle: ResolvedPluginBundle
+    ) -> tuple[HarnessSkillContribution, ...]:
         config = self._config(bundle)
         declared = _resource_entries(config, expected_kind="skill")
         resolved = _resolved_resources(bundle, "skills")
@@ -381,6 +708,7 @@ class WorkspaceSkillRuntime(_BuiltinRuntime):
                     "builtin_skill_digest_mismatch",
                     f"Skill {name!r} does not match its locked Bundle digest",
                 )
+            source_ref = _required_string(entry, "resourceId", code="builtin_skill_invalid")
             instructions = _required_string(
                 item, "instructions", code="builtin_skill_instructions_missing"
             )
@@ -389,12 +717,23 @@ class WorkspaceSkillRuntime(_BuiltinRuntime):
                     name=name,
                     instructions=instructions,
                     resource_root=directory,
+                    source_ref=source_ref,
+                    content_digest=expected_digest,
                 )
             )
         if not contributions:
             raise PluginHostError(
                 "builtin_skill_resource_missing", "workspace Skill has no locked resource"
             )
+        if len({item.source_ref for item in contributions}) != len(contributions):
+            raise PluginHostError(
+                "builtin_skill_invalid", "workspace Skills must have unique locked resource IDs"
+            )
+        return tuple(contributions)
+
+    def harness_skill(self, bundle: ResolvedPluginBundle) -> HarnessSkillContribution:
+        """Retain the singular ABI for existing providers and direct consumers."""
+        contributions = self.harness_skills(bundle)
         if len(contributions) == 1:
             return contributions[0]
         return HarnessSkillContribution(
@@ -433,9 +772,30 @@ class ReadOnlyBundleContextRuntime(_BuiltinRuntime):
                     "builtin_context_path_invalid",
                     f"Bundle context path is not a regular file: {relative}",
                 )
+            # Resolution verifies the Bundle once; an activation can outlive
+            # changes on disk. Authorize and project the same byte snapshot,
+            # before truncating it to the configured character budget.
+            entry_path = PurePosixPath(relative).as_posix()
+            entries = [item for item in bundle.manifest.files if item.path == entry_path]
             try:
-                text = path.read_text(encoding="utf-8").strip()
-            except (OSError, UnicodeError) as error:
+                content = path.read_bytes()
+            except OSError as error:
+                raise PluginHostError(
+                    "builtin_context_read_failed",
+                    f"Bundle context file could not be read: {relative}",
+                ) from error
+            if (
+                len(entries) != 1
+                or len(content) != entries[0].size
+                or "sha256:" + hashlib.sha256(content).hexdigest() != entries[0].sha256
+            ):
+                raise PluginHostError(
+                    "builtin_context_source_integrity",
+                    f"Bundle context file no longer matches its locked bytes: {relative}",
+                )
+            try:
+                text = content.decode("utf-8").strip()
+            except UnicodeError as error:
                 raise PluginHostError(
                     "builtin_context_read_failed",
                     f"Bundle context file could not be read: {relative}",
@@ -516,6 +876,18 @@ class SQLiteSessionStoreFactory:
         return runtime
 
 
+class LocalMemoryProviderFactory:
+    def __init__(self, state_root: Path):
+        self._state_root = state_root.resolve()
+
+    async def stage(self, manifest, *, profile, services):
+        del profile, services
+        _require_manifest(manifest, LOCAL_MEMORY_PROVIDER_PLUGIN_ID)
+        return LocalMemoryProviderRuntime(
+            manifest.metadata.id, manifest.metadata.version, state_root=self._state_root,
+        )
+
+
 class _WorkspaceMCPFactory:
     def __init__(self, secret_resolver: SecretResolver | None) -> None:
         self._secret_resolver = secret_resolver
@@ -571,9 +943,7 @@ def builtin_capability_factories(
         READ_ONLY_CONTEXT_PLUGIN_ID: _SimpleFactory(
             READ_ONLY_CONTEXT_PLUGIN_ID, ReadOnlyBundleContextRuntime
         ),
-        LOCAL_MEMORY_PROVIDER_PLUGIN_ID: _SimpleFactory(
-            LOCAL_MEMORY_PROVIDER_PLUGIN_ID, _BuiltinRuntime
-        ),
+        LOCAL_MEMORY_PROVIDER_PLUGIN_ID: LocalMemoryProviderFactory(state_root),
         CORE_RENDERER_PLUGIN_ID: _SimpleFactory(
             CORE_RENDERER_PLUGIN_ID, CoreConversationRendererRuntime
         ),
@@ -586,182 +956,6 @@ def _require_manifest(manifest: PluginManifest, plugin_id: str) -> None:
             "builtin_manifest_mismatch",
             f"factory cannot stage {manifest.metadata.id}@{manifest.metadata.version}",
         )
-
-
-def _bound_capability_config(
-    bundle: ResolvedPluginBundle, plugin_id: str, version: str
-) -> Mapping[str, Any]:
-    composition = bundle.composition
-    if composition_profile_digest(composition.profile) != composition.profile_digest:
-        raise PluginHostError(
-            "plugin_bundle_profile_mutated",
-            "resolved Bundle composition profile changed after validation",
-        )
-    if plugin_lock_digest(composition.plugin_lock) != composition.plugin_lock_digest:
-        raise PluginHostError(
-            "plugin_bundle_lock_mutated",
-            "resolved Bundle plugin lock changed after validation",
-        )
-    ref = f"plugin://{plugin_id}@{version}"
-    matches = [item for item in composition.profile.capabilities if item.ref == ref]
-    if len(matches) != 1:
-        raise PluginHostError(
-            "builtin_capability_binding_missing",
-            f"resolved Bundle does not bind built-in capability {plugin_id}@{version}",
-        )
-    if not any(
-        item.id == plugin_id and item.version == version for item in composition.plugin_lock.plugins
-    ):
-        raise PluginHostError(
-            "builtin_capability_lock_missing",
-            f"resolved Bundle does not lock built-in capability {plugin_id}@{version}",
-        )
-    return cast(Mapping[str, Any], matches[0].config)
-
-
-def _resource_entries(
-    config: Mapping[str, Any], *, expected_kind: str
-) -> tuple[Mapping[str, Any], ...]:
-    raw = config.get("resources")
-    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
-        raise PluginHostError(
-            f"builtin_{expected_kind}_config_invalid", "resources must be an array"
-        )
-    entries: list[Mapping[str, Any]] = []
-    for item in raw:
-        entry = _mapping(item, code=f"builtin_{expected_kind}_config_invalid")
-        if entry.get("kind") != expected_kind:
-            raise PluginHostError(
-                f"builtin_{expected_kind}_resource_mismatch",
-                f"resource kind must be {expected_kind!r}",
-            )
-        for field in ("resourceId", "name", "version", "digest"):
-            _required_string(entry, field, code=f"builtin_{expected_kind}_invalid")
-        entries.append(entry)
-    return tuple(entries)
-
-
-def _resolved_resources(bundle: ResolvedPluginBundle, field: str) -> tuple[Mapping[str, Any], ...]:
-    capabilities = _mapping(
-        bundle.resolved_agent_spec.get("capabilities"),
-        code="builtin_bundle_capabilities_missing",
-    )
-    raw = capabilities.get(field)
-    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
-        raise PluginHostError(
-            "builtin_bundle_capabilities_missing", f"Bundle capabilities.{field} is missing"
-        )
-    return tuple(_mapping(item, code="builtin_bundle_capabilities_invalid") for item in raw)
-
-
-def _match_resource(
-    declared: Mapping[str, Any],
-    resolved: Sequence[Mapping[str, Any]],
-    *,
-    code: str,
-) -> Mapping[str, Any]:
-    name = _required_string(declared, "name", code=code)
-    version = _required_string(declared, "version", code=code)
-    digest = _required_string(declared, "digest", code=code)
-    matches = [
-        item
-        for item in resolved
-        if item.get("name") == name
-        and item.get("version") == version
-        and item.get("digest") == digest
-    ]
-    if len(matches) != 1:
-        raise PluginHostError(
-            code,
-            f"locked resource {name!r}@{version} is missing from resolved Agent spec",
-        )
-    return matches[0]
-
-
-def _safe_bundle_path(
-    bundle: ResolvedPluginBundle,
-    relative_text: str,
-    *,
-    code: str,
-    require_declared: bool,
-) -> Path:
-    relative = PurePosixPath(relative_text)
-    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-        raise PluginHostError(code, f"unsafe Bundle path: {relative_text}")
-    path = bundle.root.joinpath(*relative.parts)
-    cursor = bundle.root
-    for part in relative.parts:
-        cursor = cursor / part
-        if cursor.is_symlink():
-            raise PluginHostError(code, f"Bundle path cannot use symlinks: {relative_text}")
-    try:
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(bundle.root)
-    except (OSError, ValueError) as error:
-        raise PluginHostError(code, f"Bundle path is unavailable: {relative_text}") from error
-    if require_declared and relative.as_posix() not in {
-        item.path for item in bundle.manifest.files
-    }:
-        raise PluginHostError(code, f"Bundle path is not declared: {relative_text}")
-    return cast(Path, resolved)
-
-
-def _directory_digest(directory: Path) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(item for item in directory.rglob("*") if item.is_file()):
-        if path.is_symlink():
-            raise PluginHostError(
-                "builtin_skill_path_invalid", "Skill Bundle cannot contain symlinks"
-            )
-        relative = path.relative_to(directory).as_posix().encode("utf-8")
-        content = path.read_bytes()
-        digest.update(len(relative).to_bytes(4, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return f"sha256:{digest.hexdigest()}"
-
-
-def _mapping(value: Any, *, code: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise PluginHostError(code, "expected an object")
-    return value
-
-
-def _required_string(value: Mapping[str, Any], field: str, *, code: str) -> str:
-    text = value.get(field)
-    if not isinstance(text, str) or not text.strip():
-        raise PluginHostError(code, f"{field} must be a non-empty string")
-    return text.strip()
-
-
-def _optional_string(value: Any) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise PluginHostError(
-            "builtin_config_invalid", "optional configuration value must be a string"
-        )
-    return value.strip() or None
-
-
-def _string_list(value: Any) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise PluginHostError("builtin_config_invalid", "configuration value must be an array")
-    result: list[str] = []
-    for item in value:
-        if not isinstance(item, str) or not item.strip():
-            raise PluginHostError(
-                "builtin_config_invalid", "array entries must be non-empty strings"
-            )
-        result.append(item.strip())
-    return tuple(result)
-
-
-def _is_secret_reference(value: str) -> bool:
-    return value.startswith(("secret://", "env://", "credential://", "vault://"))
 
 
 __all__ = [

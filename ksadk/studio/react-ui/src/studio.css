@@ -6956,6 +6956,71 @@ body.create-mode .global-context {
   }
 }
 
+/* ===== 整页设置页（对标系统设置：左侧分类栏 + 右侧内容区） ===== */
+.settings-page .settings-page-layout {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 760px);
+  gap: 40px;
+  align-items: start;
+}
+.settings-page-nav {
+  position: sticky;
+  top: calc(var(--studio-header-height, 56px) + 40px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-page-nav button {
+  text-align: left;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--studio-text-secondary);
+  font-size: var(--font-size-body, 14px);
+  cursor: pointer;
+}
+.settings-page-nav button:hover { background: var(--studio-surface); color: var(--studio-text, inherit); }
+.settings-page-nav button.active {
+  background: var(--studio-surface);
+  color: var(--studio-text, inherit);
+  font-weight: var(--font-weight-semibold, 600);
+}
+.settings-page-sections { min-width: 0; padding-top: 8px; }
+.settings-section-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+.settings-update-check { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+.settings-model-add-title { margin-top: 28px; }
+
+/* 添加模型表单：极简 Key + 可选地址 + 探测结果 + 模型 chips */
+.model-setup-form { display: flex; flex-direction: column; gap: 14px; }
+.model-probe-result { display: flex; flex-direction: column; gap: 8px; }
+.model-probe-attempts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.model-chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.model-chip {
+  border: 1px solid var(--studio-border);
+  background: var(--studio-surface);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: var(--font-size-meta, 13px);
+  cursor: pointer;
+  color: var(--studio-text, inherit);
+}
+.model-chip:hover { border-color: var(--studio-text-secondary); }
+.model-chip[data-selected="true"] {
+  background: var(--studio-text, inherit);
+  border-color: var(--studio-text, inherit);
+  color: var(--studio-surface);
+}
+.setup-advanced { border: 1px solid var(--studio-border); border-radius: var(--radius-control); padding: 10px 14px; }
+.setup-advanced > summary { cursor: pointer; color: var(--studio-text-secondary); font-size: var(--font-size-meta, 13px); }
+.setup-advanced[open] > summary { margin-bottom: 10px; }
+.model-setup-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+@media (max-width: 900px) {
+  .settings-page .settings-page-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .settings-page-nav { position: static; flex-direction: row; flex-wrap: wrap; }
+}
+
 .settings-group {
   margin-bottom: 24px;
   padding-bottom: 20px;
@@ -8594,6 +8659,86 @@ select {
   margin: 8px auto 16px;
   padding: 0 16px;
   font-size: var(--font-size-meta);
+}
+
+/* Harness 实时思考块（仅直播流）：默认只显示状态，点击后查看有界的最近思路。 */
+.harness-live-thinking {
+  max-width: 60rem;
+  margin: 4px auto 8px;
+  padding: 0 16px;
+  font-size: var(--font-size-meta);
+  color: var(--studio-text-secondary);
+}
+
+.harness-live-thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.harness-live-thinking-head::-webkit-details-marker { display: none; }
+
+.harness-live-thinking-pulse {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+
+.harness-live-thinking-pulse i {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--studio-accent);
+  animation: harness-live-thinking-pulse 1.15s ease-in-out infinite;
+}
+
+.harness-live-thinking-pulse i:nth-child(2) { animation-delay: 140ms; }
+.harness-live-thinking-pulse i:nth-child(3) { animation-delay: 280ms; }
+
+/* 思考结束后脉冲立即停止（不显示字数、时长等计数）。 */
+.harness-live-thinking[data-streaming="false"] .harness-live-thinking-pulse i {
+  animation: none;
+  opacity: .35;
+}
+
+@keyframes harness-live-thinking-pulse {
+  0%, 65%, 100% { transform: translateY(0); opacity: .35; }
+  32% { transform: translateY(-4px); opacity: 1; }
+}
+
+.harness-live-thinking-title { min-width: 0; }
+.harness-live-thinking-chevron { margin-left: 2px; transition: transform .16s ease; opacity: .7; }
+.harness-live-thinking-details[open] .harness-live-thinking-chevron { transform: rotate(90deg); }
+
+.harness-live-thinking-tokens {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  font-size: var(--font-size-meta);
+}
+
+.harness-live-thinking-body {
+  margin: 6px 0 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--surface-subtle);
+  max-height: min(32vh, 18rem);
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-body);
+}
+
+.harness-live-thinking-note { margin: 9px 0 0; color: var(--studio-text-tertiary, var(--studio-text-secondary)); font-size: var(--font-size-meta); }
+
+@media (prefers-reduced-motion: reduce) {
+  .harness-live-thinking-pulse i { animation: none; }
 }
 
 /* 空会话欢迎语在 harness timeline（滚动容器）内正确居中。 */

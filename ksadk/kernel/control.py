@@ -32,6 +32,7 @@ from ksadk.kernel.contracts import (
     RuntimeCapabilityMatrix,
     SessionEventEnvelope,
     SessionEventSubscription,
+    SubmitInteractionPayload,
 )
 from ksadk.kernel.errors import InvalidPermitError
 from ksadk.kernel.execution_grants import (
@@ -215,8 +216,25 @@ class AgentKernel:
                 message=error.message,
             )
 
-        field, capability = capability_of(command.command_type, self._capabilities())
-        if field is not None and not capability.supported:
+        matrix = self._capabilities()
+        field, capability = capability_of(command.command_type, matrix)
+        if command.command_type == "interrupt" and command.payload.get("scope_id") is not None:
+            field = "scoped_cancel"
+            capability = matrix.scoped_cancel or _unavailable("runtime_scoped_cancel_unsupported")
+        managed_only = (
+            field == "submit_interaction"
+            and capability.reason == "managed_a2a_live_interaction_only"
+        )
+        checkpoint_interaction = (
+            field == "submit_interaction"
+            and matrix.interaction_mode == "durable_resume"
+            and matrix.resume.supported
+            and await self._is_checkpoint_interaction(command)
+        )
+        if field is not None and not checkpoint_interaction and (
+            not capability.supported
+            or (managed_only and not await self._is_managed_interaction(command))
+        ):
             # steer/inject 等绝不降级为 enqueue：直接 unsupported。
             return await self._store.reject_command(
                 command,
@@ -226,6 +244,48 @@ class AgentKernel:
             )
 
         return await self._store.accept_command(command, queue_limit=self._queue_limit)
+
+    async def _is_checkpoint_interaction(self, command: AgentControlCommand) -> bool:
+        """Admit native resume only for the same scoped LangGraph ledger record.
+
+        Managed A2A's live submit restriction must not mask a runner's native
+        interrupt delivery through its checkpoint interaction provider.
+        """
+        payload = SubmitInteractionPayload.model_validate(dict(command.payload))
+        record = await self._store.get(
+            payload.interaction_id,
+            tenant_id=command.tenant_id,
+            agent_instance_id=command.agent_instance_id,
+            session_id=command.session_id,
+            run_id=payload.run_id,
+        )
+        return bool(
+            record is not None
+            and record.provider_id == "langgraph"
+            and record.kind in {"approval", "structured_input"}
+            and isinstance(record.native_target, dict)
+            and record.native_target.get("checkpoint_id")
+            and record.native_target.get("thread_id")
+        )
+
+    async def _is_managed_interaction(self, command: AgentControlCommand) -> bool:
+        """Scope the managed live capability to a trusted Kernel ledger record."""
+        payload = SubmitInteractionPayload.model_validate(dict(command.payload))
+        record = await self._store.get(
+            payload.interaction_id,
+            tenant_id=command.tenant_id,
+            agent_instance_id=command.agent_instance_id,
+            session_id=command.session_id,
+            run_id=payload.run_id,
+        )
+        return bool(
+            record is not None
+            and record.provider_id == "managed-a2a"
+            and (record.kind, record.native_target.get("schema")) in {
+                ("approval", "a2a.approval/v1"), ("structured_input", "a2a.input/v1"),
+                ("approval", "a2a.remote-approval/v1"),
+            }
+        )
 
     async def _expired_permit_receipt(self, command: AgentControlCommand) -> AgentControlReceipt:
         """permit 过期：只有 Store 已有完全相同请求（同 digest/幂等域）才 duplicate。"""

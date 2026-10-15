@@ -153,6 +153,18 @@ class FrameworkRunSpecResolver:
         resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
         instructions = resolved.get("instructions") if isinstance(resolved, dict) else {}
         model_spec = resolved.get("model") if isinstance(resolved, dict) else {}
+        candidate_model_specs = [model_spec]
+        fallback_model_specs = resolved.get("fallbackModels") or resolved.get("fallback_models")
+        if isinstance(fallback_model_specs, list):
+            candidate_model_specs.extend(fallback_model_specs)
+        selected_model_spec = next(
+            (
+                item
+                for item in candidate_model_specs
+                if isinstance(item, dict) and str(item.get("model") or "") == selected_model
+            ),
+            model_spec if isinstance(model_spec, dict) else {},
+        )
         endpoint_url = str((model_spec or {}).get("endpointUrl") or "").strip()
         base_url = str((model_spec or {}).get("baseUrl") or "").strip()
         if not base_url and endpoint_url.endswith("/chat/completions"):
@@ -178,6 +190,11 @@ class FrameworkRunSpecResolver:
             "entry_point": detection.entry_point if detection is not None else "",
             "agent_variable": detection.agent_variable if detection is not None else "",
         }
+        execution_spec = resolved.get("execution") if isinstance(resolved, dict) else {}
+        if runtime_type == "harness" and isinstance(execution_spec, dict):
+            approval_timeout = execution_spec.get("approvalTimeoutSeconds")
+            if approval_timeout is not None:
+                request_config["approval_timeout_seconds"] = int(approval_timeout)
         # AgentVersion 的 ContextSpec 预算传到 Planner（方案 §8.2）
         context_spec = resolved.get("context") if isinstance(resolved, dict) else {}
         if isinstance(context_spec, dict):
@@ -214,6 +231,7 @@ class FrameworkRunSpecResolver:
             build_id=build.id,
             agent_id=build.agent_id,
             model=selected_model,
+            model_metadata=dict(selected_model_spec.get("metadata") or {}),
             request_config=request_config,
             manifest_sha256=build.resolved_digest,
         )

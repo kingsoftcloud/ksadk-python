@@ -298,6 +298,44 @@ async def _drain(adapter, handle, events: list):
         events.append(event)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_type", [ADKRuntimeAdapter, LangGraphRuntimeAdapter])
+async def test_cancel_waits_for_async_cleanup_before_root_terminal(adapter_type):
+    class CleanupRunner(_ContractRunner):
+        def __init__(self):
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.cleaned = False
+
+        async def stream(self, input_data):
+            yield {"type": "approval", "call_id": "cleanup-approval"}
+            self.entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                # Durable A2A cancellation performs async writes here. A second
+                # cancel must not interrupt them or acknowledge the root early.
+                await asyncio.sleep(0.03)
+                self.cleaned = True
+
+    runner = CleanupRunner()
+    adapter = adapter_type(runner)
+    handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
+    terminal_cleanup = []
+
+    async def consume():
+        async for event in adapter.stream(handle):
+            if event.event_type == "run.canceled":
+                terminal_cleanup.append(runner.cleaned)
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(runner.entered.wait(), 2)
+    assert await adapter.cancel(handle) is CancelResult.INTERRUPTED_ACTIVE_TURN
+    await asyncio.wait_for(task, 2)
+    assert runner.cleaned
+    assert terminal_cleanup == [True]
+
+
 @pytest.mark.parametrize("factory,framework,resume_kind", ADAPTERS)
 class TestAdapterContract:
     # ---- 六动词 + stream 返回 RuntimeEvent ----
@@ -416,6 +454,8 @@ class TestAdapterContract:
         if framework == "adk":
             assert framework_ref.get("adk", {}).get("invocation_id") == "ref-1"
             assert injected.get("run_id") == "ref-1"
+            assert injected.get("resume_payload_kind") == "approval_decision"
+            assert injected.get("resume_call_id") == "call-1"
         elif framework == "langgraph":
             assert framework_ref.get("langgraph", {}).get("checkpoint_id") == "ref-1"
         elif framework == "miniflow":

@@ -285,6 +285,15 @@ async def _build_code(
     if not result.success:
         raise validation_error(result.error_message or "构建失败")
 
+    if result.artifact_path is not None:
+        from ksadk.builders.code_builder import _sha256_file, read_code_deployment_contract
+
+        result.metadata["code_checksum"] = _sha256_file(result.artifact_path)
+        contract = read_code_deployment_contract(result.artifact_path)
+        if contract and contract.get("schema") == "ksadk-code-deployment/v1":
+            result.metadata["code_command"] = contract.get("command")
+            result.metadata["code_kernel_contract_digest"] = contract.get("agentKernelContractDigest")
+
     agent_name = result.metadata.get("agent_name", agent_path.name)
 
     # 上传到 KS3

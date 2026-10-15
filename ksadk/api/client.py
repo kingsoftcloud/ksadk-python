@@ -23,6 +23,7 @@ import urllib3
 
 from ksadk.api.environment import environment_variables_payload
 from ksadk.common.auth import AWSV4Auth
+from ksadk.common.cloud_headers import build_cloud_headers
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,18 @@ class AgentEngineSSEStream(AsyncIterator[bytes]):
         # normal framing, including the blank line between events.
         self._chunks = (line + b"\n" for line in response.iter_lines(chunk_size=1))
         self._closed = False
+        # requests/urllib3 close() waits for the buffered reader's lock. A
+        # worker blocked in an unlimited SSE read holds that lock, so closing
+        # from another thread must first wake the socket. Capture it before
+        # EOF can clear urllib3's connection reference. Connection: close
+        # responses may only retain it through HTTPResponse's buffered file.
+        raw = getattr(response, "raw", None)
+        connection = getattr(raw, "_connection", None)
+        transport_socket = getattr(connection, "sock", None)
+        if not isinstance(transport_socket, socket.socket):
+            response_file = getattr(getattr(raw, "_fp", None), "fp", None)
+            transport_socket = getattr(getattr(response_file, "raw", None), "_sock", None)
+        self._socket = transport_socket if isinstance(transport_socket, socket.socket) else None
 
     def __aiter__(self) -> "AgentEngineSSEStream":
         return self
@@ -73,10 +86,15 @@ class AgentEngineSSEStream(AsyncIterator[bytes]):
             raise StopAsyncIteration
         try:
             chunk = await asyncio.to_thread(_next_stream_chunk, self._chunks)
+        except Exception:
+            if self._closed:
+                raise StopAsyncIteration from None
+            await self.aclose()
+            raise
         except BaseException:
             await self.aclose()
             raise
-        if chunk is None:
+        if chunk is None or self._closed:
             await self.aclose()
             raise StopAsyncIteration
         return chunk
@@ -88,9 +106,16 @@ class AgentEngineSSEStream(AsyncIterator[bytes]):
         response, session = self._response, self._session
         self._response = None
         self._session = None
+        transport_socket, self._socket = self._socket, None
 
         def close_transport() -> None:
             try:
+                if transport_socket is not None:
+                    try:
+                        transport_socket.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        # EOF or a simultaneous peer disconnect already closed it.
+                        pass
                 if response is not None:
                     response.close()
             finally:
@@ -590,7 +615,7 @@ class AgentEngineClient:
             account_id = self._resolve_account_id()
             if account_id:
                 headers["X-Ksc-Account-Id"] = account_id
-        return headers
+        return build_cloud_headers(headers)
 
     def _resolve_user_uuid(self) -> Optional[str]:
         """解析子账号 user uuid（X-Ksc-User-uuid 值）。
@@ -1055,7 +1080,7 @@ class AgentEngineClient:
         response = self._get_session().request(
             method="POST",
             url=f"{endpoint}/agentengine/api/v1/{action}",
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=build_cloud_headers({"Authorization": f"Bearer {api_key}"}),
             json=params,
             timeout=self.timeout,
             verify=self._request_ssl_verify(),
@@ -1246,7 +1271,7 @@ class AgentEngineClient:
         response = self._get_session().request(
             method=method,
             url=url,
-            headers=headers or None,
+            headers=build_cloud_headers(headers),
             params=params,
             files=files,
             stream=False,
@@ -1313,6 +1338,7 @@ class AgentEngineClient:
         params: Optional[Dict[str, Any]] = None,
         *,
         ignore_dry_run: bool = False,
+        preserve_case: bool = False,
     ) -> Dict[str, Any]:
         """通用 Action API 调用"""
         body = params or {}
@@ -1336,7 +1362,7 @@ class AgentEngineClient:
 
         # 提取 Data 并统一转换为 snake_case
         data = result.get("Data") if result.get("Data") is not None else result
-        data = self._to_snake_case(data)
+        data = data if preserve_case else self._to_snake_case(data)
 
         # 预发环境 endpoint 协议归一化: https -> http
         if self.logical_region and self.logical_region.strip().lower() == "pre-online":
@@ -1584,6 +1610,7 @@ class AgentEngineClient:
                 "Bucket": ks3.get("bucket"),
                 "Command": data.get("code_command"),
                 "Checksum": data.get("code_checksum"),
+                "AgentKernelContractDigest": data.get("agent_kernel_contract_digest"),
             }
         elif params["DeploymentType"] == "ManagedRuntime":
             params["ManagedRuntimeConfig"] = self._managed_runtime_config_payload(data)
@@ -1888,7 +1915,7 @@ class AgentEngineClient:
         return True
 
     async def update_agent(self, agent_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """更新 Agent (热更新)"""
+        """提交 Agent 更新并直接返回响应；Code 更新由服务端后台执行。"""
         params: Dict[str, Any] = {"AgentId": agent_id}
         artifact_type = data.get("artifact_type")
         if artifact_type:
@@ -1916,6 +1943,7 @@ class AgentEngineClient:
                     "Bucket": ks3.get("bucket"),
                     "Command": data.get("code_command"),
                     "Checksum": data.get("code_checksum"),
+                    "AgentKernelContractDigest": data.get("agent_kernel_contract_digest"),
                 }
 
         if data.get("resources"):
@@ -1933,7 +1961,14 @@ class AgentEngineClient:
 
         envs = data.get("env_vars") or data.get("environment_variables")
         if envs:
-            params["EnvironmentVariables"] = environment_variables_payload(envs)
+            env_payload = environment_variables_payload(envs)
+            if data.get("environment_variables_is_patch"):
+                params["EnvironmentVariablePatch"] = {
+                    "Upsert": env_payload,
+                    "Delete": [],
+                }
+            else:
+                params["EnvironmentVariables"] = env_payload
 
         network_payload = self._normalize_network_payload(data.get("network"))
         if network_payload:
@@ -1978,7 +2013,7 @@ class AgentEngineClient:
         if advanced:
             params["Advanced"] = advanced
 
-        return self._action("UpdateAgent", params)
+        return await self._action_async("UpdateAgent", params)
 
     # ===== Session Actions =====
 
@@ -2593,16 +2628,18 @@ class AgentEngineClient:
             params["Metadata"] = {"agentengine": execution_metadata}
         return await self._action_async("RunAgent", params)
 
-    def _open_chat_stream(self, params: Dict[str, Any]) -> AgentEngineSSEStream:
+    def _open_chat_stream(
+        self, params: Dict[str, Any], *, action: str = "RunAgent", method: str = "POST"
+    ) -> AgentEngineSSEStream:
         """Open RunAgent SSE synchronously in a worker-owned requests session."""
 
-        path = "/agentengine/api/v1/RunAgent"
-        _kop_mode, headers, full_url = self._build_action_request_target(path, "RunAgent")
+        path = f"/agentengine/api/v1/{action}"
+        _kop_mode, headers, full_url = self._build_action_request_target(path, action)
         body_str = json.dumps(params, ensure_ascii=False)
         if self.dry_run:
             # Reuse the established dry-run contract, which raises DryRunExit
             # with the signed request rather than opening a socket.
-            self._request("POST", path, params)
+            self._request(method, path, params)
             raise AssertionError("dry-run request unexpectedly returned")
 
         session = requests.Session()
@@ -2612,9 +2649,10 @@ class AgentEngineClient:
         try:
             while True:
                 response = session.request(
-                    method="POST",
+                    method=method,
                     url=full_url,
-                    data=body_str.encode("utf-8"),
+                    data=body_str.encode("utf-8") if method == "POST" else None,
+                    params=params if method == "GET" else None,
                     headers=headers,
                     auth=self._auth.get_auth(),
                     # A foreground Agent turn can legitimately spend minutes
@@ -2650,7 +2688,7 @@ class AgentEngineClient:
                         str(
                             details.get("remote_error_message") or details.get("message") or ""
                         ).strip()
-                        or "RunAgent stream did not return text/event-stream"
+                        or f"{action} stream did not return text/event-stream"
                     )
                     raise AgentEngineAPIError(
                         error_code,
@@ -2663,12 +2701,12 @@ class AgentEngineClient:
                     response = None
                     self._switch_to_inner_aicp_endpoint()
                     _kop_mode, headers, full_url = self._build_action_request_target(
-                        path, "RunAgent"
+                        path, action
                     )
                     continue
 
                 self._log_http_error(
-                    method="POST",
+                    method=method,
                     full_url=full_url,
                     status_code=response.status_code,
                     details=details,

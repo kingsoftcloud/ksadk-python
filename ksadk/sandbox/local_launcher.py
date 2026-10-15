@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 
 
@@ -16,6 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--limits", required=True)
     parser.add_argument("--report-fd", required=True, type=int)
+    parser.add_argument("--owner-fd", type=int)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     arguments = parser.parse_args(argv)
     command = list(arguments.command)
@@ -29,11 +31,43 @@ def main(argv: list[str] | None = None) -> int:
         return 125
     if not command:
         return 125
+    if arguments.owner_fd is not None:
+        try:
+            _watch_owner(arguments.owner_fd)
+        except OSError:
+            return 125
     try:
         os.execvpe(command[0], command, os.environ)
     except OSError as exc:
         print(f"local-process launcher exec failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 126
+
+
+def _watch_owner(owner_fd: int) -> None:
+    """Bind this exec group's lifetime to the caller's private pipe writer.
+
+    A thread cannot survive exec. The small watcher stays in the command's
+    owned group, reads no workspace input and holds no command output pipes.
+    Normal cleanup stops the whole group; caller death closes the writer and
+    lets the watcher stop it even if the caller cannot execute a finally block.
+    """
+    group = os.getpgrp()
+    if group != os.getpid():
+        raise OSError("local command owner watcher requires its own process group")
+    if os.fork() != 0:
+        os.close(owner_fd)
+        return
+    try:
+        for descriptor in (0, 1, 2):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        while os.read(owner_fd, 1):
+            pass
+        os.killpg(group, signal.SIGKILL)
+    finally:
+        os._exit(0)
 
 
 def _apply_limits(configured: dict[str, object]) -> dict[str, object]:

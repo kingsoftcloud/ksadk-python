@@ -77,16 +77,19 @@ def _emit_completed(
     config.emit("proxy.completed", payload)
 
 
+def _upstream_error_detail(status_code: int) -> dict[str, object]:
+    return {
+        "type": "rate_limit_error" if status_code == 429 else "upstream_error",
+        "code": "rate_limit_exceeded" if status_code == 429 else "upstream_error",
+        "message": f"The model upstream rejected the request (HTTP {status_code}).",
+    }
+
+
 def _upstream_error(status_code: int) -> JSONResponse:
     """Return a stable public error without relaying an upstream traceback."""
     return JSONResponse(
         status_code=status_code,
-        content={
-            "error": {
-                "type": "upstream_error",
-                "message": "The model upstream rejected the request.",
-            }
-        },
+        content={"error": _upstream_error_detail(status_code)},
     )
 
 
@@ -310,7 +313,7 @@ async def _stream_gen(
                             "type": "response.failed",
                             "response": {
                                 **s._resp("failed"),
-                                "error": {"message": "The model upstream rejected the request."},
+                                "error": _upstream_error_detail(r.status_code),
                             },
                         },
                     )

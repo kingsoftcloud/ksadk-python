@@ -43,6 +43,38 @@ from ksadk.builders.requirements_utils import (
 
 BUILD_INFO_SCHEMA = "ksadk-build-info/v1"
 BUILD_INFO_ARCNAME = "ksadk/BUILD-INFO.json"
+DEPLOYMENT_CONTRACT_ARCNAME = "ksadk/DEPLOYMENT-CONTRACT.json"
+HOSTED_CODE_COMMAND = [
+    "ksadk", "web", "/app/code", "--port", "8080", "--host", "0.0.0.0", "--no-open",
+]
+
+
+def read_code_deployment_contract(zip_path: Path) -> dict[str, Any] | None:
+    """Read the declaration from this exact built ZIP; never infer it from the caller's SDK."""
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            return json.loads(archive.read(DEPLOYMENT_CONTRACT_ARCNAME))
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        return None
+
+
+def _bundled_kernel_contract_digest(files) -> str | None:
+    for package_name, relative, file_path in files:
+        if package_name != "ksadk" or relative != "kernel/contract_fingerprints.py":
+            continue
+        try:
+            tree = ast.parse(file_path.read_text(encoding="utf-8"))
+            for node in tree.body:
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == "AGENT_KERNEL_V1_AGGREGATE_DIGEST"
+                    for target in node.targets
+                ):
+                    value = ast.literal_eval(node.value)
+                    if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
+                        return value
+        except (OSError, SyntaxError, ValueError, TypeError):
+            return None
+    return None
 
 
 def _sha256_file(path: Path) -> str:
@@ -249,6 +281,7 @@ class CodeBuilder(BaseBuilder):
         ".yaml",
         ".yml",
         ".json",
+        ".sql",
         ".jinja2",
         ".j2",
         ".txt",
@@ -270,6 +303,9 @@ class CodeBuilder(BaseBuilder):
     }
     BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS = (
         "a2a-sdk>=0.3.22",
+        # Code archives run `ksadk web` in the plain Runtime image as well as
+        # the Kernel Host image.  ksadk.cli imports rich during startup.
+        "rich>=13.0.0",
         "culsans>=0.11.0",
         "httpx-sse>=0.4.0",
         "sse-starlette>=2.1.0",
@@ -281,8 +317,10 @@ class CodeBuilder(BaseBuilder):
         "requests-aws4auth>=1.2.0",
         "kingsoftcloud-sdk-python>=1.5.8.94",
         "cryptography>=44.0.0",
+        "rfc8785==0.1.4",
         "websockets>=12.0,<16.0",
         "qrcode>=7.4.0",
+        "rfc8785>=0.1.4",
     )
     BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS = (
         "mcp>=1.1.0",
@@ -344,10 +382,16 @@ class CodeBuilder(BaseBuilder):
 
     def build(self) -> BuildResult:
         """执行 Code 模式构建"""
+        from ksadk.a2a.build_validation import validate_a2a_exposure_sources
         from ksadk.detection import FrameworkDetector
 
         self._load_dotenv()
         config = self._load_config()
+
+        try:
+            validate_a2a_exposure_sources(self.project_dir)
+        except ValueError as exc:
+            return BuildResult(success=False, error_message=str(exc))
 
         # 检测框架
         detector = FrameworkDetector(str(self.project_dir))
@@ -891,7 +935,10 @@ class CodeBuilder(BaseBuilder):
 
     def _should_skip_ksadk_relative_path(self, relative_path: Path) -> bool:
         parts = relative_path.parts
-        return len(parts) >= 2 and parts[0] == "server" and parts[1] == "web-ui"
+        return len(parts) >= 2 and parts[:2] in {
+            ("server", "web-ui"),
+            ("studio", "react-ui"),
+        }
 
     def _warn_on_nonrelease_bundled_source(self, build_info: dict) -> None:
         """vendored ksadk 源码来自本地路径/editable/来源不明时给出醒目提示。
@@ -1011,6 +1058,13 @@ class CodeBuilder(BaseBuilder):
                 excluded_names={"ksadk"},
             )
             final_deps = merge_requirement_lists(final_deps, user_deps)
+
+        # User pins may narrow the supported framework window, but an unpinned
+        # template dependency must not erase it. Keeping both requirements lets
+        # pip intersect constraints and reject incompatible pins at build time.
+        for requirement in code_requirements_for_framework(detection_result.type.value):
+            if requirement not in final_deps:
+                final_deps.append(requirement)
 
         return final_deps
 
@@ -1869,6 +1923,17 @@ class CodeBuilder(BaseBuilder):
                 BUILD_INFO_ARCNAME,
                 json.dumps(build_info, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             )
+            zf.writestr(
+                DEPLOYMENT_CONTRACT_ARCNAME,
+                json.dumps({
+                    "schema": "ksadk-code-deployment/v1",
+                    "framework": detection_result.type.value,
+                    "command": HOSTED_CODE_COMMAND,
+                    "agentKernelContractDigest": _bundled_kernel_contract_digest(
+                        bundled_source_files
+                    ),
+                }, sort_keys=True, separators=(",", ":")) + "\n",
+            )
             self._warn_on_nonrelease_bundled_source(build_info)
 
             click.echo(f"   ✓ 打包运行时源码: {bundled_source_count} 个文件")
@@ -2212,43 +2277,27 @@ runtime_context = RuntimeLaunchContext(
     detection=detection_result,
     config=dict(runtime_build_config),
 )
-# managed A2A:KSADK_A2A_RUNTIME_ID 非空时挂 discovery card + 完整数据面 route。
-_managed_a2a_card = None
-_a2a_config = None
+# Runtime identity is available before registration for discovery.  Operator
+# enables the complete composition only after every Secret projection exists.
+_managed_a2a_bootstrap = None
 _a2a_adapter = None
 if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():
-    from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
-
-    _managed_a2a_card = build_managed_a2a_card_if_configured()
-    try:
-        from ksadk.a2a.routes import A2AConfig
+    if os.environ.get("KSADK_A2A_MANAGED_BOOTSTRAP_ENABLED", "").strip().lower() == "true":
+        from ksadk.a2a.platform import build_managed_a2a_bootstrap_from_env
         from ksadk.runtime.factory import create_runtime_adapter
 
         _a2a_adapter = create_runtime_adapter(runtime_context)
-        _base = (
-            os.environ.get("KSADK_A2A_INTERNAL_BASE_URL", "").strip()
-            or "http://localhost:8080"
-        )
-        _a2a_config = A2AConfig(
-            enabled=True,
-            base_url=_base,
-            agent_name=(
-                os.environ.get("KSADK_A2A_AGENT_NAME", "").strip()
-                or os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip()
-            ),
-            streaming=True,
-            task_store_dsn="sqlite+aiosqlite:///.agentengine/a2a_tasks.db",
-        )
-    except Exception as _e:
-        logger.warning(f"managed A2A 数据面装配失败,回退 discovery-only: {{_e}}")
-        _a2a_config = None
-        _a2a_adapter = None
+        _managed_a2a_bootstrap = build_managed_a2a_bootstrap_from_env()
+    else:
+        from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+
+        _managed_a2a_bootstrap = build_managed_a2a_card_if_configured()
 app = create_runtime_app(
     RuntimeAppConfig(
         runtime_type=detection_result.type.value,
         runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
         launch_context=runtime_context,
-        a2a=_a2a_config or _managed_a2a_card,
+        a2a=_managed_a2a_bootstrap,
         a2a_runtime_adapter=_a2a_adapter,
     ),
     configure_runtime_app,

@@ -113,4 +113,33 @@ describe("resource schemas", () => {
       expect(settings.data).not.toHaveProperty("agentEngineControlPlaneUrl");
     }
   });
+
+  it("G7: harnessSandbox accepts isolation-strength enum and defaults to workspace-write-local", () => {
+    const ok = settingsSchema.safeParse({
+      sandbox: "workspace-write",
+      harnessSandbox: "workspace-write-remote",
+      buildAfterCreate: true,
+      codexProxy: "auto",
+    });
+    expect(ok.success).toBe(true);
+    if (ok.success) {
+      expect(ok.data.harnessSandbox).toBe("workspace-write-remote");
+    }
+    const defaulted = settingsSchema.safeParse({
+      sandbox: "workspace-write",
+      buildAfterCreate: true,
+      codexProxy: "auto",
+    });
+    expect(defaulted.success).toBe(true);
+    if (defaulted.success) {
+      expect(defaulted.data.harnessSandbox).toBe("workspace-write-local");
+    }
+    const bad = settingsSchema.safeParse({
+      sandbox: "workspace-write",
+      harnessSandbox: "workspace-write",  // 旧 codex 值不属于 harness 枚举
+      buildAfterCreate: true,
+      codexProxy: "auto",
+    });
+    expect(bad.success).toBe(false);
+  });
 });

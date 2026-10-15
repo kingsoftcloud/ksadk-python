@@ -20,6 +20,7 @@ from ksadk.context_engine.contributors import (
     ContextContributionRequest,
     ContributorCapabilities,
 )
+from ksadk.context_engine.instruction_authority import validate_instruction_authority
 from ksadk.context_engine.models import ContextItem, ContextKind, ContextTrustLevel
 from ksadk.plugins.contracts import PluginContractModel
 
@@ -382,6 +383,11 @@ class ContextContributorExchange(PluginContractModel):
                 raise ValueError("ContextFragment classification is not allowed")
             if _TRUST_RANK[fragment.trust_level] > maximum_trust:
                 raise ValueError("ContextFragment cannot elevate contributor trust")
+            validate_instruction_authority(
+                kind=fragment.kind,
+                trust_level=fragment.trust_level,
+                metadata=fragment.metadata,
+            )
             used_tokens += fragment.token_estimate
             if used_tokens > token_ceiling:
                 raise ValueError(
@@ -396,16 +402,21 @@ class ContextContributorExchange(PluginContractModel):
     ) -> ProjectedContextContribution:
         """Validate expiry and project the admitted response into engine types."""
 
+        # Frozen models still contain mutable nested JSON; model_copy also
+        # skips validation. Seal again where the wire is actually consumed.
+        sealed = ContextContributorExchange.model_validate_json(
+            self.model_dump_json(by_alias=True)
+        )
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None or current.utcoffset() is None:
             raise ValueError("projection time must include a timezone")
-        for fragment in self.response.fragments:
+        for fragment in sealed.response.fragments:
             if fragment.expires_at is not None and fragment.expires_at <= current:
                 raise ValueError(f"ContextFragment {fragment.item_id} has expired")
         return ProjectedContextContribution(
-            capabilities=self.capabilities.to_context_engine(),
-            request=self.request.to_context_engine(),
-            items=tuple(fragment.to_context_engine() for fragment in self.response.fragments),
+            capabilities=sealed.capabilities.to_context_engine(),
+            request=sealed.request.to_context_engine(),
+            items=tuple(fragment.to_context_engine() for fragment in sealed.response.fragments),
         )
 
 

@@ -24,6 +24,8 @@ class RuntimeServices:
 
     codex_client_factory: Callable[[], Any] | None = None
     runner_factory: Callable[[Any, str], Any] | None = None
+    # Process-owned dependency; never serialized into user/runtime config.
+    managed_a2a_bootstrap: Any | None = None
 
 
 @dataclass(frozen=True)

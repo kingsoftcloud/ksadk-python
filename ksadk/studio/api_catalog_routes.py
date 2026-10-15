@@ -17,6 +17,7 @@ from ksadk.studio.api_contracts import (
     SecretReferenceCheckRequest,
     SkillDiscoveryCommitRequest,
     SkillDiscoveryRequest,
+    SkillRemoteDiscoveryRequest,
     ToolPolicyPreviewRequest,
     ToolResourceCreateRequest,
     ToolSchemaValidationRequest,
@@ -214,6 +215,10 @@ def register_catalog_routes(
     async def discover_skills(payload: SkillDiscoveryRequest):
         return studio.catalog.discover_skills(scan_paths=payload.scan_paths or None)
 
+    @app.post("/api/v1/catalog/skills:discover-github")
+    async def discover_github_skills(payload: SkillRemoteDiscoveryRequest):
+        return studio.catalog.skill_discovery.discover_github(payload.source_url, ref=payload.ref)
+
     @app.get(
         "/api/v1/catalog/skills/discoveries/{inspection_token}/candidates/{candidate_id}/files"
     )
@@ -227,6 +232,14 @@ def register_catalog_routes(
             candidate_id,
             path=path,
         )
+
+    @app.delete(
+        "/api/v1/catalog/skills/discoveries/{inspection_token}",
+        status_code=204,
+    )
+    async def discard_skill_discovery(inspection_token: str):
+        studio.catalog.skill_discovery.discard(inspection_token)
+        return None
 
     @app.get("/api/v1/catalog/skills/{resource_id}/files")
     async def preview_installed_skill(

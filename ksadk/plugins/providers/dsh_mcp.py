@@ -12,6 +12,8 @@ import asyncio
 import hashlib
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any, cast
 
 from ksadk.harness.config import McpToolSpec
@@ -25,6 +27,7 @@ from ksadk.plugins.providers.dsh_capabilities import (
     DshProfileCapabilityDescriptor,
     load_dsh_capability_bundle,
 )
+from ksadk.plugins.providers.mcp_projection import MCPResourcePin, MCPRuntimeCredential
 
 DSH_PROFILE_MCP_PLUGIN_ID = "io.ksadk.mcp.dsh-profile"
 DSH_PROFILE_MCP_PLUGIN_VERSION = "1.0.0"
@@ -83,7 +86,7 @@ def dsh_profile_mcp_manifest() -> PluginManifest:
                     "compatibility": {
                         "kernelApi": ">=1,<2",
                         "runtimeProtocols": ["agentkit.runtime/v1", "2025-06-18"],
-                        "python": ">=3.10,<3.15",
+                        "python": ">=3.12,<3.15",
                     },
                     "healthContract": "plugin.health/v1",
                     "provenance": {
@@ -175,6 +178,17 @@ def _resource_entry(config: Mapping[str, Any]) -> Mapping[str, Any]:
     return entry
 
 
+@dataclass
+class _ScopedCredential:
+    lease: DshMcpConnectorLease = dataclass_field(repr=False)
+    generation: str
+    aliases: dict[str, str]
+    current_token: str = dataclass_field(repr=False)
+    tokens: set[str] = dataclass_field(repr=False)
+    lock: asyncio.Lock = dataclass_field(default_factory=asyncio.Lock, repr=False)
+    closed: bool = False
+
+
 class DshProfileMCPRuntime:
     """Resolve a locked DSH descriptor into one process-scoped MCP spec."""
 
@@ -184,7 +198,10 @@ class DshProfileMCPRuntime:
         self._descriptor: DshProfileCapabilityDescriptor | None = None
         self._lease: DshMcpConnectorLease | None = None
         self._issued_scopes: dict[str, DshMcpConnectorLease] = {}
+        self._issued_generations: dict[str, str] = {}
+        self._lease_generation = ""
         self._revocation_tasks: dict[str, asyncio.Task[None]] = {}
+        self._credentials: dict[str, _ScopedCredential] = {}
         self._ready = False
         self._disposed = False
 
@@ -208,6 +225,7 @@ class DshProfileMCPRuntime:
         self._validate_descriptor(descriptor, lease)
         self._descriptor = descriptor
         self._lease = lease
+        self._lease_generation = getattr(snapshot, "generation_id", "")
 
     async def health(self) -> bool:
         return self._ready and not self._disposed and self._lease is not None
@@ -218,6 +236,8 @@ class DshProfileMCPRuntime:
     async def dispose(self) -> None:
         self._ready = False
         self._disposed = True
+        for credential in self._credentials.values():
+            credential.closed = True
         scopes = tuple(self._issued_scopes)
         first_error: BaseException | None = None
         for token in scopes:
@@ -230,6 +250,7 @@ class DshProfileMCPRuntime:
         self._lease = None
         if first_error is not None:
             raise first_error
+        self._credentials.clear()
 
     async def harness_mcp_specs(self, bundle: ResolvedPluginBundle) -> tuple[McpToolSpec, ...]:
         if not self._ready or self._disposed:
@@ -266,6 +287,14 @@ class DshProfileMCPRuntime:
         resource_name = _required(resolved, "name", code="dsh_mcp_resource_invalid")
         token = self._lease.bearer_token_for_runtime(aliases)
         self._issued_scopes[token] = self._lease
+        self._issued_generations[token] = self._lease_generation
+        self._credentials[token] = _ScopedCredential(
+            self._lease,
+            self._lease_generation,
+            aliases,
+            token,
+            {token},
+        )
         return (
             McpToolSpec(
                 name=resource_name,
@@ -287,6 +316,125 @@ class DshProfileMCPRuntime:
         del activation_key  # compatibility contexts predating PluginHost activation IDs
         return await self.harness_mcp_specs(bundle)
 
+    async def activation_mcp_specs_available(self, specs: Sequence[McpToolSpec]) -> bool:
+        """Validate these original scopes against the supervised generation.
+
+        Do not refresh the projection: a replacement sidecar has identical
+        code digests but cannot inherit the original credential's authority.
+        """
+        if not self._ready or self._disposed or not specs:
+            return False
+        try:
+            current = await self._service.runtime_snapshot()
+            self._validate_descriptor(current.descriptor, current.lease)
+            for spec in specs:
+                token = spec.api_key
+                if (
+                    token is None
+                    or token in self._revocation_tasks
+                    or self._issued_scopes.get(token) is not current.lease
+                    or self._issued_generations.get(token) != getattr(current, "generation_id", "")
+                    or spec.url != current.lease.endpoint
+                    or not current.lease.runtime_token_valid(token)
+                ):
+                    return False
+            return True
+        except Exception:
+            return False
+
+    def activation_mcp_resource_pins(
+        self, specs: Sequence[McpToolSpec]
+    ) -> tuple[MCPResourcePin, ...]:
+        pins = []
+        for spec in specs:
+            token = spec.api_key
+            lease = self._issued_scopes.get(token) if token is not None else None
+            generation = self._issued_generations.get(token) if token is not None else None
+            if lease is None:
+                raise PluginHostError("dsh_mcp_scope_unavailable", "MCP scope is unavailable")
+            # Compatibility sources without a generation remain unproven;
+            # do not manufacture one from profile/credential hashes.
+            if generation:
+                pins.append(MCPResourcePin(spec.name, generation, lease.descriptor_digest))
+        return tuple(pins)
+
+    def activation_mcp_runtime_credentials(
+        self,
+        specs: Sequence[McpToolSpec],
+    ) -> tuple[MCPRuntimeCredential, ...]:
+        """Opt-in bearer renewal for clients that consume this owned callback.
+
+        Static specs retain their original token and expiry semantics. Renewal
+        cannot resolve another sidecar generation, lease or tool grant.
+        """
+        result = []
+        for spec in specs:
+            credential = self._credentials.get(spec.api_key or "")
+            if credential is None or spec.url != credential.lease.endpoint:
+                raise PluginHostError("dsh_mcp_scope_unavailable", "MCP scope is unavailable")
+            if not credential.generation:
+                continue  # old third-party services cannot prove renewal ownership
+
+            async def token(selected=credential):
+                return await self._runtime_token(selected)
+
+            async def available(selected=credential):
+                try:
+                    await self._runtime_token(selected)
+                    return True
+                except Exception:
+                    return False
+
+            result.append(MCPRuntimeCredential(spec.name, token, available))
+        return tuple(result)
+
+    async def _runtime_token(self, credential: _ScopedCredential) -> str:
+        async with credential.lock:
+
+            def live():
+                return self._ready and not self._disposed and not credential.closed
+
+            if not live():
+                raise PluginHostError("dsh_mcp_scope_unavailable", "MCP scope is unavailable")
+
+            async def owner():
+                try:
+                    current = await self._service.runtime_snapshot()
+                    self._validate_descriptor(current.descriptor, current.lease)
+                except Exception:
+                    raise PluginHostError(
+                        "dsh_mcp_scope_unavailable", "MCP scope is unavailable"
+                    ) from None
+                if (
+                    not live()
+                    or current.lease is not credential.lease
+                    or getattr(current, "generation_id", "") != credential.generation
+                    or not credential.generation
+                    or self._issued_scopes.get(credential.current_token) is not credential.lease
+                    or credential.current_token in self._revocation_tasks
+                ):
+                    raise PluginHostError("dsh_mcp_scope_unavailable", "MCP scope is unavailable")
+
+            await owner()
+            if not credential.lease.runtime_token_valid(credential.current_token):
+                previous = credential.current_token
+                renewed = credential.lease.bearer_token_for_runtime(credential.aliases)
+                self._issued_scopes[renewed] = credential.lease
+                self._issued_generations[renewed] = credential.generation
+                credential.tokens.add(renewed)
+                credential.current_token = renewed
+                try:
+                    await self._revoke_tracked_scope(previous)
+                    await owner()  # cleanup awaited: the sidecar may have changed meanwhile
+                except BaseException:
+                    # Even cancellation must not publish a half-cleaned scope.
+                    # All minted tokens remain tracked for activation disposal.
+                    credential.closed = True
+                    raise
+            if not live() or not credential.lease.runtime_token_valid(credential.current_token):
+                raise PluginHostError("dsh_mcp_scope_unavailable", "MCP scope is unavailable")
+            return credential.current_token
+
     async def release_activation_mcp_specs(
         self,
         activation_key: str,
@@ -305,6 +453,19 @@ class DshProfileMCPRuntime:
         for spec in specs:
             token = spec.api_key
             if token is None:
+                continue
+            credential = self._credentials.get(token)
+            if credential is not None:
+                credential.closed = True  # fence before waiting on a renewal probe
+                async with credential.lock:
+                    for issued in tuple(credential.tokens):
+                        try:
+                            await self._revoke_tracked_scope(issued)
+                        except BaseException as error:
+                            if first_error is None:
+                                first_error = error
+                    if not any(issued in self._issued_scopes for issued in credential.tokens):
+                        self._credentials.pop(token, None)
                 continue
             if token not in self._issued_scopes:
                 continue
@@ -335,6 +496,7 @@ class DshProfileMCPRuntime:
                 self._revocation_tasks.pop(token, None)
         task.result()
         self._issued_scopes.pop(token, None)
+        self._issued_generations.pop(token, None)
 
     async def _revoke_scope(self, lease: DshMcpConnectorLease, token: str) -> None:
         revoke = getattr(self._service, "revoke_runtime_token", None)

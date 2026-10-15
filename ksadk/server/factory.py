@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import sqlite3
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional
 
@@ -398,6 +399,10 @@ def create_runtime_app(
                 await teams_host.close()
                 _kernel_ingress.set_teams_ingress_gate(None)
             await shutdown_runtime_resources(state)
+            if config.a2a_runtime_adapter is not None:
+                close_app_resources = getattr(config.a2a_runtime_adapter, "close_app_resources", None)
+                if callable(close_app_resources):
+                    await close_app_resources()
             raise
         app.state.agent_kernel_runtime = kernel_runtime
         if teams_host is not None and kernel_runtime is None:
@@ -429,6 +434,10 @@ def create_runtime_app(
             clear_agent_kernel_runtime()
             _kernel_ingress.clear_agent_kernel()
             await shutdown_runtime_resources(state)
+            if config.a2a_runtime_adapter is not None:
+                close_app_resources = getattr(config.a2a_runtime_adapter, "close_app_resources", None)
+                if callable(close_app_resources):
+                    await close_app_resources()
 
     app = FastAPI(
         title="ADK Core API",
@@ -525,6 +534,10 @@ def create_runtime_app(
                 response.headers["Expires"] = "0"
             return response
 
+    from ksadk.server.history_deadline import HistoryDeadlineMiddleware
+
+    app.add_middleware(HistoryDeadlineMiddleware)
+
     # CORS(与旧 app 一致,默认对 ADK 工具放开)。
     app.add_middleware(
         CORSMiddleware,
@@ -543,12 +556,83 @@ def create_runtime_app(
     async def session_backend_unavailable_handler(_request, exc: SessionBackendUnavailable):
         return Response(
             content=_json.dumps(
-                {"detail": {"code": "session_backend_unavailable", "message": str(exc)}},
+                {"Code": 503, "Message": str(exc), "Data": None,
+                 "ReasonCode": "SESSION_BACKEND_UNAVAILABLE",
+                 "detail": {"code": "session_backend_unavailable", "message": str(exc)}},
                 ensure_ascii=False,
             ),
             status_code=503,
             media_type="application/json",
         )
+
+    from ksadk.sessions.errors import (
+        CheckpointLookupTimeout,
+        HistoryProjectionBudgetExceeded,
+        HistoryReloadRequired,
+    )
+
+    @app.exception_handler(CheckpointLookupTimeout)
+    async def checkpoint_lookup_timeout_handler(_request, exc: CheckpointLookupTimeout):
+        return Response(
+            content=_json.dumps({"Code": 504, "Message": str(exc), "Data": None,
+                                 "ReasonCode": "CHECKPOINT_LOOKUP_TIMEOUT"}),
+            status_code=504, media_type="application/json",
+        )
+
+    @app.exception_handler(HistoryProjectionBudgetExceeded)
+    async def history_projection_budget_handler(_request, exc: HistoryProjectionBudgetExceeded):
+        return Response(
+            content=_json.dumps({"Code": 422, "Message": str(exc), "Data": None,
+                                 "ReasonCode": "HISTORY_PROJECTION_BUDGET_EXCEEDED"}),
+            status_code=422, media_type="application/json",
+        )
+
+    @app.exception_handler(HistoryReloadRequired)
+    async def history_reload_handler(_request, exc: HistoryReloadRequired):
+        return Response(
+            content=_json.dumps({"Code": 409, "Message": str(exc), "Data": None,
+                                 "ReasonCode": "HISTORY_RELOAD_REQUIRED"}),
+            status_code=409, media_type="application/json",
+        )
+
+    # PostgreSQL replies to these cases, so resilience must not turn them into
+    # independent live writes. Expose explicit HTTP classifications instead.
+    try:
+        import asyncpg
+    except ImportError:  # local-only SDK installation
+        pass
+    else:
+        @app.exception_handler(asyncpg.QueryCanceledError)
+        async def postgres_statement_timeout_handler(_request, _exc):
+            return Response(
+                content=_json.dumps({"Code": 504, "Message": "Database statement timed out",
+                                     "Data": None, "ReasonCode": "DATABASE_STATEMENT_TIMEOUT"}),
+                status_code=504, media_type="application/json",
+            )
+
+        @app.exception_handler(asyncpg.LockNotAvailableError)
+        async def postgres_lock_timeout_handler(_request, _exc):
+            return Response(
+                content=_json.dumps({"Code": 503, "Message": "Database lock unavailable",
+                                     "Data": None, "ReasonCode": "DATABASE_LOCK_TIMEOUT"}),
+                status_code=503, media_type="application/json",
+            )
+
+        @app.exception_handler(asyncpg.UniqueViolationError)
+        async def postgres_unique_handler(_request, _exc):
+            return Response(
+                content=_json.dumps({"Code": 409, "Message": "Conflicting database record",
+                                     "Data": None, "ReasonCode": "DATABASE_CONFLICT"}),
+                status_code=409, media_type="application/json",
+            )
+
+        @app.exception_handler(asyncpg.CheckViolationError)
+        async def postgres_check_handler(_request, _exc):
+            return Response(
+                content=_json.dumps({"Code": 422, "Message": "Database constraint rejected request",
+                                     "Data": None, "ReasonCode": "DATABASE_CONSTRAINT"}),
+                status_code=422, media_type="application/json",
+            )
 
     # A2A 端点须在 configure 之前装配:health_meta 含 GET catch-all ``/{requested_path:path}``,
     # 若 A2A 后挂,A2A 的 GET 路由(agent-card / tasks/{id})会被 catch-all 遮蔽成 404。
@@ -574,6 +658,9 @@ def _kernel_adapter_provider(
     if config.kernel_adapter_provider is not None:
         return config.kernel_adapter_provider
     if config.a2a_runtime_adapter is not None:
+        adopt_app_lifetime = getattr(config.a2a_runtime_adapter, "adopt_app_lifetime", None)
+        if callable(adopt_app_lifetime):
+            adopt_app_lifetime()
         return lambda: config.a2a_runtime_adapter
     if config.runtime_executor is not None and config.launch_context is not None:
         return lambda: config.runtime_executor.create_adapter(config.launch_context)
@@ -609,6 +696,11 @@ def _wire_a2a_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeAp
     runtime_type = adapter.runtime.runtime_type or config.runtime_type
 
     if isinstance(a2a_cfg, AgentEngineA2ABootstrap):
+        if config.runtime_executor is not None:
+            config.runtime_executor.configure_managed_a2a(a2a_cfg)
+        configure_adapter = getattr(adapter, "configure_managed_a2a", None)
+        if callable(configure_adapter):
+            configure_adapter(a2a_cfg)
         server = a2a_cfg.mount(
             app,
             runtime_adapter=adapter,
@@ -661,27 +753,62 @@ def _wire_agui_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeA
             self._service = service
             self._store = RuntimeEventStore(service)
 
-        async def append_one(self, session_id: str, event: Any) -> Any:
-            existing = await self._service.get_session(session_id)
+        async def _ensure_session(self, session_id: str, event: Any) -> None:
+            meta = event.source.metadata
+            asserted_agent = str(meta.get("agent_id") or "").strip()
+            asserted_user = str(meta.get("user_id") or "").strip()
+            agent_id = asserted_agent or "agent"
+            user_id = asserted_user or "user"
+            authority = getattr(self._service, "canonical_event_service", self._service)
+            header = getattr(self._service, "get_session_header", None)
+            if not callable(header):
+                header = self._service.get_session_metadata
+            existing = await header(session_id)
             if existing is None:
-                metadata = getattr(event, "source", None)
-                meta = metadata.metadata if metadata is not None else {}
-                await self._service.create_session(
-                    str(meta.get("agent_id") or "agent"),
-                    str(meta.get("user_id") or "user"),
-                    session_id,
-                )
+                try:
+                    ensure = getattr(self._service, "ensure_canonical_session_header", None)
+                    if not callable(ensure):
+                        ensure = getattr(authority, "ensure_session_header", None)
+                    existing = (await ensure(agent_id, user_id, session_id)
+                                if callable(ensure) else
+                                await authority.create_session(agent_id, user_id, session_id))
+                except Exception as exc:
+                    if not (getattr(exc, "sqlite_errorcode", None) in
+                            {sqlite3.SQLITE_CONSTRAINT_UNIQUE, sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY}
+                            or getattr(exc, "sqlstate", None) == "23505"):
+                        raise
+                    existing = await header(session_id)
+                    if existing is None:
+                        raise
+            if ((asserted_agent and existing.agent_id != asserted_agent)
+                    or (asserted_user and existing.user_id != asserted_user)):
+                raise ValueError("AG-UI session id belongs to a different agent or user")
+            # Canonical events are persisted by the durable authority even when
+            # the session service has a dirty process-local fallback session.
+            degraded = getattr(self._service, "persistence_degraded", None)
+            if authority is not self._service and callable(degraded) and degraded(session_id):
+                authority_header = getattr(authority, "get_session_header", None)
+                if not callable(authority_header):
+                    authority_header = authority.get_session_metadata
+                durable = await authority_header(session_id)
+                if durable is None:
+                    from ksadk.sessions.errors import SessionBackendUnavailable
+
+                    raise SessionBackendUnavailable(
+                        "Canonical AG-UI session is unavailable in durable storage"
+                    )
+                if ((asserted_agent and durable.agent_id != asserted_agent)
+                        or (asserted_user and durable.user_id != asserted_user)):
+                    raise ValueError("AG-UI session id belongs to a different agent or user")
+
+        async def append_one(self, session_id: str, event: Any) -> Any:
+            await self._ensure_session(session_id, event)
             return await self._store.append_one(session_id, event)
 
         async def reserve_once(self, event: Any) -> Any:
-            existing = await self._service.get_session(event.session_id)
-            if existing is None:
-                await self._service.create_session(
-                    event.agent_id,
-                    event.user_id,
-                    event.session_id,
-                )
-            return await self._store.reserve_once(event)
+            session_id = str(event.source.metadata.get("session_id") or "")
+            await self._ensure_session(session_id, event)
+            return await self._store.persist_one(session_id, event)
 
         async def list(self, session_id: str, **kwargs: Any) -> Any:
             return await self._store.list(session_id, **kwargs)

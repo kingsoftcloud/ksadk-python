@@ -22,6 +22,10 @@ _EXPORTS = {
     "HarnessReasoningTurn": ("ksadk.harness.reasoner", "HarnessReasoningTurn"),
     "HarnessToolCall": ("ksadk.harness.reasoner", "HarnessToolCall"),
     "LiteLLMHarnessReasoner": ("ksadk.harness.reasoner", "LiteLLMHarnessReasoner"),
+    "ModelGatewayHarnessReasoner": (
+        "ksadk.harness.reasoner",
+        "ModelGatewayHarnessReasoner",
+    ),
     "AcceptanceCheck": ("ksadk.harness.run_control", "AcceptanceCheck"),
     "MilestoneSpec": ("ksadk.harness.run_control", "MilestoneSpec"),
     "RunControlSpec": ("ksadk.harness.run_control", "RunControlSpec"),

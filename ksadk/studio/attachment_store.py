@@ -44,6 +44,13 @@ _TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+_DOCUMENT_MEDIA_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".pptx", ".xlsx"}
 
 
 @dataclass(frozen=True)
@@ -57,7 +64,7 @@ class StoredConversationAttachment:
 
 
 class ConversationAttachmentStore:
-    """Persist only the small image/text inputs supported by local Studio."""
+    """Persist bounded uploads; each Runtime separately admits its supported view."""
 
     MAX_BYTES = 1_500_000
 
@@ -88,7 +95,7 @@ class ConversationAttachmentStore:
         if not self._supported(content, filename=safe_name, media_type=normalized_type):
             raise StudioError(
                 "CONVERSATION_ATTACHMENT_TYPE_UNSUPPORTED",
-                "会话附件仅支持图片或 UTF-8 文本、代码文件",
+                "会话附件支持图片、UTF-8 文本、代码及 PDF、DOCX、PPTX、XLSX 文档",
                 status_code=415,
                 field="file",
             )
@@ -170,6 +177,11 @@ class ConversationAttachmentStore:
     @staticmethod
     def _supported(content: bytes, *, filename: str, media_type: str) -> bool:
         if media_type.startswith("image/"):
+            return True
+        if (
+            media_type in _DOCUMENT_MEDIA_TYPES
+            or Path(filename).suffix.lower() in _DOCUMENT_SUFFIXES
+        ):
             return True
         if (
             media_type.startswith("text/")

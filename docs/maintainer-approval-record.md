@@ -1,6 +1,8 @@
 # KsADK Public Release Approval Record
 
-This record approves the public `0.8.5` release candidate described below. It is the evidence consumed by the release gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages deployment.
+This is the historical `0.8.5` approval record and does not authorize PyPI publication of `0.8.6`. A new record must bind the reviewed release source, Web package, and fresh verification before publication.
+
+The historical record approved the public `0.8.5` release candidate described below. It is the evidence consumed by the release gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages deployment.
 
 ## Required Approval Decisions
 

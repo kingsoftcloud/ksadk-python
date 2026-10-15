@@ -1,5 +1,7 @@
 <h1 align="center">Kingsoft Cloud Agent Development Kit</h1>
 
+新版本要求 Python 3.12 或以上；已有 Agent 可保留原 SDK 和运行镜像，旧 Runtime 的会话读取与订阅协议继续兼容。
+
 <p align="center"><strong>金山云智能体开发套件</strong></p>
 
 <p align="center">
@@ -36,6 +38,8 @@ agentengine run -i
 ```bash
 agentengine web . --no-open
 ```
+
+升级前请查看文档站的快速开始与升级说明；本地 Studio 默认使用 Native Harness 和持久化执行账本。
 
 ## 运行时架构
 

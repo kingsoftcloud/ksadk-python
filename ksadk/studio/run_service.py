@@ -6,16 +6,17 @@ import asyncio
 import copy
 import hashlib
 import json
+import linecache
 import logging
+import os
 import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
-
-from jsonschema import Draft202012Validator
 
 from ksadk.agui.a2ui_projection import project_a2ui_operations
 from ksadk.conversations.projector import (
@@ -56,7 +57,6 @@ from ksadk.events.content import (
 from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
-    PauseResult,
     ResumePayload,
     ResumeTarget,
     RuntimeExecutor,
@@ -66,10 +66,12 @@ from ksadk.runtime import (
 from ksadk.runtime.executor import RuntimeStartPreparation
 from ksadk.sessions.base import BaseSessionService
 from ksadk.sessions.local_service import LocalSessionService
-from ksadk.studio.contracts import RunEvent, RunRecord, RunStatus, Usage
+from ksadk.studio.contracts import RunEvent, RunRecord, RunStatus, RunSubmissionRef, Usage
 from ksadk.studio.errors import StudioError
 from ksadk.studio.event_store import RunEventStore
+from ksadk.studio.native_verification_presentation import terminal_verification_notice
 from ksadk.studio.run_activity import project_run_activities
+from ksadk.studio.run_controls import StudioRunControlsMixin
 from ksadk.studio.workspace import Workspace
 
 _CANCEL_TIMEOUT_SECONDS = 2.0
@@ -77,6 +79,174 @@ _INTERACTION_SUBMIT_TIMEOUT_SECONDS = 10.0
 
 
 logger = logging.getLogger(__name__)
+
+
+def _stall_seconds(name: str, default: float) -> float:
+    """读看门狗阈值（秒）；非法值回落到默认，<=0 表示关闭。"""
+
+    raw = os.getenv(name, "")
+    if not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _format_task_stacks(limit: int = 40) -> str:
+    """把当前 asyncio 任务现场拼成可读文本（只用于诊断日志，不含凭据）。
+
+    比普通 ``task.get_stack()`` 更进一步——后者只返回**当前协程**那一帧，
+    ``await`` 链上被等待协程的帧会整段丢掉（上一版 dump 里 run 本体只剩一帧
+    ``ainvoke`` 就是这个原因）。这里改为：
+
+    - 记录 ``task._fut_waiter``：任务到底在等哪个 future / event / task；
+    - 沿 ``coro.cr_await`` 逐层取帧，直到撞到 Future/Task/Event 边界。
+    """
+
+    parts: list[str] = []
+    for task in sorted(asyncio.all_tasks(), key=lambda t: (t.done(), t.get_name())):
+        if task.done():
+            continue
+        coro = task.get_coro()
+        parts.append(f"=== task {task.get_name()} ({_coro_qualname(coro)})")
+        fw = getattr(task, "_fut_waiter", None)
+        if fw is not None:
+            parts.append(f"    等待对象: {_future_desc(fw)}")
+        frames = _coro_await_frames(coro, limit=limit)
+        if not frames:
+            parts.append("    (无栈帧)")
+            continue
+        for filename, lineno, code in frames:
+            parts.append(f"    {filename}:{lineno}  {code}")
+        parts.append("")
+    return "\n".join(parts) or "(没有可 dump 的任务栈)"
+
+
+def _coro_qualname(coro: Any) -> str:
+    try:
+        return coro.__qualname__
+    except Exception:  # noqa: BLE001 - 诊断尽力而为
+        return repr(coro)[:80]
+
+
+def _future_desc(fut: Any) -> str:
+    """描述被 await 的 future/event/task；只读属性，不触发、不等待它。"""
+
+    if isinstance(fut, asyncio.Task):
+        state = "done" if fut.done() else "pending"
+        detail = ""
+        if fut.done() and not fut.cancelled():
+            exc = fut.exception()
+            detail = f" exc={type(exc).__name__}" if exc is not None else ""
+        return f"Task({_coro_qualname(fut.get_coro())}) {state}{detail}"
+    if isinstance(fut, asyncio.Event):
+        return f"Event is_set={fut.is_set()}"
+    if isinstance(fut, asyncio.Future):
+        state = "done" if fut.done() else "pending"
+        if fut.done() and not fut.cancelled():
+            exc = fut.exception()
+            state += f" exc={type(exc).__name__}" if exc is not None else ""
+        return f"Future {state} cancelled={fut.cancelled()}"
+    return f"{type(fut).__name__}: {repr(fut)[:140]}"
+
+
+def _coro_await_frames(
+    coro: Any, *, limit: int
+) -> list[tuple[str, int, str]]:
+    """沿 ``cr_await`` 链收集 (文件名, 行号, 代码行)；撞到 Future/Task 即停。"""
+
+    frames: list[tuple[str, int, str]] = []
+    seen = 0
+    guard = 0
+    while coro is not None and seen < limit and guard < 256:
+        guard += 1
+        frame = getattr(coro, "cr_frame", None)
+        if frame is not None:
+            code = frame.f_code
+            line = linecache.getline(code.co_filename, frame.f_lineno).strip()
+            frames.append((code.co_filename, frame.f_lineno, line))
+            seen += 1
+        nxt = getattr(coro, "cr_await", None)
+        if nxt is None or nxt is coro:
+            break
+        if not hasattr(nxt, "cr_frame"):
+            # await 的是 Future/Task/Event：链到此为止（fut_waiter 已单独记录）。
+            frames.append(("<await-boundary>", 0, _future_desc(nxt)))
+            break
+        coro = nxt
+    return frames
+
+
+def _format_loop_timers(limit: int = 12) -> str:
+    """列出事件循环里最近将触发的定时器（含 callback 与到期秒数）。
+
+    用途：区分"卡在一个超长 sleep"和"在等一个永远不会就绪的 future"。
+    前者会在这里看到一个很大的到期秒数；后者这里要么空、要么全是无关的
+    轮询定时器，而任务却停在 await 一个 Future 上。
+    """
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return "(没有运行中的事件循环)"
+    handles = []
+    for handle in list(getattr(loop, "_scheduled", ()) or ()):
+        if getattr(handle, "_cancelled", False):
+            continue
+        when = getattr(handle, "_when", None)
+        if when is None:
+            continue
+        callback = getattr(handle, "_callback", None)
+        name = getattr(callback, "__qualname__", None) or repr(callback)[:60]
+        handles.append((float(when), name))
+    if not handles:
+        return "(事件循环里没有待触发的定时器)"
+    handles.sort()
+    try:
+        now = loop.time()
+    except Exception:  # noqa: BLE001 - 诊断尽力而为
+        now = handles[0][0]
+    lines = [
+        f"    {max(0.0, when - now):9.2f}s 后  {name}"
+        for when, name in handles[:limit]
+    ]
+    if len(handles) > limit:
+        lines.append(f"    ... 另有 {len(handles) - limit} 个定时器")
+    return "\n".join(lines)
+
+
+def _consumed_model_output(record: Any) -> bool:
+    """该 run 是否真的消耗了模型输出 token（用于判定"空交付"而非"合法空输出"）。
+
+    审批/交互类流程会合法地以空输出收束；只有"跑过模型、烧了输出 token，却没有任何
+    交付内容"才是事故（2026-09-18 实测：harness provider adapter 路径 COMPLETED +
+    output 长度 0 + 产物 0）。
+    """
+
+    usage = getattr(record, "usage", None)
+    try:
+        return int(getattr(usage, "output_tokens", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _require_delivery(output: Any) -> None:
+    """空交付不得判 COMPLETED（2026-09-18 实测事故）。
+
+    一次 run 跑了 15 次模型调用、并行 3 个子 Agent、约 17 分钟，最后以
+    **COMPLETED + output 长度 0 + 产物 0** 收场——用户看到"成功"却拿不到任何东西。
+    harness 的真正完成点是 ``_plugin_run`` / ``_kernel_run``（我第一版把守卫错放在
+    ``_schedule_run``，于是下一次事故照样以 COMPLETED 收场），两处都必须过这道闸。
+    """
+
+    if not str(output or "").strip():
+        raise StudioError(
+            "EMPTY_DELIVERY",
+            "本轮没有产出任何交付内容（输出为空，且没有产物），已按失败处理而不是成功。"
+            "请重试，或检查该 Agent 的委派/落盘策略。",
+            status_code=502,
+        )
 
 
 @dataclass(frozen=True)
@@ -87,19 +257,30 @@ class StudioRunSpec:
     build_id: str
     agent_id: str
     model: str | None = None
+    # Immutable capability metadata copied from the selected model in the
+    # Build.  Conversation surfaces must use this declaration instead of
+    # guessing modality support from model names or mutable catalog state.
+    model_metadata: Mapping[str, Any] = field(default_factory=dict)
     request_config: Mapping[str, Any] = field(default_factory=dict)
     manifest_sha256: str = ""
     plugin_bundle_root: Path | None = None
+    submission_ref: RunSubmissionRef | None = None
+    presentation_profile: Literal["flat-v1", "agent-block-v1"] = "flat-v1"
 
 
 class _ProjectedRunEventWriter:
-    """Batch high-frequency text deltas before rewriting a Run JSON file.
+    """Batch high-frequency presentation events before rewriting a Run JSON.
 
     Canonical RuntimeEvents are already durable in the session store.  The
     RunEvent JSON is a presentation projection, so writing and retaining one
-    copy of the full projection envelope per token is unnecessary and becomes
-    quadratic as the response grows.  A short batching window keeps live chat
-    responsive and coalesces adjacent chunks for the same projected item.
+    copy of the full projection envelope per token *or internal status fact*
+    with an independent file replace is unnecessary and becomes quadratic as
+    the response grows.  A short batching window keeps live chat responsive,
+    coalesces adjacent text chunks, and commits status facts in one replace.
+
+    The status facts themselves are not discarded: the canonical session
+    trace remains the source of truth and the Studio projection still retains
+    every curated fact.  Only the number of growing-file rewrites changes.
     """
 
     _STREAM_TYPES = frozenset({"message.delta", "thinking.delta"})
@@ -123,8 +304,24 @@ class _ProjectedRunEventWriter:
         self._last_flush = 0.0
         self._flush_handle: asyncio.TimerHandle | None = None
 
-    def append(self, event_type: str, data: dict[str, Any]) -> RunEvent | None:
-        if event_type in self._STREAM_TYPES:
+    def append(
+        self, event_type: str, data: dict[str, Any], *, record: RunRecord | None = None,
+    ) -> RunEvent | None:
+        if record is not None:
+            if record.id != self._run_id:
+                raise ValueError("projected event Run identity mismatch")
+            # A flush could persist a cached, already terminal record before
+            # its terminal fact. Publish the pending prefix in this same write.
+            entries = [*self._coalesce_stream_entries(self._pending), (event_type, data)]
+            stored = self._event_store.append_record_events(record, entries)
+            self._pending.clear()
+            if self._flush_handle is not None:
+                self._flush_handle.cancel()
+                self._flush_handle = None
+            self._last_flush = time.monotonic()
+            self._notify(stored)
+            return stored[-1]
+        if self._is_batchable(event_type, data):
             self._pending.append((event_type, data))
             elapsed = time.monotonic() - self._last_flush
             if elapsed < self._flush_interval:
@@ -138,6 +335,20 @@ class _ProjectedRunEventWriter:
         stored = self._event_store.append(self._run_id, event_type, data)
         self._notify((stored,))
         return stored
+
+    @classmethod
+    def _is_batchable(cls, event_type: str, data: dict[str, Any]) -> bool:
+        if event_type in cls._STREAM_TYPES:
+            return True
+        runtime_event = data.get("runtimeEvent")
+        # Managed Harness publishes its execution evidence as canonical status
+        # items.  Long runs can emit thousands of these in seconds; they drive
+        # the activity UI but do not require one fsync/JSON rewrite per fact.
+        return (
+            event_type == "item.completed"
+            and isinstance(runtime_event, dict)
+            and runtime_event.get("item_kind") == "status"
+        )
 
     def flush(self) -> list[RunEvent]:
         if self._flush_handle is not None:
@@ -166,7 +377,10 @@ class _ProjectedRunEventWriter:
                 coalesced.append((event_type, copy.deepcopy(data)))
                 continue
             previous_type, previous = coalesced[-1]
-            if not _same_projected_stream(previous_type, previous, event_type, data):
+            if (
+                event_type not in _ProjectedRunEventWriter._STREAM_TYPES
+                or not _same_projected_stream(previous_type, previous, event_type, data)
+            ):
                 coalesced.append((event_type, copy.deepcopy(data)))
                 continue
 
@@ -215,7 +429,7 @@ def _set_projected_stream_text(data: dict[str, Any], text: str) -> None:
             update["text"] = text
 
 
-class StudioRunService:
+class StudioRunService(StudioRunControlsMixin):
     """Persist Studio state without selecting or wrapping a RuntimeAdapter."""
 
     def __init__(
@@ -227,6 +441,7 @@ class StudioRunService:
         session_service: BaseSessionService | None = None,
         runtime_events: RuntimeEventStore | None = None,
         plugin_runtime: Any | None = None,
+        native_harness_ingress: bool = False,
     ) -> None:
         self.workspace = workspace
         self.executor = executor
@@ -236,9 +451,15 @@ class StudioRunService:
         )
         self.runtime_events = runtime_events or RuntimeEventStore(self.session_service)
         self.plugin_runtime = plugin_runtime
+        self.native_harness_ingress = native_harness_ingress
         self.schedule_assistant: Any | None = None
         self._active_handles: dict[str, Any] = {}
         self._active_sessions: set[tuple[str, str]] = set()
+        # Serialize accepted next-turn prompts per Agent/Session. Direct Run
+        # calls retain their overlap rejection; the asynchronous Studio
+        # operation route may wait its turn without starting a second adapter.
+        self._session_turn_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._session_turn_users: dict[tuple[str, str], int] = {}
         self._cancel_flags: dict[str, bool] = {}
         self._control_queues: dict[
             str,
@@ -246,15 +467,29 @@ class StudioRunService:
         ] = {}
         self._waiting_modes: dict[str, str] = {}
         self._submitted_interactions: dict[str, set[str]] = {}
+        # 传输活性与持久化是两条独立合同。Harness 的 reasoning/text token
+        # delta 出于隐私和体积原因不会写入 RunEventStore，但它们仍证明模型流
+        # 在前进；看门狗必须观察这条进程内单调序号，不能把“未持久化”误判成
+        # “没有收到任何 chunk”。
+        self._runtime_progress_seq = 0
         # Interaction resolution appends to one run-level event file.  Serialise
         # every decision for that run, not only identical interaction ids, so
         # two concurrently visible cards cannot overwrite each other's receipt.
         self._interaction_locks: dict[str, asyncio.Lock] = {}
         self._recovery_tasks: set[asyncio.Task] = set()
+        self._native_recovery_ready: dict[str, asyncio.Event] = {}
         self._detaching_recoveries = False
 
     def has_active_runs(self) -> bool:
-        return bool(self._active_sessions or self._active_handles)
+        # Accepted follow-ups remain live work even during the short handoff
+        # between two Runs. Settings/credential changes must not slip through.
+        return bool(self._session_turn_users or self._active_sessions or self._active_handles)
+
+    def has_pending_session_turns(self, session_id: str) -> bool:
+        return any(
+            waiting_session == session_id and count > 0
+            for (_, waiting_session), count in self._session_turn_users.items()
+        )
 
     def is_run_executing(self, run_id: str) -> bool:
         """该 run 是否仍在本进程内实际执行（内存态判定）。
@@ -262,7 +497,13 @@ class StudioRunService:
         磁盘 record 停在 RUNNING 的 run 若不在这里，说明是进程崩溃/重启
         遗留的僵尸状态，允许删除会话时将其收尾为 canceled。
         """
-        return run_id in self._active_handles or run_id in self._active_sessions
+        if run_id in self._active_handles:
+            return True
+        try:
+            record = self.event_store.get(run_id)
+        except StudioError:
+            return False
+        return (record.agent_id, record.session_id) in self._active_sessions
 
     async def reap_stale_running_run(self, run_id: str) -> bool:
         """把不在执行的僵尸 RUNNING run 收尾为 canceled（幂等）。"""
@@ -294,18 +535,36 @@ class StudioRunService:
     async def recover_interrupted(self, resolve_spec=None) -> None:
         """Settle local runs left active across a Studio restart.
 
-        Reattach approval-paused providers only when their pinned Build and
-        durable-restore capability can be verified. Other in-process runs are
-        explicitly interrupted; active execution takeover remains Kernel-owned.
+        Reattach approval-paused Providers and opt-in local Native runs only
+        when their pinned Build and durable-restore capability can be verified.
+        Other in-process runs are explicitly interrupted; hosted takeover
+        remains Kernel-owned.
         """
-        active = {RunStatus.RUNNING, RunStatus.WAITING_INPUT}
+        active = {RunStatus.RUNNING, RunStatus.WAITING_INPUT, RunStatus.PAUSED}
         for record in self.event_store.list_runs():
+            if record.status == RunStatus.COMPLETED:
+                from ksadk.studio.native_terminal_recovery import rebuild_native_terminal_trace
+
+                await rebuild_native_terminal_trace(self, record, resolve_spec)
             if record.status not in active:
                 continue
-            if record.status == RunStatus.WAITING_INPUT and resolve_spec is not None:
+            native_ref = (
+                record.runtime_handle.get("native_ref", {}) if record.runtime_handle else {}
+            )
+            is_native = isinstance(native_ref, dict) and native_ref.get("engine_kind") == "native"
+            if (
+                record.status == RunStatus.WAITING_INPUT
+                and resolve_spec is not None
+                and not is_native
+            ):
                 from ksadk.studio.provider_recovery import restore_waiting_provider_run
 
                 if await restore_waiting_provider_run(self, record, resolve_spec):
+                    continue
+            if resolve_spec is not None:
+                from ksadk.studio.native_recovery import restore_native_studio_run
+
+                if await restore_native_studio_run(self, record, resolve_spec):
                     continue
             record.status = RunStatus.INTERRUPTED
             record.completed_at = datetime.now(timezone.utc)
@@ -321,9 +580,24 @@ class StudioRunService:
             )
             self._expire_unresolved_interactions(record)
 
-    async def events(self, run_id: str, *, after: int = 0) -> list[RunEvent]:
+    async def events(
+        self, run_id: str, *, after: int = 0, presentation_profile: str | None = None
+    ) -> list[RunEvent]:
         """Read the durable Studio event timeline for API/SSE replay."""
-        return self.event_store.events(run_id, after=after)
+        from ksadk.studio.presentation import StudioConversationProjection
+
+        record = self.event_store.get(run_id)
+        if presentation_profile is not None and presentation_profile != record.presentation_profile:
+            raise StudioError(
+                "PRESENTATION_PROFILE_CONFLICT", "重连必须沿用当前运行的展示方式", status_code=409
+            )
+        projector = StudioConversationProjection(record.session_id, record.presentation_profile)
+        result = []
+        for event in self.event_store.events(run_id, after=0):
+            projected = projector.apply(event)
+            if event.id > after:
+                result.append(projected)
+        return result
 
     async def run(
         self,
@@ -333,29 +607,164 @@ class StudioRunService:
         runtime_input: Any = None,
         session_id: str | None = None,
         on_event: Callable[[RunEvent], None] | None = None,
+        queue_if_active: bool = False,
+        on_admitted: Callable[[], None] | None = None,
     ) -> RunRecord:
         session = session_id or f"ses_{uuid4().hex}"
+        if spec.submission_ref is not None and (
+            spec.submission_ref.agent_id != spec.agent_id
+            or spec.submission_ref.session_id != session
+        ):
+            raise StudioError(
+                "RUN_SUBMISSION_SCOPE_MISMATCH", "提交来源与实际运行不一致", status_code=409
+            )
         key = (spec.agent_id, session)
-        # Claim before the first await, including preparation and plugin runs.
-        # A second turn must never attach another adapter to the live thread.
-        if key in self._active_sessions:
+        # Count the admission before the first await. A direct caller cannot
+        # jump ahead of an already accepted follow-up during lock handoff.
+        if not queue_if_active and self._session_turn_users.get(key, 0):
             raise StudioError(
                 "SESSION_RUN_ACTIVE",
                 "上一轮仍在运行或等待回答，请先完成回答或停止运行。",
                 status_code=409,
                 details={"sessionId": session},
             )
-        self._active_sessions.add(key)
+        # Accepted structured input belongs to this submission, not to the
+        # mutable composer/caller while this coroutine waits for its turn.
+        runtime_input = copy.deepcopy(runtime_input)
+        lock = self._session_turn_locks.setdefault(key, asyncio.Lock())
+        self._session_turn_users[key] = self._session_turn_users.get(key, 0) + 1
         try:
-            return await self._run_owned(
-                spec,
-                user_input,
-                runtime_input=runtime_input,
-                session_id=session,
-                on_event=on_event,
-            )
+            async with lock:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise asyncio.CancelledError()
+                if on_admitted is not None:
+                    on_admitted()
+                self._active_sessions.add(key)
+                watchdog = asyncio.create_task(self._watch_run_progress())
+                try:
+                    return await self._run_owned(
+                        spec,
+                        user_input,
+                        runtime_input=runtime_input,
+                        session_id=session,
+                        on_event=on_event,
+                    )
+                finally:
+                    watchdog.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await watchdog
+                    self._active_sessions.discard(key)
         finally:
-            self._active_sessions.discard(key)
+            users = self._session_turn_users[key] - 1
+            if users:
+                self._session_turn_users[key] = users
+            else:
+                self._session_turn_users.pop(key, None)
+                self._session_turn_locks.pop(key, None)
+
+    async def _watch_run_progress(self) -> None:
+        """运行期"无进展"看门狗：只做取证，不改行为。
+
+        依据：2026-09-18 实测一次 run 静默 437s、期间 0 事件，而进程 CPU 稳定
+        在 ~20%（空转基线 0.3%），日志里没有任何一行能说明"当时在干什么"；
+        排查只能靠 `lsof` 反推，且 macOS 上 py-spy 需要 root、lldb attach 被拒。
+        因此把"疑似卡住"时的现场（asyncio 任务栈）直接打进 studio 日志：
+        下次再卡住，根因在日志里，不需要复现第二次。
+
+        阈值：``KSADK_RUN_STALL_WARN_SECONDS``（默认 60，<=0 关闭）；
+        现场 dump 从 ``KSADK_RUN_STALL_DUMP_SECONDS``（默认 120）开始，
+        **持续卡住就每隔这么久再 dump 一次**（最多 ``KSADK_RUN_STALL_MAX_DUMPS``
+        次，默认 5）。一次性 dump 区分不了"卡住"和"只是慢"：2026-09-18 实测一次
+        run 静默 10 分钟、期间零模型请求、进程全部线程 idle，而 21:36:08 那份
+        一次性 dump 早已过期，无法说明 6 分钟后的状态。
+        """
+
+        warn_after = _stall_seconds("KSADK_RUN_STALL_WARN_SECONDS", 60.0)
+        if warn_after <= 0:
+            return
+        dump_after = _stall_seconds("KSADK_RUN_STALL_DUMP_SECONDS", 120.0)
+        max_dumps = int(_stall_seconds("KSADK_RUN_STALL_MAX_DUMPS", 5.0))
+        poll_seconds = min(15.0, warn_after)
+        quiet_since = time.monotonic()
+        last_seq = self._progress_marker()
+        warned = False
+        dumps = 0
+        last_dump_at = 0.0
+        while True:
+            await asyncio.sleep(poll_seconds)
+            marker = self._progress_marker()
+            if marker != last_seq:
+                last_seq = marker
+                quiet_since = time.monotonic()
+                warned = False
+                dumps = 0
+                last_dump_at = 0.0
+                continue
+            quiet_for = time.monotonic() - quiet_since
+            if quiet_for >= warn_after and not warned:
+                warned = True
+                logger.warning(
+                    "run 已 %.0fs 没有新事件（当前执行中 run=%s）；疑似卡住，"
+                    "达到 %.0fs 将 dump asyncio 任务栈",
+                    quiet_for,
+                    sorted(self._active_handles) or sorted(self._active_sessions),
+                    dump_after,
+                )
+            due_for_dump = quiet_for >= dump_after and (
+                last_dump_at == 0.0 or quiet_for - last_dump_at >= dump_after
+            )
+            if due_for_dump and dumps < max_dumps:
+                dumps += 1
+                last_dump_at = quiet_for
+                logger.warning(
+                    "run 已 %.0fs 没有新事件（第 %d/%d 次现场）；"
+                    "asyncio 任务现场：\n%s\n事件循环最近的定时器：\n%s",
+                    quiet_for,
+                    dumps,
+                    max_dumps,
+                    _format_task_stacks(),
+                    _format_loop_timers(),
+                )
+
+    def _progress_marker(self) -> tuple[int, int, int]:
+        """进展标记：持久事件、活跃会话与未落盘的实时流序号。"""
+
+        total = 0
+        for run_id in list(self._active_handles):
+            try:
+                total += len(self.event_store.events(str(run_id)))
+            except Exception:  # noqa: BLE001 - 取证代码不得影响主流程
+                continue
+        return total, len(self._active_sessions), self._runtime_progress_seq
+
+
+    async def _start_public_execution(self, run_id, launch_context, request, preparation):
+        from ksadk.harness.public_output import public_output_scope
+        from ksadk.studio.public_output_store import PublicOutputStore
+
+        store = PublicOutputStore(self.workspace)
+        with public_output_scope(lambda text, **kwargs: store.retain(run_id, text, **kwargs)):
+            return await self.executor.start(launch_context, request, preparation=preparation)
+
+    async def _public_execution_stream(self, handle, run_id):
+        from ksadk.harness.public_output import public_output_scope
+        from ksadk.studio.public_output_store import PublicOutputStore
+
+        store = PublicOutputStore(self.workspace)
+        def sink(text, **kwargs):
+            return store.retain(run_id, text, **kwargs)
+
+        iterator = self.executor.stream(handle)
+        try:
+            while True:
+                with public_output_scope(sink):
+                    try:
+                        event = await anext(iterator)
+                    except StopAsyncIteration:
+                        return
+                yield event
+        finally:
+            await iterator.aclose()
 
     async def _run_owned(
         self,
@@ -375,11 +784,13 @@ class StudioRunService:
             agent_id=spec.agent_id,
             session_id=session,
             trace_id=uuid4().hex,
+            submission_ref=spec.submission_ref,
             manifest_sha256=spec.manifest_sha256,
             runtime_type=runtime_type,
             model=str(spec.model or ""),
             collaboration_mode=str(spec.request_config.get("collaboration_mode") or ""),
             goal_objective=str(spec.request_config.get("goal_objective") or ""),
+            presentation_profile=spec.presentation_profile,
             input=user_input,
         )
         await self.session_service.create_session(spec.agent_id, "local-user", session)
@@ -398,6 +809,7 @@ class StudioRunService:
                 "model": record.model,
                 "collaborationMode": record.collaboration_mode,
                 "goalObjective": record.goal_objective,
+                "presentationProfile": record.presentation_profile,
             },
         )
         if on_event is not None:
@@ -446,6 +858,81 @@ class StudioRunService:
             provider_runtime_adapter=provider_runtime_adapter,
         )
 
+    def _admit_native_studio_start(
+        self,
+        spec: StudioRunSpec,
+        record: RunRecord,
+        user_input: str,
+        request: StartRequest,
+        adapter: Any,
+        *,
+        require_pin: bool,
+    ) -> StartRequest:
+        """Apply the same Build/history fence to direct and PluginHost Native starts."""
+        adapter.admit_studio_build(
+            build_id=spec.build_id,
+            manifest_sha256=spec.manifest_sha256,
+            model=request.model,
+            request_config=request.config,
+            project_dir=spec.launch_context.project_dir,
+            launch_config=spec.launch_context.config,
+            require_pin=require_pin,
+        )
+        from ksadk.studio.native_user_input import admit_native_user_input
+
+        normalized_input = admit_native_user_input(request.input, user_input)
+        prior_turns = [
+            previous
+            for previous in self.event_store.list_runs(session_id=record.session_id)
+            if previous.id != record.id
+            and previous.agent_id == spec.agent_id
+            and (
+                previous.status == RunStatus.COMPLETED
+                or (
+                    previous.status
+                    in {
+                        RunStatus.FAILED,
+                        RunStatus.CANCELLED,
+                        RunStatus.INTERRUPTED,
+                        RunStatus.TIMED_OUT,
+                    }
+                    and previous.runtime_handle.get("run_id")
+                )
+            )
+        ]
+        parent = adapter.session_parent_run_id(record.session_id)
+        if prior_turns:
+            last = prior_turns[-1]
+            if (
+                any(
+                    (previous.runtime_handle.get("native_ref") or {}).get("engine_kind")
+                    != "native"
+                    or previous.build_id != spec.build_id
+                    or previous.manifest_sha256 != spec.manifest_sha256
+                    for previous in prior_turns
+                )
+                or parent != last.runtime_handle.get("run_id")
+            ):
+                raise ValueError("native_studio_cross_runtime_history_unavailable")
+        elif parent is not None:
+            raise ValueError("native_studio_session_parent_mismatch")
+        # The Native ledger is the only history owner. The fields removed here
+        # have already been checked against immutable host-side admissions.
+        from ksadk.studio.contracts import NativeRunOptions
+
+        if spec.plugin_bundle_root is not None:
+            # Ordinary Studio/DSH owns these normalized selections. Explicit
+            # injected hosts retain their separately pinned request contract;
+            # their opaque policy names are not Studio approval vocabulary.
+            record.native_runtime_options = NativeRunOptions(
+                tool_approval_mode=spec.request_config.get("tool_approval_mode"),
+                reasoning_effort=spec.request_config.get("effort") or None,
+            )
+            self.event_store.save(record)
+        return request.model_copy(update={
+            "metadata": {}, "config": {}, "model": None, "input": normalized_input,
+        })
+
     async def _execute_runtime_record(
         self, spec, user_input, *, record, runtime_input=None, on_event=None,
         prepared_turn=None, provider_runtime_adapter=False, restored_handle=None,
@@ -458,11 +945,48 @@ class StudioRunService:
             record.started_at = datetime.now(timezone.utc)
         self.event_store.save(record)
         projected_writer = _ProjectedRunEventWriter(self.event_store, run_id, on_event)
+        native_restore = (
+            restored_handle is not None
+            and restored_handle.native_ref.get("engine_kind") == "native"
+        )
+        native_restored_run_id = restored_handle.run_id if native_restore else None
+        existing_events = self.event_store.events(run_id) if native_restore else ()
+        # A cold Native replay reconstructs record state from the full ledger.
+        # Studio's public event file is a separate projection; its persisted
+        # run_seq is the safe prefix, including batches of prior text deltas.
+        public_replay_cursor = max(
+            (
+                fact.get("run_seq", 0)
+                for row in existing_events
+                if isinstance((fact := row.data.get("runtimeEvent")), dict)
+                and fact.get("run_id") == native_restored_run_id
+                and type(fact.get("run_seq")) is int
+            ),
+            default=0,
+        )
+        approval_surfaces = {
+            str(row.data.get("interactionId"))
+            for row in existing_events
+            if row.type == "a2ui.interaction" and row.data.get("interactionId")
+        }
 
-        async def persist(runtime_event: RuntimeEvent) -> RunEvent | None:
+        async def persist(
+            runtime_event: RuntimeEvent, *, terminal_record: RunRecord | None = None,
+        ) -> RunEvent | None:
+            # 必须早于 private-delta 过滤：对齐 Codex/Pi/OpenClaw 的 transport
+            # liveness 语义，任意真实应用层事件都续期；是否持久化/展示由下面的
+            # 投影策略单独决定。
+            self._runtime_progress_seq += 1
             if _is_private_harness_delta(runtime_event):
                 return None
             persisted = await self.runtime_events.append_one(record.session_id, runtime_event)
+            if (
+                native_restore
+                and persisted.run_id == native_restored_run_id
+                and persisted.run_seq is not None
+                and persisted.run_seq <= public_replay_cursor
+            ):
+                return None
             event_type, data = project_runtime_event(
                 persisted,
                 session_id=record.session_id,
@@ -475,18 +999,22 @@ class StudioRunService:
                     item_payload = conversation_item.get("payload")
                     if isinstance(item_payload, dict):
                         item_payload["revision"] = 1
-            return projected_writer.append(event_type, data)
+            return projected_writer.append(event_type, data, record=terminal_record)
 
         handle = None
         completed_text_by_item: dict[tuple[str, str], str] = {}
         streamed_text_by_item: dict[tuple[str, str], str] = {}
         terminal_output_refs: tuple[OutputRef, ...] = ()
+        terminal_notice = ""
+        pending_completed_event: RunCompleted | None = None
         runtime_duration_ms: int | None = None
+        native_terminal_metadata_fixed = False
         item_phases: dict[tuple[str, str], str | None] = {}
         control_queue: asyncio.Queue[
             tuple[str, ResumePayload | None, asyncio.Future[None] | None]
         ] = asyncio.Queue()
         self._control_queues[run_id] = control_queue
+        cancellation_reason = "cancelled"
         try:
             tool_approval_mode = str(spec.request_config.get("tool_approval_mode") or "")
             conversation_request: dict[str, Any] = {
@@ -524,27 +1052,69 @@ class StudioRunService:
                 },
             )
             preparation = None
-            if provider_runtime_adapter:
+            if restored_handle is None and provider_runtime_adapter:
                 if self.plugin_runtime is None:
                     raise StudioError(
                         "PLUGIN_RUNTIME_UNAVAILABLE", "Codex Provider Runtime 不可用",
                         status_code=503,
                     )
                 adapter = self.plugin_runtime.kernel_adapter_provider(spec)()
+                from ksadk.studio.plugin_kernel_adapter import StudioPluginKernelAdapter
+
+                if isinstance(adapter, StudioPluginKernelAdapter):
+                    adapter.bind_native_admission(
+                        lambda native, bound_request: self._admit_native_studio_start(
+                            spec,
+                            record,
+                            user_input,
+                            bound_request,
+                            native,
+                            require_pin=True,
+                        )
+                    )
                 preparation = RuntimeStartPreparation(context=spec.launch_context, adapter=adapter)
-            handle = restored_handle or await self.executor.start(
-                spec.launch_context, request, preparation=preparation,
+            elif (
+                restored_handle is None
+                and self.native_harness_ingress
+                and runtime_type == "harness"
+            ):
+                # Keep the selected adapter for this one start. Admission must
+                # run before Native compiles or launches any effectful port.
+                preparation = RuntimeStartPreparation(
+                    context=spec.launch_context,
+                    adapter=self.executor.create_adapter(spec.launch_context),
+                )
+                from ksadk.harness.native_runtime import NativeRuntimeAdapter
+
+                if isinstance(preparation.adapter, NativeRuntimeAdapter):
+                    request = self._admit_native_studio_start(
+                        spec,
+                        record,
+                        user_input,
+                        request,
+                        preparation.adapter,
+                        require_pin=False,
+                    )
+            handle = restored_handle or await self._start_public_execution(
+                run_id, spec.launch_context, request, preparation,
             )
             record.runtime_handle = handle.model_dump(mode="json")
             self.event_store.save(record)
             self._active_handles[run_id] = handle
+            approval_timeout = spec.request_config.get("approval_timeout_seconds")
+            approval_wait_seconds = (
+                float(approval_timeout) if approval_timeout is not None else None
+            )
+            if approval_wait_seconds is not None and approval_wait_seconds <= 0:
+                raise ValueError("approval_timeout_seconds must be positive")
+            approval_deadline: float | None = None
             while True:
                 terminal_seen = False
                 should_resume = restored_handle is not None
                 if restored_handle is not None:
                     self._waiting_modes[run_id] = "resume"
                     restored_handle = None
-                async for event in self.executor.stream(handle):
+                async for event in self._public_execution_stream(handle, run_id):
                     if (
                         isinstance(event, RunInterrupted)
                         and event.interaction_id
@@ -558,15 +1128,32 @@ class StudioRunService:
                         # the app-server pipe.
                         self._waiting_modes[run_id] = "live"
                         continue
-                    if isinstance(event, InteractionResolved) and event.source.framework == "codex":
+                    if isinstance(event, InteractionResolved) and (
+                        event.source.framework == "codex"
+                        or event.source.metadata.get("engine_kind") == "native"
+                    ):
                         submitted = self._submitted_interactions.get(run_id, set())
                         provider_call_id = str(getattr(event.response, "call_id", None) or "")
                         if event.interaction_id in submitted or provider_call_id in submitted:
                             # submit_interaction atomically persists the public
                             # terminal fact and receipt. Ignore the provider's
                             # echo so replay never shows the approval twice.
+                            if event.source.metadata.get("engine_kind") == "native":
+                                # Keep the Native canonical fact for replay and
+                                # reconciliation; the Studio action already
+                                # wrote its public approval.resolved row.
+                                await self.runtime_events.append_one(record.session_id, event)
                             continue
-                    await persist(event)
+                    # ``run.completed`` is only a provider claim until Studio has
+                    # resolved its output refs and applied the delivery gate.  If
+                    # we persist it first and the gate then rejects an empty
+                    # delivery, replay contains both ``run.completed`` and
+                    # ``run.failed`` for one run.  Buffer the successful terminal
+                    # fact; all non-success events remain live and durable.
+                    if isinstance(event, RunCompleted):
+                        pending_completed_event = event
+                    else:
+                        await persist(event)
                     if self._cancel_flags.get(run_id):
                         raise asyncio.CancelledError()
                     if isinstance(event, ItemStarted) and event.item_kind == "message":
@@ -597,23 +1184,41 @@ class StudioRunService:
                             if isinstance(part, TextContent)
                         )
                     elif isinstance(event, UsageReported):
-                        record.usage = Usage(
-                            input_tokens=event.input_tokens,
-                            output_tokens=event.output_tokens,
-                            total_tokens=event.total_tokens,
-                            cached_input_tokens=event.cached_tokens,
-                            reasoning_output_tokens=event.reasoning_tokens,
-                            reported=True,
-                            source=str(event.source.framework or runtime_type),
-                        )
+                        _apply_usage_event(record, event, runtime_type)
                     elif isinstance(event, InteractionRequested):
                         record.status = RunStatus.WAITING_INPUT
-                        self._waiting_modes[run_id] = "live"
+                        approval_deadline = (
+                            asyncio.get_running_loop().time() + approval_wait_seconds
+                            if event.interaction_kind == "approval"
+                            and approval_wait_seconds is not None
+                            else None
+                        )
+                        native_interaction = event.source.metadata.get("engine_kind") == "native"
+                        # Both Managed LangGraph and Native Harness suspend the
+                        # stream and accept approvals through resume(). A user
+                        # may submit as soon as the request is published,
+                        # before the companion RunInterrupted is projected.
+                        # Mark that route now instead of briefly sending an
+                        # early approval to RuntimeAdapter.submit() (unsupported
+                        # by Managed Harness). Codex keeps its live JSON-RPC
+                        # submit channel.
+                        resume_interaction = native_interaction or runtime_type == "harness"
+                        self._waiting_modes[run_id] = (
+                            "resume" if resume_interaction else "live"
+                        )
+                        # Native stream ends at the durable suspension. Its
+                        # continuation is a new resume call on the same run.
+                        should_resume = should_resume or resume_interaction
                         self.event_store.save(record)
-                        if event.interaction_kind == "approval":
+                        if (
+                            event.interaction_kind == "approval"
+                            and event.interaction_id not in approval_surfaces
+                        ):
                             self._persist_approval_surface(record, event, on_event=on_event)
+                            approval_surfaces.add(event.interaction_id)
                     elif isinstance(event, InteractionResolved):
                         record.status = RunStatus.RUNNING
+                        approval_deadline = None
                         self._waiting_modes.pop(run_id, None)
                         self.event_store.save(record)
                     elif isinstance(event, RunFailed):
@@ -631,7 +1236,7 @@ class StudioRunService:
                             "message": str(event.reason or "运行已取消"),
                         }
                     elif isinstance(event, RunInterrupted):
-                        if event.reason == "user_pause":
+                        if _is_pause_interruption(event):
                             record.status = RunStatus.PAUSED
                             should_resume = True
                         elif record.status == RunStatus.WAITING_INPUT:
@@ -647,7 +1252,19 @@ class StudioRunService:
                         self.event_store.save(record)
                     elif isinstance(event, RunCompleted):
                         terminal_seen = True
+                        if event.source.metadata.get("engine_kind") == "native":
+                            # A timer can flush the Store's cached record while
+                            # canonical persistence awaits. Keep that old record
+                            # active until the explicit public terminal commit.
+                            record = record.model_copy(deep=True)
                         record.status = RunStatus.COMPLETED
+                        if event.source.metadata.get("engine_kind") == "native":
+                            terminal_notice = terminal_verification_notice(event.source.metadata)
+                            native_outcome = event.source.metadata.get("outcome")
+                            if isinstance(native_outcome, str) and native_outcome in {
+                                "verified", "unverified", "partial", "blocked"
+                            }:
+                                record.verification_outcome = native_outcome
                         terminal_output_refs = event.output_refs
                         raw_duration = event.source.metadata.get("duration_ms")
                         if raw_duration is None:
@@ -662,11 +1279,32 @@ class StudioRunService:
                     record.status = RunStatus.COMPLETED
                     break
 
-                command, resume_payload, submit_ack = await control_queue.get()
+                # Cold replay may include older, already resolved cards. Only
+                # signal readiness after the full stream reaches its current
+                # durable suspension and this loop can consume resume commands.
+                recovery_ready = self._native_recovery_ready.pop(run_id, None)
+                if recovery_ready is not None:
+                    recovery_ready.set()
+                try:
+                    if record.status == RunStatus.WAITING_INPUT and approval_deadline is not None:
+                        command, resume_payload, submit_ack = await asyncio.wait_for(
+                            control_queue.get(),
+                            timeout=max(
+                                0.0,
+                                approval_deadline - asyncio.get_running_loop().time(),
+                            ),
+                        )
+                    else:
+                        command, resume_payload, submit_ack = await control_queue.get()
+                except TimeoutError:
+                    cancellation_reason = "approval_timeout"
+                    self._cancel_flags[run_id] = True
+                    raise asyncio.CancelledError() from None
                 if command == "cancel" or self._cancel_flags.get(run_id):
                     raise asyncio.CancelledError()
                 if command != "resume":
                     continue
+                approval_deadline = None
                 native_thread_id = handle.native_ref.get("thread_id")
                 target = (
                     ResumeTarget(kind="thread_id", id=str(native_thread_id))
@@ -709,6 +1347,40 @@ class StudioRunService:
                 completed_parts = [part for part in completed_text_by_item.values() if part]
                 fallback_parts = [part for part in streamed_text_by_item.values() if part]
                 record.output = "\n\n".join(completed_parts or fallback_parts)
+            if record.status == RunStatus.COMPLETED and (
+                _consumed_model_output(record)
+                or (handle is not None and handle.native_ref.get("engine_kind") == "native")
+            ):
+                # 空交付不得判 COMPLETED。harness 的 **provider adapter** 路径就走这里
+                # （runtimeHandle 里 `_ksadk_plugin_provider_runtime_type: harness`），
+                # 我前两版守卫分别错放在 `_schedule_run` 和只盖 `_plugin_run`，于是
+                # run_4abd9ab7 仍然以 COMPLETED + output 长度 0 + 产物 0 收场。
+                #
+                # 收窄条件：只有**确实消耗了模型输出 token** 才算"空交付"。审批/交互
+                # 这类合法地以空输出收束的流程不应被判失败（实测有 3 个审批用例因此挂）。
+                _require_delivery(record.output)
+            if record.status == RunStatus.COMPLETED and record.output and terminal_notice:
+                record.output += terminal_notice
+            if pending_completed_event is not None:
+                native_terminal = (
+                    handle is not None and handle.native_ref.get("engine_kind") == "native"
+                    and pending_completed_event.source.metadata.get("engine_kind") == "native"
+                )
+                if native_terminal:
+                    # Seal the host's completion clock with the public terminal,
+                    # before cleanup can be interrupted by process termination.
+                    record.completed_at = datetime.now(timezone.utc)
+                    record.duration_ms = (
+                        runtime_duration_ms if runtime_duration_ms is not None
+                        else int((time.monotonic() - started) * 1000)
+                    )
+                    record.duration_source = (
+                        "runtime" if runtime_duration_ms is not None else "studio"
+                    )
+                    native_terminal_metadata_fixed = True
+                await persist(
+                    pending_completed_event, terminal_record=record if native_terminal else None,
+                )
         except asyncio.CancelledError:
             if self._detaching_recoveries and record.status == RunStatus.WAITING_INPUT:
                 raise
@@ -725,27 +1397,51 @@ class StudioRunService:
                 except Exception:  # best effort; close still owns resource cleanup
                     cancel_result = "cancel_failed"
             record.status = RunStatus.CANCELLED
-            record.error = {"code": "RUN_CANCELLED", "message": "运行已取消"}
-            cancelled_run_id = handle.run_id if handle is not None else run_id
-            cancelled = RunCanceled(
-                schema_version=2,
-                event_id=f"evt_cancel_{uuid4().hex}",
-                seq=len(self.event_store.events(run_id)) + 1,
-                timestamp=time.time(),
-                run_id=cancelled_run_id,
-                scope_id=cancelled_run_id,
-                source=SourceRef(
-                    framework="ksadk",
-                    metadata={"cancel_result": cancel_result},
-                ),
-                status="canceled",
-                reason="cancelled",
+            record.error = (
+                {"code": "APPROVAL_TIMEOUT", "message": "审批等待超时，运行已取消"}
+                if cancellation_reason == "approval_timeout"
+                else {"code": "RUN_CANCELLED", "message": "运行已取消"}
             )
-            await persist(cancelled)
+            cancelled_run_id = handle.run_id if handle is not None else run_id
+            # A provider may emit its own canceled terminal immediately before
+            # the host's cancel flag raises. Preserve that canonical fact;
+            # synthesizing another one would give this Run two terminals.
+            already_cancelled = any(
+                event.type == "run.cancelled"
+                for event in self.event_store.events(run_id)
+            )
+            if not already_cancelled:
+                cancelled = RunCanceled(
+                    schema_version=2,
+                    event_id=f"evt_cancel_{uuid4().hex}",
+                    seq=len(self.event_store.events(run_id)) + 1,
+                    timestamp=time.time(),
+                    run_id=cancelled_run_id,
+                    scope_id=cancelled_run_id,
+                    source=SourceRef(
+                        framework="ksadk",
+                        metadata={"cancel_result": cancel_result},
+                    ),
+                    status="canceled",
+                    reason=cancellation_reason,
+                )
+                await persist(cancelled)
             raise
         except Exception as exc:  # noqa: BLE001
             record.status = RunStatus.FAILED
             record.error = {"code": "RUNTIME_RUN_FAILED", "message": str(exc)}
+            from ksadk.harness.native_driver_failure import (
+                NativeDriverFailure,
+                NativeDriverFailureDiagnostic,
+            )
+
+            diagnostic_metadata = {}
+            if (type(exc) is NativeDriverFailure
+                    and type(exc.diagnostic) is NativeDriverFailureDiagnostic):
+                diagnostic_metadata["native_driver_failure"] = exc.diagnostic.model_dump(
+                    mode="json"
+                )
+                record.error["details"] = diagnostic_metadata
             failed_run_id = handle.run_id if handle is not None else run_id
             failure = RunFailed(
                 schema_version=2,
@@ -754,7 +1450,7 @@ class StudioRunService:
                 timestamp=time.time(),
                 run_id=failed_run_id,
                 scope_id=failed_run_id,
-                source=SourceRef(framework="ksadk"),
+                source=SourceRef(framework="ksadk", metadata=diagnostic_metadata),
                 status="failed",
                 error=ErrorInfo(
                     code="RUNTIME_RUN_FAILED",
@@ -767,6 +1463,32 @@ class StudioRunService:
         finally:
             projected_writer.flush()
             if handle is not None and self.executor.is_attached(handle):
+                if handle.native_ref.get("engine_kind") == "native":
+                    # Persist curated child history before the activation closes.
+                    # UI subscriptions are observers and cannot keep it alive.
+                    try:
+                        children = await self.execution_children(run_id, include_details=True)
+                        for child in children:
+                            if child["status"] in {"running", "paused"}:
+                                child["lastObservedStatus"] = child["status"]
+                                child["status"] = "unknown"
+                                for message in child.get("messages", []):
+                                    message["streaming"] = False
+                                for fact in child.get("facts", []):
+                                    if fact.get("status") == "running":
+                                        fact["status"] = "unknown"
+                                    for tool in fact.get("tools", []):
+                                        if tool.get("status") == "running":
+                                            tool["status"] = "unknown"
+                        if children:
+                            self.event_store.append(
+                                run_id, "child.execution_snapshot", {"children": children}
+                            )
+                    except Exception as exc:
+                        # Optional presentation must never skip activation cleanup.
+                        logger.warning(
+                            "Child execution snapshot unavailable: %s", type(exc).__name__
+                        )
                 try:
                     await asyncio.shield(self.executor.close(handle))
                 except asyncio.CancelledError:
@@ -781,15 +1503,20 @@ class StudioRunService:
             preserve_waiting = (
                 self._detaching_recoveries and record.status == RunStatus.WAITING_INPUT
             )
+            preserve_terminal_metadata = (
+                native_terminal_metadata_fixed and record.status == RunStatus.COMPLETED
+            )
             if not preserve_waiting:
-                record.completed_at = datetime.now(timezone.utc)
+                if not preserve_terminal_metadata:
+                    record.completed_at = datetime.now(timezone.utc)
                 self._expire_unresolved_interactions(record, on_event=on_event)
-            if runtime_duration_ms is not None:
-                record.duration_ms = runtime_duration_ms
-                record.duration_source = "runtime"
-            else:
-                record.duration_ms = int((time.monotonic() - started) * 1000)
-                record.duration_source = "studio"
+            if not preserve_terminal_metadata:
+                if runtime_duration_ms is not None:
+                    record.duration_ms = runtime_duration_ms
+                    record.duration_source = "runtime"
+                else:
+                    record.duration_ms = int((time.monotonic() - started) * 1000)
+                    record.duration_source = "studio"
             self.event_store.save(record)
             await self._sync_trace(record)
         return record
@@ -921,6 +1648,17 @@ class StudioRunService:
                     output_refs=(OutputRef(scope_id=record.id, item_id=item_id, part_id=part_id),),
                 )
             )
+            if not str(output or "").strip():
+                # 空交付不得判 COMPLETED（2026-09-18 实测事故）：一次 run 跑了 15 次
+                # 模型调用、并行 3 个子 Agent、约 17 分钟，最后以 **COMPLETED +
+                # output 长度 0 + 产物 0 个** 收场——用户看到"成功"却拿不到任何东西。
+                # 宁可报失败并说清原因，也不要让"什么都没交付"伪装成完成。
+                raise StudioError(
+                    "EMPTY_DELIVERY",
+                    "本轮没有产出任何交付内容（输出为空，且工作区没有新产物），"
+                    "已按失败处理而不是成功。请重试或检查该 Agent 的委派/落盘策略。",
+                    status_code=502,
+                )
             record.output = output
             record.status = RunStatus.COMPLETED
         except asyncio.CancelledError:
@@ -1106,6 +1844,7 @@ class StudioRunService:
                     usage=result.usage,
                 )
             await publish(canonical)
+            _require_delivery(result.output_text)
             record.output = result.output_text
             record.status = RunStatus.COMPLETED
             _apply_plugin_usage(record, result.usage)
@@ -1301,12 +2040,17 @@ class StudioRunService:
                     continue
                 event_type, data = projected
                 if event_type == "message.delta":
-                    output_text += str(data.get("delta") or "")
+                    # Canonical RuntimeEvent projection names the visible text
+                    # field ``text``; legacy Studio envelopes used ``delta``.
+                    # The Kernel path consumes both because it may replay a
+                    # mixed-version session during a rolling upgrade.
+                    output_text += str(data.get("text") or data.get("delta") or "")
                 elif event_type == "run.completed":
                     output_text = str(data.get("output_text") or output_text)
                 stored = self.event_store.append(record.id, event_type, data)
                 if on_event is not None:
                     on_event(stored)
+            _require_delivery(output_text)
             record.output = output_text
             record.status = RunStatus.COMPLETED
             record.completed_at = datetime.now(timezone.utc)
@@ -1377,6 +2121,9 @@ class StudioRunService:
     async def cancel_run(self, run_id: str) -> dict[str, str]:
         """Request cancellation; the flag and executor perform the actual stop."""
         self._cancel_flags[run_id] = True
+        recovery_ready = self._native_recovery_ready.pop(run_id, None)
+        if recovery_ready is not None:
+            recovery_ready.set()
         queue = self._control_queues.get(run_id)
         if queue is not None:
             queue.put_nowait(("cancel", None, None))
@@ -1395,29 +2142,13 @@ class StudioRunService:
                 pass
         return {"runId": run_id, "status": "cancelling"}
 
-    async def pause_run(self, run_id: str) -> dict[str, str]:
-        record = self.event_store.get(run_id)
-        if record.status == RunStatus.WAITING_INPUT:
-            raise StudioError(
-                "RUN_WAITING_INPUT",
-                "当前运行正在等待交互输入，请先处理卡片",
-                status_code=409,
-            )
-        if record.status != RunStatus.RUNNING:
-            raise StudioError("RUN_NOT_RUNNING", "只有运行中的 Run 可以暂停", status_code=409)
-        handle = self._active_handles.get(run_id)
-        if handle is None or not self.executor.is_attached(handle):
-            raise StudioError("RUN_NOT_ATTACHED", "运行句柄已不在当前进程", status_code=409)
-        result = await self.executor.pause(handle)
-        if result is PauseResult.NOT_SUPPORTED:
-            raise StudioError(
-                "RUN_PAUSE_UNSUPPORTED",
-                "当前 Runtime 不支持可恢复暂停",
-                status_code=409,
-            )
-        if result is not PauseResult.PAUSED_ACTIVE_TURN:
-            raise StudioError("RUN_PAUSE_FAILED", "暂停运行失败", status_code=409)
-        return {"runId": run_id, "status": "pausing"}
+
+
+
+
+
+
+
 
     async def resume_run(self, run_id: str) -> dict[str, str]:
         record = self.event_store.get(run_id)
@@ -1430,7 +2161,9 @@ class StudioRunService:
                 "Studio 进程已重启，当前暂停点无法恢复",
                 status_code=409,
             )
-        queue.put_nowait(("resume", ResumePayload(kind="free_text", data="继续运行"), None))
+        # A paused-run continuation is a control action, with no new user
+        # message or approval. Keep the RuntimeAdapter's empty-payload seam.
+        queue.put_nowait(("resume", None, None))
         return {"runId": run_id, "status": "resuming"}
 
     async def submit_interaction(
@@ -1475,221 +2208,14 @@ class StudioRunService:
         idempotency_key: str,
         request_digest: str,
     ) -> dict[str, Any]:
-        events = self.event_store.events(run_id)
-        prior = next(
-            (
-                event
-                for event in reversed(events)
-                if event.type == "a2ui.action"
-                and str(event.data.get("interactionId") or "") == interaction_id
-                and _interaction_revision(event.data) > 0
-            ),
-            None,
-        )
-        if prior is not None:
-            if str(prior.data.get("idempotencyKey") or "") != idempotency_key:
-                raise StudioError(
-                    "INTERACTION_ALREADY_RESOLVED",
-                    "该交互已由其他请求处理",
-                    status_code=409,
-                )
-            if str(prior.data.get("requestDigest") or "") != request_digest:
-                raise StudioError(
-                    "INTERACTION_IDEMPOTENCY_CONFLICT",
-                    "同一幂等键不能提交不同内容",
-                    status_code=409,
-                )
-            # A receipt replay is read-only. The run may already be waiting
-            # for a different interaction; never clear that newer wait state.
-            return dict(prior.data.get("receipt") or {})
+        from ksadk.studio.interaction_submission import submit_interaction_locked
 
-        interaction = next(
-            (
-                event
-                for event in reversed(events)
-                if event.type == "a2ui.interaction"
-                and str(event.data.get("interactionId") or event.data.get("interaction_id") or "")
-                == interaction_id
-            ),
-            None,
+        return await submit_interaction_locked(
+            self, run_id, interaction_id, name=name, data=data,
+            expected_revision=expected_revision, idempotency_key=idempotency_key,
+            request_digest=request_digest, revision_of=_interaction_revision,
+            submit_timeout_seconds=_INTERACTION_SUBMIT_TIMEOUT_SECONDS,
         )
-        if interaction is None:
-            raise StudioError("INTERACTION_NOT_FOUND", "交互请求不存在", status_code=404)
-        revision = _interaction_revision(interaction.data)
-        if revision < 1:
-            raise StudioError(
-                "INTERACTION_READ_ONLY",
-                "交互请求缺少权威 revision，只能查看不能操作",
-                status_code=409,
-            )
-        if expected_revision != revision:
-            raise StudioError(
-                "INTERACTION_REVISION_MISMATCH",
-                "交互版本已变化，请刷新后重试",
-                status_code=409,
-                details={"expectedRevision": expected_revision, "actualRevision": revision},
-            )
-        record = self.event_store.get(run_id)
-        if record.status != RunStatus.WAITING_INPUT:
-            raise StudioError(
-                "INTERACTION_NOT_PENDING",
-                "该 Run 当前没有等待中的交互",
-                status_code=409,
-            )
-        kind = str(interaction.data.get("kind") or "form")
-        if kind != "approval" and name not in {"cancel", "skip"}:
-            schema = interaction.data.get("inputSchema") or {}
-            errors = list(Draft202012Validator(schema).iter_errors(data))
-            if errors:
-                raise StudioError(
-                    "INTERACTION_RESPONSE_INVALID",
-                    "请填写必填问题后再提交。",
-                    status_code=422,
-                )
-        provider_call_id = str(
-            interaction.data.get("callId") or interaction.data.get("call_id") or ""
-        )
-        if kind == "approval" and not provider_call_id:
-            approval_request = next(
-                (
-                    event
-                    for event in reversed(events)
-                    if event.type == "approval.requested"
-                    and str(event.data.get("approvalId") or event.data.get("interactionId") or "")
-                    == interaction_id
-                ),
-                None,
-            )
-            if approval_request is not None:
-                provider_call_id = str(
-                    approval_request.data.get("callId")
-                    or approval_request.data.get("call_id")
-                    or ""
-                )
-        provider_call_id = provider_call_id or interaction_id
-        submitted = self._submitted_interactions.setdefault(run_id, set())
-        submitted.update({interaction_id, provider_call_id})
-        decision = str(data.get("decision") or name)
-        if kind == "approval" and record.runtime_type == "codex":
-            # The shared Web action is named `reject`; Codex app-server calls
-            # the same decision `deny`/`decline`. Do not let a UI alias fall
-            # through as an unsupported native approval decision.
-            decision = {
-                "reject": "deny",
-                "rejected": "deny",
-            }.get(decision.lower(), decision)
-        payload_data = {**data, "decision": decision}
-        payload = ResumePayload(
-            kind="approval_decision" if kind == "approval" else "hitl_answer",
-            call_id=provider_call_id,
-            data=payload_data,
-        )
-        mode = self._waiting_modes.get(run_id)
-        handle = self._active_handles.get(run_id)
-        if mode == "live":
-            if handle is None or not self.executor.is_attached(handle):
-                raise StudioError("INTERACTION_EXPIRED", "运行时交互已失效", status_code=409)
-            try:
-                await asyncio.wait_for(
-                    self.executor.submit(handle, payload),
-                    timeout=_INTERACTION_SUBMIT_TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                submitted.difference_update({interaction_id, provider_call_id})
-                raise StudioError(
-                    "INTERACTION_SUBMIT_FAILED",
-                    "运行时未及时确认交互提交，请重试",
-                    status_code=409,
-                ) from exc
-            except Exception as exc:  # noqa: BLE001 - provider errors are user-safe here
-                submitted.difference_update({interaction_id, provider_call_id})
-                raise StudioError(
-                    "INTERACTION_SUBMIT_FAILED",
-                    str(exc),
-                    status_code=409,
-                ) from exc
-        elif mode == "resume":
-            queue = self._control_queues.get(run_id)
-            if queue is None:
-                raise StudioError("INTERACTION_EXPIRED", "运行时交互已失效", status_code=409)
-            submit_ack = asyncio.get_running_loop().create_future()
-            queue.put_nowait(("resume", payload, submit_ack))
-            try:
-                await asyncio.wait_for(
-                    submit_ack,
-                    timeout=_INTERACTION_SUBMIT_TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                submitted.difference_update({interaction_id, provider_call_id})
-                raise StudioError(
-                    "INTERACTION_SUBMIT_FAILED",
-                    "运行时未及时确认交互提交，请重试",
-                    status_code=409,
-                ) from exc
-            except Exception as exc:  # noqa: BLE001 - provider errors are user-safe here
-                submitted.difference_update({interaction_id, provider_call_id})
-                raise StudioError(
-                    "INTERACTION_SUBMIT_FAILED",
-                    str(exc),
-                    status_code=409,
-                ) from exc
-        else:
-            submitted.difference_update({interaction_id, provider_call_id})
-            raise StudioError("INTERACTION_EXPIRED", "运行时交互已失效", status_code=409)
-
-        next_revision = revision + 1
-        normalized_action = name.lower()
-        if normalized_action in {"approve", "approved", "accept", "accepted"}:
-            outcome = "approved"
-            response_summary = "已同意"
-        elif normalized_action in {"reject", "rejected", "deny", "denied", "decline"}:
-            outcome = "rejected"
-            response_summary = "已拒绝"
-        elif normalized_action in {"cancel", "cancelled", "canceled"}:
-            outcome = "cancelled"
-            response_summary = "已反馈给 Agent" if data.get("feedback") else "已取消"
-        else:
-            outcome = "submitted"
-            response_summary = "已提交"
-        resolved_data = {
-            "runId": run_id,
-            "interactionId": interaction_id,
-            "callId": provider_call_id,
-            "name": name,
-            "action": name,
-            "outcome": outcome,
-            "actor": "user",
-            "responseSummary": response_summary,
-            "data": data,
-            "revision": next_revision,
-            "expectedRevision": expected_revision,
-            "idempotencyKey": idempotency_key,
-        }
-        action_data = {
-            "runId": run_id,
-            "surfaceId": str(
-                interaction.data.get("surfaceId") or interaction.data.get("surface_id") or ""
-            ),
-            "interactionId": interaction_id,
-            "callId": provider_call_id,
-            "actionId": f"action-{interaction_id}",
-            "name": name,
-            "data": data,
-            "revision": next_revision,
-            "expectedRevision": expected_revision,
-            "idempotencyKey": idempotency_key,
-            "requestDigest": request_digest,
-        }
-        _, _, receipt = self.event_store.append_interaction_resolution(
-            run_id,
-            resolved_type=("approval.resolved" if kind == "approval" else "interaction.resolved"),
-            resolved_data=resolved_data,
-            action_data=action_data,
-        )
-        record.status = RunStatus.RUNNING
-        self.event_store.save(record)
-        self._waiting_modes.pop(run_id, None)
-        return receipt
 
     def _expire_unresolved_interactions(
         self,
@@ -2063,6 +2589,40 @@ def _interaction_revision(data: Mapping[str, Any]) -> int:
         return 0
 
 
+def _apply_usage_event(
+    record: RunRecord, event: UsageReported, runtime_type: str = ""
+) -> None:
+    """Apply a canonical UsageReported event to the run record by ``mode``.
+
+    长任务方案 §19.2 usage_mode / 交接记录 §6 Usage 计量缺陷修复：
+    - ``delta``：单次调用的增量，累加到 record.usage（引擎每模型调用一条）；
+    - ``cumulative`` / ``snapshot``：provider 已给出累计/快照值，直接覆盖。
+    缺省按 ``delta`` 处理，保持旧事件「逐次累加」语义不回退。
+    """
+    mode = getattr(event, "mode", "delta") or "delta"
+    source = str(event.source.framework or runtime_type or "")
+    if mode == "delta":
+        record.usage = Usage(
+            input_tokens=record.usage.input_tokens + event.input_tokens,
+            output_tokens=record.usage.output_tokens + event.output_tokens,
+            total_tokens=record.usage.total_tokens + event.total_tokens,
+            cached_input_tokens=record.usage.cached_input_tokens + event.cached_tokens,
+            reasoning_output_tokens=record.usage.reasoning_output_tokens + event.reasoning_tokens,
+            reported=True,
+            source=source or record.usage.source,
+        )
+    else:
+        record.usage = Usage(
+            input_tokens=event.input_tokens,
+            output_tokens=event.output_tokens,
+            total_tokens=event.total_tokens,
+            cached_input_tokens=event.cached_tokens,
+            reasoning_output_tokens=event.reasoning_tokens,
+            reported=True,
+            source=source or record.usage.source,
+        )
+
+
 def _apply_plugin_usage(record: RunRecord, usage: Mapping[str, Any]) -> None:
     normalized = _normalized_plugin_usage(usage)
     if not normalized["reported"]:
@@ -2095,6 +2655,12 @@ def _is_private_harness_delta(event: RuntimeEvent) -> bool:
         return False
     native_event_type = str(event.source.metadata.get("native_event_type") or "")
     return native_event_type in {"reasoning.delta", "text.delta"}
+
+
+def _is_pause_interruption(event: RunInterrupted) -> bool:
+    return event.reason == "user_pause" or (
+        event.reason == "paused" and event.source.metadata.get("engine_kind") == "native"
+    )
 
 
 def project_runtime_event(
@@ -2132,8 +2698,23 @@ def project_runtime_event(
         projected = "run.cancelled"
         payload = {"reason": event.reason or ""}
     elif isinstance(event, RunInterrupted):
-        projected = "run.paused" if event.reason == "user_pause" else "run.interrupted"
+        projected = "run.paused" if _is_pause_interruption(event) else "run.interrupted"
         payload = {"reason": event.reason or ""}
+    elif isinstance(event, ItemStarted) and event.item_kind in {"message", "reasoning"}:
+        # 首段文本随 ItemStarted 到达；不投影会让 live 流丢掉第一个 chunk
+        # （增量在 ItemUpdated 里才开始出现）。
+        text = ""
+        if event.initial:
+            for part in event.initial.parts:
+                if isinstance(part, TextContent):
+                    text += part.text
+        is_thinking = event.item_kind == "reasoning"
+        if text:
+            projected = "thinking.delta" if is_thinking else "message.delta"
+            payload = {"text": text}
+        else:
+            projected = "thinking.started" if is_thinking else "message.started"
+            payload = {"itemId": event.item_id}
     elif isinstance(event, ItemUpdated) and event.item_kind in {"message", "reasoning"}:
         text = event.update.text if isinstance(event.update, TextContent) else ""
         is_thinking = event.item_kind == "reasoning"
@@ -2169,6 +2750,11 @@ def project_runtime_event(
         else:
             projected = "tool.started"
             payload = {}
+    elif (isinstance(event, ItemUpdated) and event.item_kind == "tool_call"
+          and event.source.metadata.get("tool_display")):
+        projected = "tool.progress"
+        payload = {"callId": event.source.metadata.get("call_id"),
+                   "tool": event.source.metadata.get("tool_name"), "status": "running"}
     elif isinstance(event, ItemCompleted) and event.item_kind == "tool_call":
         tool_call = _first_content(event.snapshot, ToolCallContent)
         tool_result = _first_content(event.snapshot, ToolResultContent)
@@ -2181,7 +2767,10 @@ def project_runtime_event(
             )
             payload = {
                 "callId": tool_call.call_id,
-                "status": str(result.get("status") or ""),
+                "status": (
+                    "failed" if tool_result is not None and tool_result.is_error
+                    else str(result.get("status") or "")
+                ),
                 "exitCode": result.get("exit_code"),
                 "durationMs": result.get("duration_ms"),
                 "output": str(result.get("output") or ""),
@@ -2235,8 +2824,8 @@ def project_runtime_event(
             projected = "approval.resolved"
             payload = {
                 "approvalId": event.interaction_id,
-                "callId": "",
-                "decision": "",
+                "callId": str(event.source.metadata.get("call_id") or ""),
+                "decision": event.response.decision,
             }
         else:
             projected = "a2ui.action"

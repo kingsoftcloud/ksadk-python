@@ -2,3 +2,6 @@
 /output/
 /test-results/
 /playwright-report/
+
+# TypeScript incremental build state
+*.tsbuildinfo

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -92,6 +93,53 @@ async def terminal(host, scope, key="delivery-one"):
             return receipt
         await asyncio.sleep(0.01)
     pytest.fail("Kernel did not settle")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delegated", [False, True])
+async def test_lookup_uses_root_output_without_leaking_child_text(runtime, monkeypatch, delegated):
+    from ksadk.events.canonical import OutputRef
+    from ksadk.events.content import TextContent
+    from tests.events.test_managed_scope_reducer import events
+
+    host, scope, registry, *_ = runtime
+    await submit(host, scope)
+    completed = await terminal(host, scope)
+    stream = events()
+    expected = next(
+        p.text
+        for event in stream
+        if event.event_type == "item.completed" and event.item_id == "root-message-2"
+        for p in event.snapshot.parts
+        if isinstance(p, TextContent)
+    )
+    if delegated:
+        stream = [event for event in stream if getattr(event, "item_id", None) != "root-message-2"]
+        stream[-1] = stream[-1].model_copy(
+            update={
+                "output_refs": (OutputRef(scope_id="child-scope-1", item_id="child-message-2"),)
+            }
+        )
+        expected = "second answer"
+    envelopes = [
+        SimpleNamespace(
+            run_id=completed.run_id,
+            family="runtime",
+            family_version=2,
+            seq=event.seq,
+            event_id=event.event_id,
+            event_type=event.event_type,
+            payload=event.model_copy(update={"run_id": completed.run_id}).model_dump(mode="json"),
+        )
+        for event in stream
+    ]
+
+    async def read(session_id, after, limit):
+        assert session_id == scope.session_id
+        return [event for event in envelopes if event.seq > after][:limit]
+
+    monkeypatch.setattr(registry.runtime_for_build("build-one").session_events, "read", read)
+    assert (await host.lookup(scope, "delivery-one")).output == expected
 
 
 @pytest.mark.asyncio

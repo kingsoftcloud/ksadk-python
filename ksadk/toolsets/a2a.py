@@ -14,16 +14,19 @@ call_a2a_agent。LLM 操作哪个远程 agent 通过参数动态指定。
 from __future__ import annotations
 
 import difflib
+import inspect
 import ipaddress
 import os
 import socket
-import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpcore
 import httpx
 
+from ksadk.tools.a2a_policy import A2A_REMOTE_TOOL_POLICY
 from ksadk.tools.gateway import ToolPolicy
 from ksadk.toolsets._langchain import as_tool
 
@@ -101,9 +104,10 @@ def _match_agent(agents: list[dict[str, Any]], ref: str) -> tuple[dict[str, Any]
     if not target:
         return None, [a["agent_id"] for a in agents]
     for a in agents:
-        if _normalize_agent_ref(a["agent_id"]) == target or _normalize_agent_ref(
-            a["name"]
-        ) == target:
+        if (
+            _normalize_agent_ref(a["agent_id"]) == target
+            or _normalize_agent_ref(a["name"]) == target
+        ):
             return a, []
     available = [a["agent_id"] for a in agents]
     names = [_normalize_agent_ref(a["agent_id"]) for a in agents] + [
@@ -129,13 +133,13 @@ def _extract_reply_text(remote_task: Any) -> str:
         message = status.get("message") or {}
         parts: list[str] = []
         # 优先 status.message.parts（终态回复）；无则退到 artifacts 分片。
-        for part in (message.get("parts") or []):
+        for part in message.get("parts") or []:
             if isinstance(part, dict) and part.get("text"):
                 parts.append(part["text"])
         if parts:
             return "".join(parts)
-        for artifact in (remote_task.get("artifacts") or []):
-            for part in (artifact.get("parts") or []):
+        for artifact in remote_task.get("artifacts") or []:
+            for part in artifact.get("parts") or []:
                 if isinstance(part, dict) and part.get("text"):
                     parts.append(part["text"])
         return "".join(parts)
@@ -143,12 +147,12 @@ def _extract_reply_text(remote_task: Any) -> str:
     status = getattr(remote_task, "status", None)
     message = getattr(status, "message", None)
     if message is not None:
-        for part in (getattr(message, "parts", None) or []):
+        for part in getattr(message, "parts", None) or []:
             text = getattr(part, "text", None)
             if isinstance(text, str) and text:
                 parts_text.append(text)
-    for artifact in (getattr(remote_task, "artifacts", None) or []):
-        for part in (getattr(artifact, "parts", None) or []):
+    for artifact in getattr(remote_task, "artifacts", None) or []:
+        for part in getattr(artifact, "parts", None) or []:
             text = getattr(part, "text", None)
             if isinstance(text, str) and text:
                 parts_text.append(text)
@@ -218,7 +222,8 @@ def _validated_card_origin(url: str) -> tuple[str, int, str] | dict[str, Any]:
         or parsed.username is not None
         or parsed.password is not None
         or parsed.netloc.rsplit("@", 1)[-1].endswith(":")
-        or port is not None and not 1 <= port <= 65535
+        or port is not None
+        and not 1 <= port <= 65535
     ):
         return {
             "ok": False,
@@ -327,100 +332,95 @@ def get_a2a_agent_card(agent: str) -> dict[str, Any]:
     return {"ok": True, "agent": matched}
 
 
-def call_a2a_agent(agent: str, message: str) -> dict[str, Any]:
-    """Call a remote A2A agent by id or name with a text message.
+_managed_tool_binding = ContextVar("managed_a2a_tool_binding", default=None)
 
-    ``agent`` accepts A2AAgentId (a2a-agent-*) or card name. Synchronously waits
-    for the remote task to complete and returns the agent's text reply. If the
-    task does not reach a terminal state within the poll budget, returns the
-    last known state and task_id for follow-up.
+
+@contextmanager
+def bind_managed_a2a_tools(invocation_service, request_provider, exposure_plan):
+    """Bind actual tool-call identity and one exposure plan for this execution.
+
+    request_provider(agent, message) returns (A2AInvocationRequest, ScopeTriggerRef).
+    The caller supplies identity from the actual native/canonical tool call.
     """
-    space_id = _a2a_space_id()
-    if not space_id:
-        return {"ok": False, "error_message": "A2A Space not configured"}
-    if not (message or "").strip():
-        return {"ok": False, "error_message": "message is required"}
+    token = _managed_tool_binding.set((invocation_service, request_provider, exposure_plan))
     try:
-        agents = _discover_agents()
-    except Exception as exc:
-        return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
-    matched, hint = _match_agent(agents, agent)
-    if matched is None:
+        yield
+    finally:
+        _managed_tool_binding.reset(token)
+
+
+async def call_a2a_agent(agent: str, message: str) -> dict[str, Any]:
+    """Invoke a managed remote agent and return its legacy JSON reply envelope.
+
+    The runtime supplies authorization, actual call identity and a fixed target.
+    """
+    binding = _managed_tool_binding.get()
+    if binding is None:
         return {
             "ok": False,
-            "error_message": f"Agent not found: {agent}",
-            "available_agents": hint,
+            "error_type": "A2A_MANAGED_INVOCATION_CONTEXT_REQUIRED",
+            "error_message": "Managed A2A invocation context is required",
         }
+    if not message.strip():
+        return {"ok": False, "error_message": "message is required"}
+    service, provider, plan = binding
     try:
-        card_url = str(matched.get("url") or "").strip()
-        if not card_url:
-            return {"ok": False, "error_message": f"agent {matched['agent_id']} card 无可用 url"}
+        resolved = provider(agent, message)
+        if inspect.isawaitable(resolved):
+            resolved = await resolved
+        request, trigger = resolved
+        plan.assert_generic_target_allowed(request.spec.target_agent_id)
+        snapshots = {}
+        item_kinds = {}
+        from ksadk.events.content import TextContent
 
-        def _send() -> dict[str, Any]:
-            # 直接对 card.url 发非流式 SendMessage(returnImmediately=false),同步拿终态回复。
-            # 不走 space_client 的流式 send_message/subscribe(其 task 状态跟踪在异步下不可靠)。
-            payload = {
-                "jsonrpc": "2.0",
-                "method": "SendMessage",
-                "id": "1",
-                "params": {
-                    "message": {
-                        "messageId": f"m-{uuid.uuid4().hex[:12]}",
-                        "role": "ROLE_USER",
-                        "parts": [{"text": message}],
-                    },
-                    "configuration": {"returnImmediately": False},
-                },
-            }
-            # 透传 OTel trace context：把当前 span 注入 traceparent header,
-            # 让被调 agent 的 span 挂到同一条分布式 trace 上。
-            headers = {"Content-Type": "application/json", "A2A-Version": "1.0"}
-            try:
-                from opentelemetry import propagate
-
-                propagate.inject(headers)
-            except Exception:
-                pass
-            validated = _validated_card_origin(card_url)
-            if isinstance(validated, dict):
-                return validated
-            hostname, port, pinned_ip = validated
-            with _pinned_http_client(
-                hostname=hostname,
-                port=port,
-                pinned_ip=pinned_ip,
-            ) as client:
-                resp = client.post(card_url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                return {
-                    "ok": False,
-                    "error_type": "A2AClientError",
-                    "error_message": f"HTTP {resp.status_code}: {resp.text[:200]}",
+        async for event in service.invoke(request, trigger_ref=trigger):
+            snapshot = getattr(event, "snapshot", None) or getattr(event, "initial", None)
+            if snapshot is None:
+                continue
+            if event.item_kind in {"message", "artifact"}:
+                key = (event.scope_id, event.item_id)
+                item_kinds[key] = event.item_kind
+                snapshots[key] = {
+                    part.part_id: part.text
+                    for part in snapshot.parts
+                    if isinstance(part, TextContent)
                 }
-            data = resp.json()
-            if "error" in data and data["error"]:
-                err = str(data["error"])[:300]
-                return {"ok": False, "error_type": "A2AError", "error_message": err}
-            task = (data.get("result") or {}).get("task") or {}
-            return {
-                "ok": True,
-                "agent": matched["agent_id"],
-                "task_id": task.get("id", ""),
-                "state": str((task.get("status") or {}).get("state", "")),
-                "reply": _extract_reply_text(task),
-            }
+        handle = service.handle(request.scope_id)
+        latest = service.snapshot(handle)
+        status = latest.status if latest is not None else "unknown"
+        from ksadk.a2a.result_text import select_terminal_reply
 
-        return _send()
+        return {
+            "ok": status == "completed",
+            "agent": request.spec.target_agent_id,
+            "task_id": handle.platform_task_id,
+            "state": status,
+            "reply": (
+                select_terminal_reply(latest.output_refs, snapshots, item_kinds)
+                if status == "completed" and latest is not None
+                else ""
+            ),
+        }
     except Exception as exc:
-        return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
+        code = (
+            str(exc)
+            if str(exc).startswith("A2A_") and len(str(exc)) < 128
+            else "A2A_INVOCATION_FAILED"
+        )
+        return {"ok": False, "error_type": code, "error_message": "Managed A2A invocation failed"}
 
 
 def get_a2a_tools() -> list:
-    return [as_tool(list_a2a_agents), as_tool(get_a2a_agent_card), as_tool(call_a2a_agent)]
+    try:
+        from ksadk.a2a.langgraph_tools import managed_tool
+    except ImportError:
+        managed_tool = as_tool
+    return [managed_tool(list_a2a_agents), managed_tool(get_a2a_agent_card), managed_tool(call_a2a_agent)]
 
 
 _A2A_TOOL_POLICIES = {
     "list_a2a_agents": ToolPolicy(risk_level="low"),
     "get_a2a_agent_card": ToolPolicy(risk_level="low"),
-    "call_a2a_agent": ToolPolicy(risk_level="high", side_effects=("a2a_remote_call",)),
+    "call_a2a_agent": A2A_REMOTE_TOOL_POLICY,
 }

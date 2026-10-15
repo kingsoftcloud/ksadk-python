@@ -10,6 +10,17 @@ from ksadk.a2a.task_event_outbox import A2ATaskEventOutbox
 
 logger = logging.getLogger(__name__)
 
+PERMANENT_TASK_EVENT_ERRORS = frozenset(
+    {
+        "A2A_EVENT_BATCH_TOO_LARGE",
+        "A2A_KERNEL_FACT_INVALID",
+        "A2A_EVENT_REF_CAPACITY",
+        "A2A_EVENT_REF_CONFLICT",
+        "A2A_EVENT_REF_INVALID",
+        "A2A_TASK_NOT_FOUND",
+    }
+)
+
 
 class A2ATaskEventSink(Protocol):
     async def append_task_events(
@@ -45,6 +56,7 @@ class A2ATaskEventDispatcher:
         self._background_task: asyncio.Task[None] | None = None
         self._started = False
         self._last_error: str | None = None
+        self._permanent_error: str | None = None
 
     @property
     def outbox(self) -> A2ATaskEventOutbox:
@@ -124,7 +136,15 @@ class A2ATaskEventDispatcher:
             while True:
                 batches = await self._outbox.pending(limit=100)
                 if not batches:
-                    self._last_error = None
+                    # A background drain may have dead-lettered a batch before
+                    # an explicit flush acquires this lock. Empty pending work
+                    # is not proof that every queued batch was delivered.
+                    self._last_error = self._permanent_error
+                    if raise_on_error and self._permanent_error:
+                        raise RuntimeError(
+                            "A2A task event delivery was permanently rejected: "
+                            + self._permanent_error
+                        )
                     return delivered
                 for batch in batches:
                     try:
@@ -139,6 +159,19 @@ class A2ATaskEventDispatcher:
                         error = str(getattr(exc, "error_code", "") or type(exc).__name__)
                         self._last_error = error
                         await self._outbox.record_failure(batch.batch_id, error)
+                        if error in PERMANENT_TASK_EVENT_ERRORS:
+                            await self._outbox.dead_letter(batch.batch_id, error)
+                            self._permanent_error = error
+                            logger.error(
+                                "A2A task event batch was permanently rejected and moved "
+                                "to dead letters: task=%s batch=%s error=%s",
+                                batch.platform_task_id,
+                                batch.batch_id,
+                                error,
+                            )
+                            if raise_on_error:
+                                raise
+                            continue
                         if raise_on_error:
                             raise
                         logger.warning(
@@ -164,4 +197,8 @@ class A2ATaskEventDispatcher:
                 self._wake_event.clear()
 
 
-__all__ = ["A2ATaskEventDispatcher", "A2ATaskEventSink"]
+__all__ = [
+    "A2ATaskEventDispatcher",
+    "A2ATaskEventSink",
+    "PERMANENT_TASK_EVENT_ERRORS",
+]

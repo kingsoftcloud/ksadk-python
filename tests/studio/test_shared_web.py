@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from ksadk.events.canonical import (
     ContentSnapshot,
     ItemCompleted,
+    ItemStarted,
     ItemUpdated,
     OutputRef,
     RunCompleted,
@@ -25,6 +26,7 @@ from ksadk.plugins.contracts import PluginManifest
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.codex_provider_build import CODEX_PROVIDER_REF
 from ksadk.studio.contracts import ModelSpec, RunRecord, RunStatus, Usage
+from ksadk.studio.errors import StudioError
 from ksadk.studio.model_client import ModelResponse
 from ksadk.studio.service import StudioService
 from ksadk.studio.shared_web import StudioSharedWebBridge
@@ -74,6 +76,7 @@ async def test_cancel_run_falls_back_before_canonical_run_is_created() -> None:
         _require_direct_run=Mock(),
         run_service=run_service,
         operations=operations,
+        event_store=SimpleNamespace(get=Mock(side_effect=KeyError("not found"))),
     )
     bridge = StudioSharedWebBridge(studio)
     bridge._operations_by_invocation["inv-1"] = "op-1"
@@ -84,6 +87,72 @@ async def test_cancel_run_falls_back_before_canonical_run_is_created() -> None:
     run_service.cancel_run.assert_not_awaited()
     assert result["Cancelled"] is True
     assert result["RunId"] == ""
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_accepts_durable_run_id_after_page_reload() -> None:
+    run_service = SimpleNamespace(cancel_run=AsyncMock(return_value={"status": "cancelling"}))
+    operations = SimpleNamespace(cancel=Mock())
+    studio = SimpleNamespace(
+        _require_direct_run=Mock(),
+        run_service=run_service,
+        operations=operations,
+        event_store=SimpleNamespace(
+            get=Mock(
+                side_effect=[
+                    SimpleNamespace(status=RunStatus.RUNNING),
+                    SimpleNamespace(status=RunStatus.CANCELLED),
+                ]
+            )
+        ),
+    )
+    bridge = StudioSharedWebBridge(studio)
+
+    result = await bridge.cancel_run("run-restored")
+
+    run_service.cancel_run.assert_awaited_once_with("run-restored")
+    operations.cancel.assert_not_called()
+    assert result == {
+        "InvocationId": "run-restored",
+        "RunId": "run-restored",
+        "Cancelled": True,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery", ["replace", "guide"])
+async def test_steer_run_resolves_invocation_and_preserves_direct_run_gate(delivery) -> None:
+    run_service = SimpleNamespace(
+        steer_run=AsyncMock(return_value={"runId": "run-1", "status": "steering"})
+    )
+    studio = SimpleNamespace(_require_direct_run=Mock(), run_service=run_service)
+    bridge = StudioSharedWebBridge(studio)
+    bridge._run_ids_by_invocation["inv-1"] = "run-1"
+
+    result = await bridge.steer_run("inv-1", "correct the current turn", delivery=delivery)
+
+    studio._require_direct_run.assert_called_once_with("run-1")
+    run_service.steer_run.assert_awaited_once_with(
+        "run-1", "correct the current turn", delivery=delivery
+    )
+    assert result == {
+        "InvocationId": "inv-1",
+        "RunId": "run-1",
+        "Status": "steering",
+    }
+
+
+def test_response_session_id_resolves_live_waiting_invocation() -> None:
+    studio = SimpleNamespace(
+        event_store=SimpleNamespace(
+            get=Mock(return_value=SimpleNamespace(session_id="session-live"))
+        )
+    )
+    bridge = StudioSharedWebBridge(studio)
+    bridge._run_ids_by_invocation["response-live"] = "run-live"
+
+    assert bridge.response_session_id("response-live") == "session-live"
+    studio.event_store.get.assert_called_once_with("run-live")
 
 
 class RecordingModelClient:
@@ -311,6 +380,70 @@ def test_shared_chat_run_output_accepts_serialized_status():
     assert StudioSharedWebBridge._run_output(record) == "运行状态：RUNNING"
 
 
+@pytest.mark.asyncio
+async def test_active_run_output_replays_persisted_canonical_message() -> None:
+    record = RunRecord(
+        id="run_active",
+        build_id="build_active",
+        agent_id="demo-agent",
+        session_id="ses_active",
+        trace_id="trace_active",
+        status=RunStatus.RUNNING,
+        input="hello",
+    )
+    common = {
+        "schema_version": 2,
+        "timestamp": 1.0,
+        "run_id": "native-run",
+        "scope_id": "scope-1",
+        "source": SourceRef(framework="langgraph"),
+    }
+    canonical = [
+        ItemStarted(
+            event_id="event-1",
+            seq=1,
+            item_id="answer",
+            item_kind="message",
+            initial=ContentSnapshot(parts=(TextContent(part_id="text", text="正在"),)),
+            **common,
+        ),
+        ItemUpdated(
+            event_id="event-2",
+            seq=2,
+            item_id="answer",
+            item_kind="message",
+            op="append",
+            update=TextContent(part_id="text", text="生成"),
+            **common,
+        ),
+        ItemUpdated(
+            event_id="event-3",
+            seq=3,
+            item_id="private-reasoning",
+            item_kind="reasoning",
+            op="append",
+            update=TextContent(part_id="text", text="不应展示"),
+            **common,
+        ),
+    ]
+    studio = SimpleNamespace(
+        run_service=SimpleNamespace(
+            events=AsyncMock(
+                return_value=[
+                    SimpleNamespace(data={"runtimeEvent": event.model_dump(mode="json")})
+                    for event in canonical
+                ]
+            )
+        )
+    )
+
+    from ksadk.studio.active_run_output import active_run_output
+
+    output = await active_run_output(studio.run_service, record)
+
+    assert output == "正在生成"
+
+
 def test_shared_chat_empty_session_survives_session_reload(tmp_path: Path):
     app = create_studio_app(tmp_path, security_enabled=False)
 
@@ -391,6 +524,46 @@ def test_shared_chat_resolves_bound_model_profile(tmp_path: Path):
     assert models["Models"] == [bootstrap["Model"]]
 
 
+def test_shared_chat_skips_missing_default_provider_without_index_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = StudioService(tmp_path)
+    profiles = []
+    for name in ("missing-primary", "available-fallback"):
+        profiles.append(
+            service.catalog.create_model_profile(
+                name=name,
+                display_name=name,
+                version="1.0.0",
+                description="",
+                spec=ModelSpec(
+                    provider="openai-compatible",
+                    model=name,
+                    endpoint_url="https://api.openai.com/v1/chat/completions",
+                    credential_ref="env://AGENTKIT_MODEL_API_KEY",
+                ),
+            )
+        )
+    spec = default_agent_spec("blank")
+    spec.bindings.model_profile_id = profiles[0].resource_id
+    spec.bindings.model_profile_ids = [item.resource_id for item in profiles]
+    service.create_agent(agent_id="provider-fallback", name="Provider Fallback", spec=spec)
+
+    original_resolve = service.catalog.resolve_model
+
+    def resolve_available(bindings):
+        if bindings.model_profile_id == profiles[0].resource_id:
+            raise StudioError("RESOURCE_NOT_FOUND", "provider catalog not loaded", status_code=404)
+        return original_resolve(bindings)
+
+    monkeypatch.setattr(service.catalog, "resolve_model", resolve_available)
+
+    models = StudioSharedWebBridge(service).list_models("provider-fallback")
+
+    assert models["Current"] == "available-fallback"
+    assert [item["id"] for item in models["Models"]] == ["available-fallback"]
+
+
 def test_shared_chat_keeps_unbound_agent_model_explicit(tmp_path: Path):
     service = StudioService(tmp_path)
     service.create_agent(agent_id="unbound-agent", name="Unbound Agent")
@@ -438,7 +611,7 @@ def test_shared_chat_explains_unbound_model_profile(tmp_path: Path):
     [
         ({"Messages": []}, "请输入消息后再发送"),
         ({"Messages": "invalid"}, "会话输入格式无效"),
-        ({"Model": "not-bound"}, "请求模型未绑定到当前 Agent Build"),
+        ({"Model": "not-bound"}, "当前 Agent 未绑定 Model Profile"),
         ({"AgentId": "missing-agent"}, "agent 不存在"),
     ],
 )
@@ -458,6 +631,126 @@ async def test_stream_preflight_errors_are_not_empty_responses(tmp_path, extra, 
         assert message in events[0]
     finally:
         await studio.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_acknowledge_when_durable_run_never_starts(tmp_path, monkeypatch):
+    studio = StudioService(tmp_path)
+    studio.create_agent(agent_id="demo-agent", name="Demo Agent")
+    bridge = StudioSharedWebBridge(studio)
+    started = asyncio.Event()
+
+    monkeypatch.setattr(bridge, "_select_build_model", lambda *_args: "test-model")
+    monkeypatch.setattr(bridge, "_ensure_build", AsyncMock(return_value=SimpleNamespace(
+        id="b", runtime_lock={"model": "test-model", "models": ["test-model"]},
+    )))
+    monkeypatch.setattr(bridge, "_validate_conversation_turn", lambda **_kwargs: None)
+
+    async def execute(**_kwargs):
+        started.set()
+        raise RuntimeError("test must close before execution completes")
+
+    monkeypatch.setattr(bridge, "_execute_run", execute)
+    stream = bridge.stream_run(
+        {
+            "AgentId": "demo-agent",
+            "SessionId": "ses-ack",
+            "InvocationId": "resp-ack",
+            "Messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+    first = await anext(stream)
+    assert "event: response.failed" in first
+    assert started.is_set()
+    await stream.aclose()
+    await studio.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_builds_before_validating_cold_provider_model(tmp_path, monkeypatch):
+    studio = StudioService(tmp_path)
+    studio.create_agent(agent_id="demo-agent", name="Demo Agent")
+    bridge = StudioSharedWebBridge(studio)
+    calls: list[str] = []
+
+    async def ensure_build(_agent_id):
+        calls.append("build")
+        return SimpleNamespace(id="b")
+
+    def select_model(*_args):
+        calls.append("model")
+        assert calls == ["build", "model"]
+        return "test-model"
+
+    monkeypatch.setattr(bridge, "_ensure_build", ensure_build)
+    monkeypatch.setattr(bridge, "_select_build_model", select_model)
+    monkeypatch.setattr(bridge, "_validate_conversation_turn", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        bridge,
+        "_execute_run",
+        AsyncMock(side_effect=RuntimeError("stop after preflight")),
+    )
+
+    events = [
+        event
+        async for event in bridge.stream_run(
+            {
+                "AgentId": "demo-agent",
+                "InvocationId": "resp-cold-model",
+                "Messages": [{"role": "user", "content": "hello"}],
+            }
+        )
+    ]
+    assert calls == ["build", "model"]
+    assert any("event: response.failed" in event for event in events)
+    await studio.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_projects_user_cancellation_as_cancelled_not_failed(
+    tmp_path, monkeypatch
+):
+    studio = StudioService(tmp_path)
+    studio.create_agent(agent_id="demo-agent", name="Demo Agent")
+    bridge = StudioSharedWebBridge(studio)
+
+    monkeypatch.setattr(bridge, "_select_build_model", lambda *_args: "test-model")
+    monkeypatch.setattr(bridge, "_ensure_build", AsyncMock(return_value=SimpleNamespace(
+        id="b", runtime_lock={"model": "test-model", "models": ["test-model"]},
+    )))
+    monkeypatch.setattr(bridge, "_validate_conversation_turn", lambda **_kwargs: None)
+
+    async def execute(**_kwargs):
+        raise StudioError("RUN_CANCELLED", "运行已取消", status_code=409)
+
+    monkeypatch.setattr(bridge, "_execute_run", execute)
+    events = [
+        event
+        async for event in bridge.stream_run(
+            {
+                "AgentId": "demo-agent",
+                "SessionId": "ses-cancelled",
+                "InvocationId": "resp-cancelled",
+                "Messages": [{"role": "user", "content": "hello"}],
+            }
+        )
+    ]
+
+    assert any("event: response.cancelled" in event for event in events)
+    assert not any("event: response.failed" in event for event in events)
+    await studio.aclose()
+
+
+def test_failed_run_output_prefers_terminal_error_over_retry_progress() -> None:
+    run = SimpleNamespace(
+        status=RunStatus.FAILED,
+        output="模型服务繁忙（timeout），1 秒后自动重试（第 2/2 次）",
+        error={"message": "model stream made no progress for 60 seconds"},
+    )
+
+    assert StudioSharedWebBridge._run_output(run) == (
+        "model stream made no progress for 60 seconds"
+    )
 
 
 def test_shared_chat_runs_and_replays_two_turn_session(tmp_path: Path):
@@ -661,6 +954,54 @@ def test_shared_chat_submit_interaction_returns_canonical_receipt(tmp_path: Path
     ]
 
 
+@pytest.mark.asyncio
+async def test_responses_approval_resume_submits_pending_interaction() -> None:
+    record = SimpleNamespace(
+        id="run-1",
+        model="test-model",
+        status=RunStatus.WAITING_INPUT,
+    )
+    interaction = SimpleNamespace(
+        type="a2ui.interaction",
+        data={
+            "interactionId": "approval-1",
+            "callId": "call-1",
+            "revision": 2,
+        },
+    )
+    submit = AsyncMock(return_value={"status": "accepted"})
+    studio = SimpleNamespace(
+        event_store=SimpleNamespace(
+            get=Mock(return_value=record),
+            events=Mock(return_value=[interaction]),
+        ),
+        run_service=SimpleNamespace(submit_interaction=submit),
+    )
+    bridge = StudioSharedWebBridge(studio)
+    bridge._run_ids_by_invocation["response-1"] = "run-1"
+
+    resumed = await bridge._submit_response_resume(
+        previous_response_id="response-1",
+        response_id="response-2",
+        resume_input={
+            "type": "mcp_approval_response",
+            "approval_request_id": "approval-1",
+            "approve": True,
+        },
+    )
+
+    assert resumed is record
+    submit.assert_awaited_once_with(
+        "run-1",
+        "approval-1",
+        name="approve",
+        data={"decision": "approve"},
+        expected_revision=2,
+        idempotency_key="responses:response-2:approval-1:2",
+    )
+    assert bridge.resolve_run_reference("response-2") == "run-1"
+
+
 def test_shared_response_approval_item_uses_interaction_identity():
     event_name, payload = StudioSharedWebBridge._response_item_event(
         "approval.requested",
@@ -723,10 +1064,13 @@ async def test_shared_ui_form_keeps_response_open_until_execution_finishes(tmp_p
                        trace_id="t", input="ask", status=RunStatus.COMPLETED, output="done")
     monkeypatch.setattr(bridge, "resolve_agent_id", lambda value: "a")
     monkeypatch.setattr(bridge, "_select_model", lambda *args: "test-model")
-    monkeypatch.setattr(bridge, "_ensure_build", AsyncMock(return_value=SimpleNamespace(id="b")))
+    monkeypatch.setattr(bridge, "_ensure_build", AsyncMock(return_value=SimpleNamespace(
+        id="b", runtime_lock={"model": "test-model", "models": ["test-model"]},
+    )))
     monkeypatch.setattr(bridge, "_validate_conversation_turn", lambda **kwargs: None)
 
     async def execute(**kwargs):
+        bridge._run_ids_by_invocation[kwargs["invocation_id"]] = record.id
         await release.wait()
         return record
 
@@ -746,9 +1090,9 @@ async def test_shared_ui_form_keeps_response_open_until_execution_finishes(tmp_p
         "Messages": [{"role": "user", "content": "ask"}],
     }, shared_ui=True)
     try:
-        assert "response.created" in await anext(stream)
-        assert "response.in_progress" in await anext(stream)
-        assert "a2ui.interaction" in await anext(stream)
+        assert "response.created" in await asyncio.wait_for(anext(stream), timeout=5)
+        assert "response.in_progress" in await asyncio.wait_for(anext(stream), timeout=5)
+        assert "a2ui.interaction" in await asyncio.wait_for(anext(stream), timeout=5)
         assert "keep-alive" in await asyncio.wait_for(anext(stream), timeout=2)
         release.set()
         remaining = "".join([frame async for frame in stream])
@@ -879,6 +1223,50 @@ def test_shared_history_uses_public_run_identity_without_mutating_native_event()
     assert projected["runtimeEvent"]["run_id"] == "studio-run"
     assert native["run_id"] == "native-run"
     assert projected["runtimeEvent"]["item_id"] == "answer"
+
+
+def test_completed_harness_history_hides_non_authoritative_final_snapshot(
+    tmp_path: Path,
+) -> None:
+    studio = StudioService(tmp_path)
+    bridge = StudioSharedWebBridge(studio)
+    run = RunRecord(
+        id="run-current",
+        build_id="build",
+        agent_id="agent",
+        session_id="session",
+        trace_id="trace",
+        runtime_type="harness",
+        status=RunStatus.COMPLETED,
+        input="new task",
+        output="current answer",
+    )
+    stale = {
+        "runtimeEvent": {
+            "run_id": "native-run",
+            "item_kind": "message",
+            "source": {
+                "metadata": {
+                    "native_event_type": "text.completed",
+                    "phase": "final_answer",
+                }
+            },
+            "snapshot": {
+                "parts": [
+                    {"content_type": "text", "part_id": "text-0", "text": "old answer"}
+                ]
+            },
+        }
+    }
+
+    presented = bridge._presentation_event_content(stale, run)["runtimeEvent"]
+
+    assert presented["run_id"] == run.id
+    assert presented["item_kind"] == "status"
+    rendered = presented["snapshot"]["parts"][0]["text"]
+    assert "old answer" not in rendered
+    assert "non_authoritative_final" in rendered
+    assert stale["runtimeEvent"]["item_kind"] == "message"
 
 
 def test_shared_history_keeps_resumable_interruption_pending():

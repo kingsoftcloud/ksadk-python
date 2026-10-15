@@ -590,7 +590,7 @@ def main() -> None:
                 )
                 discovery_trigger = page.get_by_role("button", name="发现 Skill", exact=True)
                 discovery_trigger.click()
-                discovery_dialog = page.get_by_role("dialog", name="发现本地 Skill")
+                discovery_dialog = page.get_by_role("dialog", name="发现 Skill")
                 expect(discovery_dialog).to_be_visible()
                 expect(page.locator(".global-header")).to_have_attribute("inert", "")
                 expect(page.locator(".studio-navigation")).to_have_count(0)
@@ -648,6 +648,11 @@ def main() -> None:
 
                 print("Responsive shell and viewport matrix passed", flush=True)
                 create_test_agent(base_url)
+                # Conversation execution is Build-bound: a draft is authoring
+                # state, never an executable runtime target. The deterministic
+                # fixture therefore seals the same formal Codex Build that the
+                # create workflow would produce before opening chat.
+                service.codex_builder.build("responsive-agent")
                 workbench_context = browser.new_context(
                     viewport={"width": 1024, "height": 768},
                     reduced_motion="reduce",

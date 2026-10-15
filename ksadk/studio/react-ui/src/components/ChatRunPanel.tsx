@@ -37,6 +37,7 @@ interface RunRecord {
   model: string;
   runtimeType?: string;
   status: string;
+  verificationOutcome?: "verified" | "unverified" | "partial" | "blocked" | null;
   startedAt?: string;
   completedAt?: string;
   durationMs?: number | null;
@@ -182,9 +183,15 @@ function shortId(id: string): string {
   return id.length > 20 ? `${id.slice(0, 17)}…` : id;
 }
 
-function statusLabel(status: string): string {
+function statusLabel(status: string, outcome?: RunRecord["verificationOutcome"]): string {
   if (status === "RUNNING" || status === "CREATED") return "运行中";
-  if (status === "COMPLETED") return "已完成";
+  if (status === "COMPLETED") {
+    if (outcome === "verified") return "已验收";
+    if (outcome === "unverified") return "已结束 · 未验收";
+    if (outcome === "partial") return "已结束 · 部分验收";
+    if (outcome === "blocked") return "已结束 · 验收受阻";
+    return "已完成";
+  }
   if (status === "CANCELLED") return "已取消";
   if (status === "INTERRUPTED") return "已中断";
   if (status === "TIMED_OUT") return "已超时";
@@ -338,6 +345,8 @@ export function ChatRunPanel({ agentId, sessionId, onOpenTrace, onClose }: { age
 
   const running = latest?.status === "RUNNING" || latest?.status === "CREATED";
   const failed = latest ? /fail|error|interrupt|timed/i.test(latest.status) : false;
+  const unverified = latest?.status === "COMPLETED" &&
+    ["unverified", "partial", "blocked"].includes(latest.verificationOutcome || "");
   const timeline = useMemo(() => projectRunInspectorTimeline(events), [events]);
   const waterfall = useMemo(() => waterfallLayout(spans), [spans]);
   const usageReported = latest?.usage?.reported === true;
@@ -380,14 +389,14 @@ export function ChatRunPanel({ agentId, sessionId, onOpenTrace, onClose }: { age
           <div className="chat-run-scroll">
             <section className="chat-run-overview">
               <div className="chat-run-status-row">
-                <span className={`chat-run-state-icon ${running ? "running" : failed ? "failed" : "completed"}`}>
-                  {running ? <Loader2 size={15} className="animate-spin" /> : failed ? <XCircle size={15} /> : <CheckCircle2 size={15} />}
+                <span className={`chat-run-state-icon ${running ? "running" : failed ? "failed" : unverified ? "unverified" : "completed"}`}>
+                  {running ? <Loader2 size={15} className="animate-spin" /> : failed ? <XCircle size={15} /> : unverified ? <Clock3 size={15} /> : <CheckCircle2 size={15} />}
                 </span>
                 <div className="chat-run-identity">
-                  <strong>{statusLabel(latest.status)}</strong>
+                  <strong>{statusLabel(latest.status, latest.verificationOutcome)}</strong>
                   <span title={latest.id}>{shortId(latest.id)}</span>
                 </div>
-                <span className={`chat-run-state ${running ? "running" : failed ? "failed" : "completed"}`}>{latest.status}</span>
+                <span className={`chat-run-state ${running ? "running" : failed ? "failed" : unverified ? "unverified" : "completed"}`}>{latest.status}</span>
               </div>
               {latest.error?.message && (
                 <div className="chat-run-error" role="alert">

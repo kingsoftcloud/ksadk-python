@@ -1,13 +1,15 @@
 import importlib
+import json
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import zipfile
-import pytest
 from email.parser import BytesParser
 from pathlib import Path
 
+import pytest
 import yaml
 from packaging.requirements import Requirement
 
@@ -21,6 +23,18 @@ from ksadk.builders.container_builder import ContainerBuilder
 from ksadk.detection import DetectionResult, FrameworkType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_public_default_native_studio_assembly_without_framework_imports(streaming):
+    command = [sys.executable, str(REPO_ROOT / "scripts/verify_native_studio_install.py")]
+    if streaming:
+        command.append("--streaming")
+    result = subprocess.run(command, cwd=REPO_ROOT, check=False, text=True,
+                            capture_output=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"storage_selection": "ordinary_default"' in result.stdout
+    assert '"engine": "native"' in result.stdout
 
 
 def _build_wheel_in_isolated_source(tmp_path: Path, *, include_static: bool = False) -> Path:
@@ -193,14 +207,24 @@ def test_release_build_generates_ignored_react_studio_static_assets():
     assert "ksadk/studio/static/**" in gitignore
     studio_source = REPO_ROOT / "ksadk/studio/react-ui"
     if studio_source.exists():
-        tracked_static_files = subprocess.run(
+        git_tracking = subprocess.run(
             ["git", "ls-files", "ksadk/studio/static"],
             cwd=REPO_ROOT,
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
-        ).stdout.splitlines()
-        assert tracked_static_files == []
+        )
+        if git_tracking.returncode == 0:
+            assert git_tracking.stdout.splitlines() == []
+        else:
+            # Canonical clean exports deliberately have no Git metadata.
+            # Their build identity is validated by write_build_provenance and
+            # release_preflight; an arbitrary Git-free directory is invalid.
+            manifest = json.loads((REPO_ROOT / "export-manifest.json").read_text())
+            assert manifest["sourceTree"] == "clean"
+            assert re.fullmatch(r"[0-9a-f]{40}", manifest["sourceCommit"])
+            assert (REPO_ROOT / "ksadk/studio/static/index.html").is_file()
+            assert any((REPO_ROOT / "ksadk/studio/static/assets").iterdir())
     else:
         assert (REPO_ROOT / "ksadk/studio/static/index.html").is_file()
         assert any((REPO_ROOT / "ksadk/studio/static/assets").iterdir())
@@ -339,10 +363,11 @@ def test_pyproject_declares_validated_framework_dependency_windows():
     # Studio 是基础入口；ADK 本体必须随基础包安装，额外生成依赖仍保持在 [adk]。
     assert "google-adk>=1.34.0,<3.0.0" in dependencies
     assert any(item.startswith("litellm>=") for item in optional_dependencies["adk"])
-    # LangChain 生态下限锚定本地已验证版本(不降级,<2.0 守 1.x 稳定线)
-    assert "langchain>=1.3.14,<2.0.0" in dependencies
-    assert "langchain-core>=1.5.0,<2.0.0" in dependencies
-    assert "langgraph>=1.2.0,<1.3.0" in dependencies
+    # Native 不导入框架；基础安装仍为 Managed 兼容入口保留 LangGraph。
+    # 可选适配器保持已验证的版本窗口。
+    assert "langchain>=1.3.14,<2.0.0" in optional_dependencies["langchain"]
+    assert "langchain-core>=1.5.0,<2.0.0" in optional_dependencies["langchain"]
+    assert "langgraph>=1.2.0,<1.3.0" in optional_dependencies["langgraph"]
     assert (
         "deepagents>=0.6.2,<1.0.0; python_version >= '3.11'" in optional_dependencies["deepagents"]
     )
@@ -373,10 +398,13 @@ def test_built_wheel_makes_langchain_openai_framework_optional(tmp_path: Path):
     from ksadk.version import VERSION
     assert metadata["Version"] == VERSION
     requirements = [Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])]
-    assert all(
-        requirement.name != "langchain-openai" or requirement.marker is not None
+    mandatory_names = {
+        requirement.name
         for requirement in requirements
-    )
+        if requirement.marker is None or requirement.marker.evaluate({"extra": ""})
+    }
+    assert {"langgraph", "langgraph-checkpoint-sqlite"} <= mandatory_names
+    assert not mandatory_names & {"langchain", "langchain-core", "langchain-openai"}
 
     for extra in ("langchain", "langgraph", "deepagents"):
         matching_requirements = [

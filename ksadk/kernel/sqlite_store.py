@@ -590,6 +590,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                     message = await self.load_message(message_id)
                     assert message is not None
                     return message
+                await self._sqlite_require_claim_grant(connection, row)
                 if row["status"] not in (
                     InboxState.ACCEPTED.value,
                     InboxState.CLAIMED.value,
@@ -1586,6 +1587,19 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
 
     # -------------------------------------------------------------------- runs
 
+    async def find_command_run(
+        self, agent_instance_id: str, session_id: str, command_id: str
+    ) -> RunRecord | None:
+        connection = await self._connect()
+        rows = await connection.execute_fetchall(
+            "SELECT run_id FROM kernel_runs WHERE agent_instance_id=? AND session_id=? "
+            "AND json_extract(metadata_json, '$.command_id')=? LIMIT 2",
+            (agent_instance_id, session_id, command_id),
+        )
+        if len(rows) > 1:
+            raise InvalidCommandError("ambiguous runs for the same command")
+        return await self.load_run(rows[0]["run_id"]) if rows else None
+
     async def load_run(self, run_id: str) -> RunRecord | None:
         row = await self._fetchone(
             await self._connect(), "SELECT * FROM kernel_runs WHERE run_id=?", (run_id,)
@@ -1619,6 +1633,35 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         row = await self._fetchone(connection, sql, params)
         return await self.load_run(row["run_id"]) if row is not None else None
 
+    async def save_runtime_checkpoint(
+        self, run_id: str, checkpoint: dict, *, agent_instance_id: str,
+        session_id: str, guard: ActivationWriteGuard,
+    ) -> None:
+        from ksadk.kernel.runtime_checkpoint import checkpoint_copy, require_checkpoint_owner
+
+        checkpoint = checkpoint_copy(checkpoint)
+        async with self._write_lock:
+            connection = await self._begin()
+            try:
+                activation = await self._check_fence(
+                    connection, agent_instance_id, session_id, guard.fencing_token,
+                )
+                if activation["activation_id"] != guard.activation_id:
+                    raise StaleFenceError("runtime checkpoint activation mismatch")
+                run = await self.load_run(run_id)
+                require_checkpoint_owner(
+                    run, agent_instance_id=agent_instance_id, session_id=session_id,
+                )
+                metadata = dict(run.metadata, runtime_checkpoint=checkpoint)
+                await connection.execute(
+                    "UPDATE kernel_runs SET metadata_json=?, updated_at=? WHERE run_id=?",
+                    (json.dumps(metadata, ensure_ascii=False), now_iso(), run_id),
+                )
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+
     async def save_run_transition(self, run: RunRecord, *, expected_fence: int) -> RunRecord:
         async with self._write_lock:
             connection = await self._begin()
@@ -1627,6 +1670,11 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                     connection, run.agent_instance_id, run.session_id, expected_fence
                 )
                 existing = await self.load_run(run.run_id)
+                from ksadk.kernel.runtime_checkpoint import preserve_runtime_checkpoint
+
+                run = run.model_copy(update={"metadata": preserve_runtime_checkpoint(
+                    run.metadata, existing.metadata if existing else None,
+                )})
                 assert_run_transition(existing.state if existing else None, run.state)
                 if is_active_run(run.state):
                     cursor = await connection.execute(

@@ -1318,3 +1318,66 @@ def test_remaining_ttl_rejects_nonfinite_or_invalid_values():
     for value in (float("inf"), float("nan"), -1, True, "5"):
         with pytest.raises(InvalidCommandError):
             grant_deadline_budget(value)
+
+
+async def test_unqualified_uncertain_start_is_not_replayed(harness):
+    """A normal cloud enqueue must not repeat a possibly accepted native start."""
+    submitted = command("unqualified-uncertain", grant_id=None)
+    await harness.store.accept_command(submitted, queue_limit=10)
+    lease = await harness.lease()
+    first = FixtureAdapter(fail_start=True)
+    assert (await run_once(worker(harness, first), lease)).outcome == "terminal_failure"
+    assert len(first.started) == 1
+
+    second = FixtureAdapter()
+    result = await run_once(worker(harness, second), lease)
+    assert not second.started, "same command repeated an uncertain provider start"
+    record = await harness.store.load_run(result.run_id)
+    assert record.state == RunState.INTERRUPTED
+    assert record.metadata["reason"] == "execution_start_uncertain"
+
+
+async def test_uncertain_start_recognizes_older_random_run_id(harness):
+    from ksadk.kernel.store import RunRecord
+
+    submitted = command("old-random-run", grant_id=None)
+    await harness.store.accept_command(submitted, queue_limit=10)
+    lease = await harness.lease()
+    old_id = str(uuid4())
+    old = RunRecord(run_id=old_id, agent_instance_id=SPEC.agent_instance_id,
+                    session_id=SPEC.session_id, state=RunState.PENDING,
+                    metadata={"command_id": str(submitted.command_id)})
+    await harness.store.save_run_transition(old, expected_fence=lease.fencing_token)
+    lookup = harness.store.find_command_run
+    assert await lookup("other-agent", SPEC.session_id, str(submitted.command_id)) is None
+    assert await lookup(SPEC.agent_instance_id, "other-session", str(submitted.command_id)) is None
+    assert await lookup(SPEC.agent_instance_id, SPEC.session_id, str(uuid4())) is None
+
+    adapter = FixtureAdapter()
+    result = await run_once(worker(harness, adapter), lease)
+    assert result.run_id == old_id
+    assert not adapter.started
+    assert (await harness.store.load_run(old_id)).state == RunState.INTERRUPTED
+
+
+async def test_ambiguous_legacy_runs_reject_replay_without_rewriting_history(harness):
+    from ksadk.kernel.store import RunRecord
+
+    submitted = command("ambiguous-old-runs", grant_id=None)
+    accepted = await harness.store.accept_command(submitted, queue_limit=10)
+    lease = await harness.lease()
+    old_ids = [str(uuid4()), str(uuid4())]
+    for run_id in old_ids:
+        await harness.store.save_run_transition(
+            RunRecord(run_id=run_id, agent_instance_id=SPEC.agent_instance_id,
+                      session_id=SPEC.session_id, state=RunState.PENDING,
+                      metadata={"command_id": str(submitted.command_id)}),
+            expected_fence=lease.fencing_token,
+        )
+    adapter = FixtureAdapter()
+    result = await run_once(worker(harness, adapter), lease)
+    assert result.run_id is None
+    assert not adapter.started
+    assert (await harness.store.load_message(accepted.message_id)).status == InboxState.DISCARDED
+    for run_id in old_ids:
+        assert (await harness.store.load_run(run_id)).state == RunState.PENDING

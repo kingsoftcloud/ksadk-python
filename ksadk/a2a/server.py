@@ -14,7 +14,6 @@ from typing import Any, cast
 
 from a2a.server.agent_execution import RequestContext, SimpleRequestContextBuilder
 from a2a.server.context import ServerCallContext
-from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import (
     create_agent_card_routes,
     create_jsonrpc_routes,
@@ -25,8 +24,10 @@ from a2a.types import AgentCard, SendMessageRequest, Task
 
 from ksadk.a2a.card import JSONRPC_PATH, REST_PATH_PREFIX
 from ksadk.a2a.executor import A2ARuntimeExecutor
+from ksadk.a2a.protocol_errors import ProtocolRequestHandler, correct_cancel_rest_route
 from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
 from ksadk.a2a.task_store import A2AOwnerContextBuilder
+from ksadk.a2a.tool_activity import PublicToolActivityPolicy
 
 
 class _DurableRequestContextBuilder(SimpleRequestContextBuilder):
@@ -76,6 +77,7 @@ class A2AProtocolServer:
         task_adapter: A2ARuntimeTaskAdapter,
         context_builder: A2AOwnerContextBuilder | None = None,
         include_reasoning: bool = False,
+        public_tool_policy: PublicToolActivityPolicy | None = None,
     ) -> None:
         self.agent_card = agent_card
         self.task_store = task_store
@@ -84,13 +86,17 @@ class A2AProtocolServer:
         self.executor = A2ARuntimeExecutor(
             task_adapter=task_adapter,
             include_reasoning=include_reasoning,
+            public_tool_policy=public_tool_policy,
         )
-        self.request_handler = DefaultRequestHandler(
+        self.request_handler = ProtocolRequestHandler(
             agent_executor=self.executor,
             task_store=task_store,
             agent_card=agent_card,
             request_context_builder=_DurableRequestContextBuilder(task_store),
         )
+
+        self.request_handler.terminal_task_reconciler = getattr(
+            task_adapter, "reconcile_terminal_task", None)
 
     def agent_card_routes(self) -> list[Any]:
         return cast(list[Any], create_agent_card_routes(self.agent_card))
@@ -108,11 +114,14 @@ class A2AProtocolServer:
     def rest_routes(self) -> list[Any]:
         return cast(
             list[Any],
-            create_rest_routes(
-                self.request_handler,
-                path_prefix=REST_PATH_PREFIX,
-                context_builder=self.context_builder,
-            ),
+            [
+                correct_cancel_rest_route(route)
+                for route in create_rest_routes(
+                    self.request_handler,
+                    path_prefix=REST_PATH_PREFIX,
+                    context_builder=self.context_builder,
+                )
+            ],
         )
 
 

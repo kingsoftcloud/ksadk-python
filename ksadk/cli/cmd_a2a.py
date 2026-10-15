@@ -199,6 +199,49 @@ def register(agent_path: Path, url: str, name: str | None, description: str, ski
     click.echo(MessageToJson(card_obj, indent=2))
 
 
+@a2a.command("register-hosted", context_settings=_HELP)
+@click.option("--agent-id", required=True, help="已通过 deploy 创建的托管运行时 ID")
+@click.option("--space-id", "space_ids", multiple=True, required=True, help="加入的 A2A Space；可重复")
+@click.option("--region", required=True, help="显式选择环境/区域，例如 pre-online")
+def register_hosted(agent_id: str, space_ids: Sequence[str], region: str):
+    """将已部署的 hosted Agent 注册为可被 Space 内其他 Agent 调用的服务。"""
+    from ksadk.api.client import AgentEngineClient
+
+    agent_id, region = agent_id.strip(), region.strip()
+    spaces = list(dict.fromkeys(space.strip() for space in space_ids))
+    if not agent_id or not region or any(not space for space in spaces):
+        raise click.UsageError("agent-id、space-id 和 region 不得为空")
+
+    async def run():
+        client = AgentEngineClient(region=region)
+        try:
+            preview = await client._action_async(
+                "GetAToARuntimeConfig", {"AgentId": agent_id}, preserve_case=True,
+            )
+            card = preview.get("AgentCard")
+            if not isinstance(card, dict) or not card:
+                raise ValueError("Runtime AgentCard unavailable")
+            result = await client._action_async("CreateAToAAgent", {
+                "Source": "hosted", "AgentId": agent_id, "A2ASpaceIds": spaces,
+                "AgentCard": card,
+            })
+        except Exception as exc:
+            # An ambiguous response is not automatically retried: registration
+            # may already exist. Never print private upstream bodies or routes.
+            code = getattr(exc, "code", None)
+            raise click.ClickException(
+                f"Hosted A2A 注册失败（code={code or 'unavailable'}）；请查询注册状态后再重试"
+            ) from None
+        finally:
+            await client.close()
+        click.echo(json.dumps({
+            "a2a_agent_id": result.get("a2_a_agent_id", result.get("A2AAgentId")),
+            "status": result.get("status", result.get("Status")),
+        }, ensure_ascii=False))
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------------------
 # discover / call / status / cancel(Space 内动态发现与调用,经 A2ASpaceClient)
 # ---------------------------------------------------------------------------

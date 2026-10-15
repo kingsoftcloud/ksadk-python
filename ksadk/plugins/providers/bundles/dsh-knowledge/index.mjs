@@ -1,6 +1,18 @@
 export const name = 'dsh-knowledge'
 export const inject = ['tools', 'platformResources']
 
+// The platform retrieval service may prefix a chunk with its internal object
+// storage key (for example ``upload_files/<numeric-id>/<uuid>.md,``).  That
+// value is neither useful evidence nor safe user-facing content.  Long numeric
+// object keys also look like payment-card numbers to the Harness DLP policy,
+// which forces an otherwise harmless knowledge result into an unreadable
+// sensitive artifact.  Strip only this well-known transport prefix and retain
+// the document title and every byte of authored content that follows it.
+export function sanitizeKnowledgeContent(value) {
+  if (typeof value !== 'string') return value
+  return value.replace(/^upload_files\/[^,\r\n]+,/, '')
+}
+
 export function apply(ctx) {
   ctx.effect(() => ctx.platformResources.registerTool('search_knowledge_base', 'search_knowledge_base'))
   ctx.tools.register({
@@ -46,8 +58,18 @@ export function apply(ctx) {
       },
     },
     isConcurrencySafe: () => true,
-    execute(args, execution) {
-      return ctx.platformResources.call('search_knowledge_base', args, { signal: execution.signal })
+    async execute(args, execution) {
+      const result = await ctx.platformResources.call(
+        'search_knowledge_base', args, { signal: execution.signal },
+      )
+      if (!result || !Array.isArray(result.items)) return result
+      return {
+        ...result,
+        items: result.items.map(item => ({
+          ...item,
+          content: sanitizeKnowledgeContent(item.content),
+        })),
+      }
     },
   })
 }

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from ksadk.tools.gateway import ToolPolicy, tool_policy_requires_approval
+from ksadk.tools.schema import callable_parameters
 from ksadk.toolsets._langchain import as_tool
 from ksadk.toolsets.a2a import (
     _A2A_TOOL_POLICIES,
@@ -19,11 +19,19 @@ from ksadk.toolsets.a2a import (
 from ksadk.toolsets.platform import component_status, get_platform_tools
 from ksadk.toolsets.sandbox import (
     _SANDBOX_TOOL_POLICIES,
+    browser_inspect_workspace,
     get_sandbox_tools,
     run_code,
     run_command,
     sandbox_backend_name,
     sandbox_status,
+)
+from ksadk.toolsets.skill_management import (
+    _SKILL_MANAGEMENT_TOOL_POLICIES,
+    get_skill_management_tools,
+    skill_bind_agent,
+    skill_discover_github,
+    skill_install,
 )
 from ksadk.toolsets.skills import (
     _SKILL_TOOL_POLICIES,
@@ -35,6 +43,17 @@ from ksadk.toolsets.skills import (
     load_skill,
     preview_skill,
     search_skills,
+)
+from ksadk.toolsets.tool_selection import (
+    _canonical_toolset_group,
+    _enabled_backend,
+    _normalize_include,
+    _normalize_mode,
+    _normalize_tool_name,
+    _search_terms,
+    _tool_search_reason,
+    _tool_search_score,
+    _tool_search_text,
 )
 from ksadk.toolsets.web import _WEB_TOOL_POLICIES, get_web_tools, web_fetch, web_search
 from ksadk.toolsets.workspace import (
@@ -52,7 +71,15 @@ from ksadk.toolsets.workspace import (
     write_workspace_files,
 )
 
-_DEFAULT_GROUPS = ("skill", "workspace", "platform", "sandbox", "web", "a2a")
+_DEFAULT_GROUPS = (
+    "skill",
+    "skill-management",
+    "workspace",
+    "platform",
+    "sandbox",
+    "web",
+    "a2a",
+)
 _DISPATCHER_TOOL_NAME = "tool_dispatcher"
 _LEGACY_DISPATCHER_TOOL_NAME = "agentengine_tool_dispatcher"
 _TOOL_SEARCH_NAME = "tool_search"
@@ -77,6 +104,10 @@ _FOCUSED_TOOL_NAMES = (
     "sandbox_status",
     "run_command",
     "run_code",
+    "browser_inspect_workspace",
+    "skill_discover_github",
+    "skill_install",
+    "skill_bind_agent",
     "web_fetch",
     "web_search",
     _TOOL_SEARCH_NAME,
@@ -84,9 +115,19 @@ _FOCUSED_TOOL_NAMES = (
 _DEFERRED_TOOL_NAMES = (_TOOL_SEARCH_NAME, _DISPATCHER_TOOL_NAME)
 _EXTERNAL_TOOL_SPECS: dict[str, dict[str, Any]] = {}
 
+
+def _sandbox_tool_boundary() -> str:
+    backend = sandbox_backend_name()
+    if backend in {"local", "local_process"}:
+        return "local_workspace_process"
+    if backend in {"pod", "pod_process"}:
+        return "agent_pod_process"
+    return "isolated_sandbox"
+
 _TOOLSET_FACTORIES = {
     "skill": get_skill_tools,
     "skills": get_skill_tools,
+    "skill-management": get_skill_management_tools,
     "workspace": get_workspace_tools,
     "platform": get_platform_tools,
     "sandbox": get_sandbox_tools,
@@ -97,6 +138,23 @@ _TOOLSET_FACTORIES = {
 _TOOLSET_DESCRIPTORS: dict[
     str, tuple[tuple[Callable[..., Any], ToolPolicy, dict[str, Any]], ...]
 ] = {
+    "skill-management": (
+        (
+            skill_discover_github,
+            _SKILL_MANAGEMENT_TOOL_POLICIES["skill_discover_github"],
+            {"boundary": "studio_skill_catalog"},
+        ),
+        (
+            skill_install,
+            _SKILL_MANAGEMENT_TOOL_POLICIES["skill_install"],
+            {"boundary": "studio_skill_catalog"},
+        ),
+        (
+            skill_bind_agent,
+            _SKILL_MANAGEMENT_TOOL_POLICIES["skill_bind_agent"],
+            {"boundary": "current_studio_agent_revision"},
+        ),
+    ),
     "skill": (
         (list_skills, _SKILL_TOOL_POLICIES["list_skills"], {}),
         (list_skill_spaces, _SKILL_TOOL_POLICIES["list_skill_spaces"], {}),
@@ -173,7 +231,7 @@ _TOOLSET_DESCRIPTORS: dict[
             {
                 "backend": lambda: sandbox_backend_name(),
                 "enabled": lambda: _enabled_backend(sandbox_backend_name()),
-                "boundary": "isolated_sandbox",
+                "boundary": _sandbox_tool_boundary,
             },
         ),
         (
@@ -182,7 +240,7 @@ _TOOLSET_DESCRIPTORS: dict[
             {
                 "backend": lambda: sandbox_backend_name(),
                 "enabled": lambda: _enabled_backend(sandbox_backend_name()),
-                "boundary": "isolated_sandbox",
+                "boundary": _sandbox_tool_boundary,
             },
         ),
         (
@@ -191,7 +249,16 @@ _TOOLSET_DESCRIPTORS: dict[
             {
                 "backend": lambda: sandbox_backend_name(),
                 "enabled": lambda: _enabled_backend(sandbox_backend_name()),
-                "boundary": "isolated_sandbox",
+                "boundary": _sandbox_tool_boundary,
+            },
+        ),
+        (
+            browser_inspect_workspace,
+            _SANDBOX_TOOL_POLICIES["browser_inspect_workspace"],
+            {
+                "backend": "playwright",
+                "enabled": lambda: sandbox_backend_name() in {"local", "local_process"},
+                "boundary": "local_workspace_browser",
             },
         ),
     ),
@@ -612,6 +679,7 @@ def _build_descriptor_registry(*, include_dispatcher: bool) -> dict[str, dict[st
                     description=(getattr(func, "__doc__", "") or "").strip(),
                     policy=policy,
                     extras=extras,
+                    function=func,
                 )
     for platform_tool in get_platform_tools():
         name = _tool_name(platform_tool)
@@ -624,6 +692,9 @@ def _build_descriptor_registry(*, include_dispatcher: bool) -> dict[str, dict[st
                 "requires_approval": False,
                 "side_effects": [],
                 "enabled": True,
+                "input_schema": callable_parameters(
+                    getattr(platform_tool, "func", platform_tool)
+                ),
             }
             args = _tool_args(platform_tool)
             if args:
@@ -635,6 +706,7 @@ def _build_descriptor_registry(*, include_dispatcher: bool) -> dict[str, dict[st
             name=_DISPATCHER_TOOL_NAME,
             description=(tool_dispatcher.__doc__ or "").strip(),
             policy=ToolPolicy(risk_level="low"),
+            function=tool_dispatcher,
             extras={
                 "boundary": "local_ksadk_builtin_tools",
                 "actions": ["list", "describe", "call"],
@@ -645,6 +717,7 @@ def _build_descriptor_registry(*, include_dispatcher: bool) -> dict[str, dict[st
             name=_TOOL_SEARCH_NAME,
             description=(tool_search.__doc__ or "").strip(),
             policy=ToolPolicy(risk_level="low"),
+            function=tool_search,
             extras={
                 "boundary": "local_ksadk_builtin_tool_registry",
                 "actions": ["search"],
@@ -655,6 +728,7 @@ def _build_descriptor_registry(*, include_dispatcher: bool) -> dict[str, dict[st
             name=_LEGACY_DISPATCHER_TOOL_NAME,
             description=(agentengine_tool_dispatcher.__doc__ or "").strip(),
             policy=ToolPolicy(risk_level="low"),
+            function=agentengine_tool_dispatcher,
             extras={
                 "boundary": "local_ksadk_builtin_tools",
                 "compat_alias_for": _DISPATCHER_TOOL_NAME,
@@ -663,25 +737,6 @@ def _build_descriptor_registry(*, include_dispatcher: bool) -> dict[str, dict[st
         )
     registry.update(_external_tool_specs_by_name())
     return registry
-
-
-def _canonical_toolset_group(name: object) -> str:
-    value = str(name).strip().lower()
-    if value == "skills":
-        return "skill"
-    return value
-
-
-def _normalize_include(include: Iterable[str] | str | None) -> list[str]:
-    if include is None:
-        return []
-    if isinstance(include, str):
-        return [include]
-    return [str(item) for item in include]
-
-
-def _normalize_tool_name(tool_name: str | None) -> str:
-    return str(tool_name or "").strip()
 
 
 def _normalize_tool_arguments(
@@ -829,26 +884,11 @@ def _unknown_tool_error(tool_name: str) -> dict[str, Any]:
     }
 
 
-def _enabled_backend(backend: str) -> bool:
-    return backend not in {"", "disabled", "none", "off"}
-
-
 def _profile_default_include(profile: str) -> list[str]:
     normalized = str(profile or "default").strip().lower()
     if normalized == "coding":
         return list(_FOCUSED_TOOL_NAMES)
     return list(_DEFAULT_GROUPS)
-
-
-def _normalize_mode(mode: str) -> str:
-    normalized = str(mode or "direct").strip().lower()
-    if normalized in {"off", "none", "disabled"}:
-        return "off"
-    if normalized in {"dispatcher", "dispatch"}:
-        return "dispatcher"
-    if normalized in {"deferred", "search"}:
-        return "deferred"
-    return "direct"
 
 
 def builtin_tools_mode(default: str = "off") -> str:
@@ -883,55 +923,6 @@ def builtin_tools_for_runtime(
     return get_agentengine_tools(profile=resolved_profile, mode=resolved_mode)
 
 
-def _search_terms(text: str) -> list[str]:
-    terms = re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]+", text.lower())
-    synonyms = {
-        "edit": ["edit", "replace", "modify", "patch", "write", "file"],
-        "file": ["file", "workspace", "read", "list", "search", "edit"],
-        "grep": ["grep", "search", "rg", "find"],
-        "run": ["run", "command", "shell", "code", "execute"],
-        "web": ["web", "fetch", "search", "url", "http"],
-        "读": ["read", "file", "workspace"],
-        "改": ["edit", "replace", "file"],
-        "搜": ["search", "grep", "find"],
-    }
-    expanded: list[str] = []
-    for term in terms:
-        expanded.append(term)
-        expanded.extend(synonyms.get(term, []))
-    return expanded
-
-
-def _tool_search_text(spec: Mapping[str, Any]) -> str:
-    values = [
-        str(spec.get("name") or ""),
-        str(spec.get("group") or ""),
-        str(spec.get("description") or ""),
-        " ".join((spec.get("args") or {}).keys()) if isinstance(spec.get("args"), Mapping) else "",
-    ]
-    return " ".join(values).lower()
-
-
-def _tool_search_score(terms: list[str], haystack: str, spec: Mapping[str, Any]) -> float:
-    score = 0.0
-    name = str(spec.get("name") or "").lower()
-    for term in terms:
-        if not term:
-            continue
-        if term in name:
-            score += 4.0
-        elif term in haystack:
-            score += 1.0
-    if str(spec.get("group") or "") == "workspace":
-        score += 0.5
-    return score
-
-
-def _tool_search_reason(terms: list[str], haystack: str) -> str:
-    matched = [term for term in terms if term and term in haystack]
-    return f"matched: {', '.join(matched[:4])}" if matched else "matched registry metadata"
-
-
 def _tool_spec(
     *,
     group: str,
@@ -939,6 +930,7 @@ def _tool_spec(
     description: str,
     policy: ToolPolicy,
     extras: Mapping[str, Any] | None = None,
+    function: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     spec = {
         "name": name,
@@ -962,6 +954,8 @@ def _tool_spec(
     if name in {"run_command", "run_code", "sandbox_status"}:
         enabled = enabled and _enabled_backend(sandbox_backend_name())
     spec["enabled"] = enabled
+    if function is not None:
+        spec["input_schema"] = callable_parameters(function)
     return spec
 
 
