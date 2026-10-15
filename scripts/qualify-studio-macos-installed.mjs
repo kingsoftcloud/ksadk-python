@@ -75,6 +75,12 @@ async function nativeAX(pid) {
   const script = `tell application "System Events"
     set p to first application process whose unix id is ${pid}
     set frontmost of p to true
+    try
+      set value of attribute "AXManualAccessibility" of p to true
+    end try
+    try
+      set value of attribute "AXEnhancedUserInterface" of p to true
+    end try
     set resultText to ""
     repeat with w in windows of p
       repeat with element in entire contents of w
@@ -187,6 +193,7 @@ try {
   electron = await _electron.launch({ executablePath: join(install, 'Contents/MacOS/AgentKit Studio'), args: [], cwd: scratch, env, timeout: 120000 });
   initialPid = electron.process().pid;
   assert.ok((await processIds()).includes(initialPid), 'Owned initial main process must be observable with its automation arguments');
+  await electron.evaluate(({ app }) => { app.accessibilitySupportEnabled = true; });
   for (const stream of [electron.process().stdout, electron.process().stderr]) stream?.pipe(createBuildOutputRedactor()).pipe(process.stdout, { end: false });
   const page = await electron.firstWindow({ timeout: 120000 }); page.setDefaultTimeout(30000);
   const guide = page.locator('.agentkit-credential-onboarding-content'); await expect(guide).toBeVisible({ timeout: 120000 });
@@ -209,8 +216,12 @@ try {
   await expect(page.getByRole('button', { name: /^(停止生成|Stop generating)$/ })).toHaveCount(0, { timeout: 180000 });
   nativeSession = await page.locator('[data-conversation-session]').first().getAttribute('data-conversation-session'); assert.ok(nativeSession);
   await page.screenshot({ path: join(evidence, 'baseline-session.png'), fullPage: true });
-  const baselineAX = await nativeAX(initialPid);
-  assert.ok(baselineAX.includes(marker) && baselineAX.includes('Agents'), 'Native accessibility observer must work before installation');
+  await checkpoint('observing-baseline-native-accessibility');
+  await until('baseline native accessibility', async () => {
+    const value = await nativeAX(initialPid);
+    await writeFile(join(evidence, 'baseline-native-ax.txt'), value);
+    return value.includes(marker) && value.includes('Agents');
+  }, 30000);
   await checkpoint('recording-existing-native-data');
   const files = [...await walk(nativeHome), ...await walk(productHome)];
   const selected = files.filter(path => path.includes(nativeSession) && /session\.v\d+\.jsonl(?:\.zstd)?$/.test(path) || path === join(productHome, 'config.yaml'));
