@@ -116,7 +116,7 @@ async function sendNativeContinuation(pid, ordinal) {
     key code 36
   end tell`], { timeout: 20000 });
   await until('native successor context response', async () => {
-    if (!report.modelRequests.some(item => item.ordinal === ordinal && item.priorAssistantMarker)) return false;
+    if (!report.modelRequests.some(item => item.continuationTurn === ordinal && item.priorAssistantMarker)) return false;
     const text = await nativeAX(pid); return text.split(marker).length - 1 >= ordinal + 1 && !/停止生成|Stop generating/i.test(text);
   });
 }
@@ -168,10 +168,12 @@ try {
     if (req.url === '/v1/models') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ object: 'list', data: [{ id: 'native-retention', object: 'model' }] })); return; }
     if (req.url !== '/v1/chat/completions') { res.writeHead(404); res.end(); return; }
     const body = JSON.parse(Buffer.concat(chunks)); const messages = body.messages || [];
-    const ordinal = messages.filter(message => message.role === 'user').length;
+    const userMessages = messages.filter(message => message.role === 'user');
+    const continuationTurn = userMessages.some(message => JSON.stringify(message.content).includes('Turn 2.')) ? 2 : undefined;
     const priorAssistantMarker = messages.some(message => message.role === 'assistant' && JSON.stringify(message.content).includes(marker));
-    report.modelRequests.push({ ordinal, priorAssistantMarker, nativeModel: body.model === 'native-retention' });
-    if (ordinal > 1 && !priorAssistantMarker) { res.writeHead(400); res.end('{}'); return; }
+    // Native request context can contain additional user-role environment messages;
+    // that count is not a conversation turn. Validate retained assistant context separately.
+    report.modelRequests.push({ userMessages: userMessages.length, continuationTurn, priorAssistantMarker, nativeModel: body.model === 'native-retention' });
     res.setHeader('content-type', 'text/event-stream');
     const id = 'chatcmpl-native-local';
     for (const delta of [{ role: 'assistant', content: marker }, {}]) res.write('data: ' + JSON.stringify({ id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body.model, choices: [{ index: 0, delta, finish_reason: Object.keys(delta).length ? null : 'stop' }] }) + '\n\n');
@@ -203,7 +205,7 @@ try {
   const workspace = page.getByRole('treeitem').filter({ has: page.getByText(/^(默认工作区|Default workspace)$/) });
   await workspace.hover(); await workspace.getByRole('button', { name: /在“.*”中新建会话|^New session in / }).click();
   const composer = page.locator('[contenteditable="true"]').first(); await composer.fill('Remember a unique context marker. Reply only with the marker. Do not use tools.'); await composer.press('Enter');
-  await expect(page.getByText(marker, { exact: true })).toBeVisible({ timeout: 180000 });
+  await expect(page.locator('[data-conversation-session]').first().getByText(marker, { exact: true })).toBeVisible({ timeout: 180000 });
   await expect(page.getByRole('button', { name: /^(停止生成|Stop generating)$/ })).toHaveCount(0, { timeout: 180000 });
   nativeSession = await page.locator('[data-conversation-session]').first().getAttribute('data-conversation-session'); assert.ok(nativeSession);
   await page.screenshot({ path: join(evidence, 'baseline-session.png'), fullPage: true });
