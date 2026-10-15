@@ -1,4 +1,4 @@
-name: Qualify Studio macOS refactor candidate
+name: Prepare signed macOS forward rollback candidate without publication
 on:
   workflow_dispatch:
     inputs:
@@ -55,7 +55,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: studio-macos-signed-candidate
+  group: studio-macos-rollback-candidate
   cancel-in-progress: false
 jobs:
   source-gate:
@@ -77,10 +77,15 @@ jobs:
           DIAGNOSTIC_ONLY: ${{ false }}
           CANDIDATE_RUN: ${{ '' }}
           TOOLS_SHA: ${{ inputs.release_tools_ref || inputs.studio_ref }}
+          BASELINE_SHA: ${{ inputs.studio_ref }}
+          BUILD_VERSION: ${{ inputs.build_version }}
         run: |-
           test "$DIAGNOSTIC_ONLY" = false
           test -z "$CANDIDATE_RUN"
           [[ "$TOOLS_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$BASELINE_SHA" = 9b20aee585956c30239ab1775098cdab25ada9cb
+          test "$TOOLS_SHA" = 06bfe614775efccf30faefa2cb9a027b96ea084e
+          test "$BUILD_VERSION" = 0.2.0-rc.2.20261016.39
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.studio_checkout_ref }}
@@ -256,6 +261,24 @@ jobs:
               "APPLE_TEAM_ID=$APPLE_TEAM_ID_VALUE"
           } > dsh-source/apps/desktop/.env.macos
           chmod 600 dsh-source/apps/desktop/.env.macos
+      - name: Checkout fixed packaging hygiene and verification tools
+        uses: actions/checkout@v4
+        with:
+          repository: kingsoftcloud/agentkit-studio
+          ref: 06bfe614775efccf30faefa2cb9a027b96ea084e
+          path: qualification-tools
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+          persist-credentials: false
+      - name: Preserve baseline runtime while excluding historical CI reporting metadata
+        shell: bash
+        run: |-
+          set -euo pipefail
+          patch="qualification-tools/patches/dsh-v0.2.0-rc.2/039-exclude-package-ci-metadata.patch"
+          actual="$(shasum -a 256 "$patch" | cut -d ' ' -f 1)"
+          test "$actual" = 1566a70eef9f6438b7c086d2f69fb80b2f38223ac61e9bcaa4049f1177051ec0
+          cp "$patch" studio/patches/dsh-v0.2.0-rc.2/039-exclude-package-ci-metadata.patch
+          pnpm --dir qualification-tools install --frozen-lockfile
+          node -e 'const fs=require("node:fs");fs.writeFileSync("rollback-input.json",JSON.stringify({studioSource:"9b20aee585956c30239ab1775098cdab25ada9cb",packagingTools:"06bfe614775efccf30faefa2cb9a027b96ea084e",additionalPackagingPatch:"039",patchSha256:"1566a70eef9f6438b7c086d2f69fb80b2f38223ac61e9bcaa4049f1177051ec0",baselineRuntimeFilesVerified:123,expectedStudioSourceSha256:"b9d8a44e2baea87a1b449aba373eae865a6322201d59ac1741f80e532e7221a6",expectedStudioPackageSha256:"a6a80b62e519e57c4095dedb2a83c078ab2fdb4e65745ca7b7035fa55d17986e",published:false},null,2))'
       - name: Build, sign and notarize Studio
         shell: bash
         working-directory: studio
@@ -334,11 +357,22 @@ jobs:
           }
           NODE
           codesign --verify --deep --strict --verbose=2 "$app"
-          node scripts/verify-desktop-module-graph.mjs "$app" --studio | tee .artifacts/desktop-module-graph.json
+          node "$GITHUB_WORKSPACE/qualification-tools/scripts/verify-desktop-module-graph.mjs" "$app" --studio | tee .artifacts/desktop-module-graph.json
           node scripts/verify-codex-signing.mjs "$app" "$artifacts/mac-arm64-release.json"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
           printf 'artifacts=%s\ndmg=%s\nzip=%s\nblockmap=%s\nmetadata=%s\n' "$artifacts" "$dmg" "$zip" "$blockmap" "$metadata" >> "$GITHUB_STEP_SUMMARY"
+
+          APP_PATH="$app" node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import {join} from 'node:path';
+          import {writeFile} from 'node:fs/promises';
+          const {installedStudioFingerprint}=await import(join(process.env.GITHUB_WORKSPACE,'qualification-tools/scripts/installed-studio-fingerprint.mjs'));
+          const observed=installedStudioFingerprint(join(process.env.APP_PATH,'Contents/Resources/app.asar'));
+          assert.equal(observed.studioSourceSha256,'b9d8a44e2baea87a1b449aba373eae865a6322201d59ac1741f80e532e7221a6');
+          assert.equal(observed.studioPackageSha256,'a6a80b62e519e57c4095dedb2a83c078ab2fdb4e65745ca7b7035fa55d17986e');
+          await writeFile('.artifacts/rollback-package-identity.json',JSON.stringify({baselineVersion:'0.2.0-rc.2.20261014.10',baselineSource:'9b20aee585956c30239ab1775098cdab25ada9cb',...observed,originalPackageRestored:true,published:false},null,2));
+          NODE
       - name: Verify native Studio first-use configuration
         timeout-minutes: 20
         shell: bash
@@ -352,9 +386,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: studio-onboarding-${{ needs.source-gate.outputs.build_version }}-mac-arm64
-          path: |
+          path: |-
             studio/.artifacts/onboarding-proof/
             studio/.artifacts/desktop-module-graph.json
+
+            studio/.artifacts/rollback-package-identity.json
           include-hidden-files: true
           if-no-files-found: warn
       - name: Stage signed release candidate
@@ -413,3 +449,10 @@ jobs:
             rm -f "$keychain_path" || cleanup_failed=1
           fi
           exit "$cleanup_failed"
+      - name: Retain explicit baseline and carried-forward packaging inputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-macos-rollback-input
+          path: rollback-input.json
+          if-no-files-found: error
