@@ -65,12 +65,12 @@ try {
       await expect(guide).toBeVisible({ timeout: 120000 });
       await guide.getByRole('button', { name: /^(开始设置|去配置模型凭证)$/ }).click();
       const models = page.locator('[data-studio-model-settings]');
-      await expect(models.getByRole('button', { name: '保存配置', exact: true })).toBeEnabled({ timeout: 90000 });
+      await expect(models.getByRole('button', { name: '保存并继续', exact: true })).toBeEnabled({ timeout: 90000 });
       await models.getByRole('combobox', { name: /^提供商/ }).first().selectOption('custom');
       await models.getByLabel('模型名称', { exact: true }).first().fill('native-proof');
       await models.getByLabel('API 地址', { exact: true }).first().fill(`http://127.0.0.1:${server.address().port}/v1`);
       await models.getByLabel(/^API Key/).first().fill('fixture-native-only');
-      await models.getByRole('button', { name: '保存配置', exact: true }).click();
+      await models.getByRole('button', { name: '保存并继续', exact: true }).click();
       await expect(guide).toHaveAttribute('data-studio-onboarding-stage', 'cloud', { timeout: 90000 });
       await guide.getByRole('button', { name: '跳过，开始对话', exact: true }).click();
       await expect(guide).toBeHidden({ timeout: 30000 });
