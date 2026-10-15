@@ -402,7 +402,7 @@ jobs:
           path: dsh-source
           fetch-depth: 1
       - name: Download signed candidate
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-mac-arm64
           path: candidate
