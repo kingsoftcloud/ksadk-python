@@ -198,6 +198,34 @@ jobs:
           $hashes = @(Get-ChildItem $artifacts -File | ForEach-Object { @{name=$_.Name; bytes=$_.Length; sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()} })
           $report = @{sourceCommit=$env:SOURCE_SHA; dshCommit='639ed015397290b3745d163aafe02ffee4aa3f84'; buildVersion=$env:BUILD_VERSION; unsigned=$true; packagedSmokePassed=$true; studioModuleGraphPassed=$true; assembledProfileAcceptancePassed=$true; artifacts=$hashes; passed=$true}
           $report | ConvertTo-Json -Depth 10 | Out-File .artifacts/windows-package-acceptance.json -Encoding utf8
+      - name: Checkout immutable diagnostic tools
+        uses: actions/checkout@v4
+        with:
+          repository: kingsoftcloud/ksadk-python
+          ref: ${{ github.sha }}
+          path: .diagnostic-channel
+          persist-credentials: false
+          sparse-checkout: .github/scripts/verify-studio-windows-installed.mjs
+          sparse-checkout-cone-mode: false
+      - name: Install the actual NSIS package and verify native restart retention
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ inputs.studio_ref }}
+          BUILD_VERSION: ${{ inputs.build_version }}
+        run: |
+          $roots = @(Get-ChildItem "$env:RUNNER_TEMP/studio-build/desktop-checkouts" -Directory)
+          if ($roots.Count -ne 1) { throw 'Expected one isolated checkout' }
+          $artifacts = Join-Path $roots[0].FullName 'source/apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts'
+          $installers = @(Get-ChildItem $artifacts -File -Filter '*-win-x64-unsigned.exe')
+          if ($installers.Count -ne 1) { throw 'Expected one actual NSIS installer' }
+          $destination = Join-Path $env:RUNNER_TEMP 'studio-native-installed'
+          $installer = Start-Process $installers[0].FullName -ArgumentList @('/S', "/D=$destination") -Wait -PassThru
+          if ($installer.ExitCode) { throw 'Diagnostic NSIS installation failed' }
+          $installedArchive = Join-Path $destination 'resources/app.asar'
+          $assembledArchive = Join-Path $artifacts 'win-unpacked/resources/app.asar'
+          if ((Get-FileHash $installedArchive -Algorithm SHA256).Hash -ne (Get-FileHash $assembledArchive -Algorithm SHA256).Hash) { throw 'Installed archive differs from the verified package' }
+          node .diagnostic-channel/.github/scripts/verify-studio-windows-installed.mjs --executable "$destination/AgentKit Studio.exe" --version $env:BUILD_VERSION --source $env:SOURCE_SHA --report .artifacts/windows-native-installed.json
+          if ($LASTEXITCODE) { throw 'Installed native Windows retention acceptance failed' }
       - name: Collect redacted package diagnostics
         if: always()
         shell: pwsh
@@ -224,6 +252,8 @@ jobs:
             .artifacts/windows-studio-module-graph.json
             .artifacts/windows-package-acceptance.json
             .artifacts/windows-profile-acceptance.json
+            .artifacts/windows-native-installed*.json
+            .artifacts/windows-native-installed*.png
             .artifacts/profile-diagnostics/
             .artifacts/windows-diagnostics/
           if-no-files-found: error
