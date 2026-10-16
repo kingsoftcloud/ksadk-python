@@ -55,7 +55,7 @@ jobs:
           })().catch(error => { console.error(error.message); process.exitCode = 1; });
           JS
       - name: Retain encrypted configuration for destination API
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: encrypted-studio-windows-secrets
           path: ${{ runner.temp }}/encrypted-studio-windows-secrets/*.json

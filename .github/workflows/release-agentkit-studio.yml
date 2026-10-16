@@ -344,7 +344,7 @@ jobs:
           printf 'staging=%s\n' "$staging" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload signed Studio release candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-mac-arm64
           path: release-candidate/*
@@ -433,7 +433,7 @@ jobs:
           node scripts/desktop-release.mjs "${args[@]}"
       - name: Upload publication evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-publication
           path: candidate/.desktop-release/**
@@ -480,7 +480,7 @@ jobs:
             --version '${{ inputs.build_version }}'
       - name: Upload installed-update evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-installed-update
           path: studio/.artifacts/desktop-release/installed-*/**
