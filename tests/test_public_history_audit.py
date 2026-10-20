@@ -89,7 +89,7 @@ def _metadata_repo(root):
 
 def test_history_audit_checks_message_only_root_commit_without_returning_values(tmp_path, capsys):
     _metadata_repo(tmp_path)
-    endpoint = "fixture." + "internal.api.ksyun.com"
+    endpoint = "fixture." + ".".join(("internal", "api", "ksyun", "com"))
     _git(tmp_path, "commit", "--allow-empty", "-qm", "fix: remove " + endpoint)
     commit = _git(tmp_path, "rev-parse", "HEAD").strip()
     findings = _audit().audit_history(tmp_path)
@@ -115,7 +115,7 @@ def test_history_audit_treats_commit_messages_as_public_documentation(tmp_path, 
     _metadata_repo(tmp_path)
     cases = {
         "scm": ("E" + "zone", "public-doc-internal-scm"),
-        "provider": ("iam." + "inner.api.ksyun.com", "public-doc-internal-endpoint"),
+        "provider": (".".join(("iam", "inner", "api", "ksyun", "com")), "public-doc-internal-endpoint"),
         "credential": (
             "OPENAI_API_KEY=" + "00000000-0000-0000-0000-" + "000000000001",
             "uuid-secret-assignment",
@@ -134,7 +134,7 @@ def test_history_audit_checks_identity_endpoints_without_returning_attribution(
     tmp_path, monkeypatch, field, component,
 ):
     _metadata_repo(tmp_path)
-    endpoint = "fixture." + "internal.api.ksyun.com"
+    endpoint = "fixture." + ".".join(("internal", "api", "ksyun", "com"))
     value = endpoint if component == "name" else "contributor@" + endpoint
     monkeypatch.setenv(f"GIT_{field.upper()}_{component.upper()}", value)
     _git(tmp_path, "commit", "--allow-empty", "-qm", "fixture public message")
@@ -169,7 +169,7 @@ def test_history_audit_does_not_classify_author_handles_as_internal_prose(tmp_pa
 
 
 def test_commit_message_audit_honors_declared_encoding():
-    endpoint = "fixture." + "internal.api.ksyun.com"
+    endpoint = "fixture." + ".".join(("internal", "api", "ksyun", "com"))
     message = ("fixture " + endpoint).encode("utf-16")
     headers = (
         b"author Contributor <contributor@example.test> 0 +0000\n"
@@ -184,7 +184,7 @@ def test_commit_message_audit_honors_declared_encoding():
 
 def test_history_audit_still_checks_concrete_endpoints_in_authorship_trailers(tmp_path):
     _metadata_repo(tmp_path)
-    endpoint = "fixture." + "internal.api.ksyun.com"
+    endpoint = "fixture." + ".".join(("internal", "api", "ksyun", "com"))
     _git(
         tmp_path, "commit", "--allow-empty", "-qm",
         "fixture public message\n\nCo-authored-by: Contributor <peer@" + endpoint + ">",
