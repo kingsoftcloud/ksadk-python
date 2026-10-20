@@ -138,6 +138,14 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    'tests/server/test_history_deadline_config.py',
+    'tests/studio/test_run_service.py',
+    'tests/studio/test_authoring.py',
+    'tests/studio/test_scheduler_service.py',
+    'tests/studio/test_scheduler_history.py',
+    'tests/studio/test_scheduler_product_entry.py',
+    'tests/test_sandbox_backend.py',
+
     "tests/test_public_history_audit.py",
     'tests/__init__.py',
     'tests/a2a/fixtures/remote_agent/v1/a2a_stream_tool_terminal.jsonl',

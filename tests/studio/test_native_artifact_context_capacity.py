@@ -29,6 +29,7 @@ from ksadk.harness.native.tool_budget import (
 )
 from ksadk.harness.native.transitions import commit_transition
 from ksadk.harness.stores.native_memory import MemoryRunStore
+from ksadk.studio.contracts import ContextSpec
 from ksadk.studio.native_product import _estimated_token_counter, _studio_context_planner
 from ksadk.studio.native_read_budget import StudioSourceReadPolicy
 from tests.harness.native.test_kernel import SCOPE, ScriptedModel, config
@@ -43,10 +44,11 @@ class Ports:
 
 
 def setup(*, revision=98, old_refs=8, progress=9, summary_max=1024, message_extra=0,
-          instructions="Report only observed sources.", max_tool_calls=1000):
+          instructions="Report only observed sources.", max_tool_calls=1000,
+          legacy_projection=False):
     profile = ModelProfile(profile_id="capacity", profile_version="1", provider_family="test",
                            context_window=8000, max_output_tokens=1024)
-    planner = _studio_context_planner(profile)
+    planner = _studio_context_planner(profile, context=ContextSpec() if legacy_projection else None)
     planner.policy = planner.policy.model_copy(update={"summary_max_tokens": summary_max})
     if message_extra:
         ordinary = planner.count_message_tokens
@@ -116,12 +118,14 @@ def setup(*, revision=98, old_refs=8, progress=9, summary_max=1024, message_extr
     (8, 8, 9, 1024, 0), (98, 8, 99, 1024, 0), (998, 9, 999, 512, 31),
     (9998, 7, 9, 2048, 17),
 ])
+@pytest.mark.parametrize("legacy_projection", [False, True])
 def test_sealed_full_batch_retained_with_real_planner(
-    revision, old_refs, progress, summary_max, message_extra,
+    revision, old_refs, progress, summary_max, message_extra, legacy_projection,
 ):
     cfg, planner, policy, source, port, kernel, state, refs, text, save = setup(
         revision=revision, old_refs=old_refs, progress=progress,
         summary_max=summary_max, message_extra=message_extra,
+        legacy_projection=legacy_projection,
     )
     original = copy.deepcopy(state)
     before_store = kernel.store.load(SCOPE, "r").model_dump_json()
@@ -129,7 +133,8 @@ def test_sealed_full_batch_retained_with_real_planner(
     assert state == original and kernel.store.load(SCOPE, "r").model_dump_json() == before_store
     assert first.summary_tokens == (
         min(summary_max, cfg.profile.max_output_tokens)
-        + planner._count_message(_summary("")) + planner._count_message(_resume())
+        + planner._count_message(_summary(""))
+        + (planner._count_message(_resume()) if legacy_projection else 0)
     )
     quoted = []
     while state.pending_tools:

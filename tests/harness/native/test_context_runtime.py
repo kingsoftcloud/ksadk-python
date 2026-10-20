@@ -1023,7 +1023,7 @@ def test_multiple_bounded_summary_requests_cover_all_dropped_history():
     assert current.prepared.counted_input_tokens + profile().max_output_tokens <= 4000
 
 
-def test_segmented_summary_rejects_changed_source_and_enforces_chunk_cap(monkeypatch):
+def test_segmented_summary_rejects_changed_source_and_uses_validated_finite_bound(monkeypatch):
     raw = (
         {"role": "user", "content": "Build the game."},
         *(
@@ -1043,15 +1043,18 @@ def test_segmented_summary_rejects_changed_source_and_enforces_chunk_cap(monkeyp
             current_continuity=continuity(),
             current_messages=(*raw, {"role": "user", "content": "new"}),
         )
-    with pytest.raises(ContextRuntimeError, match="compaction_chunk_limit"):
-        monkeypatch.setattr("ksadk.harness.native.context_runtime._MAX_SUMMARY_CHUNKS", 1)
-        controller.advance(
-            request,
-            "Partial summary.",
-            current_revision=9,
-            current_continuity=continuity(),
-            current_messages=raw,
-        )
+    monkeypatch.setattr("ksadk.harness.native.context_runtime._MAX_SUMMARY_CHUNKS", 1)
+    before = request.model_dump_json()
+    advanced = controller.advance(
+        request,
+        "Partial summary.",
+        current_revision=9,
+        current_continuity=continuity(),
+        current_messages=raw,
+    )
+    assert advanced.chunk_index == 2
+    assert advanced.summary_partition.covered_count > 0
+    assert request.model_dump_json() == before
 
 
 def test_segmented_summary_keeps_parallel_tool_batches_in_one_chunk():

@@ -1,42 +1,22 @@
-"""Host-owned durable background commands for the E2B sandbox backend.
+"""Host-owned durable command records and sessions for the E2B backend.
 
-This mirrors ``ksadk.sandbox.local_background``: a host-owned, file-backed
-command store keyed by session owner, idempotent startup, UTF-8 output cursors,
-cooperative cancellation and truthful unknown-outcome handling.
+A detached supervisor captures each remote command stream in private host
+files, keyed by session owner. Handles expose UTF-8 output cursors, idempotent
+startup, cooperative cancellation and conservative unknown outcomes.
 
-Durability is cross-process. Each command is owned by a **detached supervisor
-subprocess** (``start_new_session=True``) that holds the remote E2B command's
-event stream and appends output to host files. The supervisor survives the
-tool/host process being killed; a new host process reads the same files and
-checks the supervisor's cross-process lock for liveness. The persistent E2B
-sandbox is owned by the supervisor and is **never** registered with the
-disposable ``SandboxRegistry`` and **never** killed on atexit — killing it on
-a normal exit would destroy commands awaiting recovery. Cleanup is an
-explicit host action (``E2BCommandStore.close``); a host that dies without
-cleaning up leaves the sandbox to the remote TTL (documented limitation).
-
-The remote E2B command outlives any single client. The current implementation
-and test stream (local_subprocess reconnect returns an empty stream) do not
-prove that a disconnect gap is recoverable; the outcome is conservatively
-reported as ``unknown`` when evidence is incomplete. The real deployed
-service's replay semantics for commands.connect(pid) are not verified (e2b
-2.21.1 only confirms ConnectRequest has no explicit output cursor; the envd
-DataEvent.Fork replay behavior was not traced). Output already captured to
-host files is preserved across reconnect; the gap, if any, is acknowledged
-via ``evidence_incomplete`` and ``observed_exit_code`` rather than claimed
-complete.
+Persistent sandboxes are never registered with the disposable SandboxRegistry
+or killed on atexit: cleanup is an explicit host action (E2BCommandStore.close).
+A host that dies without cleanup leaves sandbox cleanup to the remote TTL.
+See _e2b_background_supervisor for cross-process durability and reconnect limits.
 """
 
 from __future__ import annotations
 
-import codecs
 import fcntl
 import hashlib
 import json
 import logging
 import os
-import select
-import signal
 import subprocess
 import sys
 import threading
@@ -44,15 +24,58 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, Protocol
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from ksadk.sandbox._e2b_background_config import (
+    _e2b_kill_sandbox as _e2b_kill_sandbox,
+)
+from ksadk.sandbox._e2b_background_config import (
+    e2b_source_config as e2b_source_config,
+)
+from ksadk.sandbox._e2b_background_files import (
+    _append_output as _append_output,
+)
+from ksadk.sandbox._e2b_background_files import (
+    _atomic_json,
+    _json,
+    _open_private,
+    _private_directory,
+    _read_window,
+    _read_window_all,
+)
+from ksadk.sandbox._e2b_background_files import (
+    _finalize_output_from_log as _finalize_output_from_log,
+)
+from ksadk.sandbox._e2b_background_streams import (
+    BackgroundStream as BackgroundStream,
+)
+from ksadk.sandbox._e2b_background_streams import (
+    _disconnect_stream as _disconnect_stream,
+)
+from ksadk.sandbox._e2b_background_streams import (
+    _E2BStreamSource,
+    _kill_rpc_timeout,
+    _LocalSubprocessStreamSource,
+    _safe_kill,
+)
+from ksadk.sandbox._e2b_background_streams import (
+    _PipeStream as _PipeStream,
+)
+from ksadk.sandbox._e2b_background_streams import (
+    _Result as _Result,
+)
+from ksadk.sandbox._e2b_background_streams import (
+    _StreamAdapter as _StreamAdapter,
+)
+from ksadk.sandbox._e2b_background_supervisor import _settle_unknown_safe, _supervise
 from ksadk.sandbox.base import SandboxCommandResult, SandboxError
 
 if TYPE_CHECKING:
     from ksadk.studio.native_background_connection import BackgroundHostDeclaration
 
 logger = logging.getLogger(__name__)
+e2b_source_config.__module__ = __name__
 
 _TERMINAL = {"completed", "failed", "cancelled", "timed_out", "output_limit", "unknown"}
 _COMMAND_ID = __import__("re").compile(r"[a-f0-9]{64}\Z")
@@ -61,76 +84,8 @@ _COMMAND_ID = __import__("re").compile(r"[a-f0-9]{64}\Z")
 # reclaim after this TTL so an orphaned claim cannot block recovery forever.
 _RECOVERY_CLAIM_TTL_SECONDS = 30.0
 
-# ---------------------------------------------------------------------------
-# File helpers (shared shape with local_background; duplicated to keep this
-# module self-contained for the detached supervisor subprocess).
-# ---------------------------------------------------------------------------
 
-
-def _private_directory(path: Path) -> None:
-    for part in (path, *path.parents):
-        if part.is_symlink():
-            raise SandboxError("Background command state cannot follow symbolic links")
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
-
-
-def _open_private(path: Path, flags: int) -> int:
-    return os.open(path, flags | os.O_NOFOLLOW, 0o600)
-
-
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}")
-    try:
-        with os.fdopen(_open_private(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL), "w") as out:
-            json.dump(value, out, sort_keys=True)
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _json(path: Path) -> dict[str, Any]:
-    with os.fdopen(_open_private(path, os.O_RDONLY), "r") as source:
-        result = json.load(source)
-    if not isinstance(result, dict):
-        raise SandboxError("Invalid background command record")
-    return result
-
-
-def _read_window(path: Path, cursor: int, max_bytes: int) -> tuple[str, int]:
-    if type(cursor) is not int or cursor < 0:
-        raise SandboxError("Command output cursor must be a non-negative byte offset")
-    with os.fdopen(_open_private(path, os.O_RDONLY), "rb") as source:
-        size = os.fstat(source.fileno()).st_size
-        if cursor > size:
-            raise SandboxError("Command output cursor exceeds retained output")
-        source.seek(cursor)
-        data = source.read(max_bytes)
-    decoder = codecs.getincrementaldecoder("utf-8")("strict")
-    try:
-        text = decoder.decode(data, final=False)
-    except UnicodeDecodeError as exc:
-        raise SandboxError("Command output cursor is not a UTF-8 boundary") from exc
-    pending, _ = decoder.getstate()
-    return text, cursor + len(data) - len(pending)
-
-
-def _read_window_all(path: Path) -> tuple[str, int]:
-    with os.fdopen(_open_private(path, os.O_RDONLY), "rb") as source:
-        data = source.read()
-    return data.decode("utf-8"), len(data)
-
-
-# ---------------------------------------------------------------------------
-# Command handle (read path) — cross-process liveness via supervisor.lock flock.
-# ---------------------------------------------------------------------------
+# Command handles read output and probe the cross-process supervisor lock.
 
 
 @dataclass(frozen=True)
@@ -148,45 +103,6 @@ class CommandOutput:
     evidence_incomplete: bool = False
     observed_exit_code: int | None = None
     outcome_reason: str = ""
-
-
-class BackgroundStream(Protocol):
-    """Supervisor transport: iteration, observed terminal result and disconnect."""
-
-    @property
-    def result(self) -> Any: ...
-
-    def __iter__(self) -> Iterator[tuple[str, str, str]]: ...
-
-    def disconnect(self) -> None: ...
-
-
-class _StreamAdapter:
-    """Confine the E2B SDK's private result slot to one transport adapter."""
-
-    def __init__(self, stream: Any) -> None:
-        self._stream = stream
-
-    @property
-    def result(self) -> Any:
-        return getattr(self._stream, "_result", None)
-
-    def __iter__(self):
-        return iter(self._stream)
-
-    @property
-    def stop_check(self):
-        return getattr(self._stream, "stop_check", None)
-
-    @stop_check.setter
-    def stop_check(self, callback):
-        if hasattr(self._stream, "stop_check"):
-            self._stream.stop_check = callback
-
-    def disconnect(self) -> None:
-        callback = getattr(self._stream, "disconnect", None)
-        if callable(callback):
-            callback()
 
 
 class E2BBackgroundCommand:
@@ -305,9 +221,7 @@ class E2BBackgroundCommand:
         return self.read_output().status == "cancelled"
 
 
-# ---------------------------------------------------------------------------
-# Command store (launch + recover + connect) — spawns detached supervisors.
-# ---------------------------------------------------------------------------
+# Command store: launch, recover and connect through detached supervisors.
 
 
 class E2BCommandStore:
@@ -928,61 +842,7 @@ def _supervisor_lock_held(directory: Path) -> bool:
     return False
 
 
-# Bounded timeout for the kill RPC helper thread. This is our own implementation
-# policy: a single SIGKILL RPC should return within seconds; if it hangs
-# (network failure) the supervisor must not block indefinitely. Configurable
-# via KSADK_E2B_KILL_TIMEOUT_SECONDS for hosts that need a different bound.
-def _kill_rpc_timeout() -> float:
-    raw = os.environ.get("KSADK_E2B_KILL_TIMEOUT_SECONDS", "10")
-    try:
-        return max(0.1, float(raw))
-    except (TypeError, ValueError):
-        return 10.0
-
-
-def _safe_kill(source: Any, pid: int, kind: str) -> bool:
-    """Issue a remote kill and return whether it was confirmed.
-
-    A kill that raises, returns False, or cannot be confirmed within a bounded
-    time is not a successful cancellation. The kill RPC runs in a helper thread
-    with a bounded join so a non-returning RPC (network hang) does not block
-    the watcher indefinitely.
-    """
-    result_box: list[bool] = []
-
-    def _do_kill():
-        try:
-            result_box.append(bool(source.kill(pid)))
-        except Exception:
-            result_box.append(False)
-
-    t = threading.Thread(target=_do_kill, daemon=True)
-    t.start()
-    t.join(timeout=_kill_rpc_timeout())
-    return result_box[0] if result_box else False
-
-
-def _disconnect_stream(stream: Any) -> None:
-    """Close a command event stream without killing the command.
-
-    The real E2B SDK CommandHandle (command_handle.py:88-95) provides disconnect()
-    which closes the event generator without sending a signal. This lets the
-    supervisor settle after a timeout even when the kill failed and the stream
-    would otherwise block forever on ``for event in self._events``. For the
-    local test harness (_PipeStream) disconnect is a no-op; stop_check handles
-    the bounded exit there.
-    """
-    disconnect = getattr(stream, "disconnect", None)
-    if callable(disconnect):
-        try:
-            disconnect()
-        except Exception:
-            logger.warning("E2B background stream disconnect failed")
-
-
-# ---------------------------------------------------------------------------
-# Detached supervisor entry (runs in its own process).
-# ---------------------------------------------------------------------------
+# Detached supervisor entry, kept here for existing process launchers.
 
 
 def _run_supervisor() -> None:
@@ -1004,374 +864,7 @@ def _run_supervisor() -> None:
             pass
 
 
-def _settle_unknown_safe(directory: Path, reason: str) -> None:
-    record = _json(directory / "record.json")
-    record.update(status="unknown", exit_code=None, completed_at=time.time(),
-                   failure_reason=reason, outcome_reason=reason)
-    _atomic_json(directory / "record.json", record)
-
-
-def _supervise(
-    directory: Path, sandbox_root: Path, config: dict[str, Any], source: Any
-) -> None:
-    with os.fdopen(_open_private(directory / "supervisor.lock", os.O_RDWR), "r+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        record = _json(directory / "record.json")
-        mode = config["mode"]
-        generation = int(config.get("generation") or 0)
-        # All entry points first check the terminal state: a command that has
-        # already settled must not be taken over again by any supervisor
-        # (including a late start or a late reconnect child).
-        if str(record.get("status", "unknown")) in _TERMINAL:
-            logger.warning(
-                "E2B background supervisor %s refused: record already terminal (%s)",
-                directory.name, record.get("status"),
-            )
-            return
-        record_generation = int(record.get("generation") or 0)
-        # Generation fence (complete contract):
-        # - reconnect: the parent persisted recovery_claim_generation before
-        #   spawning this supervisor. If a different/newer claim exists, or the
-        #   claim was already cleared but the record's generation advanced past
-        #   this supervisor (a newer reclaim won), this supervisor is stale and
-        #   must refuse to take over. It must never overwrite a newer record.
-        # - start: a fresh command (generation 0) must not overwrite a record
-        #   that already advanced to a higher generation via recovery.
-        record_generation = int(record.get("generation") or 0)
-        if mode == "reconnect":
-            claimed = record.get("recovery_claim_generation")
-            if claimed is not None:
-                if int(claimed) != generation:
-                    logger.warning(
-                        "E2B background supervisor %s (gen=%d) superseded by claim gen=%s",
-                        directory.name, generation, claimed,
-                    )
-                    return
-            elif record_generation > generation:
-                # Claim was cleared by a newer reclaim; this stale supervisor
-                # must not overwrite the newer generation's record.
-                logger.warning(
-                    "E2B background supervisor %s (gen=%d) stale vs record gen=%d",
-                    directory.name, generation, record_generation,
-                )
-                return
-            # Confirm takeover: clear the claim and persist this generation.
-            record["generation"] = generation
-            record.pop("recovery_claim_generation", None)
-            record.pop("recovery_claim_at", None)
-        else:  # start
-            if record_generation > generation:
-                logger.warning(
-                    "E2B background start supervisor %s refused: record gen=%d > %d",
-                    directory.name, record_generation, generation,
-                )
-                return
-            record["generation"] = generation
-        cancel_path = directory / "cancel"
-        record["supervisor_pid"] = os.getpid()
-        # reconnect mode must not overwrite output already delivered to host
-        # files; only append post-reconnect bytes. start mode is the first
-        # supervisor and owns the canonical output.
-        append_only = mode == "reconnect"
-        try:
-            if mode == "start":
-                pid, stream, sandbox_id = source.start(
-                    config["command"], cwd=config.get("cwd"),
-                    envs=config.get("env"), timeout=config.get("timeout") or 0,
-                )
-                record.update(status="running", pid=pid, sandbox_id=sandbox_id,
-                               started_at=time.time())
-                _atomic_json(directory / "record.json", record)
-                sandbox_json = {
-                    "sandbox_id": sandbox_id, "owner": config["owner"],
-                    "created_at": time.time(),
-                }
-                source_config = config.get("source_config") or {}
-                # Freeze the typed host-declared connection target (non-sensitive
-                # identity only; no key) as the canonical authority for later
-                # read/stop/recover/terminate. A declaration that provided
-                # connection_target wins; a legacy/test source that only carried
-                # the transport triple falls back to that projection.
-                typed = source_config.get("connection_target")
-                if isinstance(typed, dict):
-                    sandbox_json["connection"] = dict(typed)
-                else:
-                    conn = source_config.get("connection")
-                    if isinstance(conn, dict):
-                        sandbox_json["connection"] = {
-                            "api_url": conn.get("api_url", ""),
-                            "domain": conn.get("domain", ""),
-                            "traffic_source": conn.get("traffic_source", ""),
-                        }
-                _atomic_json(sandbox_root / "sandbox.json", sandbox_json)
-            else:  # reconnect
-                pid = int(record.get("pid") or 0)
-                stream = source.reconnect(pid, timeout=config.get("timeout") or 0)
-                record["recovered_at"] = time.time()
-                # The disconnect gap is acknowledged: prior captured output stays
-                # in the host files; only post-reconnect output is appended. The
-                # outcome stays unknown until a new terminal event is observed,
-                # because E2B does not replay output produced during the gap.
-                record["reconnect_gap"] = True
-                _atomic_json(directory / "record.json", record)
-
-            # Compute the remaining process deadline. A reconnect must not
-            # reset the timeout: it preserves the original remaining window
-            # measured from the command's original start, so a command that
-            # already exhausted most of its deadline is not granted a fresh one.
-            # None means no deadline (unlimited); 0 means the deadline is
-            # already exhausted (must time out immediately), distinct from
-            # unlimited so an expired command cannot run forever after reconnect.
-            process_timeout = config.get("timeout") or 0
-            if not process_timeout:
-                remaining_seconds: float | None = None
-            elif mode == "start":
-                remaining_seconds = float(process_timeout)
-            else:
-                started_at = float(record.get("started_at") or 0)
-                elapsed = max(0.0, time.time() - started_at) if started_at else 0.0
-                remaining_seconds = max(0.0, float(process_timeout) - elapsed)
-
-            # Cancellation and timeout are controlled by a watcher thread that
-            # is independent of the stream's output events. The real E2B SDK
-            # (command_handle.py:54-86) only yields on non-empty stdout/stderr/
-            # pty and sets _result on end without yielding; a long silent command
-            # blocks ``for event in self._events`` indefinitely, so a cancel
-            # check placed after each yield would never run. The watcher polls
-            # the cancel marker and the process deadline and issues the remote
-            # kill directly.
-            #
-            # A kill request is separate from a confirmed terminal outcome. The
-            # watcher records whether the kill RPC succeeded (returned True); the
-            # final status is decided from the actually-observed result, not from
-            # the request. A kill that was refused, failed, or whose effect is
-            # unknown must not be reported as a successful cancellation.
-            stream: BackgroundStream = _StreamAdapter(stream)
-            cancel_requested = {"value": False}
-            timeout_requested = {"value": False}
-            kill_succeeded = {"value": False}
-            watcher_done = threading.Event()
-            consumed = threading.Event()
-
-            def _watch() -> None:
-                """Single arbiter for cancel/timeout and kill. The watcher is the
-                only component that decides the deadline has expired or a cancel
-                was requested, and the only one that issues kill. It also detects
-                when the stream has received a terminal event (the SDK sets
-                _result without yielding) so the supervisor can settle even if the
-                RPC generator blocks after end. This avoids the race where
-                consumer.join(timeout) and the watcher's own deadline check
-                compete. After kill (success or failure), disconnect the stream
-                so the consumer can settle, then return."""
-                deadline = remaining_seconds
-                start = time.monotonic()
-                while True:
-                    if not cancel_requested["value"] and cancel_path.exists():
-                        cancel_requested["value"] = True
-                        kill_succeeded["value"] = _safe_kill(source, pid, "cancel")
-                        _disconnect_stream(stream)
-                        return
-                    if (deadline is not None and not timeout_requested["value"]
-                            and time.monotonic() - start >= deadline):
-                        timeout_requested["value"] = True
-                        kill_succeeded["value"] = _safe_kill(source, pid, "timeout")
-                        _disconnect_stream(stream)
-                        return
-                    # The SDK sets _result when an end event arrives but does not
-                    # yield it, so the consumer's for-loop blocks on the next
-                    # generator step. Detect _result here and signal the consumer
-                    # to stop — the outcome is confirmed without blocking.
-                    if stream.result is not None:
-                        consumed.set()
-                        watcher_done.set()
-                        return
-                    if watcher_done.wait(timeout=0.05):
-                        return
-
-            watcher = threading.Thread(target=_watch, name="e2b-bg-watch", daemon=True)
-            watcher.start()
-
-            def _should_stop_stream() -> bool:
-                return (
-                    cancel_requested["value"]
-                    or timeout_requested["value"]
-                    or stream.result is not None
-                )
-
-            if hasattr(stream, "stop_check"):
-                stream.stop_check = _should_stop_stream
-
-            result: Any = None
-            stream_error = False
-            settled = {"value": False}
-
-            def _guarded_append(path: Path, text: str) -> None:
-                # After the supervisor has committed a terminal status, late
-                # output from a still-blocking consumer must not mutate the
-                # host files or advance cursors.
-                if settled["value"]:
-                    return
-                _append_output(path, text)
-
-            def _consume():
-                nonlocal result, stream_error
-                try:
-                    for out, err, _pty in stream:
-                        if cancel_requested["value"] or timeout_requested["value"]:
-                            break
-                        if out:
-                            _guarded_append(directory / "stdout", out)
-                        if err:
-                            _guarded_append(directory / "stderr", err)
-                        if stream.result is not None:
-                            break
-                except Exception:
-                    stream_error = True
-                finally:
-                    consumed.set()
-                    watcher_done.set()
-
-            consumer = threading.Thread(target=_consume, name="e2b-bg-stream", daemon=True)
-            consumer.start()
-            # Wait for the watcher (the single arbiter for cancel/timeout/kill).
-            # The watcher returns when: (a) cancel is requested, (b) the deadline
-            # expires, or (c) the consumer finished naturally (via watcher_done).
-            # This means a natural completion exits immediately even with a
-            # deadline — the process is not killed after it already finished.
-            # Bounded by the process deadline if set; without a deadline, the
-            # watcher exits on cancel or natural completion (both set watcher_done).
-            if remaining_seconds is not None:
-                watcher.join(timeout=max(remaining_seconds, 0.1) + 1)
-            else:
-                watcher.join()
-            watcher_done.set()
-            watcher.join(timeout=1)
-            # After the arbiter has settled, give the consumer a bounded grace to
-            # deliver any final result from the killed/disconnected stream.
-            consumer.join(timeout=2)
-
-            if not consumed.is_set():
-                # The consumer is still blocking (kill failed, stream blocks on
-                # RPC, disconnect did not help). The outcome is unknown.
-                settled["value"] = True
-                _settle_unknown_safe(directory, "stream blocked past deadline")
-                return
-            result = stream.result
-            exit_code = getattr(result, "exit_code", None) if result is not None else None
-            if stream_error and result is None:
-                settled["value"] = True
-                _settle_unknown_safe(directory, "stream ended without result")
-                return
-            # Decide status from the observed result, keeping the real exit code.
-            # A cancel/timeout request that the kill could not confirm does not
-            # invent a terminal outcome.
-            if exit_code is not None:
-                # A terminal event was observed: report the real exit code. If a
-                # cancel/timeout was requested, classify the reason but keep the
-                # observed code rather than overwriting it. A cancel whose kill
-                # was refused does not turn a successful natural exit into failed;
-                # the command finished on its own.
-                if cancel_requested["value"] and kill_succeeded["value"]:
-                    status, reason = "cancelled", "cancelled"
-                elif cancel_requested["value"] and not kill_succeeded["value"]:
-                    # Cancel was requested but the kill was refused; the command
-                    # finished naturally. Report its real outcome, not a fake
-                    # cancellation or a blanket failed.
-                    if exit_code == 0:
-                        status, reason = "completed", "exit_after_cancel_request"
-                    else:
-                        status, reason = "failed", "exit_after_cancel_request"
-                elif timeout_requested["value"] and kill_succeeded["value"]:
-                    status, reason = "timed_out", "timed_out"
-                elif timeout_requested["value"] and not kill_succeeded["value"]:
-                    if exit_code == 0:
-                        status, reason = "completed", "exit_after_timeout_request"
-                    else:
-                        status, reason = "failed", "exit_after_timeout_request"
-                elif exit_code == 0:
-                    status, reason = "completed", ""
-                else:
-                    status, reason = "failed", ""
-            elif cancel_requested["value"] and kill_succeeded["value"]:
-                # No terminal event, but the kill succeeded: the process was
-                # cancelled. Exit code is unknown (killed).
-                status, exit_code, reason = "cancelled", None, "killed_by_cancel"
-            elif timeout_requested["value"] and kill_succeeded["value"]:
-                # Kill succeeded but no terminal event was observed (stream was
-                # disconnected). The exit code is unknown (killed), not forged as
-                # 124. The status is timed_out with a classified reason.
-                status, exit_code, reason = "timed_out", None, "killed_by_timeout"
-            elif cancel_requested["value"] or timeout_requested["value"]:
-                # A kill was requested but could not be confirmed: the remote
-                # outcome is unknown, not a successful cancel/timeout.
-                status, exit_code, reason = "unknown", None, "kill_unconfirmed"
-            else:
-                status, exit_code, reason = "unknown", None, "no_terminal_event"
-            # In reconnect mode the host files already hold the pre-gap output;
-            # do not replace them. In start mode the append log is the complete
-            # output, so finalize it (replace) for cursor stability.
-            if not append_only:
-                for channel in ("stdout", "stderr"):
-                    _finalize_output_from_log(directory / channel)
-            record = _json(directory / "record.json")
-            # Terminal-state generation fence: if a newer recovery advanced the
-            # record's generation past this supervisor while it held the lock is
-            # impossible (flock is exclusive), but defend anyway — a stale
-            # supervisor that reacquired the lock after a newer reclaim must not
-            # overwrite the newer generation's terminal result.
-            if int(record.get("generation") or 0) > generation:
-                logger.warning(
-                    "E2B background supervisor %s refused terminal write: record gen=%d > %d",
-                    directory.name, int(record.get("generation") or 0), generation,
-                )
-                settled["value"] = True
-                return
-            # A reconnect that observed a terminal event still cannot claim a
-            # complete outcome: output from the disconnect gap is missing, so
-            # the evidence is incomplete even if the exit code is known. Keep
-            # the exit code for inspection but mark the outcome unknown.
-            if append_only and record.get("reconnect_gap"):
-                record["evidence_incomplete"] = True
-                record["observed_exit_code"] = exit_code
-                record["observed_reason"] = reason
-                status = "unknown"
-                exit_code = None
-            else:
-                record["outcome_reason"] = reason
-            # Mark settled before writing the terminal record so any late output
-            # from the still-blocking consumer is rejected by _guarded_append.
-            settled["value"] = True
-            record.update(status=status, exit_code=exit_code, completed_at=time.time())
-            _atomic_json(directory / "record.json", record)
-        except Exception:
-            _settle_unknown_safe(directory, "supervisor body failed")
-            raise
-
-
-def _append_output(path: Path, text: str) -> None:
-    with os.fdopen(_open_private(path, os.O_WRONLY | os.O_APPEND), "ab") as out:
-        out.write(text.encode("utf-8"))
-
-
-def _finalize_output_from_log(path: Path) -> None:
-    """Atomically replace the append log with itself, making the retained
-    output the canonical record for cursor stability. The content is unchanged;
-    only the in-place append log is committed as the durable full output."""
-    with os.fdopen(_open_private(path, os.O_RDONLY), "rb") as source:
-        data = source.read()
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}")
-    with os.fdopen(_open_private(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL), "wb") as out:
-        out.write(data)
-        out.flush()
-        os.fsync(out.fileno())
-    os.replace(temporary, path)
-
-
-# ---------------------------------------------------------------------------
-# Stream sources — pluggable so the lifecycle can be exercised without a real
-# remote sandbox. Production uses ``e2b``; the ``local_subprocess`` source runs
-# the command as a local process and is a deterministic lifecycle harness.
-# ---------------------------------------------------------------------------
+# Transport selection stays here so hosts can substitute a deterministic source.
 
 
 def _make_stream_source(
@@ -1392,268 +885,6 @@ def _make_stream_source(
     if kind == "e2b" or stream == "e2b":
         return _E2BStreamSource(source_config, sandbox_id, sandbox_root)
     raise SandboxError(f"Unknown E2B background stream source kind: {kind!r}")
-
-
-class _E2BStreamSource:
-    """Real E2B stream source, constructed inside the supervisor process."""
-
-    def __init__(
-        self, source_config: dict[str, Any], sandbox_id: str | None, sandbox_root: Path
-    ) -> None:
-        from ksadk.sandbox.backends.e2b import E2BSandboxBackend
-        from ksadk.sandbox.base import SandboxSpec, SandboxType
-        from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
-
-        spec = source_config["spec"]
-        spec_obj = SandboxSpec(
-            template_id=spec["template_id"],
-            sandbox_type=SandboxType(spec["sandbox_type"]),
-            timeout=spec["timeout"],
-            allow_internet_access=spec["allow_internet_access"],
-            metadata=dict(spec.get("metadata") or {}),
-            env=dict(spec.get("env") or {}),
-        )
-        conn = source_config.get("connection")
-        conn_obj = None
-        if conn is not None:
-            conn_obj = ExplicitE2BConnection(
-                api_url=conn["api_url"], domain=conn["domain"],
-                api_key=conn["api_key"], traffic_source=conn["traffic_source"],
-            )
-        self._source_config = source_config
-        self._backend = E2BSandboxBackend(spec=spec_obj, connection=conn_obj)
-        self._sandbox_id = sandbox_id
-        self._sandbox_root = sandbox_root
-        self._session: Any = None
-
-    def _session_get(self) -> Any:
-        if self._session is not None:
-            return self._session
-        # Serialize sandbox get-or-create across concurrent supervisors.
-        with os.fdopen(
-            _open_private(self._sandbox_root / "sandbox.lock", os.O_RDWR | os.O_CREAT), "r+"
-        ) as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            sandbox_file = self._sandbox_root / "sandbox.json"
-            if (
-                self._sandbox_id is None
-                and sandbox_file.is_file()
-                and not sandbox_file.is_symlink()
-            ):
-                self._sandbox_id = _json(sandbox_file).get("sandbox_id") or None
-            if self._sandbox_id:
-                self._session = self._backend.reconnect_session(session_locator=self._sandbox_id)
-            else:
-                self._session = self._backend.create_session(
-                    session_id=self._sandbox_root.name, input_files=[]
-                )
-                self._sandbox_id = getattr(self._session, "sandbox_id", "") or ""
-                if not self._sandbox_id:
-                    raise SandboxError("E2B background sandbox did not expose a sandbox id")
-                identity = {"sandbox_id": self._sandbox_id, "owner": self._sandbox_root.name,
-                            "created_at": time.time()}
-                connection = (self._source_config.get("connection_target")
-                              or self._source_config.get("connection"))
-                if isinstance(connection, dict):
-                    identity["connection"] = {key: value for key, value in connection.items()
-                                              if key != "api_key"}
-                # Publish identity before releasing the get-or-create lock; a
-                # second supervisor must reconnect even before start() returns.
-                _atomic_json(sandbox_file, identity)
-        return self._session
-
-    def start(self, command, *, cwd, envs, timeout):
-        session = self._session_get()
-        handle = session.start_background_stream(
-            command, envs=envs, cwd=cwd, timeout=max(timeout, 0) or None,
-        )
-        pid = int(getattr(handle, "pid", 0) or 0)
-        if pid <= 0:
-            raise SandboxError("E2B background command did not expose a process id")
-        return pid, handle, self._sandbox_id
-
-    def reconnect(self, pid, *, timeout):
-        session = self._session_get()
-        return session.connect_background_stream(pid, timeout=timeout or None)
-
-    def kill(self, pid):
-        return bool(self._session_get().kill_command(pid))
-
-
-class _LocalSubprocessStreamSource:
-    """Deterministic lifecycle harness: the "remote command" is a local process.
-
-    Used to exercise the detached-supervisor lifecycle (cross-process survival,
-    idempotency, cancellation, unknown outcome) without a real E2B sandbox.
-    The command runs as a child of the supervisor, so it survives the tool/host
-    process being killed while the supervisor lives. Like E2B's event stream,
-    the pipe does not replay output: once the supervisor dies the buffered
-    output is lost, so the outcome is ``unknown`` (no replay), faithfully.
-    """
-
-    def __init__(self, sandbox_id: str | None, source_config: dict[str, Any] | None = None) -> None:
-        self._sandbox_id = sandbox_id or "fake-local-subprocess"
-        # Test knob: "fail" makes kill return False (refused); "raise" makes it
-        # throw (unknown). Defaults to True (kill succeeds). Production e2b
-        # never uses local_subprocess, so this never affects real backends.
-        self._kill_mode = (source_config or {}).get("kill_succeeds", True)
-
-    def start(self, command, *, cwd, envs, timeout, sandbox_root=None):
-        proc = subprocess.Popen(
-            ["/bin/sh", "-c", command],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            start_new_session=True, cwd=cwd or None, env=envs or None,
-        )
-        return proc.pid, _PipeStream(proc), self._sandbox_id
-
-    def reconnect(self, pid, *, timeout):
-        # Cannot reattach to the original pipe; E2B does not replay output.
-        return _PipeStream(None)
-
-    def kill(self, pid):
-        if self._kill_mode == "raise":
-            raise OSError("injected kill failure")
-        if self._kill_mode == "fail":
-            return False
-        try:
-            os.kill(pid, signal.SIGKILL)
-            return True
-        except OSError:
-            return False
-
-
-class _PipeStream:
-    """Iterable over a local subprocess stdout/stderr, mirroring the SDK handle."""
-
-    def __init__(self, proc: subprocess.Popen | None):
-        self._proc = proc
-        self._result: Any = None
-        # Optional callback: () -> bool. When set, the stream polls it on each
-        # select timeout and stops (without yielding) when it returns True. This
-        # lets the supervisor exit when a kill could not be confirmed rather than
-        # blocking forever on a still-running process. Mirrors the SDK shape:
-        # no idle tick is yielded; the stream simply stops.
-        self.stop_check: Callable[[], bool] | None = None
-
-    @property
-    def pid(self) -> int:
-        return self._proc.pid if self._proc is not None else 0
-
-    def __iter__(self):
-        if self._proc is None:
-            return
-        stdout = self._proc.stdout
-        stderr = self._proc.stderr
-        fds: list[int] = []
-        fd_channel: dict[int, str] = {}
-        if stdout is not None:
-            fds.append(stdout.fileno())
-            fd_channel[stdout.fileno()] = "stdout"
-        if stderr is not None:
-            fds.append(stderr.fileno())
-            fd_channel[stderr.fileno()] = "stderr"
-        # Mirror the real E2B SDK (command_handle.py:54-86): yield only on
-        # non-empty stdout/stderr and set _result on process end without
-        # yielding. A silent long command blocks here; cancellation is handled
-        # by the independent watcher thread, not by polling after a yield. The
-        # select timeout only lets the supervisor notice a stop_check (e.g. an
-        # unconfirmed kill) — it never yields an idle tick.
-        stopped = False
-        while fds:
-            try:
-                ready, _, _ = select.select(fds, [], [], 0.2)
-            except (OSError, ValueError):
-                break
-            if not ready:
-                if self.stop_check is not None and self.stop_check():
-                    stopped = True
-                    break
-                continue
-            for fd in ready:
-                data = os.read(fd, 65536)
-                if not data:
-                    fds = [f for f in fds if f != fd]
-                    continue
-                text = data.decode("utf-8", "replace")
-                if fd_channel.get(fd) == "stdout":
-                    yield text, None, None
-                else:
-                    yield None, text, None
-        if stopped:
-            # The supervisor asked us to stop (timeout deadline reached). If the
-            # kill succeeded the process is dead and wait() returns immediately
-            # with a real exit code. If the kill failed the process is still
-            # alive; wait() times out (0.5s, bounded by the select poll interval)
-            # and _result stays unset so the supervisor reports unknown with
-            # kill_unconfirmed. This is not an arbitrary grace — it is the time
-            # for a SIGKILL to take effect, which is near-instant.
-            try:
-                self._proc.wait(timeout=0.5)
-                self._result = _Result(self._proc.returncode)
-            except subprocess.TimeoutExpired:
-                pass
-            return
-        self._proc.wait()
-        self._result = _Result(self._proc.returncode)
-
-
-class _Result:
-    def __init__(self, exit_code: int | None) -> None:
-        self.exit_code = exit_code
-
-
-# ---------------------------------------------------------------------------
-# Session wrapper (product-path surface).
-# ---------------------------------------------------------------------------
-
-
-def e2b_source_config(
-    backend: Any, declaration: BackgroundHostDeclaration | None = None,
-) -> dict[str, Any]:
-    """Build the serializable supervisor config from an ``E2BSandboxBackend``.
-
-    When a host declaration is present, its non-sensitive typed
-    ``connection_target`` is carried alongside the credential-bearing
-    ``connection`` so the supervisor freezes the canonical authority into
-    sandbox.json at launch. The key stays in ``connection`` (private, over the
-    stdin pipe only) and is never written to sandbox.json.
-    """
-    from ksadk.sandbox.base import SandboxType  # noqa: F401
-
-    spec = backend.spec
-    connection = backend.connection
-    config: dict[str, Any] = {
-        "source_kind": "e2b",
-        "spec": {
-            "template_id": spec.template_id,
-            "sandbox_type": spec.sandbox_type.value,
-            "timeout": spec.timeout,
-            "allow_internet_access": spec.allow_internet_access,
-            "metadata": dict(spec.metadata),
-            "env": dict(spec.env),
-        },
-        "connection": (
-            {
-                "api_url": connection.api_url,
-                "domain": connection.domain,
-                "api_key": connection.api_key.get_secret_value(),
-                "traffic_source": connection.traffic_source,
-            }
-            if connection is not None
-            else None
-        ),
-    }
-    if declaration is not None:
-        config["connection_target"] = declaration.target.to_dict()
-    return config
-
-
-def _e2b_kill_sandbox(backend: Any) -> Callable[[str], bool]:
-    def kill(sandbox_id: str) -> bool:
-        session = backend.reconnect_session(session_locator=sandbox_id)
-        return bool(session.kill())
-
-    return kill
 
 
 class E2BBackgroundSession:

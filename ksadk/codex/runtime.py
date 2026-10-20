@@ -57,26 +57,12 @@ from ksadk.runtime.adapter import (
     StartRequest,
 )
 
+
+from ksadk.codex.base_runtime import _CodexAsBaseRuntime
+
 logger = logging.getLogger(__name__)
 
 _INTERRUPT_DRAIN_TIMEOUT_SECONDS = 5.0
-
-
-class _CodexAsBaseRuntime(BaseRuntime):
-    """把 CodexClient 包装为 BaseRuntime(原生能力面)。"""
-
-    def __init__(self, client: CodexClient) -> None:
-        self._client = client
-        self.runtime_type = "codex"
-
-    def native_capabilities(self) -> dict[str, Any]:
-        return {
-            "Framework": "codex",
-            "cancel": "thread",
-            "pause": "interrupt_then_resume_thread",
-            "resume": "thread_id",
-            "live_interaction": True,
-        }
 
 
 @dataclass
@@ -1086,8 +1072,6 @@ async def _anext_or_stop(gen: AsyncIterator[Any]) -> Any:
         return await gen.__anext__()
     except StopAsyncIteration:
         return _STREAM_STOP
-
-
 
 
 __all__ = ["CodexRuntimeAdapter"]

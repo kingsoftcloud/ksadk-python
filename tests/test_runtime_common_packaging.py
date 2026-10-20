@@ -397,13 +397,13 @@ def test_built_wheel_makes_langchain_openai_framework_optional(tmp_path: Path):
     from ksadk.version import VERSION
     assert metadata["Version"] == VERSION
     requirements = [Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])]
-    assert all(
-        requirement.name not in {
-            "langgraph", "langgraph-checkpoint-sqlite", "langchain", "langchain-core",
-            "langchain-openai",
-        } or requirement.marker is not None
+    mandatory_names = {
+        requirement.name
         for requirement in requirements
-    )
+        if requirement.marker is None or requirement.marker.evaluate({"extra": ""})
+    }
+    assert {"langgraph", "langgraph-checkpoint-sqlite"} <= mandatory_names
+    assert not mandatory_names & {"langchain", "langchain-core", "langchain-openai"}
 
     for extra in ("langchain", "langgraph", "deepagents"):
         matching_requirements = [
@@ -426,7 +426,8 @@ def test_repo_root_dockerignore_excludes_local_build_artifacts():
 def test_makefile_delegates_runtime_image_builds_to_agentengine_images_repo():
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
-    assert "AGENTENGINE_IMAGES_DIR ?= ../agentengine-images" in makefile
+    assert "AGENTENGINE_IMAGES_DIR ?=\n" in makefile
+    assert "AGENTENGINE_IMAGES_DIR ?= ../" not in makefile
     assert '$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@' in makefile
     assert "-f deploy/openclaw/Dockerfile" not in makefile
     assert "-f deploy/hermes/Dockerfile" not in makefile

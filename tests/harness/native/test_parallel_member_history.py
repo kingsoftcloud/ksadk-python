@@ -327,8 +327,9 @@ def test_projection_preserves_legacy_accounting_and_completes_new_member_once(ob
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
+@pytest.mark.parametrize("changed_source", [False, True])
 async def test_partial_member_keeps_canonical_source_and_budgeted_artifact_view(
-    tmp_path, monkeypatch, backend,
+    tmp_path, monkeypatch, backend, changed_source,
 ):
     from ksadk.harness.native.engine import NativeKernel
     from tests.harness.native.test_artifact_continuity import MemoryArtifacts
@@ -345,6 +346,14 @@ async def test_partial_member_keeps_canonical_source_and_budgeted_artifact_view(
             if request.call.call_id == "a2":
                 await second_done.wait()
             if request.call.call_id in {"a", "a2", "b2"}:
+                if changed_source and request.call.call_id != "a":
+                    # Distinct bytes must retain distinct member archives; an
+                    # identical immutable source may reuse its verified locator.
+                    import copy
+
+                    content = copy.deepcopy(original.content)
+                    content["requested_source"]["content"] += " " + request.call.call_id
+                    return original.model_copy(update={"content": content})
                 return original
             entered.set()
             await asyncio.Event().wait()
@@ -389,8 +398,21 @@ async def test_partial_member_keeps_canonical_source_and_budgeted_artifact_view(
         assert following.artifact_refs == ended.artifact_refs
         refreshed = await runtime.run_until_idle(following.run_id)
         assert [ref["uri"] for ref in refreshed.artifact_refs] == [
-            "artifact://fixture/a", "artifact://fixture/a2", "artifact://fixture/b2",
+            "artifact://fixture/a",
+            *(["artifact://fixture/a2", "artifact://fixture/b2"] if changed_source else []),
         ]
+        members = [message for message in refreshed.messages
+                   if message.get("tool_call_id") in {"a2", "b2"}]
+        assert [message["tool_call_id"] for message in members] == ["a2", "b2"]
+        for message in members:
+            identity = message["tool_call_id"]
+            expected_uri = "artifact://fixture/" + (identity if changed_source else "a")
+            assert [ref["uri"] for ref in message["artifact_refs"]] == [expected_uri]
+            content = json.loads(message["content"])["content"]
+            expected_source = original.content["requested_source"]["content"]
+            assert content["requested_source"]["content"] == (
+                expected_source + (" " + identity if changed_source else "")
+            )
         new_events = [event.payload["call_id"] for event in runtime.events(following.run_id)
                       if event.kind == "tool.member_settled"]
         assert new_events == ["b2", "a2"]

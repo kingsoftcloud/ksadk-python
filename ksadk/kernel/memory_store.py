@@ -59,7 +59,9 @@ from ksadk.kernel.store import (
 )
 
 
-class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
+from ksadk.kernel.memory_store_projection import _MemoryStoreProjectionMixin
+
+class InMemoryAgentKernelStore(_MemoryStoreProjectionMixin, MemoryExecutionGrantMixin):
     def __init__(self, session_event_store: SessionEventStore) -> None:
         self._events = session_event_store
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -149,22 +151,6 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
             ),
         )
 
-    @staticmethod
-    def _receipt(
-        command: AgentControlCommand,
-        status: str,
-        *,
-        message_id: str | None = None,
-        accepted_seq: int | None = None,
-        error: ControlError | None = None,
-    ) -> AgentControlReceipt:
-        return AgentControlReceipt(
-            command_id=command.command_id,
-            status=status,  # type: ignore[arg-type]
-            message_id=message_id,
-            accepted_seq=accepted_seq,
-            error=error,
-        )
 
     # --------------------------------------------------------------- commands
 
@@ -485,19 +471,6 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
             return self._lease(request, row)
         return None
 
-    @staticmethod
-    def _to_message(row: dict[str, Any]) -> InboxMessage:
-        return InboxMessage(
-            message_id=row["message_id"],
-            agent_instance_id=row["agent_instance_id"],
-            session_id=row["session_id"],
-            idempotency_key=row["idempotency_key"],
-            request_digest=row["request_digest"],
-            accepted_seq=row["accepted_seq"],
-            status=InboxState(row["status"]),
-            claimed_fence=row["claimed_fence"],
-            command=row.get("command"),
-        )
 
     async def claim_next(
         self, agent_instance_id: str, session_id: str, fencing_token: int
@@ -948,17 +921,6 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
             self._activations[key] = new_row
             return self._lease(request, new_row)
 
-    @staticmethod
-    def _lease(request: ActivationLeaseRequest, row: dict[str, Any]) -> ActivationLease:
-        return ActivationLease(
-            agent_instance_id=request.agent_instance_id,
-            activation_id=row["activation_id"],
-            fencing_token=row["fencing_token"],
-            lease_expires_at=row["lease_expires_at_iso"],
-            bundle_digest=row["bundle_digest"],
-            runtime_type=row["runtime_type"],
-            capability_digest=row["capability_digest"],
-        )
 
     def _find_activation(self, activation_id: str) -> dict[str, Any]:
         for row in self._activations.values():
@@ -1008,9 +970,6 @@ class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
             fresh["released"] = True
             fresh["lease_expires_at"] = time.time()
 
-    @staticmethod
-    def _activation_key(row: dict[str, Any]) -> tuple[str, str]:
-        return (row["agent_instance_id"], row["session_id"])
 
     # ------------------------------------------------------------------ events
 

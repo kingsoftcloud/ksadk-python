@@ -17,13 +17,14 @@ from pathlib import Path
 from ksadk.harness.artifact_adapters.native_store import NativeArtifactStorePort
 from ksadk.harness.artifact_adapters.native_tool import install_artifact_tool
 from ksadk.harness.artifact_store import ArtifactStore
+from ksadk.harness.browser_adapters.native_vision import NativeVisionBrowser
 from ksadk.harness.browser_adapters.native_vision import (
-    NativeVisionBrowser,
-    VisionObservationContext,
+    VisionObservationContext as VisionObservationContext,
 )
 from ksadk.harness.diagnostic_adapters.contracts import LanguageServerProfile
 from ksadk.harness.native.activation_contract import ActivationResourceRef, McpLeaseRef
-from ksadk.harness.native.completion import AcceptanceItem, TaskContract
+from ksadk.harness.native.completion import AcceptanceItem as AcceptanceItem
+from ksadk.harness.native.completion import TaskContract
 from ksadk.harness.native.context_runtime import CompactionPolicy as CompactionPolicy
 from ksadk.harness.native.context_runtime import ContextPlanner
 from ksadk.harness.native.delivery_review_contract import DeliveryReviewPolicy
@@ -36,12 +37,12 @@ from ksadk.harness.native.ports import (
     RunConfiguration,
     RunLimits,
     ToolPort,
-    ToolRequest,
-    ToolResult,
     VerificationPort,
-    WorkspaceObservationPolicy,
 )
-from ksadk.harness.native.state import RunScope
+from ksadk.harness.native.ports import ToolRequest as ToolRequest
+from ksadk.harness.native.ports import ToolResult as ToolResult
+from ksadk.harness.native.ports import WorkspaceObservationPolicy as WorkspaceObservationPolicy
+from ksadk.harness.native.state import RunScope as RunScope
 from ksadk.harness.native.studio_admission import StudioAdmission, studio_mapping_digest
 from ksadk.harness.native_facade import NativeHarnessEngine
 from ksadk.harness.native_runtime import NativeRuntimeAdapter, TaskContractInput
@@ -67,20 +68,26 @@ from ksadk.studio.native_child_mcp import StudioChildMcp
 from ksadk.studio.native_child_skills import StudioChildSkills
 from ksadk.studio.native_child_workspace import StudioChildFileWorkspaces
 from ksadk.studio.native_context_port import StudioNativeContextPort
+from ksadk.studio.native_final_shape import ARTIFACT_VERIFIER_REF as ARTIFACT_VERIFIER_REF
+from ksadk.studio.native_final_shape import ARTIFACT_VERIFIER_VERSION as ARTIFACT_VERIFIER_VERSION
+from ksadk.studio.native_final_shape import BROWSER_VERIFIER_REF as BROWSER_VERIFIER_REF
+from ksadk.studio.native_final_shape import BROWSER_VERIFIER_VERSION as BROWSER_VERIFIER_VERSION
+from ksadk.studio.native_final_shape import EVIDENCE_VERIFIER_REF as EVIDENCE_VERIFIER_REF
+from ksadk.studio.native_final_shape import EVIDENCE_VERIFIER_VERSION as EVIDENCE_VERIFIER_VERSION
+from ksadk.studio.native_final_shape import StudioFinalShapeVerifier
 from ksadk.studio.native_final_shape import (
-    ARTIFACT_VERIFIER_REF,
-    ARTIFACT_VERIFIER_VERSION,
-    BROWSER_VERIFIER_REF,
-    BROWSER_VERIFIER_VERSION,
-    EVIDENCE_VERIFIER_REF,
-    EVIDENCE_VERIFIER_VERSION,
-    StudioFinalShapeVerifier,
-    declared_value_submission_schema,
-    encode_exact_workspace_file,
-    final_shape_contract_description,
-    requested_exact_workspace_file,
-    requested_final_shape,
+    declared_value_submission_schema as declared_value_submission_schema,
 )
+from ksadk.studio.native_final_shape import (
+    encode_exact_workspace_file as encode_exact_workspace_file,
+)
+from ksadk.studio.native_final_shape import (
+    final_shape_contract_description as final_shape_contract_description,
+)
+from ksadk.studio.native_final_shape import (
+    requested_exact_workspace_file as requested_exact_workspace_file,
+)
+from ksadk.studio.native_final_shape import requested_final_shape as requested_final_shape
 from ksadk.studio.native_hook_port import StudioNativeHookPort
 from ksadk.studio.native_hook_registration import validate_hook_authorization_policy
 from ksadk.studio.native_inventory_disclosure import (
@@ -144,192 +151,37 @@ from ksadk.studio.native_workspace_port import StudioNativeWorkspacePort
 from ksadk.toolsets.workspace_identity import identity_workspace_root
 from ksadk.toolsets.workspace_read_budget import estimated_source_units as estimated_source_units
 
+from .native_product_contracts import (
+    _activation_contract as _activation_contract,
+)
+from .native_product_contracts import (
+    _goal_contract as _goal_contract,
+)
+from .native_product_contracts import (
+    _vision_observation_context as _vision_observation_context,
+)
+from .native_product_contracts import (
+    _wall_delivery_seconds as _wall_delivery_seconds,
+)
+from .native_product_contracts import (
+    studio_web_observation_policy as studio_web_observation_policy,
+)
+
+studio_web_observation_policy.__module__ = __name__
+
 
 def _build_terminate_kill(
     declaration: BackgroundHostDeclaration | None,
 ) -> Callable[[str], bool] | None:
-    """Build a bounded kill callback for owner termination from a host declaration.
-
-    The declaration's typed target + resolved key construct the backend that
-    reconnects and kills the sandbox. Authority is NOT checked here: the
-    ``E2BCommandStore.terminate`` method compares the frozen sandbox.json
-    typed target against the declaration in full before this callback is ever
-    invoked, so the kill only runs against an authority the host has proven it
-    owns. Returns None when no declaration is available (terminate then reports
-    ``unknown`` without a backend call).
-    """
-    if declaration is None:
-        return None
-    try:
-        from ksadk.sandbox.backends.e2b import E2BSandboxBackend
-        from ksadk.sandbox.factory import sandbox_spec_from_env
-        from ksadk.studio.native_background_connection import make_explicit_connection
-
-        connection = make_explicit_connection(declaration)
-        backend = E2BSandboxBackend(spec=sandbox_spec_from_env(), connection=connection)
-    except Exception:
-        return None
-
-    def kill(sandbox_id: str) -> bool:
-        session = backend.reconnect_session(session_locator=sandbox_id)
-        return bool(session.kill())
-
-    return kill
+    """Preserve the host callback factory used by Studio integrations."""
+    return build_terminate_kill(declaration)
 
 
-class _ToolMux:
-    def __init__(self, ports: Mapping[str, ToolPort]) -> None:
-        self._ports = dict(ports)
-
-    async def execute(self, request: ToolRequest) -> ToolResult:
-        port = self._ports.get(request.call.name)
-        if port is None:
-            return ToolResult(status="error", content={"code": "unknown_tool"})
-        return await port.execute(request)
-
-    async def reconcile(self, request: ToolRequest) -> ToolResult:
-        from ksadk.harness.native.tool_recovery import query_sealed_tool_result
-
-        return await query_sealed_tool_result(self._ports.get(request.call.name), request)
-
-    async def recover_prepared(self, request: ToolRequest) -> ToolResult:
-        from ksadk.harness.native.tool_recovery import query_sealed_tool_result
-
-        return await query_sealed_tool_result(
-            self._ports.get(request.call.name), request, method="recover_prepared"
-        )
-
-    async def resume_prepared(self, request: ToolRequest) -> ToolResult:
-        from ksadk.harness.native.tool_recovery import query_sealed_tool_result
-
-        return await query_sealed_tool_result(
-            self._ports.get(request.call.name), request, method="resume_prepared"
-        )
-
-    async def resume_checkpoint(self, request: ToolRequest) -> ToolResult:
-        from ksadk.harness.native.tool_recovery import query_sealed_tool_result
-
-        return await query_sealed_tool_result(
-            self._ports.get(request.call.name), request, method="resume_checkpoint"
-        )
+from .native_tool_mux import NativeToolMux
 
 
-def _vision_observation_context(
-    request: ToolRequest, *, scope: RunScope, store: RunStore
-) -> VisionObservationContext:
-    """Use the same scoped RunStore as the main loop, including accepted steering."""
-    if request.scope != scope:
-        raise ValueError("native_vision_scope_mismatch")
-    snapshot = store.load(scope, request.run_id)
-    failed = []
-    observation = snapshot.unresolved_interaction_observation
-    if observation is not None and isinstance(observation.get("error"), str):
-        failed.append(observation["error"])
-    # Only host-validated reports can contribute repair observations. They are
-    # observational data here, never a new completion verdict or tool grant.
-    if snapshot.verification_tool_calls is not None and snapshot.verification is not None:
-        for item in snapshot.verification.get("items", []):
-            if isinstance(item, dict) and item.get("status") == "failed":
-                summary = item.get("safe_summary")
-                if isinstance(summary, str) and summary:
-                    failed.append(summary)
-    return VisionObservationContext(
-        scope=scope,
-        run_id=snapshot.run_id,
-        goal=snapshot.goal,
-        goal_revision=snapshot.goal_revision,
-        failed_observations=tuple(failed),
-    )
-
-
-def studio_web_observation_policy() -> WorkspaceObservationPolicy:
-    """Studio's web task profile; other hosts may pin their own source types."""
-    return WorkspaceObservationPolicy(
-        path_suffixes=(".html", ".htm", ".js", ".jsx", ".css", ".ts", ".tsx"),
-    )
-
-
-def _goal_contract(facts: TaskContractInput) -> TaskContract:
-    """Freeze the current goal while keeping absent host evidence unverified."""
-    shape = requested_final_shape(facts.goal)
-    submission_schema = declared_value_submission_schema(facts.goal)
-    exact_file = requested_exact_workspace_file(facts.goal)
-    revision = hashlib.sha256(
-        f"{facts.session_id}\0{facts.parent_run_id or ''}\0{facts.goal}\0"
-        f"{EVIDENCE_VERIFIER_REF}\0{EVIDENCE_VERIFIER_VERSION}".encode()
-    ).hexdigest()[:24]
-    items = [
-        AcceptanceItem(
-            acceptance_id="current_user_goal",
-            verifier_ref=EVIDENCE_VERIFIER_REF,
-            verifier_version=EVIDENCE_VERIFIER_VERSION,
-            # Installed tools grant no acceptance authority. The verifier
-            # selects applicable rejections from actual current-Run evidence;
-            # absence of semantic evidence remains not_run, never passed.
-            verification_method="deterministic",
-            # Preserve the explicit output clause in the bounded contract;
-            # it need not be the last sentence of a long user request.
-            description=final_shape_contract_description(facts.goal)
-            if shape
-            else facts.goal[:1024],
-        )
-    ]
-    if exact_file:
-        items.append(
-            AcceptanceItem(
-                acceptance_id="exact_workspace_file",
-                verifier_ref=ARTIFACT_VERIFIER_REF,
-                verifier_version=ARTIFACT_VERIFIER_VERSION,
-                verification_method="deterministic",
-                description=encode_exact_workspace_file(exact_file),
-            )
-        )
-    return TaskContract(
-        revision=f"studio-goal-{revision}",
-        items=tuple(items),
-        # A general delivery contract, never a fixture-specific answer schema.
-        # The Kernel submits this through its existing host final protocol and
-        # still invokes the independent verifier. No text stripping is needed.
-        final_submission_schema=submission_schema,
-        final_submission_payload_key="output" if submission_schema is not None else None,
-    )
-
-
-def _activation_contract(activation_key: str, *, browser_available: bool) -> TaskContract:
-    """Keep the immutable activation anchor stable across per-goal routing changes.
-
-    Studio always supplies task_contract_factory for real user turns. Changing
-    this legacy seed would change configuration.digest and reject a cold attach
-    to an existing Run, even though its locked Build and goal are unchanged.
-    This anchor has no authority to compile or verify a new user goal.
-    """
-    goal = "Initial activation contract"
-    revision = hashlib.sha256(f"{activation_key}\0\0{goal}".encode()).hexdigest()[:24]
-    return TaskContract(
-        revision=f"studio-goal-{revision}",
-        items=(AcceptanceItem(
-            acceptance_id="current_user_goal",
-            verifier_ref=BROWSER_VERIFIER_REF if browser_available
-            else "studio.independent-evidence-unavailable",
-            verifier_version=BROWSER_VERIFIER_VERSION if browser_available else "1",
-            verification_method="deterministic" if browser_available else "human",
-            description=goal,
-        ),),
-    )
-
-
-def _wall_delivery_seconds(execution: ExecutionSpec, *, effect_timeout_seconds: float) -> int:
-    """Reserve two model attempts inside the existing deadline, never extend it.
-
-    v1 remains byte-compatible for already sealed Builds. v2 allows time for
-    planning a write and answering after its receipt; slow tools or providers
-    can still exhaust the hard deadline. At least half remains for research.
-    """
-    if execution.native_wall_delivery_policy == "deadline-delivery/v1":
-        return min(60, execution.timeout_seconds // 10)
-    if execution.native_wall_delivery_policy in {"deadline-delivery/v2", "deadline-delivery/v3", "deadline-delivery/v4", "deadline-delivery/v5", "deadline-delivery/v6", "deadline-delivery/v7"}:
-        return min(240, execution.timeout_seconds // 2, math.ceil(2 * effect_timeout_seconds))
-    return 0
+class _ToolMux(NativeToolMux):
+    """Stable Studio tool-mux identity backed by the bound-port dispatcher."""
 
 
 def _studio_context_planner(
@@ -344,7 +196,10 @@ def _studio_context_planner(
     )
 
 
-class StudioNativeProductComposer:
+from .native_background_owner import StudioBackgroundOwner, build_terminate_kill
+
+
+class StudioNativeProductComposer(StudioBackgroundOwner):
     """One scoped Store per Studio workspace; one adapter per locked activation."""
 
     def __init__(
@@ -450,99 +305,16 @@ class StudioNativeProductComposer:
         # the Composer alone has no trusted session/run input.
         self._ownership_verifier = ownership_verifier
 
+    def _owner_termination_kill(self):
+        """Construct the host callback through the original Studio patch seam."""
+        return _build_terminate_kill(self._background_declaration)
+
     async def aclose(self) -> None:
         try:
             self.store.close()
         finally:
             self._artifact_store.close()
 
-    async def terminate_owner(self, session_id: str) -> str:
-        """Explicitly terminate the persistent background sandbox for one owner.
-
-        Returns: "terminated", "confirmed_absent", "not_e2b", "no_owner",
-        "unknown", "failed", "timeout".
-        Not called on ordinary aclose; only on explicit owner termination.
-
-        ``session_id`` is the canonical Studio session id, sourced by the host
-        (StudioService.delete_session) from the trusted session service. It binds
-        to the durable owner key ``sha256([workspace, "e2b", "ksadk-session:{id}])``
-        via ``tool_execution_scope`` + ``_background_session_key``, so terminate
-        targets exactly the owner that launched. The store's ownership checks
-        (rec.owner / sandbox_data.owner / sandbox_id↔command linkage) prove the
-        frozen sandbox belongs to this session's owner; the typed declaration
-        proves account authority.
-
-        **Canonical Native ownership** — in addition to the session-durable-state
-        checks, the frozen ``sandbox_id`` must be proven to have been launched by
-        a canonical Native run owned by this session. This reuses the trusted path
-        ``BackgroundCommandLocator`` traverses (RunHandle/scope/native_ref →
-        committed source-run receipt → sealed BackgroundCommandRef → task_id →
-        record sandbox_id). A sandbox with matching session metadata but zero
-        canonical Native runs (planted metadata) is ``unknown`` with zero backend
-        calls. The verifier is a host-supplied port; without it, any existing
-        sandbox is ``unknown`` (the Composer alone has no trusted session/run
-        input). ``no_owner``/``not_e2b`` (no target sandbox to prove) bypass the
-        canonical check and are returned by the store directly. A
-        damaged/foreign/missing-evidence state is ``unknown`` (metadata retained),
-        never ``confirmed_absent``; only a provably valid canonical owner is
-        cleaned up. typed account/session JSON is NOT canonical RunHandle/receipt.
-        """
-        from ksadk.runtime_context import tool_execution_scope
-        from ksadk.sandbox.e2b_background import E2BCommandStore, _json
-        from ksadk.toolsets.sandbox import _background_session_key
-
-        state_root = self._workspace_root / ".harness-tools" / "background"
-        with tool_execution_scope(session_id=session_id):
-            store = E2BCommandStore(
-                state_root=state_root,
-                workspace_root=identity_workspace_root(
-                    self._workspace_root / ".harness-tools" / "workspace"
-                ),
-                session_id=_background_session_key(),
-                source_config={"source_kind": "e2b"},
-                kill_sandbox=_build_terminate_kill(self._background_declaration),
-                declaration=self._background_declaration,
-            )
-        # Canonical Native ownership: before the store's kill RPC, prove the
-        # frozen sandbox_id was launched by a canonical Native run owned by this
-        # session. Only an existing e2b sandbox with a provable sandbox_id
-        # requires this check; no_owner/not_e2b have no target to prove.
-        sandbox_file = store._sandbox_root / "sandbox.json"
-        if sandbox_file.is_file() and not sandbox_file.is_symlink():
-            try:
-                sandbox_data = _json(sandbox_file)
-            except Exception:
-                return "unknown"
-            sandbox_id = sandbox_data.get("sandbox_id", "")
-            if sandbox_id and sandbox_data.get("owner") == store.owner:
-                if self._ownership_verifier is None:
-                    return "unknown"
-                proven = await self._ownership_verifier.verify_sandbox_launched_by_session(
-                    session_id=session_id, sandbox_id=sandbox_id,
-                )
-                if not proven:
-                    return "unknown"
-        return store.terminate()
-
-    def _make_background_session(self, workspace_root: Path, command_state_root: Path):
-        """Factory for the Native background observer, backend-aware.
-
-        Returns a callable that builds a durable background session for the
-        given backend (taken from the canonical launch receipt) or the current
-        backend. It carries this Composer's host-declared typed connection so
-        the observer reads/stops under the same authority as launch. It must
-        be invoked inside the owning session's ``tool_execution_scope`` so the
-        session id resolves correctly.
-        """
-        from ksadk.toolsets.sandbox import make_background_session
-
-        root = identity_workspace_root(workspace_root)
-        state_root = command_state_root
-        declaration = self._background_declaration
-        return lambda backend=None: make_background_session(
-            workspace_root=root, state_root=state_root, backend=backend,
-            declaration=declaration,
-        )
 
     async def __call__(self, context: HarnessEngineActivationContext) -> NativeRuntimeAdapter:
         claims = dict(context.activation_claims)
