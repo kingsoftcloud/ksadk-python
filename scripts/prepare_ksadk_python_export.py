@@ -138,6 +138,7 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    'tests/studio/test_cloud_gateway_configuration.py',
     'tests/server/test_history_deadline_config.py',
     'tests/studio/test_run_service.py',
     'tests/studio/test_authoring.py',

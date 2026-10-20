@@ -85,7 +85,28 @@ from ksadk.sessions.db_budget import budgeted_pool_connection, session_db_budget
 from ksadk.sessions.history_budget import CURRENT_HISTORY_READ_BUDGET
 
 
-from ksadk.kernel.postgres_event_log import PostgresKernelEventLog, PostgresFencedSessionEventStore
+from ksadk.kernel.postgres_event_log import (
+    PostgresKernelEventLog as _PostgresKernelEventLog,
+    PostgresFencedSessionEventStore as _PostgresFencedSessionEventStore,
+)
+
+class PostgresKernelEventLog(_PostgresKernelEventLog):
+    """保留原模块的预算注入边界；提取模块只消费显式 provider。"""
+
+    def __init__(self, pool: Any, *, namespace: str = "default",
+                 tenant_id: str = "default", workspace_id: str = "default") -> None:
+        super().__init__(
+            pool, namespace=namespace, tenant_id=tenant_id, workspace_id=workspace_id,
+            budget_provider=lambda: session_db_budget(),
+        )
+
+
+class PostgresFencedSessionEventStore(_PostgresFencedSessionEventStore):
+    """Keep runtime event writes and recovering reads on the owner's budget."""
+
+    def __init__(self, store: "PostgresAgentKernelStore") -> None:
+        super().__init__(store, budget_provider=lambda: session_db_budget())
+
 
 SCHEMA_PATH = Path(__file__).parent / "sql" / "001_agent_kernel.sql"
 

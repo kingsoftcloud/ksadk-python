@@ -68,8 +68,13 @@ class SubAgentSpec:
 
     @classmethod
     def from_binding(cls, binding: SubAgentBinding) -> "SubAgentSpec":
-        """把不可变 Revision 声明投影为本次 Run 的执行配置。"""
-        return cls(**binding.model_dump())
+        """把不可变 Revision 声明投影为共享父模型的 Managed 执行配置。"""
+        # Managed children share the parent's Reasoner. Explicit model selection
+        # requires a host-resolved, Build-sealed model port, which this adapter
+        # cannot supply; dropping the selector would silently change authority.
+        if binding.model_profile_id is not None:
+            raise ValueError("managed_subagent_model_profile_unsupported")
+        return cls(**binding.model_dump(exclude={"model_profile_id"}))
 
     @property
     def openai_schema(self) -> dict[str, Any]:

@@ -107,7 +107,9 @@ async def test_ambiguous_tool_input_cannot_become_an_executable_batch(monkeypatc
     else:
         values[0]["choices"][0]["delta"] = {"function_call": tool["function"]}
     result = await collect(monkeypatch, "chat", values)
-    incomplete = case in {"missing_arguments", "empty_arguments", "missing_finish"}
+    # Only unfilled arguments permit a safe retry. A filled call without
+    # a finish signal remains a terminal protocol error in the current wire policy.
+    incomplete = case in {"missing_arguments", "empty_arguments"}
     assert result.failure_kind == ("incomplete_response" if incomplete else "invalid_response"), result
     assert result.response_kind == ("provider_retryable_error" if incomplete else "provider_terminal_error")
     assert not result.tool_calls

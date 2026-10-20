@@ -157,14 +157,25 @@ async def test_real_sigkill_at_partial_summary_commit(tmp_path, monkeypatch, bou
             if boundary == "before_commit":
                 assert before.compaction_history == {} and before.compaction_request is not None
                 recomputed = kernel.context.begin_summary(before, kernel.configuration)
-                assert recomputed == proposal  # Original source, coverage, config and budget.
+                # The reducer retains consumed time; _commit then charges the
+                # current process's real interval. Different process attempts
+                # cannot have identical monotonic elapsed-time samples.
+                assert recomputed.snapshot.execution_elapsed_seconds == before.execution_elapsed_seconds
+                assert proposal.snapshot.execution_elapsed_seconds >= before.execution_elapsed_seconds
+                assert recomputed.model_copy(update={"snapshot": recomputed.snapshot.model_copy(update={
+                    "execution_elapsed_seconds": proposal.snapshot.execution_elapsed_seconds,
+                })}) == proposal  # Source, coverage, config and all other fields stay exact.
                 saved = await kernel.advance(run_id)
             else:
                 assert before == proposal.snapshot and before.compaction_request is None
                 saved = before
-            assert saved == proposal.snapshot and saved.messages == before.messages
+            assert saved.execution_elapsed_seconds >= before.execution_elapsed_seconds
+            committed_proposal = proposal.model_copy(update={"snapshot": proposal.snapshot.model_copy(
+                update={"execution_elapsed_seconds": saved.execution_elapsed_seconds},
+            )})
+            assert saved == committed_proposal.snapshot and saved.messages == before.messages
             assert not model.requests and saved.model_calls == before.model_calls == 2
-            assert store.commit(SCOPE, proposal, expected_revision=marker["expected_revision"],
+            assert store.commit(SCOPE, committed_proposal, expected_revision=marker["expected_revision"],
                                 fencing_token=fence) == saved
             assert store.load(SCOPE, run_id) == saved
             assert sum(e.kind == EVENT for e in kernel.events(run_id)) == 1
@@ -188,7 +199,14 @@ async def test_real_sigkill_at_partial_summary_commit(tmp_path, monkeypatch, bou
             assert effect_kinds.count("model") == 3
             assert effect_kinds.count("verify") == 1
             assert len(effect_kinds) == 4
-            assert end == json.loads((baseline_dir / "final-logical.json").read_text())
+            baseline_end = json.loads((baseline_dir / "final-logical.json").read_text())
+            assert end["snapshot"]["execution_elapsed_seconds"] >= saved.execution_elapsed_seconds
+            assert baseline_end["snapshot"]["execution_elapsed_seconds"] > 0
+            # Raw exports retain both measured times. Only the independent
+            # execution intervals may differ; events, intents, receipts and
+            # every other snapshot field must match the paired baseline.
+            assert {**end, "snapshot": {**end["snapshot"], "execution_elapsed_seconds":
+                    baseline_end["snapshot"]["execution_elapsed_seconds"]}} == baseline_end
             assert all(receipt["status"] == "committed" for receipt in end["receipts"].values())
             write(tmp_path / "comparison.json", {
                 "boundary": boundary, "counts": counts, "baseline_equal": True,

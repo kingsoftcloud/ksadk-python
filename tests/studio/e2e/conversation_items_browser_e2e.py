@@ -456,6 +456,9 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     approval_tray = page.locator('[data-ui="interaction-tray"]')
     expect(approval_tray).to_contain_text("echo safe")
     second_page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
+    # A new window opens a local draft. Select the source conversation before
+    # checking that its persisted approval is shared across both windows.
+    second_page.get_by_role("button", name="展示 canonical 会话项目", exact=False).click()
     second_approval_tray = second_page.locator('[data-ui="interaction-tray"]')
     expect(second_approval_tray).to_contain_text("echo safe", timeout=15_000)
     second_page.get_by_role("button", name="已思考").first.click(timeout=90_000)

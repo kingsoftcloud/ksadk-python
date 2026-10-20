@@ -570,3 +570,50 @@ async def test_exclusive_host_policy_isolates_teams_ordinary_and_dynamic_dispatc
     resolver.policies["teams-two"] = ExecutionPolicy()
     with pytest.raises(PermissionError, match="outside"):
         await invoke_tool(engine, "shell", {}, run=run, call_id="late")
+
+
+@pytest.mark.parametrize("selector", ({}, {"model_profile_id": None}))
+def test_managed_child_without_model_selector_inherits_parent_binding(selector):
+    from ksadk.harness.spec import SubAgentBinding
+    from ksadk.harness.subagent import SubAgentSpec, child_spec
+
+    parent = spec()
+    binding = SubAgentBinding(
+        name="child",
+        instructions="inspect the delegated file",
+        tools=("read",),
+        inherit_skills=False,
+        inherit_mcp=True,
+        max_tool_calls=1,
+        **selector,
+    )
+    child = SubAgentSpec.from_binding(binding)
+    derived = child_spec(parent, child)
+    assert derived.model == parent.model
+    assert child.tools == ("read",)
+    assert not child.inherit_skills and child.inherit_mcp
+    assert derived.execution_strategy.config["max_tool_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_managed_child_explicit_model_selector_fails_before_run_admission():
+    from ksadk.harness.spec import SubAgentBinding
+
+    engine = ManagedLangGraphEngine(checkpointer=memory_checkpointer())
+    revision = spec().model_copy(
+        update={
+            "sub_agents": (
+                SubAgentBinding(
+                    name="child",
+                    instructions="inspect the delegated file",
+                    model_profile_id="model-profile://child@1",
+                ),
+            ),
+        }
+    )
+    adapter = ManagedHarnessRuntimeAdapter(revision, engine=engine)
+    incoming = request("explicit-child-model")
+    incoming.metadata.pop("execution_policy_ref")
+    with pytest.raises(ValueError, match="managed_subagent_model_profile_unsupported"):
+        await adapter.start(incoming)
+    assert engine._runs == {}

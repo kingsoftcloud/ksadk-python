@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 import json
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Callable
 
 from ksadk.events.session_event import (
     _timestamp_to_float,
@@ -26,7 +26,7 @@ from ksadk.events.session_event import (
 from ksadk.kernel.contracts import SessionEventEnvelope
 from ksadk.kernel.errors import InvalidCommandError
 from ksadk.sessions._postgres_tables import KSADK_PG_EVENTS_TABLE, KSADK_PG_SESSIONS_TABLE
-from ksadk.sessions.db_budget import budgeted_pool_connection, session_db_budget
+from ksadk.sessions.db_budget import DatabaseBudget, budgeted_pool_connection, session_db_budget
 
 
 class PostgresKernelEventLog:
@@ -43,7 +43,9 @@ class PostgresKernelEventLog:
         namespace: str = "default",
         tenant_id: str = "default",
         workspace_id: str = "default",
+        budget_provider: Callable[[], DatabaseBudget] | None = None,
     ) -> None:
+        self._budget_provider = budget_provider or (lambda: session_db_budget())
         self._pool = pool
         self._namespace = namespace.strip() or "default"
         self._tenant_id = tenant_id.strip() or "default"
@@ -52,7 +54,7 @@ class PostgresKernelEventLog:
     @asynccontextmanager
     async def _connection(self, *, write: bool = False):
         async with budgeted_pool_connection(
-            self._pool, session_db_budget(), write=write,
+            self._pool, self._budget_provider(), write=write,
         ) as connection:
             yield connection
 
@@ -218,7 +220,7 @@ class PostgresKernelEventLog:
                 # potentially multi-MiB ordinary read command.
                 from ksadk.sessions.postgres_service import _TimedConnection
 
-                budget = session_db_budget()
+                budget = self._budget_provider()
                 replay = _TimedConnection(
                     connection, budget.read_sql_seconds, budget.cleanup_seconds,
                     budget.replay_operation_seconds, budget.replay_sql_seconds,
@@ -325,7 +327,11 @@ class PostgresFencedSessionEventStore:
     走 event log 自开事务。
     """
 
-    def __init__(self, store: "PostgresAgentKernelStore") -> None:
+    def __init__(
+        self, store: "PostgresAgentKernelStore",
+        *, budget_provider: Callable[[], DatabaseBudget] | None = None,
+    ) -> None:
+        self._budget_provider = budget_provider or (lambda: session_db_budget())
         self._store = store
         self._log = store._events
 
@@ -341,7 +347,7 @@ class PostgresFencedSessionEventStore:
 
         validate_write_guard(envelope, guard)
         if isinstance(guard, ActivationWriteGuard):
-            async with asyncio.timeout(session_db_budget().write_operation_seconds):
+            async with asyncio.timeout(self._budget_provider().write_operation_seconds):
                 async with self._connection() as connection:
                     async with connection.transaction():
                         await self._assert_activation_fence(
@@ -433,7 +439,7 @@ class PostgresFencedSessionEventStore:
         cursor = int(after_seq or 0)
         loop = asyncio.get_running_loop()
         while True:
-            deadline = loop.time() + session_db_budget().event_observe_recovery_seconds
+            deadline = loop.time() + self._budget_provider().event_observe_recovery_seconds
             delay = 0.2
             while True:
                 try:

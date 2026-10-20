@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -99,27 +100,36 @@ async def test_concurrent_builtin_resumes_claim_once(monkeypatch) -> None:
     service = InMemorySessionService()
     await service.create_session("agent-1", "user-1", session_id="session-1")
     calls: list[dict[str, object]] = []
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
     def run_command(**kwargs):
         calls.append(kwargs)
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(timeout=5):
+            raise TimeoutError("Test did not release the first tool invocation")
         return {"ok": True}
 
     monkeypatch.setattr(runtime_resume, "_builtin_tool_callable", lambda _: run_command)
     resume_input = {**_resume_input("checkpoint-concurrent"), "tool_name": "run_command"}
-    results = await asyncio.gather(
-        runtime_resume._execute_approved_builtin_tool_resume(
-            session_id="session-1",
-            invocation_id="invocation-1",
-            resume_input=resume_input,
+    # Keep the first claim in flight while the second caller competes. A
+    # zero-duration tool can settle before the second task runs, in which
+    # case replay is valid and cannot exercise the uncertain-claim boundary.
+    first = asyncio.create_task(runtime_resume._execute_approved_builtin_tool_resume(
+        session_id="session-1", invocation_id="invocation-1", resume_input=resume_input,
+        session_service_provider=lambda: service,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        second = asyncio.create_task(runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1", invocation_id="invocation-2", resume_input=resume_input,
             session_service_provider=lambda: service,
-        ),
-        runtime_resume._execute_approved_builtin_tool_resume(
-            session_id="session-1",
-            invocation_id="invocation-2",
-            resume_input=resume_input,
-            session_service_provider=lambda: service,
-        ),
-        return_exceptions=True,
-    )
+        ))
+        second_result = (await asyncio.gather(
+            asyncio.wait_for(second, timeout=2), return_exceptions=True,
+        ))[0]
+    finally:
+        release.set()
+    results = [await asyncio.wait_for(first, timeout=2), second_result]
 
     assert len(calls) == 1
     assert (

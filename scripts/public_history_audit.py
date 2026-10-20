@@ -23,6 +23,56 @@ HISTORY_RULES = {
 }
 
 
+# Messages are public prose, so apply the same context as curated docs. Names
+# and emails retain ordinary open-source attribution; only concrete endpoints,
+# credentials and private paths are rejected in author/committer fields.
+_METADATA_CONTEXT_PATH = "docs/commit-metadata.md"
+_IDENTITY_PROSE_RULES = {"public-doc-internal-scm", "public-doc-personal-agent-name"}
+_IDENTITY_TRAILER_KEYS = {
+    "co-authored-by", "signed-off-by", "reviewed-by", "acked-by",
+    "tested-by", "reported-by", "suggested-by", "helped-by",
+}
+
+
+def _message_fields(message: str) -> list[tuple[str, str]]:
+    prose, attribution = [], []
+    identity_continuation = False
+    for line in message.splitlines(keepends=True):
+        key, separator, _value = line.partition(":")
+        identity_line = bool(separator) and key.casefold() in _IDENTITY_TRAILER_KEYS
+        if identity_line or (identity_continuation and line.startswith((" ", "\t"))):
+            attribution.append(line)
+            identity_continuation = True
+        else:
+            prose.append(line)
+            identity_continuation = False
+    return [("message", "".join(prose)), ("message-trailer", "".join(attribution))]
+
+
+def _commit_metadata_findings(oid: str, data: bytes) -> list[dict[str, object]]:
+    headers, _separator, message = data.partition(b"\n\n")
+    encoding = "utf-8"
+    fields: list[tuple[str, str]] = []
+    for line in headers.splitlines():
+        name, _space, value = line.partition(b" ")
+        if name == b"encoding":
+            encoding = value.decode("ascii", errors="replace")
+        elif name in {b"author", b"committer"}:
+            fields.append((name.decode("ascii"), value.decode("utf-8", errors="replace")))
+    try:
+        decoded = message.decode(encoding, errors="replace")
+    except LookupError:
+        decoded = message.decode("utf-8", errors="replace")
+    fields.extend(_message_fields(decoded))
+    return [
+        {"commit": oid, "field": field, "rule": rule.name}
+        for field, text in fields
+        for rule in CONTENT_RULES
+        if not (field != "message" and rule.name in _IDENTITY_PROSE_RULES)
+        and rule.matches(_METADATA_CONTEXT_PATH, text)
+    ]
+
+
 def audit_history(root: Path, ref: str = "HEAD") -> list[dict[str, object]]:
     revision = subprocess.check_output(
         ["git", "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}"],
@@ -68,6 +118,9 @@ def audit_history(root: Path, ref: str = "HEAD") -> list[dict[str, object]]:
             terminator = process.stdout.read(1)
             if len(data) != size or terminator != b"\n":
                 raise RuntimeError("Incomplete reachable Git object")
+            if header[1] == b"commit":
+                findings.extend(_commit_metadata_findings(oid, data))
+                continue
             if header[1] != b"blob":
                 continue
             if b"\0" in data:
