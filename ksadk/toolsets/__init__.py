@@ -19,12 +19,16 @@ from ksadk.toolsets.a2a import (
 from ksadk.toolsets.platform import component_status, get_platform_tools
 from ksadk.toolsets.sandbox import (
     _SANDBOX_TOOL_POLICIES,
+    _background_command_boundary,
+    background_backend_enabled,
     browser_inspect_workspace,
     get_sandbox_tools,
+    read_command_output,
     run_code,
     run_command,
     sandbox_backend_name,
     sandbox_status,
+    stop_command,
 )
 from ksadk.toolsets.skill_management import (
     _SKILL_MANAGEMENT_TOOL_POLICIES,
@@ -103,6 +107,8 @@ _FOCUSED_TOOL_NAMES = (
     "component_status",
     "sandbox_status",
     "run_command",
+    "read_command_output",
+    "stop_command",
     "run_code",
     "browser_inspect_workspace",
     "skill_discover_github",
@@ -251,6 +257,13 @@ _TOOLSET_DESCRIPTORS: dict[
                 "enabled": lambda: _enabled_backend(sandbox_backend_name()),
                 "boundary": _sandbox_tool_boundary,
             },
+        ),
+        *tuple(
+            (function, _SANDBOX_TOOL_POLICIES[function.__name__], {
+                "backend": lambda: sandbox_backend_name(),
+                "enabled": lambda: background_backend_enabled(sandbox_backend_name()),
+                "boundary": _background_command_boundary,
+            }) for function in (read_command_output, stop_command)
         ),
         (
             browser_inspect_workspace,
@@ -951,7 +964,7 @@ def _tool_spec(
             os.environ.get("KSADK_WEB_SEARCH_PROVIDER")
             or os.environ.get("OPENCLAW_WEB_SEARCH_PROVIDER")
         )
-    if name in {"run_command", "run_code", "sandbox_status"}:
+    if name in {"run_command", "run_code", "sandbox_status", "read_command_output", "stop_command"}:
         enabled = enabled and _enabled_backend(sandbox_backend_name())
     spec["enabled"] = enabled
     if function is not None:

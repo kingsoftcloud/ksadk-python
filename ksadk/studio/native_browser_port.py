@@ -590,9 +590,15 @@ class StudioNativeBrowserPort:
             if page is not None and page.entry != entry:
                 await self._close_page(request.run_id)
             if first:
-                page = await self._open_page(
-                    request.run_id, entry, request.operation_key, source_revision, prior_ref
-                )
+                try:
+                    page = await self._open_page(
+                        request.run_id, entry, request.operation_key, source_revision, prior_ref
+                    )
+                except BrowserSessionError as exc:
+                    # No workspace navigation or user input has been dispatched.
+                    # Preserve the startup diagnosis instead of turning it into
+                    # an unknown effect outcome in the outer tool executor.
+                    return ToolResult(status="error", content={"code": str(exc)})
                 if prior_ref is not None:
                     self._lost_refs.pop(request.run_id)
                     # The initial navigation is the explicitly requested reload.

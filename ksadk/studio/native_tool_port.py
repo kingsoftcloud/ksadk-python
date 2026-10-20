@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -17,17 +18,27 @@ from typing import Any
 
 from ksadk.harness.native.adapters import StrictToolExecutor, ToolAuthorizer, ToolBinding
 from ksadk.harness.native.model import ModelImageContent
-from ksadk.harness.native.ports import ToolDefinition, ToolPort, ToolRequest, ToolResult
+from ksadk.harness.native.ports import RunLimits, ToolDefinition, ToolPort, ToolRequest, ToolResult
 from ksadk.harness.native.state import RunScope
-from ksadk.harness.tool_display import builtin_tool_display
 from ksadk.harness.stores.native_contract import RunStore
+from ksadk.harness.tool_display import builtin_tool_display
 from ksadk.plugins.providers.harness_tools import (
     LOCKED_PYTHON_EXECUTION_POLICY_DIGEST,
     assemble_python_tools,
 )
 from ksadk.runtime_context import tool_execution_scope
+from ksadk.studio.native_background_locator import BackgroundCommandLocator
 from ksadk.studio.native_browser_port import browser_inspect_parameters
-from ksadk.studio.native_command_policy import StudioCommandTimeoutPolicy
+from ksadk.studio.native_command_policy import (
+    StudioBackgroundWaitPolicy,
+    StudioCommandTimeoutPolicy,
+)
+from ksadk.studio.native_directory_observation import (
+    DIRECTORY_MODEL_DESCRIPTION,
+    DIRECTORY_SCOPE_MODEL_DESCRIPTION,
+    directory_feedback_digest,
+    directory_model_reply,
+)
 from ksadk.studio.native_final_shape import exact_byte_difference, requested_exact_workspace_file
 from ksadk.studio.native_language_diagnostics import StudioNativeLanguageDiagnostics
 from ksadk.studio.native_read_budget import StudioSourceReadPolicy
@@ -36,6 +47,8 @@ from ksadk.studio.native_workspace_diagnostics import (
     feedback_profile_digest,
     observe_workspace_writes,
 )
+from ksadk.tools.artifact_observation import OBSERVED_ARCHIVE_MODEL_POLICY
+from ksadk.toolsets.sandbox import background_backend_scope, background_declaration_scope
 from ksadk.toolsets.workspace_identity import identity_workspace_root
 from ksadk.toolsets.workspace_model_observation import source_model_reply
 from ksadk.toolsets.workspace_read_budget import source_read_budget_scope
@@ -44,6 +57,9 @@ _MAX_BROWSER_IMAGE_BYTES = 8 * 1024 * 1024
 _MAX_MODEL_IMAGE_BASE64_CHARS = 96 * 1024
 _EXACT_CONTENT_POLICY_DIGEST = (
     "sha256:" + hashlib.sha256(b"studio.current-goal-write-rejection/v1").hexdigest()
+)
+_DELIVERY_EDIT_POLICY_DIGEST = (
+    "sha256:" + hashlib.sha256(b"studio.exact-delivery-edit/v1").hexdigest()
 )
 _PARALLEL_SAFE_WORKSPACE_READ_TOOLS = frozenset(
     {"workspace_status", "list_workspace_files", "read_workspace_file", "search_workspace_files"}
@@ -145,6 +161,7 @@ def build_native_locked_tool_surface(
     mcp_server_names: frozenset[str] = frozenset(),
     source_read_policy: StudioSourceReadPolicy | None = None,
     language_diagnostics: StudioNativeLanguageDiagnostics | None = None,
+    background_declaration: Any | None = None,
 ) -> NativeLockedToolSurface:
     """Bind only tools admitted by an immutable Studio Build.
 
@@ -183,12 +200,46 @@ def build_native_locked_tool_surface(
         return await authorize(request)
 
     bindings: list[ToolBinding] = []
+    execution = resolved_agent_spec.get("execution") or {}
+    directory_policy = execution.get(
+        "nativeDirectoryObservationPolicy", execution.get("native_directory_observation_policy"),
+    ) or "studio-directory-observation/v1"
+    directory_navigation = execution.get(
+        "nativeDirectoryNavigationPolicy", execution.get("native_directory_navigation_policy"),
+    ) == "receipt-directory-progress/v1"
+    wall_policy = execution.get(
+        "nativeWallDeliveryPolicy", execution.get("native_wall_delivery_policy"),
+    )
+    wall_delivery = wall_policy in {
+        "deadline-delivery/v1", "deadline-delivery/v2", "deadline-delivery/v3",
+        "deadline-delivery/v4", "deadline-delivery/v5", "deadline-delivery/v6", "deadline-delivery/v7",
+    }
+    delivery_editor = (
+        wall_policy in {"deadline-delivery/v5", "deadline-delivery/v6", "deadline-delivery/v7"}
+        and getattr(tools.get("edit_workspace_file"), "source", None) == "sdk-builtin"
+    )
+    delivery_self_read = wall_policy in {"deadline-delivery/v6", "deadline-delivery/v7"} and delivery_editor
+    lifecycle_enabled = (resolved_agent_spec.get("execution") or {}).get(
+        "nativeCommandLifecyclePolicy",
+        (resolved_agent_spec.get("execution") or {}).get("native_command_lifecycle_policy"),
+    ) == "owned-local-command/v1"
+    background_notifications = lifecycle_enabled and (resolved_agent_spec.get("execution") or {}).get(
+        "nativeBackgroundNotificationPolicy",
+        (resolved_agent_spec.get("execution") or {}).get("native_background_notification_policy"),
+    ) == "completed-before-model/v1"
+    background_lifecycle_bound = all(
+        getattr(tools.get(name), "source", None) == "sdk-builtin"
+        for name in ("read_command_output", "stop_command")
+    )
     for tool in tools.values():
         bounded_command = (
             tool.name == "run_command" and getattr(tool, "source", None) == "sdk-builtin"
         )
+        bounded_wait = (
+            tool.name == "read_command_output" and getattr(tool, "source", None) == "sdk-builtin"
+        )
         contract_timeout = 20
-        if bounded_command:
+        if bounded_command or bounded_wait:
             for contract in resolved_agent_spec.get("capabilities", {}).get("tools", ()):
                 if isinstance(contract, Mapping) and contract.get("name") == tool.name:
                     value = contract.get("timeoutSeconds", 20)
@@ -197,12 +248,48 @@ def build_native_locked_tool_surface(
                     break
         command_timeout_cap = max(1, min(int(effect_timeout_seconds) - 30, contract_timeout - 5))
         command_timeout_default = min(120, command_timeout_cap)
+        command_parameters = tool.parameters
+        if lifecycle_enabled and bounded_command and not background_lifecycle_bound:
+            command_parameters = deepcopy(tool.parameters)
+            command_parameters.setdefault("allOf", []).append({
+                "properties": {"background": {"const": False}},
+            })
         command_policy = (
             StudioCommandTimeoutPolicy(
-                tool.parameters, default=command_timeout_default, maximum=command_timeout_cap
+                command_parameters, default=command_timeout_default, maximum=command_timeout_cap
             ) if bounded_command else None
         )
+        wait_policy = (StudioBackgroundWaitPolicy(
+            tool.parameters, contract_seconds=contract_timeout, effect_seconds=effect_timeout_seconds,
+        ) if bounded_wait and contract_timeout > 20 else None)
         description = tool.description
+        if delivery_editor and getattr(tool, "source", None) == "sdk-builtin":
+            if tool.name == "write_workspace_file":
+                description += (
+                    " Keep each call within the model output limit. For a large deliverable, "
+                    "write a complete first portion, then use the bound edit_workspace_file "
+                    "in later calls to replace a known unique tail or marker with the next "
+                    "portion. Wait for each successful receipt; incomplete calls wrote nothing. "
+                    "A partial file does not complete the task."
+                )
+            elif tool.name == "edit_workspace_file":
+                description += (
+                    " This Build permits exact edits during deadline delivery when this tool "
+                    "is admitted. Extend an already successfully written deliverable in bounded "
+                    "portions using an exact unique tail or marker; do not resend its whole body. "
+                    "Approval, current file revision and replacement checks still apply."
+                )
+        if wait_policy is not None:
+            description += (
+                f" This Build permits wait_seconds from 0 to {wait_policy.maximum}. "
+                "Use one bounded wait instead of repeatedly polling through the model. "
+                "Cancelling a wait does not stop the process or extend its lifetime."
+            )
+        if lifecycle_enabled and bounded_command and not background_lifecycle_bound:
+            description += (
+                " Background execution is disabled in this Build. Bind both "
+                "read_command_output and stop_command for the complete lifecycle."
+            )
         if tool.name == "browser_inspect_workspace" and persistent_browser is not None:
             description += (
                 " In Native Studio, the same Run and path keep one browser page across "
@@ -234,12 +321,31 @@ def build_native_locked_tool_surface(
             tool.name in WORKSPACE_WRITERS and getattr(tool, "source", None) == "sdk-builtin"
         )
         source_reader = trusted_read and tool.name == "read_workspace_file"
+        directory_reader = trusted_read and tool.name == "list_workspace_files"
+        directory_result_bytes = (
+            source_read_policy.artifact_result_max_bytes
+            if source_read_policy is not None
+            and source_read_policy.artifact_result_max_bytes is not None
+            else RunLimits().max_tool_result_bytes
+        )
+        if directory_reader:
+            description += (
+                DIRECTORY_SCOPE_MODEL_DESCRIPTION
+                if directory_policy == "studio-directory-observation/v3"
+                else DIRECTORY_MODEL_DESCRIPTION
+            )
         definition = ToolDefinition(
+            background_command_policy=(
+                "owned-command-launch/v1"
+                if bounded_command and background_lifecycle_bound and background_notifications
+                else None
+            ),
             name=tool.name,
             description=description,
             parameters=(
                 browser_inspect_parameters()
                 if tool.name == "browser_inspect_workspace" and persistent_browser is not None
+                else wait_policy.parameters if wait_policy is not None
                 else command_policy.parameters if command_policy is not None
                 else tool.parameters
             ),
@@ -250,11 +356,27 @@ def build_native_locked_tool_surface(
                 if trusted_read and tool.name == "read_workspace_file"
                 else "workspace_search"
                 if trusted_read and tool.name == "search_workspace_files"
+                else "workspace_list"
+                if directory_reader and directory_navigation
                 else "none"
             ),
             concurrent_safe=concurrent_safe,
+            delivery_write=(
+                wall_delivery and post_write_feedback and (
+                    tool.name == "write_workspace_file"
+                    or (delivery_editor and tool.name == "edit_workspace_file")
+                )
+            ),
+            delivery_artifact_role=(
+                "read" if delivery_self_read and source_reader
+                else "write" if delivery_self_read and post_write_feedback
+                and tool.name in {"write_workspace_file", "edit_workspace_file"}
+                else "none"
+            ),
             feedback_profile_digest=(
-                source_read_policy.digest
+                directory_feedback_digest(directory_result_bytes, policy=directory_policy)
+                if directory_reader
+                else source_read_policy.digest
                 if source_reader and source_read_policy is not None
                 else language_diagnostics.profile_digest
                 if post_write_feedback and language_diagnostics is not None
@@ -266,13 +388,19 @@ def build_native_locked_tool_surface(
                 _EXACT_CONTENT_POLICY_DIGEST
                 if tool.name == "write_workspace_file"
                 and getattr(tool, "source", None) == "sdk-builtin"
+                else _DELIVERY_EDIT_POLICY_DIGEST
+                if delivery_editor and tool.name == "edit_workspace_file"
+                and getattr(tool, "source", None) == "sdk-builtin"
+                else wait_policy.digest if wait_policy is not None
                 else command_policy.digest if command_policy is not None
                 else LOCKED_PYTHON_EXECUTION_POLICY_DIGEST
                 if getattr(tool, "source", None) == "locked-python"
                 else None
             ),
             result_archive_policy=(
-                source_read_policy.archive_model_policy
+                OBSERVED_ARCHIVE_MODEL_POLICY
+                if directory_reader
+                else source_read_policy.archive_model_policy
                 if source_reader
                 and source_read_policy is not None
                 and source_read_policy.retain_requested_source
@@ -290,8 +418,11 @@ def build_native_locked_tool_surface(
             *,
             bound_tool=tool,
             command_policy=command_policy,
+            legacy_wait=bounded_wait and wait_policy is None,
             post_write_feedback=post_write_feedback,
             source_reader=source_reader,
+            directory_reader=directory_reader,
+            directory_result_bytes=directory_result_bytes,
         ) -> ToolResult:
             session_id = run_session(request)
             if session_id is None:
@@ -326,6 +457,18 @@ def build_native_locked_tool_surface(
                 invocation_id=request.operation_key,
             ):
                 arguments = dict(request.call.arguments)
+                if delivery_editor and bound_tool.name == "edit_workspace_file":
+                    run = store.load(scope, request.run_id)
+                    requirement = requested_exact_workspace_file(run.goal)
+                    if requirement is not None and arguments.get("path") == requirement.relative_path:
+                        return ToolResult(status="error", content={
+                            "code": "workspace_exact_content_requires_write",
+                            "path": requirement.relative_path,
+                            "instruction": (
+                                "This goal requires exact file bytes. Submit the complete "
+                                "requested content through write_workspace_file; no edit was applied."
+                            ),
+                        })
                 if (
                     bound_tool.name == "write_workspace_file"
                     and getattr(bound_tool, "source", None) == "sdk-builtin"
@@ -360,6 +503,18 @@ def build_native_locked_tool_surface(
                                 "content requested in the current goal. No file was written."
                             ),
                         })
+                if (bound_tool.name == "run_command"
+                        and getattr(bound_tool, "source", None) == "sdk-builtin"
+                        and arguments.get("background") is True
+                        and not (lifecycle_enabled and background_lifecycle_bound)):
+                    return ToolResult(status="error", content={
+                        "code": "background_lifecycle_unavailable",
+                        "instruction": "Build with the owned command lifecycle and both query/stop tools.",
+                    })
+                if legacy_wait:
+                    wait = arguments.get("wait_seconds", 0)
+                    if type(wait) is not int or not 0 <= wait <= 10:
+                        return ToolResult(status="error", content={"code": "invalid_arguments"})
                 effective_timeout = None
                 if command_policy is not None:
                     arguments = command_policy.prepare(arguments)
@@ -368,7 +523,8 @@ def build_native_locked_tool_surface(
                             "code": "invalid_arguments",
                             "instruction": "Submit arguments allowed by the locked command schema.",
                         })
-                    effective_timeout = arguments["timeout"]
+                    if not arguments.get("background"):
+                        effective_timeout = arguments["timeout"]
                 read_budget = None
                 if source_reader and source_read_policy is not None:
                     try:
@@ -382,10 +538,35 @@ def build_native_locked_tool_surface(
                             status="error", content={"code": "source_read_budget_unavailable"}
                         )
                 with source_read_budget_scope(read_budget):
-                    value = await bound_tool.call(
-                        arguments,
-                        call_id=request.call.call_id,
-                    )
+                    # For read/stop, the backend must be proven from the canonical
+                    # launch receipt (owned ref + committed launch backend). If it
+                    # cannot be proven, fail closed — do not call any query/kill
+                    # factory and do not fall back to the environment.
+                    bg_backend = None
+                    if (bound_tool.name in {"read_command_output", "stop_command"}
+                            and getattr(bound_tool, "source", None) == "sdk-builtin"):
+                        bg_backend = _resolve_read_stop_backend(
+                            store, scope, request.run_id,
+                            arguments.get("task_id"),
+                        )
+                        if bg_backend is None:
+                            return ToolResult(status="error", content={
+                                "code": "background_command_backend_unavailable",
+                                "instruction": (
+                                    "The background command backend could not be "
+                                    "proven from the canonical launch receipt."
+                                ),
+                            })
+                    with background_backend_scope(bg_backend):
+                        # Bind the host-declared typed E2B connection for this
+                        # tool call so launch/read/stop all use the same authority
+                        # as the Composer's declaration. A host execution scope,
+                        # never derived from model/HTTP arguments.
+                        with background_declaration_scope(background_declaration):
+                            value = await bound_tool.call(
+                                arguments,
+                                call_id=request.call.call_id,
+                            )
             if effective_timeout is not None and isinstance(value, Mapping):
                 value = {
                     **value,
@@ -396,6 +577,13 @@ def build_native_locked_tool_surface(
             # Preserve that distinction in Native's tool receipt so a failed
             # read cannot be counted as a successful observation.
             failed = isinstance(value, Mapping) and value.get("ok") is False
+            unknown_command_effect = (
+                getattr(bound_tool, "source", None) == "sdk-builtin"
+                and bound_tool.name in {"run_command", "stop_command"}
+                and isinstance(value, Mapping)
+                and value.get("status") == "unknown"
+                and isinstance(value.get("task_id"), str)
+            )
             changed_paths: tuple[str, ...] = ()
             if not failed:
                 paths: list[object] = []
@@ -445,14 +633,36 @@ def build_native_locked_tool_surface(
                 if image is not None:
                     blocks = (image,)
             return ToolResult(
-                status="error" if failed else "ok",
+                status="uncertain" if unknown_command_effect else "error" if failed else "ok",
+                background_command_ref=(
+                    _issued_background_ref(request, value)
+                    if background_notifications and background_lifecycle_bound
+                    and getattr(bound_tool, "source", None) == "sdk-builtin"
+                    and bound_tool.name == "run_command"
+                    and arguments.get("background") is True and not failed
+                    and not unknown_command_effect else None
+                ),
+                background_command_finished=(
+                    background_notifications and background_lifecycle_bound
+                    and getattr(bound_tool, "source", None) == "sdk-builtin"
+                    and bound_tool.name == "run_command"
+                    and arguments.get("background") is True and not failed
+                    and not unknown_command_effect and isinstance(value, Mapping)
+                    and value.get("status") in {
+                        "completed", "failed", "cancelled", "timed_out", "output_limit"
+                    }
+                ),
                 public_display=(
                     builtin_tool_display(bound_tool.name, request.call.arguments, value)
                     if getattr(bound_tool, "source", None) == "sdk-builtin" else None
                 ),
                 content=value,
                 model_content=(
-                    source_model_reply(value)
+                    directory_model_reply(
+                        value, arguments, result_bytes=directory_result_bytes, policy=directory_policy,
+                    )
+                    if directory_reader and not failed
+                    else source_model_reply(value)
                     if source_reader and source_read_policy is not None and not failed
                     else None
                 ),
@@ -474,4 +684,35 @@ def build_native_locked_tool_surface(
             and tool.name in (_PARALLEL_SAFE_WORKSPACE_READ_TOOLS | WORKSPACE_WRITERS
                               | {"delete_workspace_file"})
         ),
+    )
+
+
+def _issued_background_ref(request, value):
+    from ksadk.harness.native.state import BackgroundCommandRef
+
+    if (not isinstance(value, Mapping)
+            or value.get("backend") not in {"sandbox/local_process", "sandbox/e2b"}
+            or not isinstance(value.get("task_id"), str)):
+        return None
+    return BackgroundCommandRef(task_id=value["task_id"], source_run_id=request.run_id,
+                                operation_key=request.operation_key)
+
+
+def _resolve_read_stop_backend(store, scope, run_id, task_id):
+    """Resolve the host-selected backend for a read/stop call from the canonical
+    launch receipt of the task referenced by ``task_id``. Returns None when the
+    task is not found or the receipt carries no provable backend (the tool then
+    reads the environment, which is the existing local behavior). Never trusts
+    model arguments or the request for the backend."""
+    if not isinstance(task_id, str) or not task_id:
+        return None
+    try:
+        snapshot = store.load(scope, run_id)
+    except Exception:
+        return None
+    ref = BackgroundCommandLocator._find_ref(snapshot, task_id)
+    if ref is None:
+        return None
+    return BackgroundCommandLocator._receipt_backend(
+        store, scope, ref, current_session_id=snapshot.session_id,
     )

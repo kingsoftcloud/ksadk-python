@@ -7,11 +7,39 @@ No disk reads, model calls or parsing of compaction prose occurs here.
 
 import hashlib
 import json
+from collections.abc import Iterator
 
 from .context import SourceReadProgress
 from .context_pruning import project_workspace_read_result
 from .ports import ToolDefinition
 from .state import RunSnapshot
+
+
+def source_path_navigation(reads: list[dict]) -> dict:
+    """Keep older exact locators alongside recent ranges, within 2 KiB.
+
+    OpenCode's fixed tool-history projection preserves original tool input
+    after output pruning. Here canonical read receipts, rather than lossy
+    model summary prose, supply the equivalent path observation. This does
+    not attest current file contents or semantic coverage.
+    """
+    navigation = {
+        "authority": "navigation_only",
+        "source_freshness": "not_attested",
+        "semantic_coverage": "not_attested",
+        "paths": [],
+        "omitted_paths": len(reads),
+    }
+    # The recent-eight range view already covers the newest reads. Start at
+    # the oldest so repeated compactions do not silently erase their identity.
+    for item in reads:
+        navigation["paths"].append(item["path"])
+        navigation["omitted_paths"] -= 1
+        if len(json.dumps(navigation, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":")).encode()) > 2048:
+            navigation["paths"].pop()
+            navigation["omitted_paths"] += 1
+    return navigation
 
 
 def _range(source):
@@ -33,11 +61,11 @@ def _range(source):
     return start, end
 
 
-def source_read_progress(
+def _source_read_pages(
     snapshot: RunSnapshot, tools: tuple[ToolDefinition, ...], *, max_chars: int | None
-) -> tuple[SourceReadProgress, ...]:
+) -> Iterator[SourceReadProgress]:
     names = {t.name for t in tools if t.read_only and t.context_role == "workspace_read"}
-    calls, progress = {}, {}
+    calls = {}
     for message in snapshot.messages:
         if message.get("role") == "assistant":
             # A result must belong to the preceding declared tool group.
@@ -112,8 +140,139 @@ def source_read_progress(
             )
         except (ValueError, TypeError, KeyError, AttributeError):
             continue
-        # Keep the latest successful page per exact path, never merge ranges
-        # across file versions or claim all intermediate lines were observed.
+        yield item
+
+
+def source_read_progress(
+    snapshot: RunSnapshot, tools: tuple[ToolDefinition, ...], *, max_chars: int | None
+) -> tuple[SourceReadProgress, ...]:
+    # Preserve the v2/v3 latest-page contract and ordering byte for byte.
+    progress = {}
+    for item in _source_read_pages(snapshot, tools, max_chars=max_chars):
+        path = item.path
         progress.pop(path, None)
         progress[path] = item
     return tuple(progress.values())
+
+
+def source_read_history(
+    snapshot: RunSnapshot, tools: tuple[ToolDefinition, ...], *, max_chars: int | None
+) -> tuple[SourceReadProgress, ...]:
+    """One earlier distinct, farthest returned page per path; never a union.
+
+    A reread of a header must not erase the locator of an earlier body page.
+    These are historical receipts, possibly from different file versions, not
+    current coverage, model observation, or a cursor to skip unread contents.
+    """
+    pages = tuple(_source_read_pages(snapshot, tools, max_chars=max_chars))
+    latest = {item.path: item for item in pages}
+    earlier = {}
+    for item in pages:
+        current = latest[item.path]
+        if (item.returned_lines, item.source_payload_digest) == (
+            current.returned_lines, current.source_payload_digest
+        ):
+            continue
+        prior = earlier.get(item.path)
+        if prior is None or item.returned_lines[::-1] >= prior.returned_lines[::-1]:
+            earlier[item.path] = item
+    return tuple(earlier.values())
+
+
+def source_read_pages(
+    snapshot: RunSnapshot, tools: tuple[ToolDefinition, ...], *, max_chars: int | None
+) -> tuple[SourceReadProgress, ...]:
+    """Retain individual receipt identities, including first and middle pages.
+
+    Page ranges are never merged: receipts may describe different file versions
+    and host-returned text does not attest model observation or understanding.
+    """
+    return tuple(_source_read_pages(snapshot, tools, max_chars=max_chars))
+
+
+def source_page_index_navigation(pages: list[dict]) -> dict:
+    """Project independent historical ranges within the existing 2 KiB bound."""
+    navigation = {
+        "authority": "navigation_only",
+        "observation_scope": "independent_historical_pages_not_cumulative_coverage",
+        "source_freshness": "not_attested",
+        "same_file_version": "not_attested",
+        "semantic_coverage": "not_attested",
+        "model_observation": "not_attested",
+        "page_count": len(pages),
+        "pages_digest": hashlib.sha256(json.dumps(
+            pages, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest(),
+        "columns": ["path", "independent_returned_line_pages"],
+        "pages": [],
+        "omitted_pages": len(pages),
+    }
+    grouped = {}
+    for item in pages:
+        grouped.setdefault(item["path"], []).append(item["returned_lines"])
+
+    def fits():
+        return len(json.dumps(navigation, ensure_ascii=False, sort_keys=True,
+                              separators=(",", ":")).encode()) <= 2048
+
+    records = []
+    for path, ranges in grouped.items():
+        row = [path, [ranges[0]]]
+        navigation["pages"].append(row)
+        navigation["omitted_pages"] -= 1
+        if not fits():
+            navigation["pages"].pop()
+            navigation["omitted_pages"] += 1
+            continue
+        records.append((row, ranges))
+    # Give every admitted path an early page before filling its middle pages.
+    # This is a bounded index, not a cursor telling the model to skip contents.
+    for index in range(1, max((len(ranges) for _, ranges in records), default=0)):
+        added = False
+        for row, ranges in records:
+            if index >= len(ranges):
+                continue
+            row[1].append(ranges[index])
+            navigation["omitted_pages"] -= 1
+            if not fits():
+                row[1].pop()
+                navigation["omitted_pages"] += 1
+            else:
+                added = True
+        if not added:
+            break
+    navigation["pages"] = [row for row in navigation["pages"] if row[1]]
+    return navigation
+
+
+def source_page_history_navigation(history: list[dict], latest: list[dict]) -> dict:
+    """Bound independent historical-page locators to 2 KiB, without merging."""
+    navigation = {
+        "authority": "navigation_only",
+        "observation_scope": "independent_historical_pages_not_cumulative_coverage",
+        "source_freshness": "not_attested",
+        "same_file_version": "not_attested",
+        "semantic_coverage": "not_attested",
+        "model_observation": "not_attested",
+        "history_count": len(history),
+        "history_digest": hashlib.sha256(json.dumps(
+            history, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest(),
+        "columns": ["path", "earlier_returned_lines", "earlier_receipt_ref",
+                    "latest_returned_lines", "latest_receipt_ref"],
+        "pages": [],
+        "omitted_paths": len(history),
+    }
+    current = {item["path"]: item for item in latest}
+    for item in history:
+        last = current[item["path"]]
+        navigation["pages"].append([
+            item["path"], item["returned_lines"], item["receipt_ref"],
+            last["returned_lines"], last["receipt_ref"],
+        ])
+        navigation["omitted_paths"] -= 1
+        if len(json.dumps(navigation, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":")).encode()) > 2048:
+            navigation["pages"].pop()
+            navigation["omitted_paths"] += 1
+    return navigation

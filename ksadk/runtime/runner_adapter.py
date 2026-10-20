@@ -606,7 +606,9 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                     # Keep the shared native_ref: canonical checkpoint mapping
                     # records resume targets on the original opaque handle.
                     event_handle.native_ref["invocation_id"] = run.invocation_id
-                    for existing in await authority.list(handle.session_id):
+                    for existing in await authority.first(
+                        handle.session_id, event_types=["run.started"], limit=256
+                    ):
                         if (
                             isinstance(existing, RunStarted)
                             and existing.run_id == authority.run_id
@@ -646,19 +648,15 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         if run.__dict__.get("_restored_from_record"):
             if authority is None:
                 raise RuntimeError("ADK restored stream requires Kernel run authority")
-            for existing in await authority.list(handle.session_id):
-                if existing.event_id == started.event_id:
-                    # Reuse the original fact's timestamp; guarded append
-                    # still checks the full payload and current fencing token.
-                    started = started.model_copy(update={"timestamp": existing.timestamp})
-                    break
+            existing = await authority.event_by_id(handle.session_id, started.event_id)
+            if existing is not None:
+                # Guarded append still checks the payload and current fence.
+                started = started.model_copy(update={"timestamp": existing.timestamp})
         if authority is not None and run.resume_key is not None:
-            for existing in await authority.list(handle.session_id):
-                if existing.event_id == started.event_id:
-                    # Resuming an interaction continues the same public run.
-                    # Its initial start fact must not acquire a new timestamp.
-                    started = existing
-                    break
+            existing = await authority.event_by_id(handle.session_id, started.event_id)
+            if existing is not None:
+                # Resuming an interaction continues the same public run.
+                started = existing
         yield started
 
         request = run.__dict__.get("_start_request")

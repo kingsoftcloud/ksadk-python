@@ -85,54 +85,46 @@ _FAILURE_KIND: dict[str, ModelFailureKind] = {
 }
 
 
-def native_model_profile_from_build(
+def _project_resolved_model_profile(
+    model: ResolvedModel,
     resolved_agent_spec: Mapping[str, Any],
     *,
-    selected_model: str,
     build_id: str,
-    reasoning_effort: Literal["low", "medium", "high"] | None = None,
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None,
     streaming_support: Callable[[ResolvedModel], bool] | None = None,
     model_role: Literal["agent", "vision"] = "agent",
 ) -> ModelProfile:
-    """Project the locked Studio model and context budgets into a Native profile.
+    """Project one locked Studio ResolvedModel into a Native ModelProfile.
 
-    The Build's input budget is the local effective context ceiling; a
-    provider-reported smaller ceiling narrows it. Missing or contradictory
-    Build budgets fail closed rather than silently selecting a test profile.
+    Shared by the primary/vision path (lookup by name in the Build) and the
+    sub-agent path (Build-sealed ResolvedModel). The Build's input budget is the
+    local effective context ceiling; a provider-reported smaller ceiling narrows
+    it. Missing or contradictory Build budgets fail closed rather than silently
+    selecting a test profile. ``reasoning_effort=None`` keeps the model's own
+    sealed effort instead of imposing a parent activation tier.
     """
     agent_id = resolved_agent_spec.get("agentId") or resolved_agent_spec.get("agent_id")
     if not isinstance(agent_id, str) or not agent_id or not build_id:
         raise ValueError("native_model_profile_identity_unavailable")
-    if model_role == "vision":
-        raw_models = (
-            resolved_agent_spec.get("visionModel") or resolved_agent_spec.get("vision_model"),
-        )
-    else:
-        raw_fallbacks = (
-            resolved_agent_spec.get("fallbackModels")
-            or resolved_agent_spec.get("fallback_models")
-            or ()
-        )
-        if not isinstance(raw_fallbacks, (list, tuple)):
-            raise ValueError("native_model_profile_selection_invalid")
-        raw_models = (resolved_agent_spec.get("model"), *raw_fallbacks)
-    matches = [
-        ResolvedModel.model_validate(raw)
-        for raw in raw_models
-        if isinstance(raw, Mapping) and raw.get("model") == selected_model
-    ]
-    if len(matches) != 1:
-        raise ValueError("native_model_profile_selection_invalid")
     if reasoning_effort is not None and (
-        type(reasoning_effort) is not str or reasoning_effort not in {"low", "medium", "high"}
+        type(reasoning_effort) is not str
+        or reasoning_effort not in {"low", "medium", "high", "xhigh", "max"}
     ):
         raise ValueError("native_model_profile_reasoning_effort_invalid")
-    model = matches[0]
+    if reasoning_effort is None:
+        reasoning_effort = model.parameters.reasoning_effort
     compatibility = provider_compat.compat_profile(
         base_url=model.endpoint_url, model=model.model
     )
     if reasoning_effort is not None and not compatibility.supports_reasoning_effort:
         raise ValueError("native_model_profile_reasoning_effort_unsupported")
+    if model.parameters.thinking_mode is not None and (
+        model.wire_api not in {None, "chat"} or not compatibility.supports_thinking_field
+    ):
+        raise ValueError("native_model_profile_thinking_mode_unsupported")
+    output_parameter = model.metadata.get("output_token_parameter", "max_tokens")
+    if type(output_parameter) is not str or output_parameter not in {"max_tokens", "max_completion_tokens"}:
+        raise ValueError("native_model_profile_output_token_parameter_invalid")
     raw_context = resolved_agent_spec.get("context")
     raw_execution = resolved_agent_spec.get("execution")
     if not isinstance(raw_context, Mapping) or not isinstance(raw_execution, Mapping):
@@ -153,7 +145,8 @@ def native_model_profile_from_build(
             type(raw_request_timeout) not in {int, float}
             or not math.isfinite(raw_request_timeout)
             or raw_request_timeout <= 0
-            or raw_request_timeout + 15 >= execution.timeout_seconds
+            or (execution.timeout_seconds > 0
+                and raw_request_timeout + 15 >= execution.timeout_seconds)
             or raw_request_timeout > 3585
         ):
             raise ValueError("native_model_profile_request_timeout_invalid")
@@ -164,13 +157,14 @@ def native_model_profile_from_build(
     media_policy = ModelMediaPolicy(max_inline_image_bytes=raw_media_limit)
     media_identity = json.dumps(media_policy.model_dump(mode="json"), sort_keys=True,
                                 separators=(",", ":"))
+    streaming = streaming_support(model) if streaming_support is not None else False
     return ModelProfile(
         profile_id="studio-"
         + hashlib.sha256(
             (
-                f"{agent_id}\0vision\0{selected_model}"
+                f"{agent_id}\0vision\0{model.model}"
                 if model_role == "vision"
-                else f"{agent_id}\0{selected_model}"
+                else f"{agent_id}\0{model.model}"
             ).encode("utf-8")
         ).hexdigest()[:24],
         profile_version=hashlib.sha256(
@@ -183,8 +177,12 @@ def native_model_profile_from_build(
         max_retries=execution.retry.max_attempts - 1,
         max_provider_retries=execution.retry.provider_max_attempts - 1,
         retry_initial_delay_seconds=execution.retry.backoff_seconds,
-        streaming=streaming_support(model) if streaming_support is not None else False,
+        streaming=streaming,
+        stream_timeout_policy=execution.native_stream_timeout_policy if streaming else None,
         reasoning_effort=reasoning_effort,
+        thinking_mode=model.parameters.thinking_mode,
+        provider_thinking_display=model.parameters.provider_thinking_display,
+        output_token_parameter=output_parameter,
         temperature=model.parameters.temperature,
         top_p=model.parameters.top_p,
         provider_replay_mode=("anthropic_content" if model.wire_api == "anthropic"
@@ -210,6 +208,76 @@ def native_model_profile_from_build(
         ),
         request_media_policy=media_policy,
         request_timeout_seconds=request_timeout,
+    )
+
+
+def native_model_profile_from_build(
+    resolved_agent_spec: Mapping[str, Any],
+    *,
+    selected_model: str,
+    build_id: str,
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None,
+    streaming_support: Callable[[ResolvedModel], bool] | None = None,
+    model_role: Literal["agent", "vision"] = "agent",
+) -> ModelProfile:
+    """Project the locked Studio model and context budgets into a Native profile.
+
+    The Build's input budget is the local effective context ceiling; a
+    provider-reported smaller ceiling narrows it. Missing or contradictory
+    Build budgets fail closed rather than silently selecting a test profile.
+    """
+    if model_role == "vision":
+        raw_models = (
+            resolved_agent_spec.get("visionModel") or resolved_agent_spec.get("vision_model"),
+        )
+    else:
+        raw_fallbacks = (
+            resolved_agent_spec.get("fallbackModels")
+            or resolved_agent_spec.get("fallback_models")
+            or ()
+        )
+        if not isinstance(raw_fallbacks, (list, tuple)):
+            raise ValueError("native_model_profile_selection_invalid")
+        raw_models = (resolved_agent_spec.get("model"), *raw_fallbacks)
+    matches = [
+        ResolvedModel.model_validate(raw)
+        for raw in raw_models
+        if isinstance(raw, Mapping) and raw.get("model") == selected_model
+    ]
+    if len(matches) != 1:
+        raise ValueError("native_model_profile_selection_invalid")
+    return _project_resolved_model_profile(
+        matches[0],
+        resolved_agent_spec,
+        build_id=build_id,
+        reasoning_effort=reasoning_effort,
+        streaming_support=streaming_support,
+        model_role=model_role,
+    )
+
+
+def native_model_profile_for_subagent(
+    resolved_model: ResolvedModel,
+    resolved_agent_spec: Mapping[str, Any],
+    *,
+    build_id: str,
+    streaming_support: Callable[[ResolvedModel], bool] | None = None,
+) -> ModelProfile:
+    """Project a host-selected, Build-sealed child model into a child profile.
+
+    The child's reasoning effort comes from the sealed model parameters, not
+    the parent activation's turn effort, so a child model never carries a parent
+    reasoning tier that contradicts it. Endpoint, wire API, image/input window
+    and token budget all follow the selected child model; the endpoint remains
+    under the same parent network policy declared in the Build.
+    """
+    return _project_resolved_model_profile(
+        resolved_model,
+        resolved_agent_spec,
+        build_id=build_id,
+        reasoning_effort=None,
+        streaming_support=streaming_support,
+        model_role="agent",
     )
 
 
@@ -332,8 +400,6 @@ def _exception(
 
 def _gateway_failure_category(category: str, code: str, finish_reason: object) -> str:
     """Keep streamed host validation failures aligned with buffered failures."""
-    if code == "MODEL_RESPONSE_INCOMPLETE":
-        return "incomplete_response"
     if code == "MODEL_TOOL_PROTOCOL_INVALID":
         return "malformed_tool_call"
     if code == "MODEL_EMPTY_RESPONSE":
@@ -417,6 +483,33 @@ class StudioNativeModelPort:
         ]
         if len(matches) != 1:
             raise ValueError("Native Studio selected model is missing or ambiguous in Build")
+        return cls._from_resolved_model(
+            client,
+            scope=scope,
+            resolved_model=matches[0],
+            resolved_agent_spec=resolved_agent_spec,
+            profile_digest=profile_digest,
+        )
+
+    @classmethod
+    def _from_resolved_model(
+        cls,
+        client: OpenAICompatibleModelClient,
+        *,
+        scope: RunScope,
+        resolved_model: ResolvedModel,
+        resolved_agent_spec: Mapping[str, Any],
+        profile_digest: str,
+    ) -> "StudioNativeModelPort":
+        """Bind a single sealed ResolvedModel under the Build's network policy.
+
+        Shared by the primary/vision lookup path and the sub-agent path. The
+        child shares the parent scope and the Build's ``security.network`` policy;
+        a sub-agent model endpoint never gets a wider network grant than parent.
+        """
+        agent_id = resolved_agent_spec.get("agentId") or resolved_agent_spec.get("agent_id")
+        if agent_id != scope.agent_id:
+            raise ValueError("Native Studio model Agent differs from Build")
         raw_security = resolved_agent_spec.get("security")
         if not isinstance(raw_security, Mapping):
             raise ValueError("Native Studio Build has no security policy")
@@ -424,8 +517,32 @@ class StudioNativeModelPort:
         return cls(
             client,
             scope=scope,
-            model=matches[0],
+            model=resolved_model,
             network_policy=policy,
+            profile_digest=profile_digest,
+        )
+
+    @classmethod
+    def for_subagent(
+        cls,
+        client: OpenAICompatibleModelClient,
+        *,
+        scope: RunScope,
+        resolved_model: ResolvedModel,
+        resolved_agent_spec: Mapping[str, Any],
+        profile_digest: str,
+    ) -> "StudioNativeModelPort":
+        """Bind a Build-sealed child model for one sub-agent role.
+
+        The child model is sealed in the Build (``sub_agent_models``); the scope
+        and network policy are the parent's, so a child endpoint stays under the
+        same parent network policy and never expands tool/Skill/MCP permissions.
+        """
+        return cls._from_resolved_model(
+            client,
+            scope=scope,
+            resolved_model=resolved_model,
+            resolved_agent_spec=resolved_agent_spec,
             profile_digest=profile_digest,
         )
 
@@ -458,6 +575,9 @@ class StudioNativeModelPort:
         if (
             sealed.profile.temperature != self._model.parameters.temperature
             or sealed.profile.top_p != self._model.parameters.top_p
+            or sealed.profile.thinking_mode != self._model.parameters.thinking_mode
+            or sealed.profile.provider_thinking_display
+            != self._model.parameters.provider_thinking_display
         ):
             raise ValueError("Native Studio model sampling policy changed")
         if sealed.profile.compatibility_digest is not None and (
@@ -486,7 +606,9 @@ class StudioNativeModelPort:
                 requested=sealed.profile.reasoning_effort,
             ),
         }
-        if provider_compat.request_thinking_disabled(
+        if sealed.profile.thinking_mode is not None:
+            options["thinking_mode"] = sealed.profile.thinking_mode
+        elif provider_compat.request_thinking_disabled(
             self._compat_profile, model=self._model.model, purpose=sealed.purpose,
             requested=sealed.profile.reasoning_effort,
         ):
@@ -504,11 +626,19 @@ class StudioNativeModelPort:
             assert_local_function_proposals(options)
         return sealed, options
 
+    def _wire_model(self) -> ResolvedModel:
+        # The sealed Profile already selected task/compaction effort. A Gateway
+        # fallback must not reapply the Agent's default to an auxiliary request.
+        if self._model.parameters.reasoning_effort is None:
+            return self._model
+        parameters = self._model.parameters.model_copy(update={"reasoning_effort": None})
+        return self._model.model_copy(update={"parameters": parameters})
+
     async def complete(self, request: ModelRequest) -> ModelTurnResult:
         sealed, options = self._request(request)
         try:
             response = await self._client.complete(
-                self._model,
+                self._wire_model(),
                 **options,
                 max_attempts=1,
                 backoff_seconds=0.0,
@@ -595,18 +725,26 @@ class StudioNativeModelPort:
 
         summary_buffer = PublicSummaryBuffer()
         summary_raw = ""
+        from ksadk.harness.provider_thinking import ProviderThinkingBuffer
+        provider_display = ProviderThinkingBuffer()
         inline_reasoning = provider_compat.InlineReasoningProjector(self._compat_profile)
         calls: list[dict[str, object]] = []
         usage: ModelUsage | None = None
         malformed = False
         receipt = None
-        iterator = events(self._model, **options, retry_empty_stream=False)
+        iterator = events(self._wire_model(), **options, retry_empty_stream=False)
         try:
             async for event in iterator:
                 validate_gateway_event(
                     event, model=self._model.model, sequence=gateway_sequence + 1
                 )
                 gateway_sequence = event.sequence
+                if sealed.profile.stream_timeout_policy == "idle/v1":
+                    sequence += 1
+                    yield ModelStreamEvent(
+                        kind="activity", request_id=sealed.request_id,
+                        attempt_id=sealed.attempt_id, seq=sequence,
+                    )
                 if event.type in {
                     ModelStreamEventType.TURN_COMPLETED, ModelStreamEventType.TURN_FAILED,
                     ModelStreamEventType.PROVIDER_RATE_LIMITED,
@@ -615,7 +753,15 @@ class StudioNativeModelPort:
                     if summary:
                         sequence += 1
                         yield ModelStreamEvent(kind="public_summary", request_id=sealed.request_id,
-                                               attempt_id=sealed.attempt_id, seq=sequence, text=summary)
+                                               attempt_id=sealed.attempt_id, seq=sequence,
+                                               text=summary)
+                    thinking = provider_display.push("", final=True)
+                    if thinking:
+                        sequence += 1
+                        yield ModelStreamEvent(
+                            kind="provider_reasoning", request_id=sealed.request_id,
+                            attempt_id=sealed.attempt_id, seq=sequence, text=thinking,
+                        )
                 if event.type is ModelStreamEventType.INPUT_TRANSFORMATIONS:
                     if self._model.wire_api != "anthropic":
                         raise ValueError("input observation belongs to another wire protocol")
@@ -632,11 +778,22 @@ class StudioNativeModelPort:
                         summary = summary_buffer.drain(summary_raw)
                         if summary:
                             sequence += 1
-                            yield ModelStreamEvent(kind="public_summary", request_id=sealed.request_id,
-                                                   attempt_id=sealed.attempt_id, seq=sequence, text=summary)
+                            yield ModelStreamEvent(
+                                kind="public_summary", request_id=sealed.request_id,
+                                attempt_id=sealed.attempt_id, seq=sequence, text=summary,
+                            )
                 elif event.type is ModelStreamEventType.REASONING_DELTA:
                     if sealed.profile.provider_replay_mode != "none":
                         reasoning_parts.append(event.text)
+                    if (event.text and sealed.purpose == "task"
+                            and sealed.profile.provider_thinking_display):
+                        thinking = provider_display.push(event.text)
+                        if thinking:
+                            sequence += 1
+                            yield ModelStreamEvent(
+                                kind="provider_reasoning", request_id=sealed.request_id,
+                                attempt_id=sealed.attempt_id, seq=sequence, text=thinking,
+                            )
                 elif event.type is ModelStreamEventType.TEXT_DELTA and event.text:
                     public_text = (event.text if self._model.wire_api == "anthropic" else
                                    inline_reasoning.push(event.text))
@@ -761,5 +918,6 @@ class StudioNativeModelPort:
 __all__ = [
     "StudioNativeModelPort",
     "native_model_profile_from_build",
+    "native_model_profile_for_subagent",
     "native_studio_streaming_support",
 ]

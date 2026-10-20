@@ -6,7 +6,7 @@ import hashlib
 import json
 
 from .ports import ToolDefinition, ToolResult
-from .state import RunSnapshot
+from .state import RunSnapshot, ToolErrorAction
 
 REPEATED_ERROR_STOP_THRESHOLD = 6
 
@@ -78,6 +78,15 @@ def advance_tool_error_streak(
         "repeated_tool_error_model_call": model_call,
         "repeated_tool_error_goal_revision": snapshot.goal_revision,
         "repeated_tool_error_workspace_revision": snapshot.workspace_revision,
+        **({"repeated_tool_error_action": ToolErrorAction(
+            name=tool_name,
+            arguments_digest=(hashlib.sha256(json.dumps(
+                snapshot.pending_tools[0]["arguments"], sort_keys=True,
+                ensure_ascii=False, separators=(",", ":"),
+            ).encode()).hexdigest() if definition is not None
+                and definition.name == tool_name and definition.read_only
+                and definition.observation_role == "none" else None),
+        )} if result.status == "error" else {}),
     }
 
 

@@ -26,7 +26,7 @@ from ksadk.harness.native.user_input import native_input_goal
 from ksadk.harness.native_facade import NativeHarnessEngine
 from ksadk.harness.native_projection import NativeEventProjection
 from ksadk.harness.spec import HarnessSpec
-from ksadk.harness.stores.native_contract import RunStore
+from ksadk.harness.stores.native_contract import NotificationTurnCreation, RunStore
 from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix, SteerPayload
 from ksadk.kernel.errors import UnsupportedControlError
 from ksadk.runtime import (
@@ -114,6 +114,22 @@ class NativeRuntimeAdapter(RuntimeAdapter):
         self._admissions: set[asyncio.Task[RunHandle]] = set()
         self._closes: dict[str, asyncio.Task[None]] = {}
         self._shutdown: asyncio.Task[None] | None = None
+        # Per-session continuation markers: session_id -> source_run_id. Unlike a
+        # global marker, this is safe under concurrent multi-session use of the
+        # same adapter. Set by the host for explicit continuation; consumed by
+        # _start using the request's session_id.
+        self._continuation_sources: dict[str, str] = {}
+
+    def set_continuation_source(self, source_run_id: str | None, *, session_id: str = "") -> None:
+        """Mark the next ``start`` for ``session_id`` as an explicit continuation
+        of ``source_run_id``. Per-session, not global, so concurrent sessions
+        on the same adapter don't cross-pollinate. Setting None for a session
+        clears that session's marker.
+        """
+        if source_run_id is None:
+            self._continuation_sources.pop(session_id, None)
+        else:
+            self._continuation_sources[session_id] = source_run_id
 
     def _check_activation_open(self) -> None:
         if self._shutdown is not None:
@@ -165,6 +181,156 @@ class NativeRuntimeAdapter(RuntimeAdapter):
         head = self._store.session_head(self._scope, session_id)
         return (head is not None and head.phase.terminal
                 and not self.has_pending_session_work(session_id))
+
+    def start_notification_turn(
+        self,
+        *,
+        source_run_id: str,
+        task_id: str,
+    ) -> NotificationTurnCreation:
+        """Admit a background-notification turn through the same scoped engine.
+
+        A controlled admission surface for the Studio coordinator: it delegates to
+        the engine's ``start_notification_turn`` under this adapter's pinned
+        scope/configuration/Build identity, so audit, cancel arbitration and the
+        lease all hold. The turn inherits the source run's goal and background
+        commands; the kernel delivers the observation via its existing
+        ``command_probe`` protocol — no synthesized user goal. After creation, the
+        run is registered and driven so the kernel advances to the model boundary.
+        Never revives a terminal run or reuses an unconfirmed effect.
+        """
+        self._check_activation_open()
+        compiled = self._compiled
+        if compiled is None:
+            raise ValueError("notification admission requires a compiled engine")
+        result = self._engine.start_notification_turn(
+            source_run_id=source_run_id, task_id=task_id,
+        )
+        spec_digest = compiled.spec.content_hash()
+        self._engine.register_and_drive_notification_turn(
+            result, compiled=compiled, spec_digest=spec_digest,
+        )
+        return result
+
+    def start_notification_turn_public(
+        self,
+        *,
+        source_run_id: str,
+        task_id: str,
+    ) -> tuple[NotificationTurnCreation, RunHandle]:
+        """Admit a notification turn and return its public RunHandle for projection.
+
+        Like ``start_notification_turn`` but returns the ``RunHandle`` (from
+        ``register_and_drive_notification_turn``) so the Studio coordinator can
+        create a public RunRecord and stream the turn's events through the
+        ordinary projection path. The internal driver advances the kernel;
+        streaming the handle reads committed events without double-driving.
+        """
+        self._check_activation_open()
+        compiled = self._compiled
+        if compiled is None:
+            raise ValueError("notification admission requires a compiled engine")
+        result = self._engine.start_notification_turn(
+            source_run_id=source_run_id, task_id=task_id,
+        )
+        spec_digest = compiled.spec.content_hash()
+        handle = self._engine.register_and_drive_notification_turn(
+            result, compiled=compiled, spec_digest=spec_digest,
+        )
+        external = self._external(handle)
+        self.snapshot(external)
+        self._handles.setdefault(handle.run_id, handle.model_copy(deep=True))
+        # Repeated admission may reattach an existing observer; do not rewind
+        # that adapter's live canonical delivery cursor.
+        self._delivery.setdefault(handle.run_id, 0)
+        return result, external
+
+    def release_notification_lease(self, source_run_id: str, task_id: str) -> None:
+        """Release an admitted-but-not-driven notification turn's stale lease.
+
+        Delegates to the facade so a restart can re-drive the turn without waiting
+        for the lease TTL. See ``NativeHarnessEngine.release_notification_lease``.
+        """
+        self._engine.release_notification_lease(source_run_id, task_id)
+
+    async def start_continuation(
+        self,
+        request: StartRequest,
+        *,
+        source_run_id: str,
+    ) -> RunHandle:
+        """Start a new run that explicitly continues a prior task chain.
+
+        Unlike ``start`` (which always assigns a fresh chain), this inherits the
+        source run's ``task_chain_id`` so the continuation's budget accrues to the
+        original task. Validates that the source run exists, is terminal, belongs
+        to this scope/session, is not canceled, and has a task_chain_id. The
+        host calls this when a user explicitly continues a prior task (not a new
+        goal). Does not revive the terminal source run; creates a new run in the
+        same session with the same chain. Always pins the parent head for CAS
+        regardless of whether a task_contract_factory is configured.
+        """
+        self._check_activation_open()
+        compiled = await self._ensure_compiled()
+        self._engine.validate_start_request(request, compiled)
+        # Load and validate the source run.
+        source = self._store.load(self._scope, source_run_id)
+        if source.scope != self._scope:
+            raise ValueError("continuation source run scope mismatch")
+        if source.session_id != request.session_id:
+            raise ValueError("continuation source run session mismatch")
+        if not source.phase.terminal:
+            raise ValueError("continuation source run is not terminal")
+        if source.phase in {RunPhase.CANCELED, RunPhase.INTERRUPTED, RunPhase.FAILED}:
+            raise ValueError("continuation source run is canceled or failed")
+        if not source.task_chain_id:
+            raise ValueError("continuation source run has no task_chain_id")
+        # Build the contract as in _start.
+        parent_run_id = source.run_id
+        parent_contract = (
+            TaskContract.model_validate(source.task_contract)
+            if source.task_contract is not None else None
+        )
+        contract = self._task_contract_factory(
+            TaskContractInput(
+                goal=native_input_goal(request.input),
+                session_id=request.session_id,
+                parent_run_id=parent_run_id,
+                parent_goal=source.goal,
+                parent_contract=parent_contract,
+            )
+        ) if self._task_contract_factory is not None else None
+        if inspect.isawaitable(contract):
+            contract = await contract
+        self._check_activation_open()
+        # Inherit the source's task_chain_id — explicit continuation.
+        # Always pin the parent head: the CAS guarantees the source run is the
+        # current session head, regardless of task_contract_factory.
+        internal = await self._engine.start(
+            request,
+            compiled,
+            task_contract=contract,
+            expected_parent_run_id=parent_run_id,
+            pin_parent=True,
+            task_chain_id=source.task_chain_id,
+        )
+        return await self._finish_admission(internal)
+
+    def notified_task_ids(self, run_id: str) -> set[str]:
+        """Authoritative set of task_ids already delivered in a run's ledger."""
+        return self._engine.notified_task_ids(run_id)
+
+    def is_run_canceled(self, run_id: str) -> bool:
+        """Authoritative terminal-status query for the coordinator."""
+        return self._engine.is_run_canceled(run_id)
+
+    def task_chain_remaining_budget(self, run_id: str) -> int | None:
+        """Remaining model-call budget for the run's task chain (None = unbounded)."""
+        return self._engine.task_chain_remaining_budget(run_id)
+
+    def task_chain_budget_status(self, run_id: str) -> dict:
+        """Remaining budget across model/tool/wall-time dimensions (None = unbounded)."""
+        return self._engine.task_chain_budget_status(run_id)
 
     def admit_studio_build(
         self,
@@ -264,9 +430,25 @@ class NativeRuntimeAdapter(RuntimeAdapter):
 
     async def start(self, request: StartRequest) -> RunHandle:
         self._check_activation_open()
-        return await self._admit(self._start(request))
+        source = self._continuation_sources.get(request.session_id)
+        handle = await self._admit(self._start(request))
+        if self._continuation_sources.get(request.session_id) == source:
+            self._continuation_sources.pop(request.session_id, None)
+        return handle
 
     async def _start(self, request: StartRequest) -> RunHandle:
+        # The continuation source is bound to the immutable request metadata
+        # (``request.metadata["source_run_id"]``), NOT a mutable per-session
+        # marker. This is safe under concurrent multi-session use: each request
+        # carries its own source identity; no global state can cross-pollinate.
+        # A per-session marker may still be set for backward compatibility, but the
+        # request-bound value takes precedence.
+        continuation_source = (
+            request.metadata.get("source_run_id")
+            if request.metadata else None
+        )
+        if continuation_source is None:
+            continuation_source = self._continuation_sources.get(request.session_id)
         compiled = await self._ensure_compiled()
         self._check_activation_open()
         self._engine.validate_start_request(request, compiled)
@@ -294,12 +476,35 @@ class NativeRuntimeAdapter(RuntimeAdapter):
             if not isinstance(contract, TaskContract):
                 raise ValueError("native_task_contract_invalid")
         self._check_activation_open()
+        # Determine task-chain identity: a fresh unique chain for ordinary starts,
+        # or the source run's chain for explicit continuation (captured above
+        # before any await/validation).
+        if continuation_source is not None:
+            source = self._store.load(self._scope, continuation_source)
+            if source.scope != self._scope:
+                raise ValueError("continuation source run scope mismatch")
+            if source.session_id != request.session_id:
+                raise ValueError("continuation source run session mismatch")
+            if not source.phase.terminal:
+                raise ValueError("continuation source run is not terminal")
+            if source.phase in {RunPhase.CANCELED, RunPhase.INTERRUPTED, RunPhase.FAILED}:
+                raise ValueError("continuation source run is canceled or failed")
+            if not source.task_chain_id:
+                raise ValueError("continuation source run has no task_chain_id")
+            chain_id = source.task_chain_id
+            # For continuation, the parent must be the source run (not whatever
+            # the session head happens to be), and pin_parent must be True.
+            parent_run_id = source.run_id
+        else:
+            chain_id = f"chain_{uuid4().hex}"
         internal = await self._engine.start(
             request,
             compiled,
             task_contract=contract,
             expected_parent_run_id=parent_run_id,
-            pin_parent=self._task_contract_factory is not None,
+            pin_parent=(continuation_source is not None
+                       or self._task_contract_factory is not None),
+            task_chain_id=chain_id,
         )
         return await self._finish_admission(internal)
 

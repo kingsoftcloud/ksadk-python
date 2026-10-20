@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import json
 
-from .artifact_read_contract import ARTIFACT_READ_DEFINITION
 from .artifact_read_capacity import _declared_group
+from .artifact_read_contract import ARTIFACT_READ_DEFINITION
+from .call_budget import call_room, remaining_calls
 from .context_artifact_page import artifact_page_observation
 from .context_runtime_contracts import CompactionHistory
 from .delivery_review import delivery_review_messages
@@ -76,8 +77,10 @@ def partial_artifact_group_admission(snapshot, configuration, driver):
         len(installed) != 1
         or installed[0].model_copy(update={"feedback_profile_digest": None})
         != ARTIFACT_READ_DEFINITION
-        or config.limits.max_tool_calls - snapshot.tool_calls - snapshot.descendant_tool_calls != 1
-        or snapshot.model_calls + snapshot.descendant_model_calls >= config.limits.max_model_calls
+        or remaining_calls(config.limits.max_tool_calls,
+                           snapshot.tool_calls + snapshot.descendant_tool_calls) != 1
+        or not call_room(config.limits.max_model_calls,
+                         snapshot.model_calls + snapshot.descendant_model_calls)
     ):
         return None
     current = snapshot.model_copy(deep=True)

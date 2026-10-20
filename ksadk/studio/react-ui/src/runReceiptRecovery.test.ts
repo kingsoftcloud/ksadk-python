@@ -12,8 +12,6 @@ function receipt(Status: RunReceipt["Status"] = "completed"): RunReceipt {
 }
 function fixture() {
   const outbox = new OutboxStore();
-  // The default ledger restores browser storage; each fixture owns one input.
-  outbox.clear();
   const queued = outbox.enqueue({ agentId: "agent", conversationId, text: "original", attachments: [],
     nativeSessionId: "session", invocationId: "client-original" });
   const entry = outbox.update(queued.requestId, { status: "unknown" })!;

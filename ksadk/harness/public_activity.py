@@ -128,6 +128,9 @@ def tool_public_action(payload: dict[str, Any]) -> dict[str, str] | None:
             else "查看目录"
         )
         return {"text": f"{verb}：{target}"}
+    if name == "browser_inspect_workspace":
+        target = _text(PurePosixPath(str(args.get("path") or "").replace("\\", "/")).name)
+        return {"text": f"浏览器检查：{target}" if target else "浏览器检查"}
     # Skill / MCP 披露 / 知识库：这几类工具此前没有 public_action，
     # Studio 活动流只能显示笼统的"使用工具处理任务"。这里补上**一句话动作**，
     # 只暴露名字与用途，绝不带参数原文或结果。

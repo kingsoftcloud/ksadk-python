@@ -52,12 +52,16 @@ async def project_inbox_inputs(
     runs = cache.setdefault("runs", {})
     messages = cache.setdefault("messages", {})
     effective_tenant = tenant_id or runtime.config.tenant_id
+    # Kernel table tenant_id is the configured storage partition, not the
+    # principal carried by the admitted command. Read only this store's
+    # partition; validate the command principal below before exposing input.
+    storage_tenant = getattr(runtime.kernel_store, "tenant_id", effective_tenant)
     run_ids = {str(event.get("InvocationId") or "") for event in events} - {""}
     missing_runs = sorted(run_ids - runs.keys())
     batch_runs = getattr(runtime.kernel_store, "load_runs_for_history", None)
     if callable(batch_runs) and missing_runs:
         runs.update(await batch_runs(
-            missing_runs, tenant_id=effective_tenant,
+            missing_runs, tenant_id=storage_tenant,
             agent_instance_id=runtime.config.agent_instance_id, session_id=session_id,
         ))
     else:
@@ -72,7 +76,7 @@ async def project_inbox_inputs(
     batch_messages = getattr(runtime.kernel_store, "load_messages_for_history", None)
     if callable(batch_messages) and missing_messages:
         messages.update(await batch_messages(
-            missing_messages, tenant_id=effective_tenant,
+            missing_messages, tenant_id=storage_tenant,
             agent_instance_id=runtime.config.agent_instance_id, session_id=session_id,
         ))
     else:
@@ -87,7 +91,8 @@ async def project_inbox_inputs(
         store_tenant = getattr(runtime.kernel_store, "tenant_id", None)
         if run_tenant is not None and run_tenant != effective_tenant:
             continue
-        if not callable(batch_runs) and store_tenant is not None and store_tenant != effective_tenant:
+        if (not callable(batch_runs) and store_tenant is not None
+                and store_tenant != effective_tenant):
             continue
         if (run is not None and run.session_id == session_id
                 and run.agent_instance_id == runtime.config.agent_instance_id):
@@ -118,3 +123,75 @@ async def project_inbox_inputs(
             "Content": {"parts": [{"text": _input_text(command.payload.get("content"))}]},
         })
     return projected
+
+
+async def complete_history_input_boundary(
+    events, *, service, runtime, session_id, budget, after_seq_id=None, request_cache=None
+):
+    """Complete the first Kernel command by identity, across unassigned control facts.
+
+    Run IDs alone cannot define the input boundary: claim/completion facts have
+    no run_id, and acceptance precedes run creation. Do not guess associations
+    from neighboring events; use the persisted run's command_id instead.
+    """
+    if runtime is None or not events:
+        return events
+    run_id = next((str(e.invocation_id) for e in events if e.invocation_id), "")
+    if not run_id:
+        return events
+    store = runtime.kernel_store
+    run_cache = (request_cache if request_cache is not None else {}).setdefault("runs", {})
+    batch = getattr(store, "load_runs_for_history", None)
+    if run_id in run_cache:
+        run = run_cache[run_id]
+    elif callable(batch):
+        runs = await batch(
+            [run_id],
+            tenant_id=getattr(store, "tenant_id", runtime.config.tenant_id),
+            agent_instance_id=runtime.config.agent_instance_id,
+            session_id=session_id,
+        )
+        run = runs.get(run_id)
+    else:
+        run = await store.load_run(run_id)
+    run_cache[run_id] = run
+    if (
+        run is None
+        or run.session_id != session_id
+        or run.agent_instance_id != runtime.config.agent_instance_id
+    ):
+        return events
+    command_id = str(run.metadata.get("command_id") or "")
+    if not command_id:
+        return events
+
+    def is_acceptance(event):
+        content = event.content
+        envelope = content.get("session_event") if isinstance(content, dict) else None
+        payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        return (
+            event.session_id == session_id
+            and isinstance(payload, dict)
+            and envelope.get("family") == "control"
+            and envelope.get("event_type") == "control.command_accepted"
+            and payload.get("command_type") == "enqueue"
+            and str(payload.get("command_id") or "") == command_id
+        )
+
+    if any(is_acceptance(e) for e in events):
+        return events
+    prefix = []
+    cursor = events[0].seq_id
+    while cursor and cursor > (after_seq_id or 0) + 1:
+        page = await service.get_events(
+            session_id, limit=64, before_seq_id=cursor, after_seq_id=after_seq_id
+        )
+        if not page:
+            break
+        budget.account(page)
+        found = next((i for i, e in enumerate(page) if is_acceptance(e)), None)
+        prefix[0:0] = page[found:] if found is not None else page
+        if found is not None:
+            break
+        cursor = page[0].seq_id
+    return [*prefix, *events]

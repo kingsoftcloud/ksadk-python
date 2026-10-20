@@ -47,7 +47,13 @@ class ConversationSessionCore:
     async def _load_session(self, session_id: str) -> Optional[Session]:
         if not session_id:
             return None
-        return await self.service.get_session(session_id)
+        # Bindings and runtime state use only the session's ownership fields.
+        # Loading its transcript here makes cold identity binding proportional
+        # to every prior graph snapshot, even with a native checkpointer.
+        loader = (getattr(self.service, "get_session_header", None)
+                  or getattr(self.service, "get_session_metadata", None)
+                  or self.service.get_session)
+        return await loader(session_id)
 
     async def get_binding_by_session_id(self, session_id: str, runner_key: str) -> dict[str, Any]:
         session = await self._load_session(session_id)

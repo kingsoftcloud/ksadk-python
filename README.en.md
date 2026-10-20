@@ -7,7 +7,7 @@
   It works with Google ADK, LangGraph, LangChain, and DeepAgents, with one-command OpenClaw and Hermes runtime launch paths.
 </p>
 
-<p align="center"><a href="https://github.com/kingsoftcloud/ksadk-python/blob/main/README.md">简体中文</a> · <a href="https://github.com/kingsoftcloud/ksadk-python/blob/main/README.en.md">English</a></p>
+<p align="center"><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
 
 <p align="center">
   <a href="https://kingsoftcloud.github.io/ksadk-python/"><img alt="Docs" src="https://img.shields.io/badge/Docs-ksadk--python-2f6fdf?style=flat" /></a>
@@ -16,24 +16,20 @@
   <a href="https://deepwiki.com/kingsoftcloud/ksadk-python"><img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg" /></a>
 </p>
 
-<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/agentkit-studio-overview.png"><img alt="Real KsADK AgentKit Studio Agent workspace" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/agentkit-studio-overview.png" width="860" /></a></p>
-
-Python 3.12 or newer is required. Existing Agents may keep their original SDK and runtime image; older history and subscription protocols remain supported. Local Studio uses Native Harness with a durable execution ledger by default.
+<p align="center"><a href="docs-site/public/assets/agentkit-studio-overview.png"><img alt="Real KsADK AgentKit Studio Agent workspace" src="docs-site/public/assets/agentkit-studio-overview.png" width="860" /></a></p>
 
 ## 30 Seconds Quick Start
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -U "ksadk[langgraph]"
+pip install -U "ksadk[all]"
 
 agentengine init demo-agent -f langgraph
 cd demo-agent
 agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
 agentengine run -i
 ```
-
-The example installs the LangGraph extra. For Native Studio alone, install `ksadk`; `ksadk[all]` also installs the other optional frameworks and development tools.
 
 Start the local debugging Web UI:
 
@@ -60,9 +56,9 @@ Start with the [runtime architecture](https://kingsoftcloud.github.io/ksadk-pyth
 
 The event path is canonical `RuntimeEvent(schema_version=2)`. Its capability descriptor is `RuntimeEventVersions=[1,2]`, `RuntimeEventDefault=2`, `RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`, and `RuntimeEventV1ProjectionDefault="snapshot_only"`. Version 1 is a read-only compatibility projection.
 
-<p align="center"><img alt="Real KsADK Studio knowledge, memory, and Skill Center bindings" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/agentkit-studio-platform-resources.png" width="860" /></p>
+<p align="center"><img alt="Real KsADK Studio knowledge, memory, and Skill Center bindings" src="docs-site/public/assets/agentkit-studio-platform-resources.png" width="860" /></p>
 
-<p align="center"><img alt="Real KsADK Studio Agent, resource binding, and plugin demo" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/agentkit-studio-demo.gif" width="860" /></p>
+<p align="center"><img alt="Real KsADK Studio Agent, resource binding, and plugin demo" src="docs-site/public/assets/agentkit-studio-demo.gif" width="860" /></p>
 
 ## Why KsADK
 
@@ -76,7 +72,7 @@ Most agent frameworks solve how to build agents. KsADK solves how to run, debug,
 
 ## Architecture
 
-<p align="center"><img alt="KsADK technical architecture" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-architecture.en.png" width="860" /></p>
+<p align="center"><img alt="KsADK technical architecture" src="docs-site/public/assets/ksadk-runtime-architecture.en.png" width="860" /></p>
 
 Agent Kernel centralizes trusted control, Harness owns composition and lifecycle, and pluggable Providers preserve native execution semantics. RuntimeEvent v2 supplies one event fact chain for APIs, Studio, and hosted surfaces.
 

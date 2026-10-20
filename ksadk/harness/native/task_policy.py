@@ -37,6 +37,8 @@ def web_verification_only(snapshot: RunSnapshot, config: RunConfiguration) -> bo
     """
     if config.workspace_observation_policy is None:
         return False
+    if config.limits.max_model_calls is None:
+        return False
     reserve = config.limits.verification_reserve_model_calls
     remaining = (
         config.limits.max_model_calls - snapshot.model_budget_claimed
@@ -67,11 +69,12 @@ def web_observation_due(snapshot: RunSnapshot, config: RunConfiguration) -> bool
     limits = config.limits
     reserve = limits.verification_reserve_model_calls
     interval = limits.browser_observation_interval_tool_calls
-    remaining = limits.max_model_calls - snapshot.model_budget_claimed
+    remaining = (limits.max_model_calls - snapshot.model_budget_claimed
+                 if limits.max_model_calls is not None else None)
     last_mutation = snapshot.last_web_mutation_tool_call
     if (
         last_mutation is None
-        or remaining <= limits.finalization_reserve_model_calls
+        or remaining is not None and remaining <= limits.finalization_reserve_model_calls
         or not browser_observation_available(config)
     ):
         return False
@@ -95,5 +98,7 @@ def web_observation_due(snapshot: RunSnapshot, config: RunConfiguration) -> bool
     if last_attempt >= last_mutation:
         return False
     early_due = interval > 0 and snapshot.tool_calls - max(last_attempt, 0) >= interval
-    reserved_due = reserve >= limits.finalization_reserve_model_calls + 4 and remaining <= reserve
+    reserved_due = (remaining is not None
+                    and reserve >= limits.finalization_reserve_model_calls + 4
+                    and remaining <= reserve)
     return early_due or reserved_due

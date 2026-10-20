@@ -282,7 +282,12 @@ class StudioAuthoringCoordinator:
         with self._id_lock:
             agent_id = self._allocate_agent_id(slug)
             resolved_slug = slug or agent_id
-            resolved = (spec or default_agent_spec(template, description=description)).model_copy(
+            resolved = (spec or (
+                self.studio._default_agent_spec(template, description=description)
+                if template == "coding" else default_agent_spec(
+                    template, description=description, runtime_type=runtime_type,
+                )
+            )).model_copy(
                 deep=True
             )
             proposed_runtime = resolved.runtime

@@ -1,20 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-dmg-existing studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen studio-app-build studio-app-dmg kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
-
-KERNEL_CANARY_NAMESPACE ?= agent-kernel
-# Kernel runtime drills must run beside real Agent workloads in the preprod
-# compute cluster. The management-cluster kubeconfig cannot reach the managed PG.
-KERNEL_CANARY_KUBECONFIG ?= $(HOME)/.kube/config
-KERNEL_CANARY_PLATFORM ?= linux/amd64
-KERNEL_CANARY_REGISTRY ?= registry.example.test/your-namespace
-KERNEL_CANARY_TAG ?= kernel-contract-$(shell git rev-parse --short=8 HEAD)
-KERNEL_CANARY_IMAGE := $(KERNEL_CANARY_REGISTRY)/agent-kernel-canary:$(KERNEL_CANARY_TAG)
-KERNEL_CANARY_KUBECTL := kubectl --kubeconfig=$(KERNEL_CANARY_KUBECONFIG)
-KERNEL_CANARY_INSTANCE_ID ?= kernel-canary-managed-pg
-KERNEL_CANARY_STORE_NAMESPACE ?= default
-KERNEL_CANARY_EVIDENCE_OUTPUT ?= /tmp/kernel-managed-pg-matrix.json
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-dmg-existing studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen studio-app-build studio-app-dmg
 
 # 默认目标
 help:
@@ -27,14 +14,10 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.13"
+	@echo "    make sync-ksadk-web-static"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
-	@echo "    make kernel-canary-push   构建并推送当前合同 PG canary 镜像"
-	@echo "    make kernel-canary-deploy 使用外部云 PostgreSQL 部署隔离验证 runtime"
-	@echo "    make kernel-canary-matrix 执行托管 PG/Pod kill/fencing/rollback 并自动清理"
-	@echo "    make kernel-canary-delete 删除隔离 canary namespace"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -78,8 +61,8 @@ help:
 	@echo "    make studio-app-clean    清理 Studio 本地包"
 	@echo ""
 	@echo "  \033[1;32mAgentEngine 镜像:\033[0m"
-	@echo "    Hermes / OpenClaw / Skill Runtime 镜像已迁移到内部 agentengine-images 仓库"
-	@echo "    可设置 AGENTENGINE_IMAGES_DIR=../agentengine-images 后继续使用兼容入口"
+	@echo "    Hermes / OpenClaw / Skill Runtime 镜像使用单独配置的构建目录"
+	@echo "    可设置 AGENTENGINE_IMAGES_DIR=/path/to/image-project 使用兼容入口"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
 	@echo "    make clean          清理构建产物和本地测试缓存"
@@ -110,14 +93,14 @@ build-webui sync-static webui: sync-ksadk-web-static
 # 开发服务器
 # ============================================================
 
-dev:
+dev: build-frontend
 	@echo "🚀 启动开发服务器..."
 	@echo "   后端: http://localhost:8000"
 	@echo ""
 	@echo "使用 Ctrl+C 停止服务"
 	python -m ksadk.cli web .
 
-dev-backend:
+dev-backend: verify-ksadk-web-static
 	@echo "🔧 启动后端开发服务器..."
 	python -m ksadk.cli web .
 
@@ -130,8 +113,6 @@ test:
 	uv run --extra all pytest tests/ -v
 
 # ============================================================
-# Kernel preproduction canary
-# ============================================================
 
 kernel-canary-build:
 	@test -z "$$(git status --porcelain --untracked-files=no)" || { echo "ERROR: tracked source tree is dirty"; exit 2; }
@@ -142,7 +123,7 @@ kernel-canary-build:
 		-f docs/superpowers/evidence/kernel/canary/canary.e2e.Dockerfile \
 		-t $(KERNEL_CANARY_IMAGE) .
 
-kernel-canary-push: kernel-canary-build
+kernel-canary-push:
 	docker push $(KERNEL_CANARY_IMAGE)
 	@echo "Canary source: commit=$$(git rev-parse HEAD), contract=$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')"
 	@docker buildx imagetools inspect $(KERNEL_CANARY_IMAGE) 2>/dev/null | awk '/^Digest:/ { print "Canary OCI digest: " $$2; exit }' || true
@@ -170,10 +151,10 @@ kernel-canary-matrix:
 	@test -n "$$KERNEL_CANARY_ROLLBACK_IMAGE" || { echo "ERROR: KERNEL_CANARY_ROLLBACK_IMAGE must be a digest-pinned prior image"; exit 2; }
 	@case "$$KERNEL_CANARY_ROLLBACK_IMAGE" in *@sha256:*) ;; *) echo "ERROR: KERNEL_CANARY_ROLLBACK_IMAGE must contain @sha256:"; exit 2;; esac
 	@set -eu; \
-		cleanup() { $(MAKE) kernel-canary-delete; }; \
+		cleanup() { $(MAKE); }; \
 		trap cleanup EXIT INT TERM; \
-		$(MAKE) kernel-canary-push; \
-		KERNEL_CANARY_POSTGRES_DSN="$$KERNEL_CANARY_POSTGRES_DSN" $(MAKE) kernel-canary-deploy; \
+		$(MAKE); \
+		KERNEL_CANARY_POSTGRES_DSN="$$KERNEL_CANARY_POSTGRES_DSN" $(MAKE); \
 		uv run python scripts/run_kernel_managed_pg_matrix.py \
 			--kubeconfig "$(KERNEL_CANARY_KUBECONFIG)" \
 			--namespace "$(KERNEL_CANARY_NAMESPACE)" \
@@ -278,9 +259,12 @@ check-build-deps:
 	@python -c "import build" 2>/dev/null || (echo "📦 安装构建依赖..." && pip install build twine)
 
 build: check-build-deps sync-ksadk-web-static build-studio-static
+	@$(MAKE) --no-print-directory verify-ksadk-web-static
 	@echo "📦 构建 Python 包 v$(VERSION)..."
 	@python scripts/write_build_provenance.py
+	@rm -rf build/
 	python -m build
+	@$(MAKE) --no-print-directory verify-ksadk-web-wheel-static
 	@# 删除 tar.gz 和临时目录，只保留 whl
 	@rm -f dist/*.tar.gz
 	@rm -rf build/ *.egg-info/
@@ -290,13 +274,16 @@ build: check-build-deps sync-ksadk-web-static build-studio-static
 
 # 仅构建 Python 包（跳过 npm 同步，使用现有静态文件）
 build-only: check-build-deps build-studio-static
+	@$(MAKE) --no-print-directory verify-ksadk-web-static
 	@echo "📦 构建 Python 包 v$(VERSION)（使用已同步 Web static）..."
 	@if [ ! -f "ksadk/server/static/index.html" ]; then \
 		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make sync-ksadk-web-static"; \
 		exit 1; \
 	fi
 	@python scripts/write_build_provenance.py
+	@rm -rf build/
 	python -m build
+	@$(MAKE) --no-print-directory verify-ksadk-web-wheel-static
 	@rm -f dist/*.tar.gz
 	@rm -rf build/ *.egg-info/
 	@$(MAKE) --no-print-directory print-build-provenance
@@ -383,9 +370,6 @@ PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
 PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/studio/test_scheduler_runtime.py tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py tests/test_deploy_env_forward.py tests/server/test_historical_agent_approval_and_blocks.py
 PUBLIC_TEST_TARGETS += tests/a2a/test_public_imports.py tests/studio/test_shared_web_final_snapshot.py
-PUBLIC_TEST_TARGETS += tests/test_cloud_headers.py
-PUBLIC_TEST_TARGETS += tests/test_prepare_ksadk_python_export.py
-PUBLIC_TEST_TARGETS += tests/packaging/test_alias_distribution.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -458,6 +442,7 @@ public-secret-audit:
 		fi; \
 	fi
 	@python3 scripts/public_secret_audit.py
+	@python3 scripts/public_history_audit.py --ref HEAD
 	@echo "✅ secret audit passed"
 
 public-audit: public-secret-audit
@@ -707,12 +692,12 @@ offline-current: build
 # AgentEngine 镜像构建兼容入口
 # ============================================================
 
-AGENTENGINE_IMAGES_DIR ?= ../agentengine-images
+AGENTENGINE_IMAGES_DIR ?=
 
 openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 	@if [ ! -d "$(AGENTENGINE_IMAGES_DIR)" ]; then \
-		echo "❌ AgentEngine 镜像资产已迁移到内部仓库 agentengine-images。"; \
-		echo "   请先克隆仓库，或设置 AGENTENGINE_IMAGES_DIR=/path/to/agentengine-images"; \
+		echo "❌ 请配置 AgentEngine 镜像构建目录。"; \
+		echo "   请先克隆仓库，或设置 AGENTENGINE_IMAGES_DIR=/path/to/image-project"; \
 		exit 1; \
 	fi
 	@$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@
@@ -726,75 +711,32 @@ openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
-# The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
-# The shared Conversation v1 Web 0.3.13 release; a normal release build must
-# fail rather than silently substituting an older npm package when that release is not
-# visible.  A reviewed local tarball is permitted for a pre-release image
-# build, but remains explicit in the command and provenance output.
-KSADK_WEB_VERSION ?= 0.3.13
+# One reviewed source manifest pins the library and both application bundles.
+ifndef KSADK_WEB_VERSION
+KSADK_WEB_VERSION := $(shell python3 scripts/reviewed_web_assets.py identity --field package_version)
+endif
+ifeq ($(strip $(KSADK_WEB_VERSION)),)
+$(error Cannot resolve the reviewed Web version from the source manifest)
+endif
 export KSADK_WEB_VERSION
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
-KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_TARBALL ?=
-KSADK_WEB_RELEASE_URL ?=
-KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
 KSADK_WEB_REGISTRY ?= https://registry.npmjs.org
 KSADK_WEB_NPM := npm --registry="$(KSADK_WEB_REGISTRY)"
 
+# Both applications consume the same checked-in reviewed archive. An explicit
+# tarball must have the exact reviewed digest; never fetch a different npm UI.
 sync-ksadk-web-static:
-	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
-	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
-	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
-	@if [ -n "$(KSADK_WEB_TARBALL)" ]; then \
-		test -f "$(KSADK_WEB_TARBALL)" || { echo "ERROR: KSADK_WEB_TARBALL does not exist: $(KSADK_WEB_TARBALL)" >&2; exit 1; }; \
-		echo "Using explicit KSADK_WEB_TARBALL=$(KSADK_WEB_TARBALL)"; \
-		cp "$(KSADK_WEB_TARBALL)" "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
-		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	elif [ -f "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" ]; then \
-		echo "Using cached tarball $(KSADK_WEB_TARBALL_NAME)"; \
-		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	elif [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
-		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
-		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
-		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	elif command -v npm >/dev/null 2>&1; then \
-		echo "Using npm pack (npm found in PATH)"; \
-		$(KSADK_WEB_NPM) pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	else \
-		echo "npm not found; resolving tarball from registry $(KSADK_WEB_REGISTRY)"; \
-		REGISTRY_JSON=$$(curl -fsSL "$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)"); \
-		if [ -z "$$REGISTRY_JSON" ]; then echo "ERROR: registry request failed for $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)" && exit 1; fi; \
-		TARBALL_URL=$$(echo "$$REGISTRY_JSON" | grep -o '"tarball":"[^"]*"' | cut -d'"' -f4 | head -1); \
-		RESOLVED_VERSION=$$(echo "$$REGISTRY_JSON" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 | head -1); \
-		if [ -z "$$TARBALL_URL" ]; then echo "ERROR: could not resolve tarball URL from registry response" && exit 1; fi; \
-		echo "Resolved version $$RESOLVED_VERSION: $$TARBALL_URL"; \
-		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$$TARBALL_URL" -o "$(KSADK_WEB_CACHE_DIR)/kingsoftcloud-ksadk-web-$$RESOLVED_VERSION.tgz"; \
-		echo "kingsoftcloud-ksadk-web-$$RESOLVED_VERSION.tgz" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	fi
-	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" -C "$(KSADK_WEB_CACHE_DIR)"
-	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" && exit 1)
-	@rm -rf "$(STATIC_DIR)"
-	@mkdir -p "$(STATIC_DIR)"
-	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
-	@$(MAKE) verify-ksadk-web-static
-	@printf 'KsADK Web static provenance: version=%s, tarball_sha256=%s\n' \
-		"$(patsubst v%,%,$(KSADK_WEB_VERSION))" "$$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")")"
-	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
+	@python3 scripts/reviewed_web_assets.py sync --expected-version "$(KSADK_WEB_VERSION)" $(if $(KSADK_WEB_TARBALL),--artifact "$(KSADK_WEB_TARBALL)")
 
 verify-ksadk-web-static:
-	@python3 scripts/verify_ksadk_web_static.py \
-		--expected "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" \
-		--actual "$(STATIC_DIR)" \
-		--package-root "$(KSADK_WEB_CACHE_DIR)/package" \
-		--expected-version "$(patsubst v%,%,$(KSADK_WEB_VERSION))"
+	@python3 scripts/reviewed_web_assets.py verify --expected-version "$(KSADK_WEB_VERSION)"
 
 verify-ksadk-web-wheel-static:
-	@python3 scripts/verify_ksadk_web_static.py \
-		--expected "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" \
-		--wheel "$$(ls dist/ksadk-*.whl)" \
-		--expected-version "$(patsubst v%,%,$(KSADK_WEB_VERSION))"
+	@python3 scripts/reviewed_web_assets.py verify --expected-version "$(KSADK_WEB_VERSION)" --wheel "$$(ls dist/ksadk-*.whl)"
 
 build-studio-static:
+	@python3 scripts/reviewed_web_assets.py check-archive --expected-version "$(KSADK_WEB_VERSION)" $(if $(KSADK_WEB_TARBALL),--artifact "$(KSADK_WEB_TARBALL)") >/dev/null
 	@if [ -f "$(STUDIO_REACT_DIR)/package.json" ]; then \
 		set -eu; \
 		echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"; \
@@ -807,6 +749,7 @@ build-studio-static:
 			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" install --no-save --ignore-scripts "$$WEB_TARBALL_PATH"; \
 		fi; \
 		npm --prefix "$(STUDIO_REACT_DIR)" run build; \
+		python3 scripts/reviewed_web_assets.py stamp-studio; \
 	else \
 		echo "React Studio source is intentionally absent; using reviewed compiled assets from $(STUDIO_STATIC_DIR)"; \
 	fi
@@ -817,11 +760,14 @@ sync-hosted-ui: sync-ksadk-web-static
 	@echo "sync-hosted-ui is deprecated; static assets now come from $(KSADK_WEB_PACKAGE)."
 
 build-frontend: sync-ksadk-web-static build-studio-static
+	@$(MAKE) --no-print-directory verify-ksadk-web-static
 	@echo "Frontend static assets prepared for packaging"
 
 build-wheel: build-frontend
 	@uv run python scripts/write_build_provenance.py
+	@rm -rf build/
 	uv build --python 3.13
+	@$(MAKE) --no-print-directory verify-ksadk-web-wheel-static
 	@$(MAKE) --no-print-directory print-build-provenance
 
 build-all: build-wheel

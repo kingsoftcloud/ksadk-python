@@ -56,3 +56,5 @@ Both approved source references include the reviewed Python source commit SHA so
 | Maintainer | Release task author (conditional release authorization) | Approved | 2026-10-15 |
 | Security reviewer | Codex automated security review (not independent human sign-off) | Approved | 2026-10-15 |
 | Release owner | Release task author; execution delegated to Codex | Approved | 2026-10-15 |
+
+This record attests only the already-published 0.8.6 source. A later source-sync candidate is not approved for a new package release by this historical record.

@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import time
+import traceback
 from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import replace
@@ -55,9 +56,6 @@ from ksadk.runtime.timing import extract_timing
 from ksadk.runtime.usage import canonical_usage_payload
 from ksadk.runtime_context import platform_invocation_scope
 from ksadk.tools.gateway import approval_interrupt_info_from_result
-
-from ksadk.runtime._runner_adapter.a2ui_surface import _a2ui_surface_event
-from ksadk.runtime._runner_adapter.gateway_approvals import _canonical_gateway_approvals
 
 if TYPE_CHECKING:
     from ksadk.runtime.runner_adapter import _ActiveRun
@@ -105,6 +103,129 @@ async def _pump_stream_in_one_context(
                 if outcome[0] != "error":
                     outcome = ("error", exc)
     await results.put(outcome)
+
+
+def _a2ui_surface_event(
+    self: Any,
+    handle: RunHandle,
+    chunk: Any,
+) -> tuple[RuntimeEvent, ...]:
+    """Recognize a validated A2UI tool envelope and emit a canonical data-item event.
+
+    The dynamic ``generate_a2ui`` tool returns official v0.9 operations as a
+    JSON tool result. Tool results are otherwise opaque to the runtime, which
+    would leave AG-UI with nothing to project until a page reload reconstructs
+    history. Convert exactly that envelope at the runtime boundary so it is
+    streamed, persisted, and replayed like every other A2UI surface.
+
+    In the canonical schema, A2UI surfaces are modeled as ``item_kind="data"``
+    items with ``source.protocol="a2ui"``.
+    """
+
+    if not isinstance(chunk, dict):
+        return ()
+    value = chunk.get("tool_output", chunk.get("output"))
+    if value is not None and hasattr(value, "content"):
+        value = value.content
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return ()
+    if not isinstance(value, Mapping):
+        return ()
+    operations_raw = value.get("a2ui_operations")
+    if not isinstance(operations_raw, list) or not operations_raw:
+        return ()
+    operations = [dict(operation) for operation in operations_raw if isinstance(operation, Mapping)]
+    if not operations:
+        return ()
+
+    known: list[tuple[str, str]] = []  # (surface_id, lifecycle)
+    for operation in operations:
+        for key, lifecycle in (
+            ("createSurface", "begin"),
+            ("updateComponents", "update"),
+            ("updateDataModel", "update"),
+            ("deleteSurface", "end"),
+        ):
+            detail = operation.get(key)
+            if isinstance(detail, Mapping) and isinstance(detail.get("surfaceId"), str):
+                surface_id = detail["surfaceId"].strip()
+                if surface_id:
+                    known.append((surface_id, lifecycle))
+                    break
+    if not known:
+        return ()
+    surface_ids = {surface_id for surface_id, _lifecycle in known}
+    if len(surface_ids) != 1:
+        logger.warning("ignoring A2UI tool result with multiple surfaces")
+        return ()
+    surface_id = known[0][0]
+    lifecycle = "begin" if any(lc == "begin" for _, lc in known) else known[0][1]
+
+    framework = self._runtime_type
+    run_id = handle.run_id
+    scope_id = stable_scope_id(framework, run_id)
+    # A dynamic A2UI tool result is a complete, immutable operation batch.  It
+    # must therefore be represented by a closed canonical item.  Reusing one
+    # long-lived item per surface leaves a create/update-only batch open at the
+    # run terminal and makes strict reducers reject the stream.
+    start_seq = self._next_seq()
+    batch_ref = str(chunk.get("call_id") or chunk.get("run_id") or chunk.get("id") or "")
+    if not batch_ref:
+        batch_ref = json.dumps(
+            operations,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    item_id = stable_item_id(framework, run_id, "a2ui-batch", surface_id, batch_ref)
+    source = SourceRef(
+        framework=framework,
+        protocol="a2ui",
+        native_run_id=run_id,
+        metadata={
+            "surface_id": surface_id,
+            "operation_batch": True,
+            "surface_lifecycle": lifecycle,
+        },
+    )
+    # TODO(runtime-event-v2): dict chunk 退化路径,chunk_ordinal 用 seq counter;
+    # LangGraph/Codex 切 stream_canonical_events 后清理
+    timestamp = time.time()
+    snapshot = ContentSnapshot(parts=(DataContent(part_id="a2ui-ops", data=operations),))
+    completed_seq = self._next_seq()
+    return (
+        ItemStarted(
+            schema_version=2,
+            event_id=stable_event_id(
+                framework, scope_id, item_id, "item.started", "a2ui", run_id, start_seq
+            ),
+            seq=start_seq,
+            timestamp=timestamp,
+            run_id=run_id,
+            scope_id=scope_id,
+            source=source,
+            item_id=item_id,
+            item_kind="data",
+            initial=snapshot,
+        ),
+        ItemCompleted(
+            schema_version=2,
+            event_id=stable_event_id(
+                framework, scope_id, item_id, "item.completed", "a2ui", run_id, completed_seq
+            ),
+            seq=completed_seq,
+            timestamp=timestamp,
+            run_id=run_id,
+            scope_id=scope_id,
+            source=source,
+            item_id=item_id,
+            item_kind="data",
+            snapshot=snapshot,
+        ),
+    )
 
 
 class _RunnerStreamMappingMixin:
@@ -310,6 +431,15 @@ class _RunnerStreamMappingMixin:
                         for a2ui_surface in _a2ui_surface_event(self, handle, chunk):
                             yield a2ui_surface
             except Exception as exc:
+                # Record locations only: exception strings and locals can contain
+                # credentials or user tool payloads. Empty TimeoutError messages
+                # otherwise make checkpoint/transport failures indistinguishable.
+                logger.warning(
+                    "Runner stream exception type=%s locations=%s",
+                    type(exc).__name__,
+                    " > ".join(f"{frame.name}:{frame.lineno}"
+                               for frame in traceback.extract_tb(exc.__traceback__)),
+                )
                 # 原始 runner 异常(如 GraphRecursionError)不走 "error" chunk 路径。
                 # 不转换则 canonical 事件流没有 run.failed 终态：下游按"流结束无终态"
                 # 报错，会话 run 状态缺失 canonical failed，前端只见干净收尾。这里
@@ -356,7 +486,76 @@ class _RunnerStreamMappingMixin:
                         run.chunk_task = None
                     run.cancellation_ack.set()
 
-    _canonical_gateway_approvals = _canonical_gateway_approvals
+    def _canonical_gateway_approvals(
+        self, handle: RunHandle, run: Optional[_ActiveRun], event: ItemCompleted
+    ) -> list[RuntimeEvent]:
+        """Recognize local results without treating historical state as new calls."""
+        calls = handle.native_ref.setdefault("_gateway_canonical_calls", {})
+        historical_calls = handle.native_ref.setdefault("_gateway_historical_result_calls", {})
+
+        def key(call_id):
+            return json.dumps([event.run_id, event.scope_id, call_id])
+
+        results = []
+        for part in event.snapshot.parts:
+            if isinstance(part, ToolCallContent):
+                calls[key(part.call_id)] = {"name": part.name, "arguments": part.arguments}
+            elif isinstance(part, ToolResultContent):
+                results.append((part.call_id, part.result))
+            elif (
+                isinstance(part, DataContent)
+                and event.source.metadata.get("channel") in {"updates", "values"}
+                and isinstance(part.data, dict)
+            ):
+                # Some ToolNode versions only emit values. Remember already
+                # present ToolMessage IDs before admitting new native calls,
+                # so loading a checkpoint cannot reopen historical approvals.
+                channel = event.source.metadata.get("channel")
+                updates = [part.data] if channel == "values" else part.data.values()
+                seen = handle.native_ref.setdefault("_gateway_canonical_results", {})
+                for update in updates:
+                    if not isinstance(update, dict):
+                        continue
+                    messages = update.get("messages", [])
+                    if not isinstance(messages, list):
+                        messages = [messages]
+                    for message in messages:
+                        if not isinstance(message, dict) or message.get("type") != "tool":
+                            continue
+                        message_id = message.get("id")
+                        if not message_id:
+                            continue
+                        result_key = key(message_id)
+                        if result_key in seen:
+                            continue
+                        seen[result_key] = True
+                        call_id = message.get("tool_call_id")
+                        if call_id and key(call_id) not in calls:
+                            # This result was already present before a live
+                            # call. Replayed native result parts must not
+                            # reopen an approval from the restored snapshot.
+                            historical_calls[key(call_id)] = True
+                        results.append((call_id, message.get("content")))
+        approvals = []
+        for call_id, result in results:
+            if key(call_id) in historical_calls:
+                continue
+            call = calls.get(key(call_id))
+            if call is None:
+                continue
+            detail = approval_interrupt_info_from_result(
+                result, fallback_tool_name=call["name"],
+                tool_args=call["arguments"], run_id=call_id,
+            )
+            if detail is None:
+                continue
+            approval_id = str(detail.get("approval_request_id") or detail.get("id") or call_id)
+            if approval_id in handle.native_ref.get("pending_approval_ids", []):
+                continue
+            approvals.extend(self._interaction_requested_from_approval(
+                handle, run, detail=detail, call_id=call_id,
+            ))
+        return approvals
 
     def _chunk_to_event(
         self, handle: RunHandle, run: Optional[_ActiveRun], chunk: Any

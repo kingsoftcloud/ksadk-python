@@ -150,6 +150,7 @@ from ksadk.studio.native_options import validate_native_options
 from ksadk.studio.operations import OperationManager
 from ksadk.studio.plugin_composition import StudioPluginCompositionCompiler
 from ksadk.studio.plugin_runtime import StudioPluginRuntime
+from ksadk.studio.project_instruction_trust import ProjectInstructionTrustStore
 from ksadk.studio.repository import AgentDraftRepository, BuildRepository
 from ksadk.studio.resource_authority import (
     ResourceAuthorityPolicy,
@@ -223,6 +224,9 @@ class StudioService(StudioSettingsMixin):
         native_harness_child_recovery_policy: ChildRecoveryPolicy | None = None,
         native_harness_model_recovery_policy: Literal["pure-inference-takeover/v1"] | None = None,
         native_harness_model_recovery_host: StudioModelTakeoverDeclaration | None = None,
+        project_instruction_trust: ProjectInstructionTrustStore | None = None,
+        native_background_connection_ref: str | None = None,
+        native_background_e2b_domain: str | None = None,
         native_acceptance_extension: StudioNativeAcceptanceExtension | None = None,
         native_delivery_review_policy: DeliveryReviewPolicy | None = None,
         native_harness_hook_registrations: Sequence[StudioNativeHookRegistration] = (),
@@ -460,6 +464,10 @@ class StudioService(StudioSettingsMixin):
             runtime_events=self.runtime_events,
             native_harness_ingress=harness_runtime_factory is not None,
         )
+        # The wakeup coordinator's status_reader resolves each still-running
+        # background command's real terminal status through the owning service
+        # (locator + composer declaration). Fail closed until this is bound.
+        self.run_service._studio = self
         self.codex_runs = CodexRunSpecResolver(
             self.workspace,
             build_repository=self.codex_builds,
@@ -478,12 +486,36 @@ class StudioService(StudioSettingsMixin):
             credential_resolver=self.credentials
         )
         self.model_client = runtime_model_client
+        self.project_instruction_trust = project_instruction_trust or ProjectInstructionTrustStore()
         if native_enabled:
             from ksadk.studio.native_product import StudioNativeProductComposer
+            from ksadk.common.cloud_headers import resolve_traffic_source
+            from ksadk.studio.native_background_connection import (
+                build_background_host_declaration,
+            )
+            # The E2B background connection identity is a host-declared
+            # resource connection (typed ConnectionTarget), not ambient env.
+            # No declared ref ⇒ no declaration ⇒ E2B background is unknown with
+            # zero backend calls. A declared ref with no record surfaces loudly.
+            background_host_declaration = None
+            if native_background_connection_ref is not None:
+                background_host_declaration = build_background_host_declaration(
+                    self.resource_connections,
+                    connection_ref=native_background_connection_ref,
+                    domain=native_background_e2b_domain or "",
+                    traffic_source=resolve_traffic_source(),
+                )
+            # Canonical Native ownership verifier: proves a frozen sandbox_id
+            # was launched by a canonical Native run owned by the session (via
+            # the committed launch receipt + sealed BackgroundCommandRef), reusing
+            # the trusted path BackgroundCommandLocator traverses. Built lazily
+            # because it needs the Composer's durable RunStore (created next).
+            ownership_verifier = None
 
             self._native_product_composer = StudioNativeProductComposer(
                 model_client=self.model_client,
                 workspace_root=self.workspace.root,
+                project_instruction_trust=self.project_instruction_trust,
                 acceptance_extension=native_acceptance_extension,
                 delivery_review_policy=native_delivery_review_policy,
                 hook_authorizer=native_harness_hook_authorizer,
@@ -497,6 +529,23 @@ class StudioService(StudioSettingsMixin):
                 diagnostic_profiles=diagnostic_profiles,
                 model_recovery_policy=native_harness_model_recovery_policy,
                 model_recovery_host=native_harness_model_recovery_host,
+                background_host_declaration=background_host_declaration,
+                ownership_verifier=ownership_verifier,
+            )
+            # Wire the canonical ownership verifier now that the Composer's
+            # durable RunStore exists. The verifier reuses event_store +
+            # plugin_runs + session_service (same trusted sources as the
+            # locator) + the Composer's store + workspace_root.
+            from ksadk.studio.native_background_ownership import (
+                StudioNativeBackgroundOwnershipVerifier,
+            )
+            self._native_product_composer._ownership_verifier = (
+                StudioNativeBackgroundOwnershipVerifier(
+                    self,
+                    native_store=self._native_product_composer.store,
+                    workspace_root=self.workspace.root,
+                    background_declaration=background_host_declaration,
+                )
             )
             def select_native_engine(context):  # type: ignore[no-untyped-def]
                 if self._native_session_enabled(context.agent_name, context.activation_key):
@@ -599,6 +648,9 @@ class StudioService(StudioSettingsMixin):
                 self._started = True
                 self._dsh_startup_task = asyncio.create_task(self._initialize_dsh())
                 self.channel_connections.start_background()
+                # Start the idle-wake coordinator so durable watches recovered
+                # from a prior process begin to fire without a new user run.
+                await self.run_service.start_background_wakeup()
             task = self._dsh_startup_task
         if wait_for_dsh and task is not None:
             await asyncio.shield(task)
@@ -1569,6 +1621,25 @@ class StudioService(StudioSettingsMixin):
                     )
                 await self.run_service.reap_stale_running_run(run.id)
         await self.plugin_runs.close_session(session_id)
+        # Explicitly terminate the persistent background sandbox for this
+        # session's owner BEFORE deleting session metadata. Proves: typed
+        # account authority (declaration), session ownership (owner key), and
+        # canonical Native launch ownership (committed receipt + sealed ref →
+        # task_id → sandbox_id, via the ownership verifier). A different
+        # authority, or a sandbox with no canonical Native run, is unknown (no
+        # kill, no delete). Only terminated/confirmed_absent/not_e2b/no_owner
+        # allow deletion; unknown/failed/timeout retain metadata for recovery.
+        # terminate_owner is async (the verifier awaits the trusted
+        # session-service lookup, same as BackgroundCommandLocator).
+        if self._native_product_composer is not None:
+            result = await self._native_product_composer.terminate_owner(session_id)
+            if result not in ("terminated", "confirmed_absent", "not_e2b", "no_owner"):
+                raise StudioError(
+                    "BACKGROUND_TERMINATE_UNCONFIRMED",
+                    "后台 sandbox 终止未确认，会话元数据已保留以便恢复",
+                    status_code=500,
+                    details={"sessionId": session_id, "terminate_result": result},
+                )
         await self.session_service.delete_session(session_id)
         self.event_store.delete_session(session_id)
 
@@ -1595,6 +1666,12 @@ class StudioService(StudioSettingsMixin):
     async def _close_owned_plugin_services(self) -> None:
         from ksadk.studio.provider_recovery import detach_recovered_runs
 
+        # Stop the idle-wake coordinator first so its poll loop cannot fire a
+        # notification turn into a service that is tearing down.
+        try:
+            await self.run_service.stop_background_wakeup()
+        except Exception:
+            pass
         await detach_recovered_runs(self.run_service)
         first_error: BaseException | None = None
         owned = [
@@ -1774,7 +1851,7 @@ class StudioService(StudioSettingsMixin):
                 status_code=409,
                 details={"id": agent_id},
             )
-        resolved_spec = spec or default_agent_spec(
+        resolved_spec = spec or self._default_agent_spec(
             template,
             description=description,
         )
@@ -2214,7 +2291,10 @@ class StudioService(StudioSettingsMixin):
     ) -> AgentDraft:
         """Create one Agent and dispatch from its RuntimeRef."""
 
-        resolved_spec = (spec or default_agent_spec(template, description=description)).model_copy(
+        resolved_spec = (spec or self._default_agent_spec(
+            template, description=description,
+            runtime_type=runtime.type if runtime is not None else None,
+        )).model_copy(
             deep=True
         )
         selected = runtime or resolved_spec.runtime
@@ -2550,14 +2630,31 @@ class StudioService(StudioSettingsMixin):
     def list_agent_templates() -> list[dict]:
         return list_agent_templates()
 
+    def _default_agent_spec(
+        self, template: str, *, description: str = "", runtime_type: str | None = None,
+    ) -> AgentSpec:
+        if template == "coding":
+            return self.compose_agent_template(
+                template,
+                AgentTemplateComposeRequest(
+                    goal=description or "根据用户要求开发、修复项目并验证实际结果。",
+                    description=description,
+                    timeout_seconds=0,
+                ),
+            ).spec
+        return default_agent_spec(template, description=description, runtime_type=runtime_type)
+
     def compose_agent_template(
         self,
         template_id: str,
         request: AgentTemplateComposeRequest,
     ) -> AgentTemplateComposition:
+        from ksadk.studio.native_coding_template import compose_native_coding_agent
+
         composers = {
             "blank": compose_blank_agent,
             "research": compose_research_agent,
+            "coding": compose_native_coding_agent,
         }
         composer = composers.get(template_id)
         if composer is None:
@@ -3605,12 +3702,6 @@ class StudioService(StudioSettingsMixin):
         )
         is_preonline = logical_region.lower() == "pre-online"
         stream_base_url = environment.get("AGENTENGINE_STREAM_SERVER_URL", "").strip()
-        if not stream_base_url and is_preonline:
-            # The pre-online KOP response path currently buffers SSE until
-            # EOF, and KOP may not yet publish newly deployed native Action
-            # names.  Its internal Server ingress validates the same V4
-            # signature for RunAgent, ManagedRuntime, and plugin delivery.
-            stream_base_url = "https://control.example.test"
         stream_client = (
             AgentEngineClient(
                 base_url=stream_base_url,

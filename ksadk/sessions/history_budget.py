@@ -34,3 +34,10 @@ class HistoryReadBudget:
 CURRENT_HISTORY_READ_BUDGET: ContextVar[HistoryReadBudget | None] = ContextVar(
     "ksadk_history_read_budget", default=None,
 )
+
+# Readable transcripts do not consume LangGraph's opaque `values` snapshots.
+# Keep this separate from the byte budget: raw events, replay and subscriptions
+# must retain those durable facts even inside a bounded history request.
+CURRENT_MESSAGE_PROJECTION: ContextVar[bool] = ContextVar(
+    "ksadk_message_projection", default=False,
+)

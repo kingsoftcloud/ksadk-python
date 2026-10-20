@@ -30,11 +30,13 @@ from .context_history import (
 from .context_partition import (
     SummaryPartitionState,
 )
+from .context_source_progress import source_page_history_navigation, source_page_index_navigation
 from .model import ModelProfile
 from .turn_control import ModelTurnControl
 
 Messages = tuple[dict[str, JsonValue], ...]
 READER_SUMMARY_POLICY_VERSION = "complete-reader-summary/v14"
+PARTITION_CHUNK_BOUND_POLICY = "validated-source-partition-chunk-bound/v1"
 
 
 class CompactionProjectionOverflow(ContextRuntimeError):
@@ -103,6 +105,13 @@ class CompactionPolicy(_Contract):
         return self
 
 
+class SessionSummarySource(_Contract):
+    policy: Literal["sealed-session-summary/v1"] = "sealed-session-summary/v1"
+    run_id: str = Field(strict=True, min_length=1)
+    revision: int = Field(strict=True, ge=0)
+    snapshot_digest: str = Field(strict=True, pattern=r"^[0-9a-f]{64}$")
+
+
 class CompactionHistory(_Contract):
     abandoned_replay_digests: tuple[
         Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", strict=True)], ...
@@ -113,6 +122,10 @@ class CompactionHistory(_Contract):
     prior_compactions: int = Field(default=0, strict=True, ge=0,
                                    exclude_if=lambda value: not value)
     count: int = Field(default=0, strict=True, ge=0)
+    # Reusing another turn's summary grants no local summary or execution allowance.
+    inherited_summary_source: SessionSummarySource | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     stagnant_count: int = Field(default=0, strict=True, ge=0)
     last_workspace_revision: str | None = None
     last_observed_progress_revision: int = Field(default=0, strict=True, ge=0)
@@ -129,6 +142,14 @@ class CompactionHistory(_Contract):
     summary_completion_policy: Literal["bounded-committed-summary/v1"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    compaction_message_projection: Literal["current-user-after-summary/v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    summary_prompt_policy: Literal[
+        "rolling-work-state/v1", "rolling-work-state/v2", "rolling-work-state/v3",
+    ] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     summary_output_limited: bool = Field(
         default=False, strict=True, exclude_if=lambda value: not value
     )
@@ -136,6 +157,10 @@ class CompactionHistory(_Contract):
     @property
     def total_compactions(self) -> int:
         return self.prior_compactions + self.count
+
+    @property
+    def has_projection(self) -> bool:
+        return self.count > 0 or self.inherited_summary_source is not None
 
     def reset_projection(self) -> dict[str, JsonValue]:
         """Discard obsolete source bindings without regranting consumed allowance."""
@@ -149,6 +174,8 @@ class CompactionHistory(_Contract):
 
     @model_validator(mode="after")
     def bounded_summary_requires_policy(self):
+        if self.inherited_summary_source is not None and self.count:
+            raise ValueError("inherited projection cannot claim a local summary operation")
         if self.summary_output_limited and self.summary_completion_policy is None:
             raise ValueError("bounded summary history requires its completion policy")
         return self
@@ -191,6 +218,11 @@ class CompactionRequest(_Contract):
     old_messages: tuple[ContextMessage, ...]
     retained_message_refs: tuple[str, ...]
     retained_messages: Messages
+    # A fully summarized fresh read view may also fit once actual summary
+    # size is known. It remains dropped for partition/coverage validation.
+    post_summary_read_refs: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda value: not value,
+    )
     budget: ContextBudget
     instructions: str
     replay_header_digest: str | None = Field(
@@ -205,6 +237,12 @@ class CompactionRequest(_Contract):
     tokenizer_id: str
     history: CompactionHistory
     source_reader_names: tuple[str, ...] = ()
+    search_fragment_policy: Literal["complete-search-fragments/v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    source_capture_search_names: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     source_capture_reader_names: tuple[str, ...] = Field(
         default=(), exclude_if=lambda value: not value
     )
@@ -239,6 +277,14 @@ class CompactionRequest(_Contract):
     summary_completion_policy: Literal["bounded-committed-summary/v1"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    compaction_message_projection: Literal["current-user-after-summary/v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    summary_prompt_policy: Literal[
+        "rolling-work-state/v1", "rolling-work-state/v2", "rolling-work-state/v3",
+    ] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     summary_output_limited: bool = Field(
         default=False, strict=True, exclude_if=lambda value: not value
     )
@@ -262,6 +308,12 @@ class CompactionRequest(_Contract):
 
     @model_validator(mode="after")
     def partition_protocol_matches_state(self):
+        if self.source_capture_search_names and self.search_fragment_policy is None:
+            raise ValueError("search captures require their fragment policy")
+        if len(set(self.source_capture_search_names)) != len(self.source_capture_search_names):
+            raise ValueError("search capture tool names must be unique")
+        if self.search_fragment_policy is not None and self.summary_partition is None:
+            raise ValueError("search fragments require source coverage")
         if (self.fresh_text_fragment_policy is not None
                 and self.fresh_tool_observation_policy is None):
             raise ValueError("fresh text fragmentation requires source observation coverage")
@@ -332,11 +384,20 @@ def _summary_continuation() -> dict[str, JsonValue]:
     }
 
 
-def _compacted_messages(text: str, messages: Messages, goal: str) -> Messages:
+def _compacted_messages(
+    text: str, messages: Messages, goal: str, *,
+    projection: Literal["current-user-after-summary/v1"] | None = None,
+) -> Messages:
     # Keep the original goal before its historical assistant summary. Replaying
     # it after the summary would present an already executing task as a new
     # user request. The resume control is model-only, never a transcript turn.
     index = _goal_message_index(messages, goal)
+    if projection == "current-user-after-summary/v1":
+        # Quote history before the exact current request; never append a newer
+        # synthetic continue instruction after a user's wait/no-tools constraint.
+        return (*messages[:index], _summary(text), *messages[index:])
+    if projection is not None:
+        raise ContextRuntimeError("context_compaction_message_projection_invalid")
     return (*messages[: index + 1], _summary(text), _resume(), *messages[index + 1 :])
 
 
@@ -349,6 +410,57 @@ def _model_continuity(state: ExecutionContinuityState) -> dict[str, JsonValue]:
     The seal still validates the original, unabridged continuity object.
     """
     projected = state.model_dump(mode="json")
+    listings = projected.get("directory_listing_progress", [])
+    if listings:
+        navigation = {
+            "authority": "navigation_only", "source_freshness": "not_attested",
+            "semantic_coverage": "not_attested", "model_observation": "not_attested",
+            "observation_scope": "historically_returned_children",
+            "listing_count": len(listings),
+            "listings_digest": hashlib.sha256(_json(listings).encode()).hexdigest(),
+            "omitted_listings": len(listings),
+            "columns": ["path", "latest_result_truncated", "child_directories", "omitted_child_directories"],
+            "pages": [],
+        }
+        # Keep shallow discovery checkpoints before recent deep listings. Quote
+        # returned names only; the whole bounded field is counted with context.
+        selected = sorted(enumerate(listings), key=lambda pair: (
+            len(pair[1]["path"].split("/")), -pair[0],
+        ))
+        records = []
+        for _, item in selected:
+            if len(records) == 8:
+                break
+            record = [item["path"], item["latest_result_truncated"], [], len(item["child_directories"])]
+            navigation["pages"].append(record)
+            navigation["omitted_listings"] -= 1
+            if len(_json(navigation).encode()) > 2048:
+                navigation["pages"].pop()
+                navigation["omitted_listings"] += 1
+                continue
+            records.append((record, item))
+        # Round-robin avoids spending the entire field on one large subtree.
+        for index in range(64):
+            for record, item in records:
+                if index >= len(item["child_directories"]):
+                    continue
+                record[2].append(item["child_directories"][index])
+                record[3] -= 1
+                if len(_json(navigation).encode()) > 2048:
+                    record[2].pop()
+                    record[3] += 1
+        projected["directory_listing_progress"] = navigation
+    if state.artifact_catalog is not None and len(state.artifact_refs) > 8:
+        # All locators remain in the sealed state and in ToolRequest grants.
+        # Only a host-installed canonical catalog can make older ones discoverable.
+        artifacts = projected["artifact_refs"]
+        projected["artifact_count"] = len(artifacts)
+        projected["artifact_refs_digest"] = hashlib.sha256(_json(artifacts).encode()).hexdigest()
+        projected["artifact_refs"] = artifacts[-8:]
+        projected["artifact_inventory_navigation"] = {
+            "tool": "ArtifactList", "offset": 0,
+            "authority": "locators_only", "source_contents_inspected": False,
+        }
     # Keep older requests unchanged when the host supplied no target. A target
     # is actionable diagnosis; an absent one adds no information to context.
     for item in projected["acceptance_progress"]:
@@ -367,7 +479,17 @@ def _model_continuity(state: ExecutionContinuityState) -> dict[str, JsonValue]:
         ).hexdigest()
         projected["accounted_subagent_run_ids"] = children[-8:]
     reads = projected.get("source_read_progress", [])
+    history = projected.get("source_read_history", [])
+    pages = projected.get("source_read_pages", [])
+    if pages:
+        projected["source_read_pages"] = source_page_index_navigation(pages)
+    if history:
+        projected["source_read_history"] = source_page_history_navigation(history, reads)
     if reads:
+        if state.source_path_projection == "canonical-source-paths/v1":
+            from .context_source_progress import source_path_navigation
+
+            projected["source_path_navigation"] = source_path_navigation(reads)
         projected["source_read_progress_count"] = len(reads)
         projected["source_read_progress_digest"] = hashlib.sha256(_json(reads).encode()).hexdigest()
         # Shared qualifiers and column names are encoded once. Repeating them

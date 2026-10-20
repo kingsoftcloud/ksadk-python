@@ -1,29 +1,18 @@
-name: Prepare shared Web source candidate
-description: Build the exact companion Web commit for source-only Studio checks.
+name: Prepare reviewed Web candidate
+description: Verify the checked-in Web artifact used by both applications.
 runs:
   using: composite
   steps:
-    - name: Check out the companion source
-      uses: actions/checkout@v7
-      with:
-        repository: kingsoftcloud/ksadk-web
-        ref: 57f144bcef89b0e2d4a99472e264b278df0ec3a8
-        path: .cache/ksadk-web-candidate
-        persist-credentials: false
-    - name: Pack the companion source
+    - name: Verify the reviewed Web archive
       shell: bash
-      working-directory: .cache/ksadk-web-candidate
       run: |
-        npm ci
-        mkdir -p "$RUNNER_TEMP/ksadk-web-candidate"
-        npm pack --pack-destination "$RUNNER_TEMP/ksadk-web-candidate"
-        version=$(node -p 'require("./package.json").version')
-        tarball="$RUNNER_TEMP/ksadk-web-candidate/kingsoftcloud-ksadk-web-$version.tgz"
+        set -eu
+        python3 scripts/reviewed_web_assets.py check-archive
+        version=$(python3 scripts/reviewed_web_assets.py identity --field package_version)
+        artifact=$(python3 scripts/reviewed_web_assets.py identity --field artifact)
+        tarball="$GITHUB_WORKSPACE/ksadk/studio/react-ui/vendor/$artifact"
         if [ "$RUNNER_OS" = Windows ]; then tarball="$(cygpath -u "$tarball")"; fi
         test -f "$tarball"
+        echo "KSADK_WEB_VERSION=$version" >> "$GITHUB_ENV"
         echo "KSADK_WEB_TARBALL=$tarball" >> "$GITHUB_ENV"
-        echo 'Shared Web source: kingsoftcloud/ksadk-web@57f144bcef89b0e2d4a99472e264b278df0ec3a8 (0.3.13). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
-      env:
-        # The candidate's build:ksadk script uses POSIX VAR=value syntax.
-        # npm invokes scripts through cmd.exe on Windows unless this is set.
-        npm_config_script_shell: ${{ runner.os == 'Windows' && 'C:\\Program Files\\Git\\bin\\bash.exe' || '' }}
+        echo 'Verified the manifest-pinned Web source archive; this is not registry release evidence.' >> "$GITHUB_STEP_SUMMARY"

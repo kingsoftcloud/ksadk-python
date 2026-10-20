@@ -56,6 +56,7 @@ class NativeEventProjection:
         self.seq = 0
         self._drafts: dict[tuple[str, str], tuple[str, str]] = {}
         self._summaries: dict[tuple[str, str], tuple[str, str]] = {}
+        self._provider_thinking: dict[tuple[str, str], tuple[str, str]] = {}
         self._pending_tools: dict[str, tuple[tuple[str, str, str], ...]] = {}
         self._waiting_tools: dict[str, list[tuple[str, str, str]]] = {}
         self._tool_displays: dict[str, dict] = {}
@@ -116,6 +117,11 @@ class NativeEventProjection:
             return ContentSnapshot(parts=(TextContent(part_id="text", text=text),))
 
         def close_drafts(operation_key=None, *, retire=False):
+            for key, (item, text) in tuple(self._provider_thinking.items()):
+                if operation_key is None or key[0] == operation_key:
+                    emit(ItemCompleted, item_id=item, item_kind="reasoning",
+                         snapshot=text_snapshot(text), metadata={"provider_reasoning": True})
+                    self._provider_thinking.pop(key)
             for key, (item, text) in tuple(self._summaries.items()):
                 if operation_key is None or key[0] == operation_key:
                     emit(ItemCompleted, item_id=item, item_kind="reasoning",
@@ -182,22 +188,26 @@ class NativeEventProjection:
 
         if kind == "run.started":
             emit(RunStarted, status="running")
-        elif kind == "thinking.summary.delta":
+        elif kind in {"thinking.summary.delta", "thinking.provider.delta"}:
+            provider = kind == "thinking.provider.delta"
+            segments = self._provider_thinking if provider else self._summaries
+            metadata = {"provider_reasoning": True} if provider else {"public_summary": True}
             key = (str(payload["request_id"]), str(payload["attempt_id"]))
             text = str(payload["text"])
-            if key not in self._summaries:
+            if key not in segments:
                 item = stable_item_id(
-                    "ksadk", self.scope_id, native.turn_id, *key, "public-summary"
+                    "ksadk", self.scope_id, native.turn_id, *key,
+                    "provider-reasoning" if provider else "public-summary"
                 )
                 emit(ItemStarted, item_id=item, item_kind="reasoning", phase="commentary",
-                     initial=text_snapshot(text), metadata={"public_summary": True})
-                self._summaries[key] = (item, text)
+                     initial=text_snapshot(text), metadata=metadata)
+                segments[key] = (item, text)
             else:
-                item, previous = self._summaries[key]
+                item, previous = segments[key]
                 emit(ItemUpdated, item_id=item, item_kind="reasoning", op="append",
                      update=TextContent(part_id="text", text=text),
-                     metadata={"public_summary": True})
-                self._summaries[key] = (item, previous + text)
+                     metadata=metadata)
+                segments[key] = (item, previous + text)
         elif kind == "text.delta":
             # Public assistant content remains separate from explicit summary parts.
             key = (str(payload["request_id"]), str(payload["attempt_id"]))

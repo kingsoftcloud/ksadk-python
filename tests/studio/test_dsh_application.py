@@ -1,4 +1,6 @@
 import asyncio
+from contextlib import asynccontextmanager
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -142,6 +144,72 @@ def test_core_proxy_drops_stale_studio_cookies_but_keeps_core_session(applicatio
 
     assert response.status_code == 200
     assert observed[0][2] == "dsh_core_session=core-token"
+
+
+_CURRENT_CORE_COOKIE = "dsh-auth-GdnvWnHsqPBuURQ6GdTsylBQ2BjQ73m51nwsCdhyxQg"
+
+
+def _populate_core_sessions(client):
+    client.cookies.set("agentkit_studio_session", "test-session")
+    # Browser cookies are shared across loopback ports. Each prior Core
+    # authority can leave a distinct signed-session cookie behind.
+    for index in range(100):
+        client.cookies.set(f"dsh-auth-obsolete-{index}", "x" * 200)
+    client.cookies.set(_CURRENT_CORE_COOKIE, "current-core-session")
+    client.cookies.set("plugin-preference", "retained")
+
+
+def test_core_proxy_forwards_only_current_authority_auth_cookie(application):
+    client, _, observed = application
+    _populate_core_sessions(client)
+
+    assert client.get("/studio-core/plugins/events").status_code == 200
+    assert observed[0][2] == (
+        f"{_CURRENT_CORE_COOKIE}=current-core-session; plugin-preference=retained"
+    )
+
+
+def test_core_proxy_never_uses_another_authoritys_cookie(application):
+    client, _, observed = application
+    _populate_core_sessions(client)
+    client.cookies.delete(_CURRENT_CORE_COOKIE)
+
+    assert client.get("/studio-core/plugins/events").status_code == 200
+    assert observed[0][2] == "plugin-preference=retained"
+
+
+def test_core_websocket_filters_stale_authority_cookies(application, monkeypatch):
+    client, _, _ = application
+    _populate_core_sessions(client)
+    headers = []
+    closed = Event()
+
+    class Upstream:
+        subprotocol = None
+
+        async def __aiter__(self):
+            yield "ready"
+
+        async def send(self, _message):
+            pass
+
+    @asynccontextmanager
+    async def connect(_url, **kwargs):
+        headers.append(kwargs["extra_headers"])
+        try:
+            yield Upstream()
+        finally:
+            closed.set()
+
+    monkeypatch.setattr("websockets.legacy.client.connect", connect)
+    with client.websocket_connect(
+        "/api/channel", headers={"Origin": "http://testserver"}
+    ) as websocket:
+        assert websocket.receive_text() == "ready"
+        assert closed.wait(3)
+    assert headers == [{"Cookie": (
+        f"{_CURRENT_CORE_COOKIE}=current-core-session; plugin-preference=retained"
+    )}]
 
 
 def test_websocket_checks_authentication_before_connecting(application):

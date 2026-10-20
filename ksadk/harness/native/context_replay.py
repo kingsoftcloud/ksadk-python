@@ -77,7 +77,8 @@ def reset_steered_replay(before, updated, configuration):
 
     previous = configuration.with_task_contract(TaskContract.model_validate(before.task_contract))
     current = configuration.with_task_contract(TaskContract.model_validate(updated.task_contract))
-    reexpanded = bool(before.compaction_history.get("count", 0))
+    reexpanded = bool(before.compaction_history.get("count", 0)
+                      or before.compaction_history.get("inherited_summary_source"))
     catalog_changed = model_tool_catalog(before, previous) != model_tool_catalog(updated, current)
     if not reexpanded and not catalog_changed:
         return updated, None

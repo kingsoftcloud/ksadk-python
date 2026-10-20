@@ -20,6 +20,7 @@ from ksadk.studio.contracts import (
     Instructions,
     ModelParameters,
     ResourceDescriptor,
+    RuntimeRef,
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.resource_catalog import LocalResourceCatalog
@@ -186,6 +187,14 @@ def list_agent_templates() -> list[dict]:
             "recommended": False,
             "steps": ["定义目标", "绑定能力", "生成 Prompt", "检查并创建"],
         },
+        {
+            "id": "coding",
+            "name": "Native 编码 Agent",
+            "description": "绑定工作区工具、命令与浏览器验证 Skill，执行开发、修复和验收。",
+            "category": "development",
+            "recommended": False,
+            "steps": ["定义目标", "绑定能力", "检查指令", "检查并创建"],
+        },
     ]
 
 
@@ -193,6 +202,7 @@ def default_agent_spec(
     template: str,
     *,
     description: str = "",
+    runtime_type: str | None = None,
 ) -> AgentSpec:
     if template == "blank":
         return AgentSpec(
@@ -210,7 +220,7 @@ def default_agent_spec(
             description=description or "执行深度调研并输出带来源引用的研究报告。",
             instructions=prompt,
             execution=ExecutionSpec(
-                strategy="plan-act-observe",
+                strategy="direct" if runtime_type == "harness" else "plan-act-observe",
                 max_steps=40,
                 timeout_seconds=900,
             ),
@@ -307,6 +317,10 @@ def compose_blank_agent(
         description=description,
         instructions=Instructions(system=system_prompt, task=task_prompt),
         bindings=bindings,
+        # Carry the wizard's chosen runtime from compose onward so the spec
+        # validates Harness-specific fields (timeoutSeconds=0) immediately,
+        # instead of waiting for submitWizard to inject it after compose.
+        runtime=RuntimeRef(type=request.runtime_type) if request.runtime_type in {"harness", "codex"} else None,
         execution=ExecutionSpec(
             strategy=request.execution_strategy,
             max_steps=request.max_steps,
@@ -422,6 +436,15 @@ def compose_research_agent(
     )
 
     settings = _DEPTH_SETTINGS[request.depth]
+    # When the wizard explicitly selects Harness runtime, preserve the user's
+    # timeout_seconds (including 0 for Native unlimited semantics) through
+    # compose instead of replacing it with the depth default. When runtime_type
+    # is None (legacy/omitted), keep the depth default unchanged.
+    research_timeout = (
+        request.timeout_seconds
+        if request.runtime_type == "harness"
+        else settings["timeout_seconds"]
+    )
     bindings = AgentBindings(
         model_profile_id=model.resource_id,
         model_profile_ids=selected_model_ids,
@@ -444,10 +467,17 @@ def compose_research_agent(
         or f"围绕“{_research_goal(request)[:160]}”执行深度调研并形成可核验结论。",
         instructions=instructions,
         bindings=bindings,
+        # Carry the wizard's chosen runtime from compose onward, same as blank.
+        # Only harness/codex can be emitted without extra required fields
+        # (providerRef for plugin, projectPath/entryPoint for adk/langgraph).
+        # Those runtimes still need submitWizard to inject the full RuntimeRef.
+        runtime=RuntimeRef(type=request.runtime_type) if request.runtime_type in {"harness", "codex"} else None,
         execution=ExecutionSpec(
-            strategy="plan-act-observe",
+            # Native owns its planning loop; this field selects Provider
+            # admission, not the research method expressed in instructions.
+            strategy="direct" if request.runtime_type == "harness" else "plan-act-observe",
             max_steps=settings["max_steps"],
-            timeout_seconds=settings["timeout_seconds"],
+            timeout_seconds=research_timeout,
         ),
         context=ContextSpec(
             max_input_tokens=65536,

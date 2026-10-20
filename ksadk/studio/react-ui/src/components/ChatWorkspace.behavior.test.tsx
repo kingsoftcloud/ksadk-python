@@ -97,8 +97,6 @@ vi.mock("./ConfirmDialog", () => ({ ConfirmDialog: () => <div data-testid="confi
 
 describe("ChatWorkspace shared conversation composition", () => {
   beforeEach(() => {
-    // Preserve durable-ledger behavior within a case, without prior cases' input.
-    new OutboxStore().clear();
     vi.restoreAllMocks();
     delete (mocks.chat.uiCapabilities as Record<string, unknown>).StudioRunReceiptQuery;
     delete (mocks.chat.uiCapabilities as Record<string, unknown>).SteerRun;

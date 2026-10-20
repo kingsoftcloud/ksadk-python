@@ -41,9 +41,9 @@ describe("CreatePage quick authoring", () => {
       if (path === "/api/v1/credentials/OPENAI_API_KEY") {
         return response({ configured: true });
       }
-      if (path === "/api/v1/agent-templates/blank:compose") {
+      if (["/api/v1/agent-templates/blank:compose", "/api/v1/agent-templates/coding:compose"].includes(path)) {
         return response({
-          templateId: "blank",
+          templateId: path.includes("coding") ? "coding" : "blank",
           spec: {
             instructions: { system: "Composed system prompt.", task: "" },
             bindings: {
@@ -86,6 +86,25 @@ describe("CreatePage quick authoring", () => {
       expect(request.spec.instructions.system).toContain("可靠的通用助手");
       expect(request.spec.bindings.modelProfileIds).toEqual([model.resourceId]);
       expect(request.spec.execution).toMatchObject({ maxSteps: 100, timeoutSeconds: 600 });
+    });
+  });
+
+  it("keeps the coding preset instructions in Harness one-click creation", async () => {
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await user.click(screen.getByRole("combobox", { name: "Runtime" }));
+    await user.click(screen.getByRole("option", { name: "通用智能体 · KsADK Harness" }));
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "Implement the requested project.");
+    const create = screen.getByRole("button", { name: "一键创建" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await user.click(create);
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      expect(call).toBeTruthy();
+      const request = JSON.parse(String(call?.[1]?.body));
+      expect(request.template).toBe("coding");
+      expect(request.spec.instructions.system).toBe("Composed system prompt.");
+      expect(request.spec.execution.timeoutSeconds).toBe(0);
     });
   });
 
@@ -189,7 +208,7 @@ describe("CreatePage quick authoring", () => {
     const base = mockedFetch.getMockImplementation()!;
     mockedFetch.mockImplementation(async (input, init) => {
       const result = await base(input, init);
-      if (String(input) === "/api/v1/agent-templates/blank:compose") {
+      if (String(input) === "/api/v1/agent-templates/coding:compose") {
         const payload = await result.json();
         payload.spec.bindings.tools = [{ resourceId: "tool-review" }];
         payload.spec.capabilities = { tools: ["tool-review"] };
@@ -222,6 +241,9 @@ describe("CreatePage quick authoring", () => {
       const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
       const request = JSON.parse(String(call?.[1]?.body));
       expect(request.runtimeType).toBe("harness");
+      expect(request.template).toBe("coding");
+      expect(request.spec.execution.timeoutSeconds).toBe(0);
+      expect(mockedFetch.mock.calls.some(([path]) => path === "/api/v1/agent-templates/coding:compose")).toBe(true);
       expect(request.spec.security.allowedPermissions).toContain("process:host-user");
       expect(request.spec.bindings.tools).toEqual([{ resourceId: "tool-review" }]);
       expect(request.spec.capabilities.tools).toEqual(["tool-review"]);
@@ -375,6 +397,7 @@ describe("CreatePage quick authoring", () => {
         executionStrategy: "direct",
         maxSteps: 100,
         timeoutSeconds: 600,
+        runtimeType: "codex",
       });
     });
 

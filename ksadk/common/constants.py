@@ -2,8 +2,10 @@
 通用常量定义
 """
 
-# Serverless Endpoint (默认内网预发环境)
-DEFAULT_SERVERLESS_ENDPOINT = "https://control.example.test"
+import os
+
+# Private deployments must provide their own endpoint explicitly.
+DEFAULT_SERVERLESS_ENDPOINT = os.environ.get("KSADK_SERVERLESS_ENDPOINT", "")
 
 # KS3 Region 映射表
 # 用户输入的 region (如 cn-beijing-6) -> (外网endpoint, 内网endpoint, region_code)

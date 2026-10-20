@@ -1,0 +1,18 @@
+{
+  "kind": "unpublished-reviewed-source-candidate",
+  "source_commit": "cee73b55e23254984b4681198fd385eb3f2647bb",
+  "source_archive_sha256": "43b885b77782962bd6be8c5cc823a737b642279eff67714a5d392878c1cb127c",
+  "package_name": "@kingsoftcloud/ksadk-web",
+  "package_version": "0.3.13",
+  "registry_release": false,
+  "scope": "Studio shared library and built-in Hosted UI from one reviewed source; unpublished",
+  "verification": {
+    "shared_tests": 939,
+    "library_build": "passed"
+  },
+  "artifact": "ksadk-web-cee73b55e232-full.tgz",
+  "artifact_sha256": "e8fcb3768bd071c2aa05f7844be3a796985730a1a910846011128971f628c523",
+  "artifact_integrity": "sha512-T9AOgxvxrkxcww8lgX7oLfOZpkVoT0QKMsao68ZtoHLojRE83uxgniGmyc7OUaw075rsM+kynq+pjiX8p/wJ5w==",
+  "library_tree_sha256": "ed78d145cb832bbb61f384dd5ad5f89d76801819b9dea6aedfaa072003294611",
+  "hosted_tree_sha256": "3dc887deeb70ae43f6c1a8e24b3d04191ed2fbbe2fa7b0d05768ed490f1b7b61"
+}

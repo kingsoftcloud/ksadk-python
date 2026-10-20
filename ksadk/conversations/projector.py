@@ -326,6 +326,7 @@ def project_conversation_item(
             }
     if isinstance(event, (RunCompleted, RunFailed, RunCanceled, RunInterrupted)):
         payload.update(_run_outcome_payload(event.source.metadata))
+    payload.update(public_item_presentation(event, kind))
     if kind == "tool_call" and event.source.metadata.get("engine_kind") == "native":
         # Native public results contain a sealed execution status, not arbitrary
         # business output. An approval receipt is nonterminal even in old logs
@@ -352,6 +353,27 @@ def project_conversation_item(
         capability_ref=capability_ref,
         native_ref=_native_ref(event),
     )
+
+
+def public_item_presentation(event: RuntimeEvent, kind: str) -> dict[str, Any]:
+    """Allowlisted display metadata shared by live and persisted projections.
+
+    These fields select presentation only. Never publish arbitrary source
+    metadata or infer authorized thinking from an unlabelled reasoning item.
+    """
+    metadata = event.source.metadata
+    if kind == "tool_call":
+        from ksadk.harness.tool_display_contract import safe_tool_display
+
+        display = safe_tool_display(metadata.get("tool_display"))
+        return {"toolDisplay": display} if display is not None else {}
+    if kind == "reasoning":
+        return {"presentationSource": (
+            "public_summary" if metadata.get("public_summary") is True
+            else "provider_reasoning" if metadata.get("provider_reasoning") is True
+            else "reasoning"
+        )}
+    return {}
 
 
 def _run_outcome_payload(metadata: Mapping[str, Any]) -> dict[str, Any]:

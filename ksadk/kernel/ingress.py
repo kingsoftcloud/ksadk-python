@@ -942,14 +942,26 @@ def _build_kernel_router() -> Any:
             except Exception:  # pragma: no cover - defensive
                 return False
 
+        from ksadk.events.sse_heartbeat import heartbeat_seconds, with_heartbeats
+
+        hosted_stream = _is_hosted()
+        response_headers.update({"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
         async def generator():
-            async for seq, envelope in subscribe_projected(
-                session_id,
-                trusted=trusted,
-                after_seq=after_seq,
-                should_stop=_client_disconnected,
-                timeout=subscribe_timeout,
-            ):
+            source = subscribe_projected(
+                session_id, trusted=trusted, after_seq=after_seq,
+                should_stop=_client_disconnected, timeout=subscribe_timeout,
+            )
+            async for item in with_heartbeats(source, seconds=heartbeat_seconds()):
+                if item is None:
+                    if hosted_stream:
+                        # Heartbeats do not extend a permit's authorization.
+                        await verifier.verify(trusted.permit, subscription,
+                                              "subscribe_events", kernel._clock())
+                    yield ": heartbeat\n\n"
+                    continue
+                seq, envelope = item
+
                 payload = (
                     envelope.payload
                     if isinstance(envelope, dict)

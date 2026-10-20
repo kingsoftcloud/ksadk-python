@@ -15,6 +15,7 @@ from dataclasses import replace
 from typing import Any, Literal
 
 from ksadk.harness.artifact_adapters.native_page_budget import ArtifactPagePolicy
+from ksadk.harness.native.child_media import resolve_child_user_input
 from ksadk.harness.native.completion import (
     AcceptanceItem,
     CompletionCandidate,
@@ -48,6 +49,8 @@ from ksadk.harness.subagent_adapters.native_background_child import NativeBackgr
 from ksadk.harness.subagent_adapters.native_child import ChildBindings, NativeChildToolPort
 from ksadk.harness.subagent_adapters.native_child_continuation import bind_child_continuation
 from ksadk.harness.subagent_adapters.native_child_result import NativeChildResultPort
+from ksadk.studio.contracts import ResolvedModel
+from ksadk.studio.model_client import OpenAICompatibleModelClient
 from ksadk.studio.native_child_mcp import StudioChildMcp
 from ksadk.studio.native_child_skills import StudioChildSkills
 from ksadk.studio.native_child_workspace import StudioChildFileWorkspaces
@@ -55,6 +58,10 @@ from ksadk.studio.native_final_shape import (
     final_shape_contract_description,
     json_object_submission_schema,
     requested_final_shape,
+)
+from ksadk.studio.native_model_port import (
+    StudioNativeModelPort,
+    native_model_profile_for_subagent,
 )
 
 _READ_ONLY_WORKSPACE_TOOLS = frozenset(
@@ -160,6 +167,40 @@ def required_subagent_effect_timeout(resolved_agent_spec: Mapping[str, Any]) -> 
     if maximum > 3585:
         raise ValueError("native_studio_subagent_timeout_exceeds_effect_lease")
     return maximum + 15.0
+
+
+def _resolved_subagent_models(
+    resolved_agent_spec: Mapping[str, Any],
+) -> dict[str, ResolvedModel]:
+    """Read the Build-sealed per-role child models. Empty when no role selects one.
+
+    These are independent of the parent failover chain: a child model is a host
+    selection sealed in the Build, not a runtime fallback. Cold restore re-reads
+    the same sealed map, so a host catalog change after the Build cannot drift a
+    resumed child to a different model.
+
+    Key ABSENCE (neither ``subAgentModels`` nor ``sub_agent_models``) is the legacy
+    shape and yields an empty map. A key that is PRESENT but null/non-Mapping is a
+    malformed Build and fails closed — a present null must not be silently
+    normalized to the legacy empty shape, otherwise a damaged map could hide an
+    explicit selection or orphan a role. An explicit ``model_profile_id`` whose
+    role has no sealed entry is an inconsistent Build that must also fail closed
+    (see ``build_studio_native_subagent_port``), never silently inherit the parent.
+    """
+    _absent = object()
+    raw = resolved_agent_spec.get("subAgentModels", _absent)
+    if raw is _absent:
+        raw = resolved_agent_spec.get("sub_agent_models", _absent)
+    if raw is _absent:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("native_studio_subagent_model_binding_invalid")
+    models: dict[str, ResolvedModel] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str) or not isinstance(entry, Mapping):
+            raise ValueError("native_studio_subagent_model_binding_invalid")
+        models[name] = ResolvedModel.model_validate(_thaw_build_value(entry))
+    return models
 
 
 class _ChildToolMux:
@@ -371,12 +412,16 @@ def build_studio_native_subagent_port(
     context_planner: ContextPlanner | None = None,
     artifacts_factory: Callable[[RunScope], ArtifactPort] | None = None,
     artifact_search: bool = False,
+    artifact_catalog: bool = False,
     artifact_page_policy: ArtifactPagePolicy | None = None,
     source_read_policy=None,
     max_tool_result_bytes: int | None = None,
     file_workspaces: StudioChildFileWorkspaces | None = None,
     child_skills: StudioChildSkills | None = None,
     child_mcp: StudioChildMcp | None = None,
+    model_client: OpenAICompatibleModelClient | None = None,
+    build_id: str | None = None,
+    streaming_support: Callable[[ResolvedModel], bool] | None = None,
 ) -> StudioNativeSubagentPort | None:
     bindings = _bindings_from_build(resolved_agent_spec)
     if not bindings:
@@ -384,6 +429,48 @@ def build_studio_native_subagent_port(
     by_name = {item.name: item for item in bindings}
     if len(by_name) != len(bindings):
         raise ValueError("native_studio_subagent_role_duplicate")
+    sub_agent_models = _resolved_subagent_models(resolved_agent_spec)
+    # An explicit model_profile_id is a host assertion that the selected model is
+    # sealed in the Build. A missing, malformed or inconsistent sealed map must
+    # fail closed here rather than silently inherit the parent — turning an
+    # explicit selection into implicit parent inheritance would let a damaged or
+    # tampered Build downgrade a child to the parent model. Legacy roles with no
+    # model_profile_id keep inheriting the parent unchanged.
+    for binding in bindings:
+        if binding.model_profile_id is not None and binding.name not in sub_agent_models:
+            raise ValueError("native_studio_subagent_model_binding_missing")
+    if sub_agent_models:
+        unknown_models = set(sub_agent_models) - set(by_name)
+        if unknown_models:
+            raise ValueError("native_studio_subagent_model_role_unbound")
+        if model_client is None or not build_id:
+            raise ValueError("native_studio_subagent_model_binding_unavailable")
+    # Per-role model selection. A role whose model is sealed in the Build gets a
+    # child ModelProfile + ModelPort projected from that sealed ResolvedModel
+    # (its own reasoning effort, wire API, image/input window and token budget).
+    # A role without a selection inherits the parent model/profile unchanged.
+    role_profiles: dict[str, ModelProfile] = {}
+    role_models: dict[str, ModelPort] = {}
+    for binding in bindings:
+        sealed_model = sub_agent_models.get(binding.name)
+        if sealed_model is None:
+            role_profiles[binding.name] = profile
+            role_models[binding.name] = model
+            continue
+        child_profile = native_model_profile_for_subagent(
+            sealed_model,
+            resolved_agent_spec,
+            build_id=build_id,
+            streaming_support=streaming_support,
+        )
+        role_profiles[binding.name] = child_profile
+        role_models[binding.name] = StudioNativeModelPort.for_subagent(
+            model_client,
+            scope=scope,
+            resolved_model=sealed_model,
+            resolved_agent_spec=resolved_agent_spec,
+            profile_digest=child_profile.digest,
+        )
     by_tool = {item.name: item for item in definitions}
     writing_roles = set()
     skill_roles = {
@@ -435,7 +522,16 @@ def build_studio_native_subagent_port(
 
     async def factory(child: ChildRunRequest) -> ChildBindings:
         binding = by_name[child.role.role_id]
+        child_profile = role_profiles[child.role.role_id]
+        child_model_port = role_models[child.role.role_id]
         parent = store.load(child.parent_scope, child.parent_run_id)
+        # Resolve host-authorized parent user input media into the child's
+        # typed user input. A text-only legacy request keeps its original
+        # plain-text goal identity; unauthorized or forged references, or an
+        # image-incapable child role, fail closed here before any model work.
+        user_input = resolve_child_user_input(
+            parent, child.media_refs, child_profile=child_profile, task=child.task,
+        )
         schema = binding.output_schema
         declared_object = child.output_format == "json_object"
         if child.output_contract == "parent" and not parent.task_contract:
@@ -533,7 +629,7 @@ def build_studio_native_subagent_port(
             final_submission_payload_key="output" if object_submission else None,
         )
         configuration = RunConfiguration(
-            profile=profile,
+            profile=child_profile,
             contract=contract,
             tools=granted_definitions,
             instructions=(
@@ -577,7 +673,7 @@ def build_studio_native_subagent_port(
         return ChildBindings(
             store=store,
             configuration=configuration,
-            model=model,
+            model=child_model_port,
             verifier=(
                 _ChildOutputSchemaVerifier(schema=schema, child_run_id=child.child_run_id)
                 if schema is not None
@@ -597,6 +693,7 @@ def build_studio_native_subagent_port(
                 if artifacts_factory is not None and granted_ports else None
             ),
             artifact_search=artifact_search,
+            artifact_catalog=artifact_catalog,
             artifact_search_policy=(
                 source_read_policy.artifact_search_policy(
                     store, workspace_revision=(parent.workspace_revision
@@ -611,6 +708,7 @@ def build_studio_native_subagent_port(
                     workspace_tracking=workspace is not None,
                 ) if source_read_policy is not None else artifact_page_policy
             ),
+            user_input=user_input,
         )
 
     assembly_digest = "sha256:" + _sha256(
@@ -652,6 +750,31 @@ def build_studio_native_subagent_port(
                 "background_guidance_policy": "boundary-guide/v1",
                 "background_continuation_policy": "parent-accounted-session-turn/v1",
                 "profile": profile.model_dump(mode="json"),
+                **(
+                    {
+                        "sub_agent_models": {
+                            name: _sha256(
+                                json.dumps(
+                                    {
+                                        "model": sub_agent_models[name].model,
+                                        "endpoint_url": sub_agent_models[name].endpoint_url,
+                                        "wire_api": sub_agent_models[name].wire_api,
+                                        "reasoning_effort": (
+                                            sub_agent_models[name].parameters.reasoning_effort
+                                        ),
+                                        "thinking_mode": (
+                                            sub_agent_models[name].parameters.thinking_mode
+                                        ),
+                                    },
+                                    sort_keys=True,
+                                    ensure_ascii=False,
+                                )
+                            )[:16]
+                            for name in sorted(sub_agent_models)
+                        }
+                    }
+                    if sub_agent_models else {}
+                ),
                 "tools": [
                     by_tool[name].model_dump(mode="json")
                     for name in sorted({name for binding in bindings for name in binding.tools})

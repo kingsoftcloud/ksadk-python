@@ -103,6 +103,19 @@ class StudioPluginKernelAdapter(PluginKernelAdapter):
             await self._release_failed_binding(handle.session_id)
             raise
 
+    async def prepare_native_notification(
+        self, handle: RunHandle, *, expected_adapter: NativeRuntimeAdapter,
+    ) -> RunHandle:
+        """Give an already admitted wake the same provider envelope as user runs."""
+        delegate = await self._bind_delegate(handle.session_id)
+        if delegate is not expected_adapter:
+            raise ValueError("native_notification_activation_changed")
+        await self._prepare_restore_handle(delegate, handle)
+        snapshot = delegate.snapshot(handle)
+        if snapshot.notification_command is None:
+            raise ValueError("native_notification_command_missing")
+        return self._outer_handle(handle)
+
     def capabilities(self):  # type: ignore[no-untyped-def]
         # Studio wires a durable Workspace store before activating Harness.
         if self._delegate is None and self._runtime_type == "harness":

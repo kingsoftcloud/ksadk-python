@@ -6,6 +6,8 @@ from ksadk.configs.env_registry_studio import STUDIO_ENV_VAR_REGISTRY_ITEMS
 from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+    EnvVarSpec("KSADK_SERVERLESS_ENDPOINT", "cloud", "Explicit endpoint for a private serverless deployment."),
+    EnvVarSpec("KSADK_E2B_KILL_TIMEOUT_SECONDS", "sandbox", "E2B termination request deadline in seconds.", "10"),
     EnvVarSpec(
         "KSADK_TRAFFIC_SOURCE",
         "cloud",
@@ -13,16 +15,29 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "agentkit",
     ),
     *STUDIO_ENV_VAR_REGISTRY_ITEMS,
-    EnvVarSpec("KSADK_DB_CONNECT_SECONDS", "sessions", "Database connect budget in seconds.", ".5"),
-    EnvVarSpec("KSADK_DB_READ_ACQUIRE_SECONDS", "sessions", "Database read acquire budget in seconds.", ".3"),
-    EnvVarSpec("KSADK_DB_READ_SQL_SECONDS", "sessions", "Database read sql budget in seconds.", "1"),
-    EnvVarSpec("KSADK_DB_WRITE_ACQUIRE_SECONDS", "sessions", "Database write acquire budget in seconds.", ".5"),
-    EnvVarSpec("KSADK_DB_WRITE_SQL_SECONDS", "sessions", "Database write sql budget in seconds.", "3"),
-    EnvVarSpec("KSADK_DB_WRITE_OPERATION_SECONDS", "sessions", "Database write operation budget in seconds.", "5"),
-    EnvVarSpec("KSADK_DB_LOCK_SECONDS", "sessions", "Database lock budget in seconds.", ".5"),
-    EnvVarSpec("KSADK_DB_CLEANUP_SECONDS", "sessions", "Database cleanup budget in seconds.", "1"),
-    EnvVarSpec("KSADK_DB_REPLAY_OPERATION_SECONDS", "sessions", "Database replay operation budget in seconds.", "30"),
-    EnvVarSpec("KSADK_DB_REPLAY_SQL_SECONDS", "sessions", "Database replay sql budget in seconds.", "3"),
+    EnvVarSpec("KSADK_KERNEL_STREAM_HEARTBEAT_SECONDS", "server",
+               "Transport-only authenticated Kernel SSE heartbeat interval; positive finite seconds.", "15"),
+    EnvVarSpec("KSADK_A2A_INBOUND_ADMISSION_SECONDS", "a2a", "Bounded recovery of the same inbound Task's Kernel command admission.", "60"),
+    EnvVarSpec("KSADK_A2A_CHECKPOINT_READY_SECONDS", "a2a", "Wait for a pending native checkpoint before publishing managed approval.", "45"),
+    EnvVarSpec("KSADK_A2A_INVOCATION_SECONDS", "a2a", "Default whole managed invocation budget; explicit RemoteAgentSpec timeout wins.", "600"),
+    EnvVarSpec("KSADK_DB_CONNECT_SECONDS", "sessions", "Database connect budget in seconds.", "2"),
+    EnvVarSpec("KSADK_DB_READ_ACQUIRE_SECONDS", "sessions", "Database read acquire budget in seconds.", "3"),
+    EnvVarSpec("KSADK_DB_READ_SQL_SECONDS", "sessions", "Database read sql budget in seconds.", "8"),
+    EnvVarSpec("KSADK_DB_WRITE_ACQUIRE_SECONDS", "sessions", "Database write acquire budget in seconds.", "3"),
+    EnvVarSpec("KSADK_DB_EVENT_OBSERVE_RECOVERY_SECONDS", "sessions", "Admitted A2A event read recovery budget in seconds.", "60"),
+    EnvVarSpec("KSADK_DB_CHECKPOINT_READ_OPERATION_SECONDS", "sessions", "Native checkpoint read budget including the saver queue and one transient read retry.", "45"),
+    EnvVarSpec("KSADK_DB_WRITE_SQL_SECONDS", "sessions",
+               "Database write sql budget in seconds.", "15"),
+    EnvVarSpec("KSADK_DB_WRITE_OPERATION_SECONDS", "sessions",
+               "Database write operation budget in seconds.", "30"),
+    EnvVarSpec("KSADK_HISTORY_EVENT_PAGE_BYTES", "sessions",
+               "Raw HTTP event page byte target; whole facts are preserved.", "524288"),
+    EnvVarSpec("KSADK_DB_LOCK_SECONDS", "sessions", "Database lock budget in seconds.", "2"),
+    EnvVarSpec("KSADK_DB_CLEANUP_SECONDS", "sessions", "Database cleanup budget in seconds.", "2"),
+    EnvVarSpec("KSADK_DB_REPLAY_OPERATION_SECONDS", "sessions", "Database replay operation budget in seconds.", "60"),
+    EnvVarSpec("KSADK_DB_REPLAY_SQL_SECONDS", "sessions", "Database replay sql budget in seconds.", "10"),
+    EnvVarSpec("KSADK_HISTORY_REQUEST_SECONDS", "server", "Finite metadata/history HTTP deadline in seconds.", "15"),
+    EnvVarSpec("BUDGET_TIMEOUT", "server", "Compatibility alias of KSADK_HISTORY_REQUEST_SECONDS."),
     EnvVarSpec("KSADK_HISTORY_INITIAL_EVENTS", "sessions", "Initial history projection window (32–256 events).", "256"),
     EnvVarSpec("KSADK_HISTORY_READ_CONCURRENCY", "sessions", "Concurrent PostgreSQL history transfers per process (1–32).", "4"),
     EnvVarSpec(
@@ -544,7 +559,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_PERSISTENCE_PROBE_TIMEOUT",
         "sessions",
         "PostgreSQL persistence readiness timeout seconds.",
-        "2",
+        "5",
     ),
     EnvVarSpec("KSADK_PG_EVENTS_TABLE", "sessions", "Internal PostgreSQL events table constant."),
     EnvVarSpec(
@@ -740,8 +755,8 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_SESSION_CONNECT_TIMEOUT",
         "sessions",
-        "Conversation PostgreSQL connection timeout seconds.",
-        "5",
+        "Legacy alias of KSADK_DB_CONNECT_SECONDS.",
+        "2",
     ),
     EnvVarSpec(
         "KSADK_SESSION_DSN", "sessions", "Conversation session database DSN.", sensitive=True
@@ -765,8 +780,8 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_SESSION_PG_CONNECT_TIMEOUT",
         "sessions",
-        "Legacy PostgreSQL session connection timeout seconds.",
-        "5",
+        "Legacy alias of KSADK_DB_CONNECT_SECONDS.",
+        "2",
     ),
     EnvVarSpec(
         "KSADK_SKILLS_MODE", "skills", "Skill loading mode: auto, local, or sandbox.", "auto"
@@ -927,8 +942,8 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_WEB_VERSION",
         "web",
-        "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.13",
+        "Optional build assertion; must match the reviewed Web source manifest.",
+        "",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

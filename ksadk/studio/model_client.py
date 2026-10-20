@@ -39,6 +39,7 @@ from ksadk.studio.model_responses_content import ResponsesContent
 from ksadk.studio.model_usage import AnthropicUsageAccumulator, provider_usage
 from ksadk.studio.model_wire_failure import ModelResponseError, provider_error
 from ksadk.studio.model_wire_identity import (
+    IncompleteToolCallFrame,
     ModelWireIdentity,
     chat_choices,
     decode_model_frame,
@@ -304,8 +305,8 @@ def _effective_reasoning_effort(
 ) -> str | None:
     """Resolve effort with the same precedence as mature agent runtimes.
 
-    Explicit run/session selection wins.  Only when it is absent may the
-    endpoint compatibility profile supply a narrow controller-turn default.
+    Explicit run/session selection wins, followed by the Agent's pinned
+    default and then the endpoint's narrow controller-turn default.
     """
 
     profile = compatibility_profile or provider_compat.compat_profile(
@@ -313,7 +314,8 @@ def _effective_reasoning_effort(
     )
     if not profile.supports_reasoning_effort:
         return None
-    requested = explicit or _delegation_reasoning_effort(model, tools, profile)
+    requested = (explicit or model.parameters.reasoning_effort
+                 or _delegation_reasoning_effort(model, tools, profile))
     if not requested:
         return None
     from ksadk.model_proxy.transform import clamp_reasoning_effort
@@ -902,7 +904,7 @@ class OpenAICompatibleModelClient:
         parallel_tool_calls: bool | None = None,
         output_token_parameter: Literal["max_tokens", "max_completion_tokens"] | None = None,
         compatibility_profile: provider_compat.CompatProfile | None = None,
-        thinking_mode: Literal["disabled"] | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
     ) -> ModelResponse:
         await self.network_guard.check(model.endpoint_url, network_policy)
         credential = self.credential_resolver.resolve(model.credential_ref)
@@ -967,7 +969,7 @@ class OpenAICompatibleModelClient:
         # 预算不足以容纳思考预算时（如委派决策回合的 2048），必须关思考，
         # 否则始终思考的模型会把预算全花在 reasoning 上、零产出。
         self._apply_thinking_policy(payload, wire_api, profile, tools, effective_effort,
-                                    thinking_mode=thinking_mode)
+                                    thinking_mode=thinking_mode or model.parameters.thinking_mode)
         if wire_api not in {"responses", "anthropic"}:
             # Apply the complete endpoint/model policy after all host options,
             # so a late effort or thinking switch cannot reintroduce a field
@@ -1193,7 +1195,7 @@ class OpenAICompatibleModelClient:
         parallel_tool_calls: bool | None = None,
         output_token_parameter: Literal["max_tokens", "max_completion_tokens"] | None = None,
         compatibility_profile: provider_compat.CompatProfile | None = None,
-        thinking_mode: Literal["disabled"] | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
     ) -> AsyncIterator[ModelStreamChunk]:
         """Stream chat-completions deltas without buffering the response.
 
@@ -1280,7 +1282,7 @@ class OpenAICompatibleModelClient:
         effective_effort = _effective_reasoning_effort(model, tools, reasoning_effort, profile)
         self._apply_reasoning_effort(payload, "chat", effective_effort)
         self._apply_thinking_policy(payload, "chat", profile, tools, effective_effort,
-                                    thinking_mode=thinking_mode)
+                                    thinking_mode=thinking_mode or model.parameters.thinking_mode)
         payload = provider_compat.apply_chat_compat(payload, profile, model=model.model)
         self._apply_output_token_parameter(payload, "chat", output_token_parameter)
         headers = {
@@ -1491,9 +1493,7 @@ class OpenAICompatibleModelClient:
                         and not empty_output_limit_retry):
                     # An explicit non-success termination cannot authorize any
                     # partially assembled tool. Preserve its reason; do not
-                    # retry. Explicit empty-stream compatibility repair is
-                    # limited to output caps with no tool envelope. An unfilled
-                    # call under a success/missing reason
+                    # retry. An unfilled call under a success/missing reason
                     # still falls through to tool_stream.finish() and surfaces
                     # as a provider_retryable_error.
                     yield ModelStreamChunk(
@@ -1504,6 +1504,22 @@ class OpenAICompatibleModelClient:
                     return
                 try:
                     sealed_tools = tool_stream.finish()
+                except IncompleteToolCallFrame:
+                    # An unfilled tool call under a success/missing finish is
+                    # incomplete safe inference, not a hostile frame: zero
+                    # tool effects authorize one bounded retry. No argument is
+                    # fabricated to {} and no tool executes; reported usage is
+                    # preserved, never synthesized. This mirrors the
+                    # non-success short-circuit above but classifies the
+                    # attempt as provider_retryable instead of terminal, so a
+                    # genuine MODEL_RESPONSE_INVALID (identity/shape/late
+                    # mutation) stays non-retryable via the clause below.
+                    yield ModelStreamChunk(
+                        tool_calls=(), usage=latest_usage, done=True,
+                        finish_reason="provider_retryable_error",
+                        provider_request_id=provider_request_id,
+                    )
+                    return
                 except StudioError as error:
                     raise ModelResponseError(error, latest_usage) from None
                 calls = tuple(ToolCall(id=value.call_id, name=value.name, arguments=value.arguments)
@@ -1522,6 +1538,11 @@ class OpenAICompatibleModelClient:
                     final_text = repair.content
                     calls = tuple(repair.tool_calls)
                     latest_usage = repair.usage
+                    # A repaired explicit output-cap stream retains its original
+                    # terminal reason. Ordinary empty streams use the repair
+                    # reason so a truncated repair cannot become success.
+                    if not empty_output_limit_retry:
+                        pending_done_finish_reason = repair.finish_reason
                 if not calls and not textual_tool_detected:
                     _raise_for_repetitive_output(final_text)
                 remaining_text = final_text
@@ -1553,12 +1574,15 @@ class OpenAICompatibleModelClient:
         max_output_tokens: int | None = None,
         reasoning_effort: str | None = None,
         compatibility_profile: provider_compat.CompatProfile | None = None,
-        thinking_mode: Literal["disabled"] | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         parallel_tool_calls: bool | None = None,
         output_token_parameter: Literal["max_tokens", "max_completion_tokens"] | None = None,
     ) -> AsyncIterator[ModelStreamChunk]:
         """Adapt the native Responses SSE event stream to Harness chunks."""
+
+        if (thinking_mode or model.parameters.thinking_mode) == "enabled":
+            raise ValueError("model_thinking_mode_unsupported")
 
         await self.network_guard.check(model.endpoint_url, network_policy)
         credential = self.credential_resolver.resolve(model.credential_ref)
@@ -1764,7 +1788,7 @@ class OpenAICompatibleModelClient:
         max_output_tokens: int | None = None,
         reasoning_effort: str | None = None,
         compatibility_profile: provider_compat.CompatProfile | None = None,
-        thinking_mode: Literal["disabled"] | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         parallel_tool_calls: bool | None = None,
         output_token_parameter: Literal["max_tokens", "max_completion_tokens"] | None = None,
@@ -1788,7 +1812,7 @@ class OpenAICompatibleModelClient:
             payload, "anthropic", effective_effort,
         )
         self._apply_thinking_policy(payload, "anthropic", profile, tools, effective_effort,
-                                    thinking_mode=thinking_mode)
+                                    thinking_mode=thinking_mode or model.parameters.thinking_mode)
         headers = self._anthropic_headers(credential, payload)
         headers["Accept"] = "text/event-stream"
         timeout = httpx.Timeout(timeout_seconds, connect=min(10, timeout_seconds))
@@ -2039,8 +2063,16 @@ class OpenAICompatibleModelClient:
         profile: provider_compat.CompatProfile,
         tools: list[dict[str, Any]] | None,
         effort: str | None,
-        *, thinking_mode: Literal["disabled"] | None = None,
+        *, thinking_mode: Literal["enabled", "disabled"] | None = None,
     ) -> None:
+        if thinking_mode == "enabled":
+            # Chat's explicit thinking switch is not Anthropic's adaptive/
+            # budgeted thinking or Responses' reasoning object. Do not guess a
+            # cross-protocol mapping or silently discard the user's selection.
+            if wire_api != "chat":
+                raise ValueError("model_thinking_mode_unsupported")
+            payload.update(provider_compat.with_thinking_enabled(payload, profile))
+            return
         if wire_api not in {"chat", "anthropic"} or not profile.supports_thinking_field:
             return
         if thinking_mode == "disabled":

@@ -71,6 +71,7 @@ interface ContextEvidence {
   projectedInputTokens?: number | null;
   tokensByKind?: Record<string, number>;
   decisions?: Array<{ decision?: string; kind?: string; reason?: string }>;
+  runtimeCompaction?: { source: string; started: number; completed: number; failed: number } | null;
 }
 
 interface PromptEvidence {
@@ -351,14 +352,16 @@ export function ChatRunPanel({ agentId, sessionId, onOpenTrace, onClose }: { age
   const waterfall = useMemo(() => waterfallLayout(spans), [spans]);
   const usageReported = latest?.usage?.reported === true;
   const decisions = contextEvidence?.decisions || [];
-  const hasRunEvidence = Boolean(contextEvidence || promptEvidence || usageReported);
+  const hasContextPlan = decisions.length > 0 || Number.isFinite(contextEvidence?.plannedInputTokens)
+    || Number.isFinite(contextEvidence?.projectedInputTokens);
+  const compaction = contextEvidence?.runtimeCompaction;
   const contextStatus = decisions.some(item => item.decision === "dropped")
     ? "部分内容已舍弃"
-    : decisions.some(item => item.decision === "compressed")
+    : decisions.some(item => item.decision === "compressed") || Number(compaction?.completed) > 0
       ? "已自动压缩"
       : decisions.some(item => item.decision === "replaced")
         ? "部分内容已替换"
-      : hasRunEvidence
+      : hasContextPlan
         ? "正常"
         : "等待证据";
   const promptSectionNames = Object.keys(promptEvidence?.tokensBySection || {}).map(promptSectionLabel);
@@ -370,6 +373,15 @@ export function ChatRunPanel({ agentId, sessionId, onOpenTrace, onClose }: { age
   const contextAdjusted = Number.isFinite(contextEvidence?.plannedInputTokens)
     && Number.isFinite(contextEvidence?.projectedInputTokens)
     && Number(contextEvidence?.plannedInputTokens) !== Number(contextEvidence?.projectedInputTokens);
+  const contextDescription = compaction && compaction.completed > 0
+    ? `已记录 ${compaction.completed} 次完成压缩；内容保留质量需另行验证`
+    : compaction && compaction.failed > 0
+      ? `已记录 ${compaction.failed} 次压缩失败，尚无完成压缩的记录`
+      : compaction && compaction.started > 0
+        ? "已记录压缩开始，尚无完成压缩的记录"
+        : hasContextPlan
+          ? "已记录上下文计划；实际内容保留质量需另行验证"
+          : "缺少上下文计划或完成压缩的记录，无法判断是否需要压缩";
 
   return (
     <aside className="chat-run-panel" aria-label="运行检查器">
@@ -428,11 +440,10 @@ export function ChatRunPanel({ agentId, sessionId, onOpenTrace, onClose }: { age
                 {contextStatus === "正常" ? <CheckCircle2 size={16} /> : <Gauge size={16} />}
                 <div>
                   <strong>{contextStatus === "正常" ? "本次运行依据已正常准备" : contextStatus}</strong>
-                  <span>{contextEvidence
-                    ? "规则、相关记忆和当前问题已按策略处理"
-                    : promptEvidence && usageReported
-                      ? "规则证据与模型用量已记录；Runner 内部上下文由框架管理"
-                      : "正在收集本次运行依据"}</span>
+                  <span>{compaction && compaction.completed > 0
+                    ? "宿主持久事件确认发生过压缩；压缩完成不代表任务完成"
+                    : hasContextPlan ? "已记录上下文计划，不能据此证明内容保留完整"
+                      : "模型用量不能代替上下文证据"}</span>
                 </div>
               </div>
 
@@ -462,8 +473,8 @@ export function ChatRunPanel({ agentId, sessionId, onOpenTrace, onClose }: { age
                 <div className={`pcm-run-signal-static ${contextStatus !== "正常" && contextStatus !== "等待证据" ? "attention" : ""}`}>
                   <Gauge size={14} />
                   <div>
-                    <strong>{contextAdjusted ? "上下文已按预算调整" : decisions.some(item => item.decision === "compressed" || item.decision === "dropped" || item.decision === "replaced") ? contextStatus : "上下文无需压缩"}</strong>
-                    <span>{contextAdjusted ? "关键规则与当前问题已优先保留" : "未检测到压缩、替换或舍弃"}</span>
+                    <strong>{contextAdjusted ? "上下文已按预算调整" : contextStatus === "等待证据" ? "上下文证据不足" : contextStatus === "正常" ? "已记录上下文计划" : contextStatus}</strong>
+                    <span>{contextDescription}</span>
                   </div>
                 </div>
               </div>

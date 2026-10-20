@@ -172,26 +172,13 @@ class ContainerBuilder(BaseBuilder):
         self.no_cache = no_cache
 
     def _get_smart_kcr_endpoint(self, region: str) -> str:
-        """智能选择 KCR endpoint
+        """Select a reachable KCR host for an explicitly configured namespace."""
+        import os
 
-        使用企业版 KCR (registry.example.test/your-namespace/)。
-        优先使用内网 VPC endpoint，如果内网不可达则使用公网。
-        """
-        from ksadk.configs.settings import check_endpoint_reachable
-
-        # 企业版 KCR 地址 (带 agentengine 命名空间)
-        vpc_endpoint = "registry.example.test/your-namespace"
-        public_endpoint = "registry.example.test/your-namespace"
-
-        click.echo("🔍 检测 KCR 内网连通性...")
-
-        # 检测 VPC 内网是否可达 (端口 443 for HTTPS registry)
-        if check_endpoint_reachable("hub-vpc.kce.ksyun.com", port=443, timeout=2.0):
-            click.secho(f"   ✅ 使用内网: {vpc_endpoint}", fg="green")
-            return vpc_endpoint
-        else:
-            click.echo(f"   ℹ️  使用公网: {public_endpoint}")
-            return public_endpoint
+        registry = os.environ.get("KCR_REGISTRY", "").strip()
+        if not registry:
+            raise ValueError("请设置 KCR_REGISTRY 为自己的 registry/namespace，或使用 --registry")
+        return self._optimize_kcr_endpoint(registry)
 
     def _optimize_kcr_endpoint(self, registry: str) -> str:
         """优化 KCR endpoint
@@ -727,7 +714,7 @@ if __name__ == "__main__":
         # KCR_REGISTRY is the registry/namespace target for KCR and third parties.
         kcr_registry = os.getenv("KCR_REGISTRY", "")
         if not kcr_registry:
-            kcr_registry = "registry.example.test/your-namespace"
+            kcr_registry = registry
 
         kcr_username, kcr_password, registry_kind = resolve_registry_credentials(registry)
 

@@ -41,7 +41,6 @@ _KSYUN_INTERNAL_HTTP_HOSTS = frozenset(
         "iam.internal.api.ksyun.com",
         "aicp.inner.api.ksyun.com",
         "aicp.internal.api.ksyun.com",
-        "https://control.example.test",
     }
 )
 

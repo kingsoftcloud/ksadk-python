@@ -38,7 +38,7 @@ def repartition_failed_summary(
     if (
         state is None or state.pending is None or state.pending_source_parts
         or request.summary_continuations or request.summary_fragments
-        or len(request.summary_messages) != 1
+        or len(request.summary_messages) != 1 + len(planner._summary_directive(request.profile))
     ):
         return None
     content = request.summary_messages[0]["content"]
@@ -48,6 +48,8 @@ def repartition_failed_summary(
     manifest, raw = source_manifest(
         current_messages, request.old_messages, request.retained_message_refs,
         capture_reader_names=request.source_capture_reader_names,
+        search_fragment_policy=request.search_fragment_policy,
+        capture_search_names=request.source_capture_search_names,
         fresh_tool_observation_policy=request.fresh_tool_observation_policy,
         fresh_tool_message_refs=request.fresh_tool_message_refs,
         fresh_text_fragment_policy=request.fresh_text_fragment_policy,

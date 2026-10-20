@@ -29,6 +29,7 @@ _OBSERVATIONS = {
     "verification_observation",
     "continuation_observation",
     "background_child_observation",
+    "tool_error_recovery_observation",
 }
 
 

@@ -111,6 +111,7 @@ def project_session_history(
         profile_digest is not None and profile_digest == parent.profile_digest
         and configuration_digest == parent.configuration_digest
         and not parent.compaction_history.get("count", 0)
+        and not parent.compaction_history.get("inherited_summary_source")
         and parent.phase == RunPhase.COMPLETED
         and journaled_guidance(parent.messages, parent.profile_digest) is not None
     )

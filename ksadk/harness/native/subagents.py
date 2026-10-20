@@ -19,6 +19,19 @@ class ChildRole(Contract):
     concurrent_safe: bool = False
 
 
+class ChildMediaRef(Contract):
+    """A scoped reference to media the host already admitted for the parent run.
+
+    The model never supplies bytes, paths, URLs or data URLs through this field;
+    it only names an authorized source and a position within it. The host
+    resolves the reference to the original immutable image content when building
+    the child run, failing closed on unknown, forged or foreign references.
+    """
+
+    source: str = Field(min_length=1, max_length=64, pattern=r"\S")
+    index: int = Field(ge=0, strict=True)
+
+
 class ChildRunRequest(Contract):
     scope: RunScope
     parent_scope: RunScope
@@ -45,6 +58,12 @@ class ChildRunRequest(Contract):
     continuation_parent_run_id: str | None = Field(
         default=None, min_length=1, max_length=256, pattern=r"\S",
     )
+    # Host-authorized scoped media references for the child run. The model names
+    # already-admitted parent user input parts; it never supplies bytes, paths,
+    # URLs or data URLs here. Empty retains the original text-only wire identity.
+    media_refs: tuple[ChildMediaRef, ...] = Field(
+        default=(), max_length=20, exclude_if=lambda value: not value
+    )
     role: ChildRole
     budget: ToolBudget
 
@@ -59,6 +78,8 @@ class ChildRunRequest(Contract):
             payload.pop("continuation_of", None)
         if self.continuation_parent_run_id is None:
             payload.pop("continuation_parent_run_id", None)
+        if not self.media_refs:
+            payload.pop("media_refs", None)
         return payload
 
     @model_validator(mode="after")

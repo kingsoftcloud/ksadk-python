@@ -11,6 +11,7 @@ import json
 from .artifact_partial_read_capacity import _valid_arguments
 from .artifact_read_capacity import _declared_group
 from .artifact_read_contract import ARTIFACT_READ_DEFINITION
+from .call_budget import call_room, remaining_calls
 from .context_artifact_page import artifact_page_observation
 from .context_fresh_tools import FRESH_TOOL_OBSERVATION_POLICY, fresh_tool_group_refs
 from .context_partition import source_manifest
@@ -59,15 +60,15 @@ def single_artifact_group_admission(snapshot, configuration, driver):
         return None
     config = effective_run_configuration(configuration, snapshot)
     installed = [t for t in config.tools if t.name == ARTIFACT_READ_DEFINITION.name]
-    remaining_models = config.limits.max_model_calls - (
-        snapshot.model_calls + snapshot.descendant_model_calls
-    )
+    remaining_models = remaining_calls(config.limits.max_model_calls,
+                                       snapshot.model_calls + snapshot.descendant_model_calls)
     if (
         len(installed) != 1
         or installed[0].model_copy(update={"feedback_profile_digest": None})
         != ARTIFACT_READ_DEFINITION
-        or snapshot.tool_calls + snapshot.descendant_tool_calls >= config.limits.max_tool_calls
-        or remaining_models < 1
+        or not call_room(config.limits.max_tool_calls,
+                         snapshot.tool_calls + snapshot.descendant_tool_calls)
+        or remaining_models is not None and remaining_models < 1
     ):
         return None
     current = snapshot.model_copy(deep=True)
@@ -131,7 +132,7 @@ def single_artifact_group_admission(snapshot, configuration, driver):
         if plan.action == "ready":
             return bool(plan.prepared and plan.prepared.counted_input_tokens
                         + config.profile.max_output_tokens <= config.profile.context_window)
-        if plan.action != "compact" or remaining_models < 2:
+        if plan.action != "compact" or (remaining_models is not None and remaining_models < 2):
             return False
         request = plan.request
         if (

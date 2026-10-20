@@ -32,7 +32,8 @@ class ManagedA2AInputRequested(InteractionRequested):
 
 
 class ManagedA2AInputWaiter:
-    def __init__(self, event, snapshot):
+    def __init__(self, event, snapshot, *, deadline_unix_seconds=None):
+        self.deadline_unix_seconds = deadline_unix_seconds
         self.handle = snapshot.handle
         self.interaction_id = event.interaction_id
         self.target = {
@@ -117,7 +118,7 @@ async def invoke_with_input(service, request, *, trigger_ref):
             pending = await service.pending_input_request(snapshot.handle)
         if pending is None or snapshot.continuation_id is None:
             raise ValueError("A2A_INPUT_CONTINUATION_REQUIRED")
-        waiter = ManagedA2AInputWaiter(pending, snapshot)
+        waiter = ManagedA2AInputWaiter(pending, snapshot, deadline_unix_seconds=request.deadline_unix_seconds)
         try:
             yield waiter.event
             outcome, response = await asyncio.wait_for(

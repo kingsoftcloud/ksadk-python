@@ -94,6 +94,9 @@ class ModelProfile(_Contract):
     max_provider_retries: int = Field(default=3, ge=0, le=9, strict=True)
     max_continuations: int = Field(default=3, ge=0, strict=True)
     streaming: bool = Field(default=False, strict=True)
+    stream_timeout_policy: Literal["idle/v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     image_input_mode: Literal["native", "text_only"] = "native"
     request_media_policy: ModelMediaPolicy | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -115,7 +118,12 @@ class ModelProfile(_Contract):
     )
     # Chat output-limit selector. Other wires retain their native field names.
     output_token_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
-    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
+    thinking_mode: Literal["enabled", "disabled"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    provider_thinking_display: bool = Field(default=False, strict=True,
+                                            exclude_if=lambda value: not value)
     temperature: float | None = Field(default=None, ge=0, le=2, strict=True)
     top_p: float | None = Field(default=None, gt=0, le=1, strict=True)
     parallel_tool_calls: bool | None = Field(default=None, strict=True)
@@ -417,7 +425,9 @@ class ModelStreamEvent(_Contract):
     have no tool/usage fields and never authorize execution or completion.
     """
 
-    kind: Literal["text_delta", "public_summary", "input_metadata", "final"]
+    kind: Literal[
+        "text_delta", "public_summary", "provider_reasoning", "activity", "input_metadata", "final",
+    ]
     request_id: str = Field(min_length=1)
     attempt_id: str = Field(min_length=1)
     seq: int = Field(ge=1, strict=True)
@@ -431,6 +441,10 @@ class ModelStreamEvent(_Contract):
     def _valid_event(self) -> ModelStreamEvent:
         if not self.request_id.strip() or not self.attempt_id.strip():
             raise ValueError("stream event identity cannot be blank")
+        if self.kind == "activity":
+            if self.text or self.result is not None or self.input_receipt is not None:
+                raise ValueError("stream activity cannot contain model content or a result")
+            return self
         if self.kind == "input_metadata":
             if self.text or self.result is not None or self.input_receipt is None:
                 raise ValueError("input metadata event contains only its receipt")
@@ -441,7 +455,7 @@ class ModelStreamEvent(_Contract):
             return self
         if self.input_receipt is not None:
             raise ValueError("input receipt requires an input metadata event")
-        if self.kind in {"text_delta", "public_summary"}:
+        if self.kind in {"text_delta", "public_summary", "provider_reasoning"}:
             if not self.text or self.result is not None:
                 raise ValueError("visible delta requires text and cannot contain a result")
         elif self.text or self.result is None:

@@ -92,7 +92,7 @@ def audit_paths(root: Path, relative_paths: list[str]) -> list[str]:
             if PATTERN.search(line) or (
                 _is_public_doc_path(relative) and PUBLIC_DOC_PATTERN.search(line)
             ):
-                hits.append(f"{path.relative_to(root)}:{lineno}:{line}")
+                hits.append(f"{path.relative_to(root)}:{lineno}: sensitive content detected")
     return hits
 
 

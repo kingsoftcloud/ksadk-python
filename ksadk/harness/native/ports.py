@@ -26,7 +26,7 @@ from .model import (
     ModelTurnResult,
 )
 from .output_contract import submission_output_format, validate_submission_schema
-from .state import ChildApproval, ChildBudgetReservation, Contract, RunScope
+from .state import BackgroundCommandRef, ChildApproval, ChildBudgetReservation, Contract, RunScope
 from .tool_schema import model_tool_parameters
 from .turn_control import ModelTurnControl
 
@@ -94,9 +94,17 @@ class ToolDefinition(Contract):
     # Host-pinned context semantics. A reader alias can retain source receipts
     # without the Kernel recognizing its name. Never exposed to the model.
     context_role: Literal[
-        "none", "workspace_read", "workspace_search", "artifact_read", "task_planning"
+        "none", "workspace_read", "workspace_search", "workspace_list", "artifact_read", "task_planning"
     ] = "none"
     concurrent_safe: bool = False
+    # Host-pinned writer retained in a deadline delivery window. This neither
+    # bypasses execution policy nor grants verification or replay authority.
+    delivery_write: bool = Field(default=False, exclude_if=lambda value: not value)
+    # A sealed host role for inspecting this goal's successful file deliveries.
+    # The Kernel derives paths from executed receipts, never from model text.
+    delivery_artifact_role: Literal["none", "read", "write"] = Field(
+        default="none", exclude_if=lambda value: value == "none",
+    )
     # Host-only grant for a read-only delegated child. Unlike ordinary reads,
     # its sealed receipt may include descendant model/tool usage and child IDs.
     delegated_read_only: bool = False
@@ -129,6 +137,10 @@ class ToolDefinition(Contract):
         default=None, exclude_if=lambda value: value is None
     )
 
+    background_command_policy: Literal["owned-command-launch/v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
     @model_serializer(mode="wrap")
     def omit_unconfigured_feedback(self, serialize):
         payload = serialize(self)
@@ -146,6 +158,8 @@ class ToolDefinition(Contract):
 
     @model_validator(mode="after")
     def valid_concurrency(self) -> ToolDefinition:
+        if self.background_command_policy is not None and (self.read_only or self.concurrent_safe):
+            raise ValueError("background launch requires serialized mutation admission")
         # Dual-mode delegates have per-member allocation accounting. Other
         # lifecycle actions still require serialized ledger admission.
         if self.child_budget_policy in {"start/v1", "settle/v1"} and self.concurrent_safe:
@@ -192,8 +206,10 @@ class RunLimits(Contract):
     # Active execution time, excluding a committed pause or approval wait.
     # Omitted SDK budgets keep their original configuration identity.
     max_wall_seconds: float | None = Field(default=None, gt=0, le=86400, allow_inf_nan=False)
-    max_model_calls: int = Field(default=32, ge=1)
-    max_tool_calls: int = Field(default=64, ge=0)
+    # No implicit count ceiling. Explicit finite values from sealed legacy
+    # configurations continue to validate and retain their original digest.
+    max_model_calls: int | None = Field(default=None, strict=True, ge=1)
+    max_tool_calls: int | None = Field(default=None, strict=True, ge=0)
     max_parallel_tools: int = Field(default=4, ge=1, le=16)
     max_repairs: int = Field(default=3, ge=0)
     # Optional host-owned evidence checkpoint before the model budget is spent.
@@ -208,6 +224,15 @@ class RunLimits(Contract):
     # Hosts with model-backed tools reserve their maximum per-tool model cost
     # plus one final call; the Kernel never silently raises the hard budget.
     finalization_reserve_model_calls: int = Field(default=1, ge=0)
+    # Opt-in host policy. Zero preserves existing sealed configurations.
+    finalization_reserve_wall_seconds: int = Field(
+        default=0, strict=True, ge=0, le=240, exclude_if=lambda value: value == 0,
+    )
+    delivery_context_recovery_policy: Literal[
+        "committed-write-summary/v1", "delivery-window-summary/v2",
+    ] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     max_output_restarts: int = Field(default=0, ge=0)
     max_subagent_depth: int = Field(default=3, ge=0, le=16)
     effect_timeout_seconds: float = Field(default=120, gt=0, le=3600)
@@ -250,6 +275,12 @@ class RunConfiguration(Contract):
     # Distinct host grants: sealed query, verify-only takeover, or continuation
     # from an undispatched child effect. No policy replays a running effect.
     tool_recovery_policy: ChildRecoveryPolicy | None = None
+    tool_error_recovery_policy: Literal["diagnose-before-repeat/v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    tool_error_recovery_model_calls: int | None = Field(
+        default=None, strict=True, ge=1, le=10, exclude_if=lambda value: value is None
+    )
     child_lifecycle_policy: Literal["owned-background/v1", "owned-background/v2"] | None = None
     child_promotion_policy: Literal["owned-child-promotion/v1"] | None = None
     child_input_policy: Literal["owned-child-guide/v1"] | None = Field(
@@ -257,6 +288,9 @@ class RunConfiguration(Contract):
     )
     child_release_policy: Literal["owned-run-release/v1"] | None = None
     child_notification_policy: Literal["ready-before-model/v1"] | None = None
+    background_notification_policy: Literal["completed-before-model/v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     child_approval_policy: Literal["owned-child-approval/v1"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
@@ -308,6 +342,10 @@ class RunConfiguration(Contract):
 
     @model_validator(mode="after")
     def unique_tools(self) -> RunConfiguration:
+        if self.background_notification_policy is not None and not any(
+            tool.background_command_policy is not None for tool in self.tools
+        ):
+            raise ValueError("background notifications require a pinned launcher")
         if self.model_recovery_policy is not None and self.host_binding_digest is None:
             raise ValueError("model takeover requires a pinned host binding")
         if self.child_input_policy is not None and self.child_lifecycle_policy is None:
@@ -431,11 +469,11 @@ class ModelRequest(Contract):
 
 
 class ToolBudget(Contract):
-    max_model_calls_remaining: int = Field(default=0, strict=True, ge=0)
+    max_model_calls_remaining: int | None = Field(default=0, strict=True, ge=0)
     # This allowance already excludes the parent's final submission. Legacy
     # standalone adapters may still receive a gross allowance (default False).
     parent_finalization_reserved: bool = Field(default=False, strict=True)
-    max_tool_calls_remaining: int = Field(default=0, strict=True, ge=0)
+    max_tool_calls_remaining: int | None = Field(default=0, strict=True, ge=0)
     depth: int = Field(default=0, strict=True, ge=0)
     max_depth: int = Field(default=0, strict=True, ge=0)
 
@@ -508,6 +546,12 @@ class ToolResult(Contract):
     public_display: dict[str, JsonValue] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    background_command_ref: BackgroundCommandRef | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    background_command_finished: bool = Field(
+        default=False, strict=True, exclude_if=lambda value: value is False
+    )
     # A host Port can identify the actual observation independently of its
     # transport envelope. Only a host-declared observing tool earns novelty;
     # this digest cannot authorize an action or establish task acceptance.
@@ -543,6 +587,10 @@ class ToolResult(Contract):
 
     @model_validator(mode="after")
     def valid_interaction(self) -> ToolResult:
+        if self.background_command_ref is not None and self.status != "ok":
+            raise ValueError("background command reference requires a successful launcher receipt")
+        if self.background_command_finished and self.background_command_ref is None:
+            raise ValueError("background completion requires its launcher reference")
         if self.child_approval is not None and self.status != "approval_required":
             raise ValueError("child approval requires an approval receipt")
         if self.child_budget_reservation is not None:

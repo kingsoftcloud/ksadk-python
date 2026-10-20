@@ -6,6 +6,9 @@ import os
 import shlex
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import asdict
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -33,10 +36,224 @@ _SANDBOX_TOOL_POLICIES = {
     "sandbox_status": ToolPolicy(risk_level="low"),
     "run_command": ToolPolicy(risk_level="high", side_effects=("sandbox_command_execution",)),
     "run_code": ToolPolicy(risk_level="high", side_effects=("sandbox_code_execution",)),
+    "read_command_output": ToolPolicy(risk_level="low"),
+    "stop_command": ToolPolicy(risk_level="high", side_effects=("sandbox_command_cancel",)),
     "browser_inspect_workspace": ToolPolicy(
         risk_level="low", side_effects=("workspace_screenshot_write",)
     ),
 }
+_COMMAND_STATE_ROOT: ContextVar[Path | None] = ContextVar("ksadk_command_state_root", default=None)
+# Host-injected backend for the current background read/stop call, set by the
+# Native tool port from the canonical launch receipt. When set, the background
+# session uses this backend instead of the current environment — so an env
+# change after launch cannot switch the query/cancel entry. Never set from
+# model arguments or the HTTP request.
+_BACKGROUND_BACKEND: ContextVar[str | None] = ContextVar("ksadk_background_backend", default=None)
+# Host-declared typed connection target + credential resolver for E2B
+# background, set by the Native tool port for the duration of a tool call from
+# the Composer's activation-scoped declaration. This is a host execution scope
+# (like tool_execution_scope), never ambient env and never set from model/HTTP
+# arguments. None means E2B background is not declared for this call: the
+# session fails closed (unknown, zero backend calls) rather than falling back
+# to env-ambient identity.
+_BACKGROUND_DECLARATION: ContextVar[Any | None] = ContextVar(
+    "ksadk_background_declaration", default=None
+)
+
+
+@contextmanager
+def background_backend_scope(backend: str | None):
+    """Bind the host-selected backend for one background read/stop call."""
+    token = _BACKGROUND_BACKEND.set(backend)
+    try:
+        yield
+    finally:
+        _BACKGROUND_BACKEND.reset(token)
+
+
+@contextmanager
+def background_declaration_scope(declaration):
+    """Bind the host-declared E2B background connection for one tool call.
+
+    Set by the Native tool port from the Composer's declaration. Not an env
+    switch and not derived from model/HTTP arguments.
+    """
+    token = _BACKGROUND_DECLARATION.set(declaration)
+    try:
+        yield
+    finally:
+        _BACKGROUND_DECLARATION.reset(token)
+
+
+@contextmanager
+def local_command_state_scope(state_root: Path):
+    """Supply a host-owned state directory; never accept it from tool arguments."""
+    token = _COMMAND_STATE_ROOT.set(Path(state_root))
+    try:
+        yield
+    finally:
+        _COMMAND_STATE_ROOT.reset(token)
+
+
+def _background_state_root() -> Path | None:
+    from ksadk.harness.execution_policy import current_execution_policy
+
+    policy = current_execution_policy()
+    if policy is not None and policy.tool_state_root is not None:
+        return policy.tool_state_root / ".harness-tools" / "background"
+    return _COMMAND_STATE_ROOT.get()
+
+
+def _background_session():
+    return make_background_session(
+        workspace_root=workspace_root(),
+        state_root=_background_state_root(),
+    )
+
+
+# Process-local override for the background stream source, used only by tests
+# to inject a deterministic harness instead of a real E2B sandbox. Production
+# never sets this; it is not an env switch (an env switch would silently turn
+# production E2B into local execution — a privilege-boundary change). Tests set
+# it through this module attribute on a per-process basis.
+_BACKGROUND_SOURCE_CONFIG: dict[str, Any] | None = None
+
+
+def set_background_source_config_for_tests(config: dict[str, Any] | None) -> None:
+    """Test-only seam: inject a deterministic background stream source.
+
+    Not exposed as an environment variable: an env switch would let a deployed
+    process silently substitute local execution for a sealed cloud sandbox.
+    """
+    global _BACKGROUND_SOURCE_CONFIG
+    _BACKGROUND_SOURCE_CONFIG = config
+
+
+def make_background_session(
+    *, workspace_root: Path, state_root: Path | None, backend: str | None = None,
+    declaration: Any | None = None,
+):
+    """Build a durable background-capable session for the given backend.
+
+    Shared by the toolset path, the Native product's background observer and
+    the HTTP read route so all select the same backend. ``backend`` may be
+    supplied from the canonical launch receipt (the actually-started backend);
+    when omitted it falls back to the current environment (matching the
+    existing local background path). ``declaration`` is the host-declared typed
+    E2B connection target + credential resolver; when omitted the host-set
+    ``background_declaration_scope`` is used. The session id is resolved from
+    the current tool execution context, so callers must invoke this inside the
+    owning session's ``tool_execution_scope``.
+
+    For E2B the declaration is authoritative: without one the session fails
+    closed (E2B background is ``unknown``, zero backend calls) rather than
+    silently resolving an env-ambient identity. The process-local test seam
+    (``set_background_source_config_for_tests``) bypasses the declaration so
+    the deterministic local-subprocess harness can exercise the lifecycle
+    mechanics without a real remote sandbox.
+    """
+    # The host-injected backend (from the canonical launch receipt, set by the
+    # Native tool port) takes precedence over the argument and the environment,
+    # so an env change after launch cannot switch the query/cancel entry.
+    resolved = (_BACKGROUND_BACKEND.get() or backend or _sandbox_execution_backend_name()).strip().lower()
+    session_id = _background_session_key()
+    if resolved in {"local", "local_process"}:
+        return LocalProcessSandboxBackend(
+            workspace_root=workspace_root, command_state_root=state_root,
+        ).create_session(session_id=session_id)
+    if resolved == "e2b":
+        return _e2b_background_session(
+            state_root,
+            workspace_root=workspace_root,
+            session_id=session_id,
+            declaration=declaration or _BACKGROUND_DECLARATION.get(),
+        )
+    # A disposable worker's E2B registry cleanup kills the entire instance.
+    # Do not advertise background success until its lease is host-owned.
+    raise SandboxError("Durable background commands are not available on this backend")
+
+
+def _e2b_background_session(
+    state_root: Path | None, *, workspace_root: Path, session_id: str,
+    declaration: Any | None = None,
+):
+    from ksadk.sandbox.e2b_background import E2BBackgroundSession
+
+    if state_root is None:
+        raise SandboxError(
+            "Durable E2B background commands require a host-owned state root"
+        )
+    # Test seam (process-local, never an env switch): a deterministic harness
+    # source lets the full product path run without a real remote sandbox. The
+    # declaration, when provided, is still threaded so typed-authority tests can
+    # exercise the frozen-target check on the local-subprocess source.
+    if _BACKGROUND_SOURCE_CONFIG is not None:
+        return E2BBackgroundSession.open(
+            state_root=state_root,
+            workspace_root=workspace_root,
+            session_id=session_id,
+            source_config=_BACKGROUND_SOURCE_CONFIG,
+            declaration=declaration,
+        )
+    # No host-declared typed connection target: E2B background is not declared
+    # for this authority. Fail closed — do not resolve an env-ambient identity.
+    if declaration is None:
+        raise SandboxError(
+            "E2B background commands require a host-declared connection target"
+        )
+    # The persistent background sandbox is built directly, never through the
+    # disposable ``create_sandbox_backend`` factory whose registry sweep would
+    # kill the instance while background commands still run.
+    from ksadk.sandbox.backends.e2b import E2BSandboxBackend
+    from ksadk.sandbox.factory import sandbox_spec_from_env
+    from ksadk.studio.native_background_connection import make_explicit_connection
+
+    connection = make_explicit_connection(declaration)
+    sandbox_backend = E2BSandboxBackend(spec=sandbox_spec_from_env(), connection=connection)
+    return E2BBackgroundSession.for_e2b(
+        state_root=state_root,
+        workspace_root=workspace_root,
+        session_id=session_id,
+        sandbox_backend=sandbox_backend,
+        declaration=declaration,
+    )
+
+
+def background_backend_enabled(backend: str | None = None) -> bool:
+    """Whether durable background command tools may bind to this backend.
+
+    The local backends own their process groups directly; E2B owns a persistent
+    sandbox with detached supervisors. Other backends do not offer a durable
+    background lifecycle and the read/stop tools must not bind there.
+    """
+    name = (backend or _sandbox_execution_backend_name()).strip().lower()
+    return name in {"local", "local_process", "e2b"}
+
+
+def _background_command_boundary() -> str:
+    backend = _sandbox_execution_backend_name()
+    if backend in {"local", "local_process"}:
+        return (
+            "executes as a local background process group; shares local "
+            "filesystem, env allowlist, and network"
+        )
+    if backend == "e2b":
+        return (
+            "runs as a background command inside an isolated E2B sandbox; the "
+            "host owns a persistent sandbox and a detached supervisor that "
+            "captures output. Output produced during a disconnect gap is not "
+            "replayed and is reported as unknown"
+        )
+    return "durable background commands are not available on this backend"
+
+
+def _background_session_key() -> str:
+    # A shared sandbox instance setting must not collapse authenticated command
+    # owners. Standalone SDK calls without a Session retain explicit host config.
+    context = get_current_tool_execution_context_or_default()
+    if context.session_id:
+        return f"ksadk-session:{context.session_id}"
+    return _sandbox_session_key("ksadk-direct")
 
 
 def _gateway():
@@ -118,8 +335,15 @@ def run_command(
     env: dict[str, str] | None = None,
     background: bool = False,
     approval: dict[str, Any] | None = None,
+    background_timeout: int | None = None,
 ) -> dict[str, Any]:
-    """Run a shell command inside the configured governed sandbox boundary."""
+    """Run a governed shell command. background=True returns an owned task_id.
+
+    timeout bounds foreground execution; background_timeout independently bounds
+    the background process (default: host limit, normally 900 seconds). Use
+    read_command_output to observe it and stop_command to explicitly cancel it.
+    Background commands require a host-owned state directory and a local or E2B backend.
+    """
 
     return _dict_result(
         _gateway().invoke(
@@ -130,6 +354,7 @@ def run_command(
             timeout,
             env,
             background,
+            background_timeout,
             approval=approval,
         ),
         tool_name="run_command",
@@ -142,6 +367,7 @@ def _run_command_impl(
     timeout: int | None = None,
     env: dict[str, str] | None = None,
     background: bool = False,
+    background_timeout: int | None = None,
 ) -> dict[str, Any]:
     command_text = str(command or "").strip()
     if not command_text:
@@ -149,13 +375,26 @@ def _run_command_impl(
     policy = _dict_result(check_command_policy(command_text), tool_name="check_command_policy")
     if not policy.get("ok"):
         return policy
-    if background:
-        return {
-            "ok": False,
-            "error_type": "background_not_supported",
-            "error_message": "background commands are not supported in P0",
-        }
     try:
+        if background:
+            session = _background_session()
+            context = get_current_tool_execution_context_or_default()
+            handle = session.start_command(
+                command_text, timeout=background_timeout, env=env, cwd=cwd,
+                operation_key=context.invocation_id or None,
+            )
+            output = handle.read_output()
+            return {
+                "ok": True, "backend": f"sandbox/{_sandbox_execution_backend_name()}",
+                "sandbox_id": session.sandbox_id,
+                "task_id": handle.command_id, **asdict(output),
+                "process_timeout_seconds": handle.timeout_seconds,
+                "instruction": (
+                    "Use read_command_output with task_id; stop_command cancels this task only."
+                ),
+            }
+        if background_timeout is not None:
+            return {"ok": False, "error_message": "background_timeout requires background=True"}
         entry, _created = _sandbox_entry("ksadk-direct")
         from ksadk.harness.tool_output import current_tool_output_observer
 
@@ -185,6 +424,61 @@ def _run_command_impl(
         )
     except SandboxError as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
+    except Exception as exc:
+        return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
+
+
+def read_command_output(
+    task_id: str, stdout_cursor: int = 0, stderr_cursor: int = 0,
+    max_bytes: int = 65536, wait_seconds: int = 0,
+) -> dict[str, Any]:
+    """Read an owned background command's status and output byte cursors.
+
+    Reusing a cursor returns the same window; advance using the returned cursors.
+    wait_seconds (0..600) waits for completion without changing the process deadline.
+    A host may expose a lower limit under its locked tool and Run deadlines.
+    """
+    return _dict_result(_gateway().invoke(
+        "read_command_output", _read_command_output_impl,
+        task_id, stdout_cursor, stderr_cursor, max_bytes, wait_seconds,
+    ), tool_name="read_command_output")
+
+
+def _read_command_output_impl(task_id, stdout_cursor, stderr_cursor, max_bytes, wait_seconds):
+    try:
+        if type(wait_seconds) is not int or not 0 <= wait_seconds <= 600:
+            raise SandboxError("wait_seconds must be an integer between 0 and 600")
+        handle = _background_session().connect_background_command(task_id)
+        if wait_seconds:
+            deadline = time.monotonic() + wait_seconds
+            interval = 0.05
+            while handle.read_output().status in {"starting", "running"}:
+                if time.monotonic() >= deadline:
+                    break  # Waiting never changes the background process deadline.
+                time.sleep(min(interval, max(0, deadline - time.monotonic())))
+                interval = min(1.0, interval * 2)
+        output = handle.read_output(stdout_cursor=stdout_cursor, stderr_cursor=stderr_cursor,
+                                    max_bytes=max_bytes)
+        return {"ok": True, "task_id": task_id, **asdict(output)}
+    except Exception as exc:
+        return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
+
+
+def stop_command(task_id: str, approval: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Request cancellation of one background command owned by this session.
+
+    A request is not a completed cancellation: read_command_output confirms the
+    final status after the process group has been cleaned up.
+    """
+    return _dict_result(_gateway().invoke(
+        "stop_command", _stop_command_impl, task_id, approval=approval,
+    ), tool_name="stop_command")
+
+
+def _stop_command_impl(task_id):
+    try:
+        output = _background_session().connect_background_command(task_id).request_cancel()
+        return {"ok": True, "task_id": task_id, **asdict(output)}
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 
@@ -742,6 +1036,8 @@ def get_sandbox_tools() -> list:
     return [
         as_tool(sandbox_status),
         as_tool(run_command),
+        as_tool(read_command_output),
+        as_tool(stop_command),
         as_tool(run_code),
         as_tool(browser_inspect_workspace),
     ]

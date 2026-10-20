@@ -1,6 +1,7 @@
 """Shared live/replay conversation projection for a persisted Studio Run."""
 
 from ksadk.conversations.contracts import ConversationItem
+from ksadk.conversations.projector import public_item_presentation
 from ksadk.conversations.runtime_projection import (
     RuntimeConversationProjection,
     conversation_identity,
@@ -40,6 +41,17 @@ class StudioConversationProjection:
                 )
             return event
         canonical = parse_runtime_event(raw)
+        # Old persisted ConversationItems predate the display fields. Rebuild
+        # only their allowlisted presentation from the original canonical fact;
+        # keep identities, lifecycle, approvals and the durable log unchanged.
+        existing = event.data.get("conversationItem")
+        if isinstance(existing, dict):
+            presentation = public_item_presentation(canonical, existing.get("kind"))
+            if presentation:
+                existing = {**existing, "payload": {**existing.get("payload", {}), **presentation}}
+                event = event.model_copy(
+                    update={"data": {**event.data, "conversationItem": existing}}
+                )
         snapshot = getattr(canonical, "snapshot", None) or getattr(canonical, "initial", None)
         parts = snapshot.parts if snapshot else (getattr(canonical, "update", None),)
         managed = any(

@@ -2,6 +2,49 @@ import { describe, expect, it } from "vitest";
 import { compactHarnessMessages } from "./compactHarnessMessages";
 
 describe("compact Harness presentation", () => {
+  it.each(["public_summary", "provider_reasoning"] as const)(
+    "reconciles live and replay %s by segment identity without removing equal text from different segments",
+    (source) => {
+      const [result] = compactHarnessMessages([
+        { id: "replay", role: "model", content: "", timestamp: 0, runId: "run",
+          blocks: [{ id: "conversation-block:item-a", type: "thinking", status: "streaming", source, content: "first" }] },
+        { id: "live", role: "model", content: "", timestamp: 1, runId: "run",
+          blocks: [
+            { id: "item-a", type: "thinking", status: "streaming", source, content: "updated" },
+            { id: "item-b", type: "thinking", status: "streaming", source, content: "updated" },
+          ] },
+      ]);
+      expect(result.blocks).toMatchObject([
+        { id: "conversation-block:item-a", content: "updated" },
+        { id: "item-b", content: "updated" },
+      ]);
+      expect(result.blocks).toHaveLength(2);
+    },
+  );
+
+  it("does not reopen a finished segment when a stale live snapshot arrives", () => {
+    const [result] = compactHarnessMessages([{ id: "m", role: "model", content: "", timestamp: 0,
+      blocks: [
+        { id: "conversation-block:item-a", type: "thinking", status: "done", source: "provider_reasoning", content: "finished" },
+        { id: "item-a", type: "thinking", status: "streaming", source: "provider_reasoning", content: "stale" },
+      ] }]);
+    expect(result.blocks).toMatchObject([{ status: "done", content: "finished" }]);
+    expect(result.blocks).toHaveLength(1);
+  });
+
+  it("keeps public summary segments and host tool display in their original order", () => {
+    const [result] = compactHarnessMessages([{ id: "m", role: "model", content: "", timestamp: 0, blocks: [
+      { id: "summary-a", type: "thinking", status: "done", source: "public_summary", content: "先查接口" },
+      { id: "call-a", type: "tool", toolName: "read_workspace_file", status: "completed", args: "private-args",
+        extra: { callId: "call-a", toolDisplay: { version: "tool-display/v1", category: "read", summary: "读取文件", path: "app.py" } } },
+      { id: "summary-b", type: "thinking", status: "streaming", source: "public_summary", content: "现在修改" },
+      { id: "private", type: "thinking", status: "done", source: "reasoning", content: "private-reasoning" },
+    ] }]);
+    expect(result.blocks?.filter(block => !(block.type === "thinking" && block.id.endsWith(":activity"))).map(block => block.id))
+      .toEqual(["summary-a", "call-a", "summary-b"]);
+    expect(result.blocks?.find(block => block.id === "call-a")).toMatchObject({ extra: { callId: "call-a", toolDisplay: { path: "app.py" } } });
+    expect(JSON.stringify(result)).not.toContain("private-");
+  });
   it("keeps successful actions between the surrounding public text without exposing payloads", () => {
     const [result] = compactHarnessMessages([{ id: "m", role: "model", content: "", timestamp: 0,
       blocks: [

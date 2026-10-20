@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from .call_budget import call_room, remaining_calls, share_calls
 from .delivery_review import (
     REVIEW_INSTRUCTIONS,
     delivery_review_readers,
@@ -41,22 +42,19 @@ def dispatch_tool_budget(
     parallel = batch_size > 1
     reserve = (max(config.limits.finalization_reserve_model_calls, 1) if parallel
                else config.limits.finalization_reserve_model_calls)
-    model_slots = max(0, config.limits.max_model_calls - snapshot.model_budget_claimed - reserve)
-    tool_slots = max(0, config.limits.max_tool_calls - snapshot.tool_budget_claimed - batch_size)
-
-    def share(total):
-        return total // batch_size + int(index < total % batch_size)
+    model_slots = remaining_calls(config.limits.max_model_calls, snapshot.model_budget_claimed, reserve)
+    tool_slots = remaining_calls(config.limits.max_tool_calls, snapshot.tool_budget_claimed, batch_size)
 
     return ToolBudget(
-        max_model_calls_remaining=share(model_slots),
-        max_tool_calls_remaining=share(tool_slots),
+        max_model_calls_remaining=share_calls(model_slots, batch_size, index),
+        max_tool_calls_remaining=share_calls(tool_slots, batch_size, index),
         parent_finalization_reserved=parallel or bool(reserve),
         depth=config.delegation_depth, max_depth=config.limits.max_subagent_depth,
     )
 
 
 def tools_exhausted(snapshot: RunSnapshot, config: RunConfiguration) -> bool:
-    return snapshot.tool_budget_claimed >= config.limits.max_tool_calls
+    return not call_room(config.limits.max_tool_calls, snapshot.tool_budget_claimed)
 
 
 def has_admitted_task_tools(config: RunConfiguration) -> bool:
@@ -75,8 +73,22 @@ def finalization_only(snapshot: RunSnapshot, config: RunConfiguration) -> bool:
     reserve = config.limits.finalization_reserve_model_calls
     return bool(
         reserve
+        and config.limits.max_model_calls is not None
         and config.limits.max_model_calls - snapshot.model_budget_claimed
         <= reserve
+    )
+
+
+def wall_delivery_only(snapshot: RunSnapshot, config: RunConfiguration) -> bool:
+    reserve = config.limits.finalization_reserve_wall_seconds
+    quote = snapshot.execution_budget_observation
+    # A preparation quote remains conservative after a model/tool claim. Its
+    # counts need not match; crossing the window cannot reopen exploration.
+    return bool(
+        reserve and config.limits.max_wall_seconds is not None and quote is not None
+        and quote.run_id == snapshot.run_id and quote.goal_revision == snapshot.goal_revision
+        and quote.wall_seconds_remaining is not None
+        and quote.wall_seconds_remaining <= reserve
     )
 
 
@@ -92,6 +104,8 @@ def model_turn_control(snapshot: RunSnapshot, config: RunConfiguration) -> Model
         if web_observation_due(snapshot, config)
         else "browser_verification_reserved"
         if web_verification_only(snapshot, config)
+        else "wall_delivery_reserved"
+        if wall_delivery_only(snapshot, config)
         else None
     )
     return (
@@ -100,7 +114,7 @@ def model_turn_control(snapshot: RunSnapshot, config: RunConfiguration) -> Model
             final_submission_required=config.final_submission_schema is not None,
             admitted_tool_names=(
                 tuple(tool.name for tool in model_tool_surface(snapshot, config))
-                if reason in {"browser_observation_due", "browser_verification_reserved"}
+                if reason in {"browser_observation_due", "browser_verification_reserved", "wall_delivery_reserved"}
                 else None
             ),
         )
@@ -134,6 +148,14 @@ def model_tool_surface(
             for tool in config.tools
             if tool.observation_role == "browser" or (fresh and tool.read_only)
         )
+    elif wall_delivery_only(snapshot, config):
+        from .delivery_artifacts import scoped_delivery_reader
+
+        task_tools = tuple(
+            scoped or tool
+            for tool in config.tools
+            if (scoped := scoped_delivery_reader(tool, snapshot)) is not None or tool.delivery_write
+        )
     else:
         task_tools = config.tools
     allowed = config.contract.allowed_tool_names
@@ -153,6 +175,13 @@ def model_tool_catalog(
     allowed = config.contract.allowed_tool_names
     tools = tuple(tool for tool in config.tools if allowed is None or tool.name in allowed)
     submission = final_submission_tool(config)
+    if wall_delivery_only(snapshot, config):
+        from .delivery_artifacts import scoped_delivery_reader
+
+        tools = tuple(
+            scoped if (scoped := scoped_delivery_reader(tool, snapshot)) is not None else tool
+            for tool in tools
+        )
     return (*tools, submission) if submission is not None else tools
 
 

@@ -79,6 +79,7 @@ class AgentKernel:
         queue_limit: int = 100,
         capabilities: CapabilityProvider | None = None,
         clock: Callable[[], datetime] = now_utc,
+        session_admission_error: Callable[[str], str | None] | None = None,
     ) -> None:
         self._store = store
         self._events = session_events
@@ -86,6 +87,7 @@ class AgentKernel:
         self._queue_limit = int(queue_limit)
         self._capabilities = capabilities or default_capability_matrix
         self._clock = clock
+        self._session_admission_error = session_admission_error
 
     def capabilities(self) -> RuntimeCapabilityMatrix:
         """Return the runtime's current typed capability snapshot.
@@ -216,6 +218,16 @@ class AgentKernel:
                 message=error.message,
             )
 
+        if self._session_admission_error is not None:
+            error = self._session_admission_error(command.session_id)
+            if error:
+                # Preserve a lost-ack retry's original admission identity.
+                existing = await self._store.load_by_idempotency(command.session_id, command.idempotency_key)
+                if existing is None:
+                    return await self._store.reject_command(
+                        command, status="rejected", code=error,
+                        message="Session is quarantined; recovery is required before new commands",
+                    )
         matrix = self._capabilities()
         field, capability = capability_of(command.command_type, matrix)
         if command.command_type == "interrupt" and command.payload.get("scope_id") is not None:
@@ -324,10 +336,15 @@ class AgentKernel:
             )
         active = await self._store.find_active_run(query.agent_instance_id, query.session_id)
         lease = await self._store.current_lease(query.agent_instance_id, query.session_id)
+        watermark = None
+        read_watermark = getattr(self._events, "get_max_seq_id", None)
+        if query.session_id and callable(read_watermark):
+            watermark = await read_watermark(query.session_id)
         return AgentStatusSnapshot(
             agent_instance_id=query.agent_instance_id,
             instance_state="ready" if lease is not None else "degraded",
             session_id=query.session_id or (active.session_id if active else None),
+            session_event_seq=watermark,
             active_run_id=active.run_id if active else None,
             active_run_state=active.state.value if active else None,
             inbox_depth=await self._store.inbox_depth(query.agent_instance_id, query.session_id),

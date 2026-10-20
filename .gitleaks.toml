@@ -1,60 +1,104 @@
-# .gitleaks.toml — ksadk-python
-# 继承 gitleaks 默认规则 (useDefault = true), 仅追加项目级 allowlist。
-# workflow 用法 (见 .github/workflows/secret-patterns.yml):
-#   gitleaks detect --source . --config .gitleaks.toml --no-banner --redact --verbose
-# detect 子命令 + fetch-depth:0 扫全 history; allowlist 同时覆盖历史与当前 tree。
-
-title = "ksadk-python gitleaks config"
+title = "Strict reviewed fixture allowlists"
 
 [extend]
 useDefault = true
 
-# Deterministic EffectRequest.effect_key from generate_teams_extended_fixtures.py.
-# This is a SHA-256 operation identity, not an authentication credential. Require
-# both the exact fixture path and exact generated value; do not exempt the file.
 [[allowlists]]
-description = "Deterministic Teams effect identity in contract fixtures"
+description = "Reviewed deterministic fixture or identifier false positives group 1"
 condition = "AND"
 regexTarget = "secret"
 regexes = [
-    '''^effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a$''',
+    '''(?s)^effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a$''',
 ]
 paths = [
-    '''^tests/contracts/fixtures/teams-cloud-v1\.json$''',
+    '''^tests/contracts/fixtures/teams\-cloud\-v1\.json$''',
 ]
 
-# ---- allowlist 统一用 [[allowlists]] 新语法 (gitleaks 8.21+), 不能与 [allowlist] 旧语法混用 ----
-
-# 测试 fixture 假 key (命中当前 tree 与历史 commit)
 [[allowlists]]
-description = "Allowlist test-fixture placeholders in hermes CLI tests"
+description = "Reviewed deterministic fixture or identifier false positives group 2"
+condition = "AND"
+regexTarget = "secret"
 regexes = [
-    # tests/test_cmd_hermes.py 的假 Bearer token (curl-auth-header 规则命中)
-    '''sk-live-secret''',
-    # tests/test_cmd_hermes.py 的假 secret value (generic-api-key 兜底)
-    '''sk-test-secret''',
+    '''(?s)^compacted_until_seq=10$''',
 ]
 paths = [
-    # 精确限定到测试文件, 避免误 allowlist 其它路径的真 key
-    '''tests/test_cmd_hermes\.py''',
-    # 公开树新增测试的假 fixture (同一种占位符)
-    '''tests/events/''',
-    '''tests/kernel/''',
-    '''tests/kernel/''',
-    '''tests/studio/test_api\.py''',
-    '''tests/compat/''',
-    '''tests/packaging/''',
+    '''^tests/events/test_v1_compat\.py$''',
 ]
 
-# Route-manifest fixture checksums are deterministic SHA-256 test data, not
-# credentials. The public CI scans every public branch's history, including the
-# superseded runtime-foundation candidate where this fixture originated.
 [[allowlists]]
-description = "Allowlist deterministic route-manifest SHA-256 test fixture"
+description = "Reviewed deterministic fixture or identifier false positives group 3"
+condition = "AND"
+regexTarget = "secret"
 regexes = [
-    '''ac9086d1592d69d7eecd4260c2ca4bfa06b0daaed5cdf0653c4eb409204ed84d''',
+    '''(?s)^sk\-1234567890$''',
 ]
 paths = [
-    '''tests/server/test_route_manifest_parity\.py''',
+    '''^tests/kernel/preprod/test_kernel_gate\.py$''',
 ]
 
+[[allowlists]]
+description = "Reviewed deterministic fixture or identifier false positives group 4"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+    '''(?s)^lease_ttl_seconds=30$''',
+]
+paths = [
+    '''^tests/kernel/test_postgres_store\.py$''',
+]
+
+[[allowlists]]
+description = "Reviewed deterministic fixture or identifier false positives group 5"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+    '''(?s)^sk\-1234567890$''',
+]
+paths = [
+    '''^tests/phase1/test_phase1_gate\.py$''',
+]
+
+[[allowlists]]
+description = "Reviewed deterministic fixture or identifier false positives group 6"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+    '''(?s)^sk\-test\-secret\-placeholder\-123$''',
+]
+paths = [
+    '''^tests/plugins/test_bundle_security\.py$''',
+]
+
+[[allowlists]]
+description = "Reviewed deterministic fixture or identifier false positives group 7"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+    '''(?s)^bcd977f5e2550871e6b603007aa7df085e930048be1c680fafea52c3012319a0$''',
+]
+paths = [
+    '''^tests/server/test_route_manifest_parity\.py$''',
+]
+
+[[allowlists]]
+description = "Reviewed deterministic fixture or identifier false positives group 8"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+    '''(?s)^conversation\-turn\-1$''',
+    '''(?s)^conversation\-turn\-2$''',
+]
+paths = [
+    '''^tests/studio/test_api\.py$''',
+]
+
+[[allowlists]]
+description = "Reviewed deterministic fixture or identifier false positives group 9"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+    '''(?s)^sk\-live\-secret$''',
+]
+paths = [
+    '''^tests/test_cmd_hermes\.py$''',
+]

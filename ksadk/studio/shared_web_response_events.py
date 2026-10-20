@@ -54,6 +54,22 @@ async def project_response_events(
             if key in seen:
                 continue
             seen.add(key)
+            native = event.data.get("runtimeEvent") or {}
+            metadata = native.get("source", {}).get("metadata", {})
+            item_id = str(event.data.get("itemId") or native.get("item_id") or "")
+            if event.type == "thinking.completed":
+                name = "response.reasoning_summary_text.done"
+                projected.append((name, {
+                    "type": name, "item_id": item_id or f"summary_{invocation_id}",
+                    "text": str(event.data.get("text") or ""),
+                    "public_summary": metadata.get("public_summary") is True,
+                    "presentation_source": "provider_reasoning"
+                    if metadata.get("provider_reasoning") is True else (
+                        "public_summary" if metadata.get("public_summary") is True else "reasoning"
+                    ),
+                    "event_id": f"{run.id}:{event.id}",
+                }))
+                continue
             if event.type == "message.completed":
                 native = event.data.get("runtimeEvent") or {}
                 metadata = native.get("source", {}).get("metadata", {})
@@ -96,14 +112,25 @@ async def project_response_events(
                     if event.type == "message.delta" and not is_activity
                     else "response.reasoning_summary_text.delta"
                 )
+                payload = self._response_delta_payload(
+                    event_name, invocation_id=invocation_id,
+                    delta=f"\n{delta}\n" if is_activity else delta,
+                    item_id=item_id or None,
+                )
+                payload.update(
+                    event_id=f"{run.id}:{event.id}",
+                    public_summary=metadata.get("public_summary") is True,
+                    presentation_source="runtime_progress" if is_activity else (
+                        "public_summary" if metadata.get("public_summary") is True else (
+                            "provider_reasoning"
+                            if metadata.get("provider_reasoning") is True else "reasoning"
+                        )
+                    ),
+                )
                 projected.append(
                     (
                         event_name,
-                        self._response_delta_payload(
-                            event_name,
-                            invocation_id=invocation_id,
-                            delta=f"\n{delta}\n" if is_activity else delta,
-                        ),
+                        payload,
                     )
                 )
                 continue

@@ -12,8 +12,10 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote, urlsplit
 
 from ksadk.harness.native.completion import (
     CompletionCandidate,
@@ -437,8 +439,54 @@ def _sha256(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+class _WebEntryBindingError(ValueError):
+    """The host cannot bind changed web files to one delivered page."""
+
+
+def _page_references_asset(page: Path, asset: Path, root: Path) -> bool:
+    """Allow root pages for nested assets only with an explicit local reference."""
+    class References(HTMLParser):
+        paths: list[str]
+        has_base = False
+
+        def __init__(self):
+            super().__init__()
+            self.paths = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "base":
+                self.has_base = True
+            key = "src" if tag == "script" else "href" if tag == "link" else None
+            value = dict(attrs).get(key) if key else None
+            if value:
+                self.paths.append(value)
+
+    try:
+        parser = References()
+        with page.open(encoding="utf-8") as stream:
+            parser.feed(stream.read(1024 * 1024))
+        if parser.has_base:
+            return False
+        for value in parser.paths:
+            url = urlsplit(value)
+            if url.scheme or url.netloc or not url.path:
+                continue
+            path = unquote(url.path)
+            base = root if path.startswith("/") else page.parent
+            if (base / path.lstrip("/")).resolve() == asset:
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
 def _written_web_entry(store: RunStore, scope: RunScope, run_id: str, root: Path) -> str | None:
-    """Choose an entry only after this Run received a successful write receipt."""
+    """Bind observed changes to their page, never an unrelated root fallback.
+
+    A continued Run may change only JS/CSS in an existing subproject. Use
+    its nearest entry directory and any host-recorded page in that directory.
+    Ambiguous or unavailable bindings are host blockers, not game defects.
+    """
     try:
         snapshot = store.load(scope, run_id)
     except Exception:
@@ -494,13 +542,59 @@ def _written_web_entry(store: RunStore, scope: RunScope, run_id: str, root: Path
     if not written:
         return None
     resolved_root = root.resolve()
-    direct = sorted(path for path in written if Path(path).name == "index.html")
-    candidates = direct or ["index.html"]
-    for path in candidates:
+    observation = getattr(snapshot, "last_browser_observation", None)
+    observed_path = observation.get("entry_path") if isinstance(observation, dict) else None
+    observed = (resolved_root / observed_path).resolve() if isinstance(observed_path, str) else None
+    if observed is not None and not (
+        observed.is_relative_to(resolved_root)
+        and observed.suffix in {".html", ".htm"}
+        and observed.is_file()
+    ):
+        observed = None
+    candidates: set[Path] = set()
+    for path in written:
         target = (resolved_root / path).resolve()
-        if target.is_relative_to(resolved_root) and target.is_file():
-            return target.relative_to(resolved_root).as_posix()
-    return None
+        if not target.is_relative_to(resolved_root):
+            raise _WebEntryBindingError(
+                "Web entry binding blocked: changed files leave the workspace."
+            )
+        if target.suffix in {".html", ".htm"}:
+            if not target.is_file():
+                raise _WebEntryBindingError(
+                    "Web entry binding blocked: the changed page is unavailable."
+                )
+            candidates.add(target)
+            continue
+        directory = target.parent
+        # A nested project with no known entry must not inherit an unrelated
+        # old page at workspace root. Root assets can still bind a root page.
+        while directory.is_relative_to(resolved_root):
+            local_project = directory != resolved_root or target.parent == resolved_root
+            # The observation is a host receipt, not a path asserted in final text.
+            if observed is not None and observed.parent == directory and (
+                local_project or _page_references_asset(observed, target, resolved_root)
+            ):
+                candidates.add(observed)
+                break
+            entry = (directory / "index.html").resolve()
+            if entry.is_relative_to(resolved_root) and entry.is_file() and (
+                local_project or _page_references_asset(entry, target, resolved_root)
+            ):
+                candidates.add(entry)
+                break
+            directory = directory.parent
+        else:
+            raise _WebEntryBindingError(
+                "Web entry binding blocked: no page is bound to the changed web files. "
+                "Inspect the intended project entry with the browser tool before verifying."
+            )
+    if len(candidates) != 1:
+        raise _WebEntryBindingError(
+            "Web entry binding blocked: changed files belong to multiple pages. "
+            "The host must bind the intended delivery entry before verifying; "
+            "this is not evidence of a defect in the delivered page."
+        )
+    return next(iter(candidates)).relative_to(resolved_root).as_posix()
 
 
 class StudioFinalShapeVerifier:
@@ -521,7 +615,7 @@ class StudioFinalShapeVerifier:
             f"{build_id}\0{VERIFIER_REF}\0{VERIFIER_VERSION}\0"
             f"{BROWSER_VERIFIER_REF}\0{BROWSER_VERIFIER_VERSION}\0"
             f"{ARTIFACT_VERIFIER_REF}\0{ARTIFACT_VERIFIER_VERSION}\0"
-            f"visual-feedback:{int(require_visual_feedback)}"
+            f"visual-feedback:{int(require_visual_feedback)}\0web-entry-binding:2"
         )
         self._workspace_root = workspace_root
         self._store = store
@@ -599,11 +693,18 @@ class StudioFinalShapeVerifier:
         browser_checked = False
         browser_controls = ""
         browser_evidence_ref: str | None = None
+        browser_blocker = None
         if browser_check:
             assert self._store is not None and self._workspace_root is not None
-            entry = _written_web_entry(
-                self._store, self._scope, request.run_id, self._workspace_root
-            )
+            try:
+                entry = _written_web_entry(
+                    self._store, self._scope, request.run_id, self._workspace_root
+                )
+            except _WebEntryBindingError as exc:
+                entry = None
+                browser_blocker = str(exc)
+                browser_failure = browser_blocker
+                browser_evidence_ref = _sha256(browser_blocker)
             if entry is not None:
                 try:
                     observation = await self._browser.verify_page(
@@ -621,7 +722,7 @@ class StudioFinalShapeVerifier:
                                     "entry": entry,
                                     "status": observation.status,
                                     "status_code": observation.status_code,
-                                    "error_code": observation.error_code,
+                                    "error_code": getattr(observation, "error_code", None),
                                     "console": observation.console,
                                     "page_errors": observation.page_errors,
                                     "page_error_locations": getattr(
@@ -643,7 +744,8 @@ class StudioFinalShapeVerifier:
                         observation.status_code is not None and observation.status_code >= 400
                     ):
                         reason = (
-                            observation.error_code or observation.status_code or observation.status
+                            getattr(observation, "error_code", None)
+                            or observation.status_code or observation.status
                         )
                         browser_failure = (
                             "The delivered page has multiple visible start controls. "
@@ -651,6 +753,18 @@ class StudioFinalShapeVerifier:
                             if reason == "browser_launch_control_ambiguous"
                             else f"Browser could not load the delivered page: {reason}."
                         )
+                        # An incomplete browser operation does not establish a
+                        # defect in the delivery. Only an observed HTTP failure
+                        # or duplicate launch controls can request a code repair.
+                        if reason != "browser_launch_control_ambiguous" and not (
+                            observation.status_code is not None and observation.status_code >= 400
+                        ):
+                            browser_blocker = (
+                                "Browser verification is blocked by an incomplete host "
+                                "observation. Restore the browser and verify the same page; "
+                                "no delivery defect has been established."
+                            )
+                            browser_failure = browser_blocker
                     elif (
                         any(
                             not browser_environment_warning(item)
@@ -717,11 +831,21 @@ class StudioFinalShapeVerifier:
                 except Exception:
                     # An unavailable host browser is missing evidence, not
                     # proof that the user's implementation is defective.
-                    pass
+                    browser_blocker = (
+                        "Browser verification is unavailable. Restore the host browser "
+                        "or evidence service and verify the same page; do not modify "
+                        "the delivery solely to clear this blocker."
+                    )
+                    browser_failure = browser_blocker
+                    browser_evidence_ref = _sha256(f"browser_unavailable\0{entry}")
             # Checkpoints are triggered after a browser observation on changed
             # web files. Surface a wrong/stale delivery page immediately, while
             # the model still has tool budget to inspect and repair it.
-            if request.purpose in {"final", "checkpoint"} and entry is not None:
+            if (
+                request.purpose in {"final", "checkpoint"}
+                and entry is not None
+                and browser_blocker is None
+            ):
                 try:
                     run_snapshot = self._store.load(self._scope, request.run_id)
                     unresolved = run_snapshot.unresolved_interaction_observation
@@ -778,7 +902,12 @@ class StudioFinalShapeVerifier:
                         browser_evidence_ref = _sha256(
                             f"browser_observation_missing\0{entry}\0{last_web_change}"
                         )
-        if request.purpose == "checkpoint" and not browser_checked and exact_file is None:
+        if (
+            request.purpose == "checkpoint"
+            and not browser_checked
+            and exact_file is None
+            and browser_blocker is None
+        ):
             return VerificationBundle(candidate=candidate, report=None)
         artifact_ok = False
         artifact_observation = ""
@@ -794,7 +923,7 @@ class StudioFinalShapeVerifier:
         items = [
             VerificationItemResult(
                 acceptance_id=acceptance.acceptance_id,
-                status="failed" if failure else "not_run",
+                status="blocked" if browser_blocker else "failed" if failure else "not_run",
                 verifier_id=acceptance.verifier_ref,
                 verifier_version=acceptance.verifier_version,
                 evidence_refs=(browser_evidence_ref,)
@@ -803,7 +932,7 @@ class StudioFinalShapeVerifier:
                 if failure
                 else (),
                 verification_method="deterministic",
-                safe_summary=failure
+                safe_summary=browser_blocker or failure
                 or (
                     "Browser smoke check observed no load or script errors. "
                     f"Visible controls: {browser_controls or 'none'}. "
@@ -842,7 +971,7 @@ class StudioFinalShapeVerifier:
             subject_context_digest=request.subject_context_digest,
             environment_digest=candidate.environment_digest,
             items=tuple(items),
-            repairable=bool(failure),
+            repairable=bool(failure) and browser_blocker is None,
             failure_fingerprint=(
                 _sha256(f"{shape}\0{request.final_text}\0{artifact_observation}\0{browser_failure}")
                 if failure

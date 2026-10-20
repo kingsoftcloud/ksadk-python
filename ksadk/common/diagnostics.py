@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import traceback
 
 _URL = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+")
 _AUTH = re.compile(r"\b(?:bearer|basic)\s+[^\s,;\"']+", re.IGNORECASE)
@@ -20,6 +21,20 @@ _CREDENTIAL = re.compile(
     re.IGNORECASE,
 )
 _API_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b", re.IGNORECASE)
+
+
+def safe_exception_locations(error: BaseException) -> list[dict[str, object]]:
+    """Exception types and source locations, without text, code, or locals."""
+    chain = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(chain) < 5:
+        seen.add(id(current))
+        chain.append({"type": type(current).__name__, "locations": [
+            f"{frame.name}:{frame.lineno}" for frame in traceback.extract_tb(current.__traceback__)
+        ]})
+        current = current.__cause__ or current.__context__
+    return chain
 
 
 def safe_exception_detail(error: Exception, *, limit: int = 2048) -> str:

@@ -95,10 +95,10 @@ def test_internal_env_registry_items_do_not_expand_the_public_reference():
     assert specs["KSADK_RUNTIME_STATE_DIR"].documented is False
 
 
-def test_env_registry_pins_ksadk_web_static_sync_to_a_published_npm_release():
+def test_env_registry_web_version_is_an_optional_source_assertion():
     specs = {item.name: item for item in ENV_VAR_REGISTRY}
 
-    assert specs["KSADK_WEB_VERSION"].default == "0.3.13"
+    assert specs["KSADK_WEB_VERSION"].default == ""
     assert specs["KSADK_WEB_PACKAGE"].default == "@kingsoftcloud/ksadk-web"
     assert specs["KSADK_WEB_RELEASE_URL"].default == ""
 

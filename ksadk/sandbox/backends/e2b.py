@@ -241,6 +241,50 @@ class E2BSandboxSession:
             kwargs["timeout"] = timeout
         return E2BCommandHandle(self._sandbox.commands.connect(process_id, **kwargs))
 
+    def start_background_stream(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+        envs: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> Any:
+        """Start a background command and return the raw SDK handle for streaming.
+
+        The host-owned observer iterates this handle's event stream to durably
+        capture output; the wrapped ``E2BCommandHandle`` only exposes wait/kill.
+        """
+        kwargs: dict[str, Any] = {"background": True}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if envs is not None:
+            kwargs["envs"] = envs
+        if cwd is not None:
+            kwargs["cwd"] = cwd
+        return self._sandbox.commands.run(command, **kwargs)
+
+    def connect_background_stream(
+        self,
+        process_id: int,
+        *,
+        timeout: int | None = None,
+    ) -> Any:
+        """Reconnect to a running command, returning the raw SDK handle.
+
+        The new stream only delivers events produced after the connect; E2B does
+        not replay output that was produced while no client was attached.
+        """
+        if process_id <= 0:
+            raise SandboxError("E2B background stream reconnect requires a positive process ID")
+        kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return self._sandbox.commands.connect(process_id, **kwargs)
+
+    def kill_command(self, process_id: int) -> bool:
+        """Send SIGKILL to one remote command without killing the sandbox."""
+        return bool(self._sandbox.commands.kill(process_id))
+
     def list_files(self, root: str, *, recursive: bool = True) -> list[str]:
         """List file paths below ``root`` without exposing sibling paths."""
 
@@ -273,8 +317,8 @@ class E2BSandboxSession:
     def get_host(self, port: int) -> str:
         return str(self._sandbox.get_host(port))
 
-    def kill(self) -> None:
-        self._sandbox.kill()
+    def kill(self) -> bool:
+        return bool(self._sandbox.kill())
 
 
 class E2BSandboxBackend:

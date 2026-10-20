@@ -565,7 +565,9 @@ class OpenAICompatibleModelPort:
         # Keep the direct Port on the same endpoint capability policy as the
         # Studio Gateway. Some profiled reasoning models can spend the whole
         # output budget thinking instead of returning a tool result.
-        if provider_compat.request_thinking_disabled(
+        if sealed.profile.thinking_mode == "enabled":
+            payload = provider_compat.with_thinking_enabled(payload, self._compat_profile)
+        elif sealed.profile.thinking_mode == "disabled" or provider_compat.request_thinking_disabled(
             self._compat_profile, model=self._model, purpose=sealed.purpose,
             requested=sealed.profile.reasoning_effort,
         ) or provider_compat.should_disable_thinking(

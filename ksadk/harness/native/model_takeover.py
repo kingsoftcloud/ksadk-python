@@ -15,6 +15,7 @@ from typing import Literal
 
 from pydantic import Field, JsonValue, ValidationError
 
+from .call_budget import call_room
 from .effective_configuration import effective_run_configuration
 from .model_recovery_contract import RunClockQuote, unavailable_uncertain_usage
 from .ports import RunConfiguration
@@ -147,8 +148,9 @@ def _call_room(snapshot, config, *, unknown_calls: int) -> bool:
         + config.limits.verification_reserve_model_calls
     )
     return (
-        snapshot.model_calls + snapshot.descendant_model_calls + unknown_calls + 1 + protected
-        <= config.limits.max_model_calls
+        call_room(config.limits.max_model_calls,
+                  snapshot.model_calls + snapshot.descendant_model_calls,
+                  unknown_calls + 1 + protected)
     )
 
 

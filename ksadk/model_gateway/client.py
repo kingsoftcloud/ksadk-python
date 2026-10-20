@@ -102,7 +102,7 @@ class ModelGatewayClient(OpenAICompatibleModelClient):
         parallel_tool_calls: bool | None = None,
         output_token_parameter: Literal["max_tokens", "max_completion_tokens"] | None = None,
         compatibility_profile: CompatProfile | None = None,
-        thinking_mode: Literal["disabled"] | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
     ) -> AsyncIterator[ModelStreamEvent]:
         sequence = 0
         last_provider_request_id = ""

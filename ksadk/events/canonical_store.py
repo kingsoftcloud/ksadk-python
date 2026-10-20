@@ -412,7 +412,38 @@ class RuntimeEventStore:
         before_seq: int | None = None,
         run_id: str | None = None,
         limit: int | None = None,
+        item_kinds: list[str] | None = None, scope_id: str | None = None,
+        event_types: list[str] | None = None,
     ) -> list[RuntimeEvent]:
+        if limit is not None:
+            return await self.latest(session_id, limit=limit, run_id=run_id,
+                                     after_seq=after_seq, before_seq=before_seq,
+                                     item_kinds=item_kinds, scope_id=scope_id,
+                                     event_types=event_types)
+        query = getattr(self._event_store, "read_runtime", None)
+        if callable(query):
+            # Replay needs every fact of this run, but never one giant fetch
+            # (or unrelated runs from the same session).
+            filters = {}
+            if event_types is not None:
+                filters["event_types"] = event_types
+            if item_kinds is not None:
+                filters["item_kinds"] = item_kinds
+            if scope_id is not None:
+                filters["scope_id"] = scope_id
+            async with asyncio.timeout(session_db_budget().replay_operation_seconds):
+                events = []
+                cursor = after_seq
+                while True:
+                    page = await query(session_id, after_seq=cursor, before_seq=before_seq,
+                                       run_id=run_id, limit=256, **filters)
+                    if not page:
+                        break
+                    events.extend(parse_runtime_event(dict(e.payload) | {"seq": e.seq}) for e in page)
+                    cursor = page[-1].seq
+                    if len(page) < 256:
+                        break
+            return events
         # Run replay uses the backend's invocation index; session replay still
         # reads the shared physical cursor log and filters legacy rows here.
         if run_id is None or self._service is None:
@@ -431,13 +462,111 @@ class RuntimeEventStore:
             canonical
             for canonical in (session_event_to_runtime_event(item) for item in raw)
             if canonical is not None and (run_id is None or canonical.run_id == run_id)
+            and (event_types is None or canonical.event_type in event_types)
+            and (item_kinds is None or getattr(canonical, "item_kind", None) in item_kinds)
+            and (scope_id is None or canonical.scope_id == scope_id)
         ]
         events.sort(key=lambda event: event.seq)
-        if limit is not None:
-            if limit < 1:
-                raise ValueError("limit must be positive")
-            events = events[-limit:]
         return events
+
+    async def latest(
+        self, session_id: str, *, limit: int = 256, run_id: str | None = None,
+        event_types: list[str] | None = None, item_kinds: list[str] | None = None,
+        scope_id: str | None = None, after_seq: int = 0,
+        before_seq: int | None = None,
+    ) -> list[RuntimeEvent]:
+        return await self._query(session_id, limit=limit, run_id=run_id, event_types=event_types,
+                                 after_seq=after_seq, before_seq=before_seq, newest_first=True,
+                                 item_kinds=item_kinds, scope_id=scope_id)
+
+    async def first(self, session_id: str, **query) -> list[RuntimeEvent]:
+        return await self._query(session_id, newest_first=False, **query)
+
+    async def _query(
+        self, session_id: str, *, limit: int = 256, run_id: str | None = None,
+        event_types: list[str] | None = None, after_seq: int = 0,
+        before_seq: int | None = None, newest_first: bool,
+        item_kinds: list[str] | None = None, scope_id: str | None = None,
+    ) -> list[RuntimeEvent]:
+        """Matching head/tail facts, returned ascending; filters/limit precede I/O.
+
+        Continuation/root lookup must not fetch unrelated token/tool payloads
+        merely to discard them afterwards.
+        """
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        query = getattr(self._event_store, "read_runtime", None)
+        if callable(query):
+            filters = {}
+            if item_kinds is not None:
+                filters["item_kinds"] = item_kinds
+            if scope_id is not None:
+                filters["scope_id"] = scope_id
+            rows = await query(session_id, after_seq=after_seq, before_seq=before_seq,
+                               run_id=run_id, event_types=event_types, limit=limit,
+                               newest_first=newest_first, **filters)
+            return sorted((parse_runtime_event(dict(e.payload) | {"seq": e.seq})
+                           for e in rows), key=lambda e: e.seq)
+        service_query = getattr(self._service, "query_events", None)
+        if callable(service_query):
+            from ksadk.sessions.base import SessionEventQuery
+            result = []
+            upper = before_seq
+            lower = after_seq
+            while len(result) < limit:
+                rows = await service_query(SessionEventQuery(
+                    session_ids=[session_id], invocation_id=run_id, event_types=event_types,
+                    after_seq_id=lower, before_seq_id=upper, limit=min(limit, 256),
+                    order_by_seq=True, from_start=not newest_first,
+                ))
+                if not rows:
+                    break
+                result.extend(e for row in rows
+                              if (e := session_event_to_runtime_event(row)) is not None
+                              and (item_kinds is None or getattr(e, "item_kind", None) in item_kinds)
+                              and (scope_id is None or e.scope_id == scope_id))
+                if newest_first:
+                    upper = min(row.seq_id for row in rows)
+                else:
+                    lower = max(row.seq_id for row in rows)
+                if len(rows) < min(limit, 256):
+                    break
+            result.sort(key=lambda e: e.seq)
+            return result[-limit:] if newest_first else result[:limit]
+        if self._service is not None:
+            # Legacy duck-typed services may lack storage queries. Preserve
+            # their old semantics; maintained backends use pushdown above.
+            rows = await self._read_rows(session_id, after_seq, before_seq)
+            events = [e for row in rows if (e := session_event_to_runtime_event(row)) is not None
+                      and (run_id is None or e.run_id == run_id)
+                      and (event_types is None or e.event_type in event_types)
+                      and (item_kinds is None or getattr(e, "item_kind", None) in item_kinds)
+                      and (scope_id is None or e.scope_id == scope_id)]
+            events.sort(key=lambda e: e.seq)
+            return events[-limit:] if newest_first else events[:limit]
+        # Compatibility for third-party envelope stores without a query port.
+        # Bound each transfer; maintained backends above push down the tail.
+        result = []
+        cursor = after_seq
+        while True:
+            rows = await self._read_rows(session_id, cursor, before_seq, limit=256)
+            if not rows:
+                break
+            for row in rows:
+                event = session_event_to_runtime_event(row)
+                if event is not None and (run_id is None or event.run_id == run_id) and (
+                    event_types is None or event.event_type in event_types
+                ) and (item_kinds is None or getattr(event, "item_kind", None) in item_kinds) and (
+                    scope_id is None or event.scope_id == scope_id
+                ):
+                    result.append(event)
+            if not newest_first and len(result) >= limit:
+                return result[:limit]
+            result = result[-limit:]
+            cursor = max(row.seq_id for row in rows)
+            if len(rows) < 256:
+                break
+        return result
 
     async def latest_seq_by_sessions(self, session_ids: list[str]) -> dict[str, int]:
         """Read canonical watermarks in one backend query when available."""

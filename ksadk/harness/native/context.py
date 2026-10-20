@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from .completion import VerificationRepairTarget
+from .execution_budget import ExecutionBudgetObservation
 
 NonBlank = Annotated[str, Field(min_length=1, pattern=r"\S")]
 TokenCount = Annotated[int, Field(strict=True, ge=0)]
@@ -101,9 +102,26 @@ class SourceReadProgress(_ContextContract):
         return self
 
 
+class DirectoryListingProgress(_ContextContract):
+    """Observed navigation only; names do not prove implementation or coverage."""
+
+    path: NonBlank = Field(max_length=2048)
+    receipt_refs: tuple[NonBlank, ...] = Field(min_length=1)
+    tool_call_ids: tuple[NonBlank, ...] = Field(min_length=1)
+    child_directories: tuple[NonBlank, ...]
+    latest_result_truncated: bool
+    observation_scope: Literal["historically_returned_children"] = "historically_returned_children"
+    authority: Literal["navigation_only"] = "navigation_only"
+    source_freshness: Literal["not_attested"] = "not_attested"
+    semantic_coverage: Literal["not_attested"] = "not_attested"
+
+
 class ExecutionContinuityState(_ContextContract):
     """Host-owned facts; pending_work names repair gaps, not final rechecks."""
 
+    execution_budget: ExecutionBudgetObservation | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     goal: NonBlank
     goal_revision: int = Field(strict=True, ge=0)
     contract_digest: NonBlank
@@ -112,6 +130,9 @@ class ExecutionContinuityState(_ContextContract):
     failure_fingerprints: tuple[NonBlank, ...]
     evidence_refs: tuple[NonBlank, ...]
     artifact_refs: tuple[NonBlank, ...]
+    artifact_catalog: Literal["earned-artifact-catalog/v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     next_action: NonBlank | None
     workspace_revision: NonBlank | None
     observed_progress_revision: int = Field(default=0, strict=True, ge=0)
@@ -138,6 +159,18 @@ class ExecutionContinuityState(_ContextContract):
     # Parent-accounted locators, distinct from pending execution or acceptance.
     accounted_subagent_run_ids: tuple[NonBlank, ...] = ()
     source_read_progress: tuple[SourceReadProgress, ...] = ()
+    source_read_history: tuple[SourceReadProgress, ...] = Field(
+        default=(), exclude_if=lambda value: not value,
+    )
+    source_read_pages: tuple[SourceReadProgress, ...] = Field(
+        default=(), exclude_if=lambda value: not value,
+    )
+    source_path_projection: Literal["canonical-source-paths/v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    directory_listing_progress: tuple[DirectoryListingProgress, ...] = Field(
+        default=(), exclude_if=lambda value: not value,
+    )
     # Host-owned delivery debt, separate from plugin content and task goals.
     pending_hook_operation_keys: tuple[NonBlank, ...] = ()
     context_source_operation_key: str | None = Field(default=None, min_length=1,
@@ -166,12 +199,23 @@ class ExecutionContinuityState(_ContextContract):
             self.tool_receipt_refs,
             self.accounted_subagent_run_ids,
             tuple(item.path for item in self.source_read_progress),
+            tuple(item.path for item in self.source_read_history),
+            tuple((item.receipt_ref, item.tool_call_id) for item in self.source_read_pages),
+            tuple(item.path for item in self.directory_listing_progress),
             self.pending_verification,
         ):
             if len(set(identities)) != len(identities):
                 raise ValueError("duplicate acceptance or pending tool identity")
         if not set(self.pending_verification).issubset(self.required_acceptance_ids):
             raise ValueError("pending verification must name required acceptances")
+        if not {item.path for item in self.source_read_history}.issubset(
+            item.path for item in self.source_read_progress
+        ):
+            raise ValueError("source history must have a latest page")
+        if not {item.path for item in self.source_read_pages}.issubset(
+            item.path for item in self.source_read_progress
+        ):
+            raise ValueError("source pages must have a latest page")
         return self
 
 

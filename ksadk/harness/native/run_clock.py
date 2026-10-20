@@ -19,6 +19,11 @@ class ActiveRunClock:
 
     Host ports own cleanup. A lost running intent remains uncertain after
     attach; this clock does not claim to reconstruct unrecorded crash time.
+
+    Elapsed time is always tracked — even for unbounded runs (no wall limit) —
+    so chain accounting records real consumption. The limit only governs the
+    ``remaining`` stop check; it does not gate time accumulation. Paused and
+    approval-waiting phases do not accrue time.
     """
 
     def __init__(self, limit: float | None) -> None:
@@ -32,7 +37,7 @@ class ActiveRunClock:
         }
 
     def attach(self, snapshot: RunSnapshot) -> None:
-        if self.limit is not None and self.active(snapshot):
+        if self.active(snapshot):
             self.anchors.setdefault(snapshot.run_id, monotonic())
 
     def release(self, run_id: str) -> None:
@@ -65,14 +70,16 @@ class ActiveRunClock:
         self, previous: RunSnapshot, batch: CommitBatch,
     ) -> tuple[CommitBatch, float]:
         now = monotonic()
-        if self.limit is not None:
-            batch = batch.model_copy(update={"snapshot": batch.snapshot.model_copy(update={
-                "execution_elapsed_seconds": self.elapsed(previous, now),
-            })})
+        # Always record elapsed time, even for unbounded runs, so chain
+        # accounting captures real consumption. The limit only governs
+        # the stop check in ``remaining``, not whether time is tracked.
+        batch = batch.model_copy(update={"snapshot": batch.snapshot.model_copy(update={
+            "execution_elapsed_seconds": self.elapsed(previous, now),
+        })})
         return batch, now
 
     def committed(self, snapshot: RunSnapshot, now: float) -> None:
-        if self.limit is not None and self.active(snapshot):
+        if self.active(snapshot):
             self.anchors[snapshot.run_id] = now
         else:
             self.release(snapshot.run_id)

@@ -263,6 +263,21 @@ PUBLIC_EXPORT_MANIFEST_KEYS = {
 
 CONTENT_RULES = (
     ContentRule(
+        name="private-stage-endpoint",
+        pattern=re.compile(r"\b[\w.-]+\.(?:pre-online|staging)\.(?:inner|internal)\.api\.ksyun\.com\b|\bagent-api-pre\.[\w.-]+\.ksyun\.com\b"),
+        description="private stage service addresses must remain explicit operator configuration",
+    ),
+    ContentRule(
+        name="personal-cluster-config",
+        pattern=re.compile(r"\.kube/config-[A-Za-z0-9]+\b"),
+        description="personal cluster configuration paths must stay outside public source",
+    ),
+    ContentRule(
+        name="fixed-private-registry-namespace",
+        pattern=re.compile(r"\bhub(?:-vpc)?\.kce\.ksyun\.com/agentengine(?:/|[\"'\s`]|$)"),
+        description="private registry namespaces must be configured by the operator",
+    ),
+    ContentRule(
         name="public-doc-internal-endpoint",
         pattern=re.compile(
             r"\b(?:aicp\.(?:inner|internal)\.api|iam\.inner\.api)\.ksyun\.com\b"
@@ -357,7 +372,7 @@ CONTENT_RULES = (
     ),
     ContentRule(
         name="uuid-secret-assignment",
-        # UUID 格式 key 赋值给 *_API_KEY/*_TOKEN/*_MCP_KEY 等(如 OPENAI_API_KEY=4fd210b0-...)
+        # UUID 格式 key 赋值给 *_API_KEY/*_TOKEN/*_MCP_KEY 等(例如占位的 UUID 形状凭证)
         pattern=re.compile(
             r"(?i)\b[A-Z0-9_]*(?:API_KEY|MCP_KEY|TOKEN|SECRET)[A-Z0-9_]*\b\s*[:=]\s*[\"']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
         ),

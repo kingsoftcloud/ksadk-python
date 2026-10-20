@@ -72,6 +72,7 @@ with contextlib.redirect_stdout(sys.stderr):
     import ksadk.toolsets.workspace_state as state
     from ksadk.toolsets.workspace_read_budget import SourceReadBudget, source_read_budget_scope
     from ksadk.harness.tool_output import tool_output_scope
+    from ksadk.runtime_context import tool_execution_scope
     resolved_workspace_root = lambda: Path(sys.argv[2])
     # Builtin modules import workspace_root by value. Patch every consumer so
     # file tools, status tools, and command execution share the exact policy
@@ -82,6 +83,24 @@ with contextlib.redirect_stdout(sys.stderr):
     tool = get_agentengine_tools(include=[sys.argv[3]], mode='direct')[0]
     arguments = json.load(sys.stdin)
     source_budget = SourceReadBudget.from_transport(json.loads(sys.argv[6]))
+    # Trusted argv, separate from model arguments and editable workspace files.
+    sandbox._background_state_root = lambda: Path(sys.argv[7])
+    tool_context = json.loads(sys.argv[8])
+    # The host-selected background backend (from the canonical launch receipt,
+    # validated by the Native tool port) is carried in tool_context and set as
+    # a ContextVar here so the worker's background session selects the same
+    # backend as launch, independent of the worker's environment. It is never
+    # read from model arguments or the worker env. Only host-supported backends
+    # are accepted — an arbitrary non-None value is not trusted.
+    _bg_backend = tool_context.pop("background_backend", None)
+    if _bg_backend is not None and _bg_backend in {"local", "local_process", "e2b"}:
+        sandbox._BACKGROUND_BACKEND.set(_bg_backend)
+    # Test-only dependency channel: carry the deterministic stream source to
+    # the isolated worker. Production never sets this (None); the worker then
+    # uses the real E2B factory. This is not an env switch and not a model arg.
+    _bg_source_config = tool_context.pop("background_source_config", None)
+    if _bg_source_config is not None:
+        sandbox._BACKGROUND_SOURCE_CONFIG = _bg_source_config
 
     def public_output(channel, text):
         global output_bytes
@@ -96,7 +115,10 @@ with contextlib.redirect_stdout(sys.stderr):
                     ensure_ascii=False), file=wire_stdout, flush=True)
 
     def invoke_builtin():
-        with source_read_budget_scope(source_budget), tool_output_scope(public_output):
+        with (
+            source_read_budget_scope(source_budget), tool_output_scope(public_output),
+            tool_execution_scope(**tool_context),
+        ):
             return tool.invoke(arguments) if hasattr(tool, 'invoke') else tool(**arguments)
 
     # File observations and mutations share the persistent revision guard.
@@ -109,7 +131,7 @@ with contextlib.redirect_stdout(sys.stderr):
     if stateful:
         db_path = Path(sys.argv[4])
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(db_path, timeout=10) as db:
+        with tool_execution_scope(**tool_context), sqlite3.connect(db_path, timeout=10) as db:
             db.execute('CREATE TABLE IF NOT EXISTS reads (session TEXT PRIMARY KEY, data TEXT)')
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT data FROM reads WHERE session=?', (sys.argv[5],)).fetchone()
@@ -298,6 +320,7 @@ def assemble_python_tools(
             env = {}
             execution_root = root
             from ksadk.runtime_context import get_current_tool_execution_context_or_default
+            from ksadk.toolsets.sandbox import _BACKGROUND_BACKEND, _BACKGROUND_SOURCE_CONFIG
 
             tool_context = get_current_tool_execution_context_or_default()
             from ksadk.harness.execution_policy import current_execution_policy
@@ -358,6 +381,20 @@ def assemble_python_tools(
                     ),
                     tool_context.session_id or "default",
                     json.dumps(source_budget.transport() if source_budget is not None else None),
+                    str(state_root / ".harness-tools" / "background"),
+                    json.dumps({"session_id": tool_context.session_id or "default",
+                                "run_id": tool_context.run_id,
+                                "invocation_id": tool_context.invocation_id,
+                                "background_backend": _BACKGROUND_BACKEND.get(),
+                                # Test-only dependency channel: when the parent
+                                # process has injected a deterministic stream
+                                # source via set_background_source_config_for_tests,
+                                # carry it to the isolated worker so the worker
+                                # (which re-imports toolsets and does not inherit
+                                # the parent's module global) uses the same source.
+                                # Production never sets this; it is not an env
+                                # switch and not a model argument.
+                                "background_source_config": _BACKGROUND_SOURCE_CONFIG}),
                 ]
             process = await asyncio.create_subprocess_exec(
                 sys.executable,

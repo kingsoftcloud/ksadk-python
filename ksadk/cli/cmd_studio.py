@@ -17,7 +17,6 @@ import uvicorn
 from ksadk.cli.env_options import load_env_file
 from ksadk.cli.ui import print_info, print_kv, print_success, print_title
 from ksadk.studio.api import create_studio_app
-from ksadk.studio.service import StudioService
 
 # veadk 风格：日志行带模块名与行号（filename:lineno），本地排障时能直接定位代码。
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(filename)s:%(lineno)d %(message)s"
@@ -117,12 +116,28 @@ def _open_browser_when_ready(url: str, port: int, *, timeout: float = 90.0) -> N
     show_default=True,
     help="Codex Responses→Chat 代理策略",
 )
+@click.option(
+    "--background-connection-ref",
+    default=None,
+    help=(
+        "E2B 后台 sandbox 宿主声明的 resource connection ref。"
+        "未声明时 E2B 后台不可用（unknown，0 后端调用）。"
+        "需与已声明的 ResourceConnectionRepository 记录匹配。"
+    ),
+)
+@click.option(
+    "--background-e2b-domain",
+    default=None,
+    help="E2B 后台 sandbox 传输域名，与 --background-connection-ref 配对。",
+)
 def studio(
     workspace: str,
     port: int,
     no_open: bool,
     env_file: str | None,
     codex_proxy: str,
+    background_connection_ref: str | None,
+    background_e2b_domain: str | None,
 ) -> None:
     """启动本地 AgentKit Studio。
 
@@ -202,10 +217,11 @@ def studio(
             }[codex_proxy]
         session_token = os.environ.get("KSADK_STUDIO_SESSION_TOKEN") or secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(24)
-        service = StudioService(root, configuration_overrides=configuration_overrides)
         app = create_studio_app(
             root,
-            service=service,
+            configuration_overrides=configuration_overrides,
+            native_background_connection_ref=background_connection_ref,
+            native_background_e2b_domain=background_e2b_domain,
             session_token=session_token,
             csrf_token=csrf_token,
             security_enabled=os.environ.get("KSADK_STUDIO_NO_SECURITY") != "1",

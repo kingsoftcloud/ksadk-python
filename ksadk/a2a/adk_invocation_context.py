@@ -4,6 +4,7 @@ import inspect
 import time
 from dataclasses import dataclass
 
+from ksadk.a2a.timeouts import invocation_seconds
 from ksadk.a2a.invocation_types import (
     A2AInvocationContext,
     A2AInvocationHandle,
@@ -173,7 +174,7 @@ class ADKInvocationContextProvider:
                 caller_agent_id=self._caller,
                 audit_id=stable_item_id("a2a", handle.scope_id, "audit"),
             ),
-            deadline_unix_seconds=float(self._clock()) + (spec.timeout_seconds or 300.0),
+            deadline_unix_seconds=float(self._clock()) + invocation_seconds(spec.timeout_seconds),
             idempotency_token=stable_item_id("a2a", handle.scope_id, "initial-send"),
         )
         return ManagedADKInvocationContext(request, trigger, service, tuple(prefix))

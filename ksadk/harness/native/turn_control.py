@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
 from pydantic import Field, JsonValue, model_validator
@@ -29,6 +30,14 @@ OBSERVATION_DUE_INSTRUCTION = (
     "the current page; the next turn can use the resulting evidence to repair "
     "any observed problem."
 )
+WALL_DELIVERY_INSTRUCTION = (
+    "The runtime is in its reserved deadline delivery window. Stop exploration "
+    "and further research. Use only the currently admitted delivery tools to "
+    "persist the requested deliverable from evidence already received, then "
+    "answer. Disclose unsupported conclusions, incomplete work and missing "
+    "verification honestly. This window grants no extra calls, permissions, "
+    "verification pass or deadline extension."
+)
 
 
 class ModelTurnControl(Contract):
@@ -42,6 +51,7 @@ class ModelTurnControl(Contract):
     reason: Literal[
         "model_budget_reserved", "task_tools_exhausted",
         "browser_observation_due", "browser_verification_reserved",
+        "wall_delivery_reserved",
     ]
     final_submission_required: bool = Field(default=False, strict=True)
     # Current admission, not the Agent's full registered catalog. Omission
@@ -53,19 +63,25 @@ class ModelTurnControl(Contract):
         return self.reason in {"model_budget_reserved", "task_tools_exhausted"}
 
     @property
-    def tool_choice(self) -> Literal["auto", "required"]:
+    def tool_choice(self) -> Literal["auto", "required", "none"]:
         # This admission already validates a singleton submit_final_output
         # surface. Convey that existing authority to the provider; ordinary
         # and observation turns still choose whether to use a task tool.
+        if self.reason == "wall_delivery_reserved" and not self.admitted_tool_names:
+            return "none"
         return "required" if self.finalization_only and self.final_submission_required else "auto"
 
     @model_validator(mode="after")
     def admission_is_explicit(self) -> ModelTurnControl:
         names = self.admitted_tool_names
-        if not self.finalization_only and (
+        if names is not None and (any(not name.strip() for name in names) or len(set(names)) != len(names)):
+            raise ValueError("admitted tool names must be nonblank and unique")
+        if not self.finalization_only and self.reason != "wall_delivery_reserved" and (
             not names or any(not name.strip() for name in names) or len(set(names)) != len(names)
         ):
             raise ValueError("observation control requires explicit admitted tool names")
+        if self.reason == "wall_delivery_reserved" and names is None:
+            raise ValueError("deadline delivery requires an explicit admitted surface")
         if names is not None and self.final_submission_required != ("submit_final_output" in names):
             raise ValueError("turn control conflicts with structured submission admission")
         return self
@@ -77,7 +93,10 @@ class ModelTurnControl(Contract):
             "task_tools_exhausted": EXHAUSTED_INSTRUCTION,
             "browser_observation_due": OBSERVATION_DUE_INSTRUCTION,
             "browser_verification_reserved": VERIFICATION_INSTRUCTION,
+            "wall_delivery_reserved": WALL_DELIVERY_INSTRUCTION,
         }[self.reason]
+        if self.reason == "wall_delivery_reserved":
+            instruction += " Admitted tool names: " + json.dumps(self.admitted_tool_names) + "."
         if self.final_submission_required:
             instruction += (
                 " For final delivery, call submit_final_output with arguments matching its "

@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from ksadk.harness.native.call_budget import call_room, cap_calls, remaining_calls
 from ksadk.harness.native.child_lifecycle import ChildLifecycleRequest, ChildLifecycleResult
 from ksadk.harness.native.child_lifecycle_contract import (
     ChildInterruptedReceipt,
@@ -202,13 +203,13 @@ class NativeBackgroundChildToolPort:
     def _child_request(self, request: ToolRequest) -> ChildRunRequest:
         launch = _Launch.model_validate(request.call.arguments)
         allowance = request.budget
-        model_slots = allowance.max_model_calls_remaining - (
-            0 if allowance.parent_finalization_reserved else 1
-        )
+        model_slots = remaining_calls(allowance.max_model_calls_remaining, 0,
+                                      0 if allowance.parent_finalization_reserved else 1)
         # Preserve a parent collection/control call rather than allocate every
         # remaining tool slot to the child. The outer final model reserve stays.
-        tool_slots = allowance.max_tool_calls_remaining - 1
-        if model_slots < 1 or tool_slots < 0:
+        tool_slots = remaining_calls(allowance.max_tool_calls_remaining, 0, 1)
+        if (not call_room(model_slots, 0)
+                or not call_room(allowance.max_tool_calls_remaining, 0, 1)):
             raise ValueError("child_budget_exhausted")
         args = {"role": launch.role, "task": launch.task}
         if launch.output_format is not None:
@@ -223,8 +224,8 @@ class NativeBackgroundChildToolPort:
                 "definition": self._delegate.definition(),
                 "budget": allowance.model_copy(
                     update={
-                        "max_model_calls_remaining": min(model_slots, launch.model_call_limit),
-                        "max_tool_calls_remaining": min(tool_slots, launch.tool_call_limit),
+                        "max_model_calls_remaining": cap_calls(model_slots, launch.model_call_limit),
+                        "max_tool_calls_remaining": cap_calls(tool_slots, launch.tool_call_limit),
                         "parent_finalization_reserved": True,
                     }
                 ),

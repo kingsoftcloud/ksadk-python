@@ -71,11 +71,12 @@ def _recovery_source(scope_id: str) -> SourceRef:
 async def scan_open_runs(
     store: RuntimeEventStore,
     session_id: str,
+    *, run_id: str | None = None,
 ) -> list[RecoveryFinding]:
     """Detect runs left open, with their resumability and open items."""
 
     findings: list[RecoveryFinding] = []
-    run_ids = await store.list_run_ids(session_id)
+    run_ids = [run_id] if run_id is not None else await store.list_run_ids(session_id)
     for run_id in run_ids:
         projection = await replay_projection(store, session_id, run_id=run_id)
         if projection.status not in (None, "running"):

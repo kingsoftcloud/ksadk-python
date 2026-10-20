@@ -179,7 +179,9 @@ class NativePlaywrightBrowser:
         if self._browser is None:
             try:
                 from playwright.async_api import async_playwright
-
+            except ImportError:
+                raise BrowserSessionError("browser_dependency_missing") from None
+            try:
                 self._playwright = await async_playwright().start()
                 for channel in self._launch_channels:
                     try:

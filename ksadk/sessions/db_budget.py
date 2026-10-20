@@ -1,8 +1,8 @@
 """Shared database phase budgets for session, Kernel, ADK and LangGraph storage.
 
 Each positive finite ``KSADK_DB_<PHASE>_SECONDS`` value overrides its default:
-CONNECT=.5, READ_ACQUIRE=.3, READ_SQL=1, WRITE_ACQUIRE=.5,
-WRITE_SQL=3, WRITE_OPERATION=5, REPLAY_SQL=3, REPLAY_OPERATION=30, LOCK=.5, CLEANUP=1. Invalid values use the
+CONNECT=2, READ_ACQUIRE=3, READ_SQL=8, WRITE_ACQUIRE=3,
+WRITE_SQL=15, WRITE_OPERATION=30, REPLAY_SQL=10, REPLAY_OPERATION=60, LOCK=2, CLEANUP=2. Invalid values use the
 default with a warning. CONNECT also accepts the legacy
 ``KSADK_SESSION_CONNECT_TIMEOUT`` / ``KSADK_SESSION_PG_CONNECT_TIMEOUT``
 when the new name is absent. These are per-phase limits, not retry budgets.
@@ -154,16 +154,18 @@ async def release_pool_lease(pool: Any, lease: Any, connection: Any, seconds: fl
 
 @dataclass(frozen=True)
 class DatabaseBudget:
-    connect_seconds: float = 0.5
-    read_acquire_seconds: float = 0.3
-    read_sql_seconds: float = 1.0
-    write_acquire_seconds: float = 0.5
-    write_sql_seconds: float = 3.0
-    write_operation_seconds: float = 5.0
-    lock_seconds: float = 0.5
-    cleanup_seconds: float = 1.0
-    replay_operation_seconds: float = 30.0
-    replay_sql_seconds: float = 3.0
+    connect_seconds: float = 2.0
+    read_acquire_seconds: float = 3.0
+    read_sql_seconds: float = 8.0
+    write_acquire_seconds: float = 3.0
+    write_sql_seconds: float = 15.0
+    write_operation_seconds: float = 30.0
+    checkpoint_read_operation_seconds: float = 45.0
+    lock_seconds: float = 2.0
+    cleanup_seconds: float = 2.0
+    replay_operation_seconds: float = 60.0
+    replay_sql_seconds: float = 10.0
+    event_observe_recovery_seconds: float = 60.0
 
 
 class DatabaseOperationDeadline:

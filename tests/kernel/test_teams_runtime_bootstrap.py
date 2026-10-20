@@ -2,8 +2,6 @@
 
 import asyncio
 import json
-import sys
-import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -40,30 +38,18 @@ from tests.kernel.teams_host_harness import temporary_postgres as temporary_post
 BASE = "/agent-kernel/teams-host/v1"
 
 
-async def test_prepare_fixture_uses_database_clock_when_host_runs_ahead(cloud, monkeypatch):
-    class AheadDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return super().now(tz) + timedelta(seconds=1)
-
-    monkeypatch.setattr(sys.modules[__name__], "datetime", AheadDateTime)
-    response = await cloud.client.post(BASE + "/PrepareExecution", json=body(cloud, "prepare"))
-    assert response.status_code == 200, response.text
-
-
 class Server:
-    def __init__(self, now):
-        self.now = now
+    def __init__(self):
         self.signer, self.native = Signer(), PermitAuthority()
         self.resolve_calls, self.invoke_calls = [], []
         self.context = self.incarnation = None
         self.revision = 1
-        self.expires = self.now() + timedelta(seconds=30)
+        self.expires = datetime.now(timezone.utc) + timedelta(seconds=30)
         self.callback_changes = {}
         self.fail_resolve = False
 
     def callback(self):
-        c, now = self.context, self.now()
+        c, now = self.context, datetime.now(timezone.utc)
         unsigned = TeamsCallbackPermit(
             issuer="host-test",
             kid=self.signer.key_id,
@@ -121,7 +107,7 @@ class Server:
                 json={
                     "context": self.context.model_dump(mode="json"),
                     "storeIncarnation": self.incarnation,
-                    "serverTime": timestamp(self.now()),
+                    "serverTime": timestamp(datetime.now(timezone.utc)),
                     "expiresAt": timestamp(self.expires),
                     "callbackPermit": self.callback().model_dump(mode="json"),
                 },
@@ -159,16 +145,8 @@ class Reasoner:
 async def cloud(tmp_path, monkeypatch, temporary_postgres, request):
     import asyncpg
 
+    server, reasoner = Server(), Reasoner()
     admin = await asyncpg.connect(temporary_postgres.get_uri())
-    observed = await admin.fetchval("SELECT clock_timestamp()")
-    observed_at = time.monotonic()
-
-    def trusted_now():
-        # Sign against the same time authority used by production verification.
-        # Starting after the round trip keeps issuedAt from leading the DB clock.
-        return observed + timedelta(seconds=max(0, time.monotonic() - observed_at))
-
-    server, reasoner = Server(trusted_now), Reasoner()
     name = "runtime_host_" + uuid4().hex
     await admin.execute(f'CREATE DATABASE "{name}"')
     settings = {
@@ -301,7 +279,7 @@ async def cloud(tmp_path, monkeypatch, temporary_postgres, request):
             ),
         )
         server.context, server.incarnation = context, descriptor["storeIncarnation"]
-        server.expires = server.now() + timedelta(seconds=30)
+        server.expires = datetime.now(timezone.utc) + timedelta(seconds=30)
         h = HostHarness(
             "postgres",
             None,
@@ -313,7 +291,7 @@ async def cloud(tmp_path, monkeypatch, temporary_postgres, request):
             server.signer,
             server.native,
             server.incarnation,
-            server.now(),
+            datetime.now(timezone.utc),
             None,
         )
         async with httpx.AsyncClient(
@@ -335,7 +313,7 @@ async def cloud(tmp_path, monkeypatch, temporary_postgres, request):
 
 
 def body(c, operation, *, recovery=False, revision=1):
-    c.h.now = c.server.now()
+    c.h.now = datetime.now(timezone.utc)
     return {
         "contextRef": c.h.context.context_ref,
         "expectedIncarnation": c.h.incarnation,
@@ -374,8 +352,8 @@ async def test_runtime_lifespan_pg_native_ingress_tool_and_terminal_result(cloud
     await prepare(c)
     original = c.h.context.command
     native = c.server.native.permit(
-        issued_at=timestamp(c.server.now()),
-        expires_at=timestamp(c.server.now() + timedelta(seconds=60)),
+        issued_at=timestamp(datetime.now(timezone.utc)),
+        expires_at=timestamp(datetime.now(timezone.utc) + timedelta(seconds=60)),
     )
     response = await c.client.post(
         ingress.KERNEL_INGRESS_SUBMIT_PATH,
@@ -459,7 +437,7 @@ async def test_renewal_uses_original_operation_and_new_callback_revision(cloud):
     await prepare(c)
     c.server.revision = 2
     await asyncio.sleep(0.2)
-    c.server.expires = c.server.now() + timedelta(seconds=29.99)
+    c.server.expires = datetime.now(timezone.utc) + timedelta(seconds=29.99)
     response = await c.client.post(
         BASE + "/SetExecutionGrant",
         json=body(c, "renew_grant")
@@ -522,7 +500,7 @@ async def test_real_probe_and_revocation_blocks_per_model_boundary(cloud):
 
     c = cloud
     desc = await c.factory.descriptor()
-    now = c.server.now()
+    now = datetime.now(timezone.utc)
     probe = sign_permit(
         BindingProbePermit(
             issuer="host-test",
@@ -574,7 +552,7 @@ async def test_callback_expiry_uses_pg_time_not_runtime_wall_clock(cloud, monkey
 
     c = cloud
     c.server.callback_changes = {
-        "expiresAt": timestamp(c.server.now() + timedelta(seconds=0.6))
+        "expiresAt": timestamp(datetime.now(timezone.utc) + timedelta(seconds=0.6))
     }
     await prepare(c)
 
@@ -606,8 +584,8 @@ async def test_actual_model_to_tool_boundary_observes_revocation(cloud):
 
     c.reasoner.after_model = revoke
     native = c.server.native.permit(
-        issued_at=timestamp(c.server.now()),
-        expires_at=timestamp(c.server.now() + timedelta(seconds=60)),
+        issued_at=timestamp(datetime.now(timezone.utc)),
+        expires_at=timestamp(datetime.now(timezone.utc) + timedelta(seconds=60)),
     )
     response = await c.client.post(
         ingress.KERNEL_INGRESS_SUBMIT_PATH,

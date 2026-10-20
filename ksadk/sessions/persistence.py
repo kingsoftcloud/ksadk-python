@@ -10,12 +10,17 @@ from copy import deepcopy
 from typing import Any, Awaitable, Callable, Mapping
 
 from ksadk.sessions import resolve_persistence_topology
+from ksadk.sessions.db_budget import _positive_seconds
 from ksadk.sessions.topology import StorageTarget
 
 ConnectCallable = Callable[..., Awaitable[Any]]
 
 _STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = asyncio.Lock()
+
+
+def persistence_probe_timeout() -> float:
+    return _positive_seconds("KSADK_PERSISTENCE_PROBE_TIMEOUT", 5.0)
 
 
 class _NoopAsyncLock:
@@ -122,7 +127,7 @@ async def _probe_postgres_target(
 ) -> dict[str, Any]:
     dsn = _asyncpg_dsn(target.dsn)
 
-    timeout = max(0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2"))
+    timeout = persistence_probe_timeout()
     ttl = max(0.0, float(os.getenv("KSADK_PERSISTENCE_PROBE_CACHE_TTL") or "30"))
     key = _cache_key(target.backend, dsn)
     now = time.monotonic()

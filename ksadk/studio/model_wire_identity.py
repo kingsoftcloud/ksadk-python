@@ -10,6 +10,30 @@ def invalid_model_frame() -> StudioError:
     return StudioError("MODEL_RESPONSE_INVALID", "Invalid model response frame", status_code=422)
 
 
+class IncompleteToolCallFrame(StudioError):
+    """A tool call left unfilled under a success/missing finish.
+
+    This is incomplete safe inference, not a hostile frame: the model declared
+    a tool call but never supplied its arguments, and signaled success
+    (``stop``/``tool_calls``) or no finish before the stream ended cleanly.
+    Zero tool effects authorize one bounded provider retry. No argument is
+    fabricated to ``{}`` and no tool executes; reported usage is preserved.
+    Kept distinct from ``MODEL_RESPONSE_INVALID`` so genuine identity, shape
+    and late-mutation rejections stay terminal and never become retryable.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "MODEL_INCOMPLETE_TOOL_CALL",
+            "Incomplete tool call arguments",
+            status_code=422,
+        )
+
+
+def incomplete_tool_call_frame() -> IncompleteToolCallFrame:
+    return IncompleteToolCallFrame()
+
+
 def decode_model_frame(raw: str | bytes) -> dict:
     try:
         value = load_model_json(raw)

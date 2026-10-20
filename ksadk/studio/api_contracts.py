@@ -30,6 +30,10 @@ class WorkspaceOpenRequest(ContractModel):
     create: bool = False
 
 
+class ProjectInstructionTrustRequest(ContractModel):
+    trusted: bool = Field(strict=True)
+
+
 class LinkedDirectoryRequest(ContractModel):
     path: str
     mode: Literal["read", "write"] = "read"
@@ -87,7 +91,7 @@ class QuickAuthoringRequest(ContractModel):
     name: str = Field(min_length=1, max_length=128)
     slug: str | None = Field(default=None, min_length=1, max_length=63)
     runtime_type: Literal["harness", "codex", "adk", "langgraph", "plugin"]
-    template: Literal["blank", "research"] = "blank"
+    template: Literal["blank", "research", "coding"] = "blank"
     description: str = Field(default="", max_length=1024)
     spec: AgentSpec | None = None
 

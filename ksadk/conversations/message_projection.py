@@ -263,10 +263,18 @@ def _project_tool_events(
         event_type = str(event.get("EventType") or "")
         metadata = _event_metadata(event)
         if event_type == "tool_call":
+            pair_key = _tool_pair_key(metadata)
+            existing = pending_by_key.get(pair_key) if pair_key else None
+            if existing is not None and metadata.get("canonical_tool_call_snapshot"):
+                # Native streams can publish arguments only in the terminal
+                # snapshot. Enrich the original call without adding another
+                # tool or resetting an already observed result to running.
+                existing["Name"] = str(metadata.get("tool_name") or existing["Name"])
+                existing["Args"] = metadata.get("tool_args")
+                continue
             entry = _tool_event_from_call(event, metadata)
             projected.append(entry)
             pending_calls.append(entry)
-            pair_key = _tool_pair_key(metadata)
             if pair_key:
                 pending_by_key[pair_key] = entry
             continue
@@ -301,7 +309,9 @@ def _project_tool_events(
             entry = match
         output = metadata.get("tool_output", _event_text(event))
         entry["Status"] = (
-            "failed" if isinstance(output, Mapping) and output.get("ok") is False else "completed"
+            "failed" if metadata.get("tool_is_error") is True
+            or (isinstance(output, Mapping) and output.get("ok") is False)
+            else "completed"
         )
         entry["Result"] = output
         entry["ResultSeqId"] = event.get("SeqId")
@@ -608,6 +618,10 @@ def _normalize_canonical_event(
             call_id = part.get("call_id", "")
             name = part.get("name", "")
             args = part.get("arguments", {})
+            if not call_id or not name:
+                # The completed snapshot will supply the stable identity.
+                # A run-id fallback here would merge unrelated native tools.
+                return event
             normalized["EventType"] = "tool_call"
             normalized["Content"] = {"call_id": call_id, "name": name, "args": args}
             normalized_metadata.update({"call_id": call_id, "tool_name": name, "tool_args": args})
@@ -655,7 +669,21 @@ def _normalize_canonical_event(
             normalized["Content"] = {"role": "model", "parts": [{"text": text}]}
             normalized["Author"] = "assistant"
         elif item_kind == "tool_call":
-            return event
+            snapshot = runtime_event.get("snapshot") or {}
+            parts = snapshot.get("parts") if isinstance(snapshot, Mapping) else None
+            part = next((part for part in parts or [] if isinstance(part, Mapping)
+                         and part.get("content_type") == "tool_call"), {})
+            call_id = part.get("call_id", "")
+            name = part.get("name", "")
+            if not call_id or not name:
+                return event
+            args = part.get("arguments", {})
+            normalized["EventType"] = "tool_call"
+            normalized["Content"] = {"call_id": call_id, "name": name, "args": args}
+            normalized_metadata.update({
+                "call_id": call_id, "tool_name": name, "tool_args": args,
+                "canonical_tool_call_snapshot": True,
+            })
         elif item_kind == "tool_result":
             snapshot = runtime_event.get("snapshot") or {}
             parts = snapshot.get("parts") if isinstance(snapshot, Mapping) else None
@@ -664,7 +692,10 @@ def _normalize_canonical_event(
             result = part.get("result", "")
             normalized["EventType"] = "tool_result"
             normalized["Content"] = {"call_id": call_id, "name": "", "result": result}
-            normalized_metadata.update({"call_id": call_id, "tool_output": result})
+            normalized_metadata.update({
+                "call_id": call_id, "tool_output": result,
+                "tool_is_error": part.get("is_error") is True,
+            })
         elif item_kind == "data" and source.get("protocol") == "a2ui":
             source_metadata = source.get("metadata")
             if (

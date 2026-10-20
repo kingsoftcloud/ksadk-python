@@ -16,6 +16,7 @@ from langgraph.types import Command
 
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
 from ksadk.runners._langgraph_runner_streams import _LangGraphStreamMixin
+from ksadk.runners._langgraph_fresh_turn import fresh_memory_input, fresh_user_checkpoint
 from ksadk.runners._langgraph_state_reader import (
     interrupt_info_from_state,
     known_subgraph_namespaces,
@@ -30,10 +31,8 @@ from ksadk.sessions import resolve_persistence_topology
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.sessions.db_budget import session_db_budget
 
-from ksadk.runners._langgraph_tool_projection import _LangGraphToolProjectionMixin
 
-
-class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMixin, _LangGraphStreamMixin, BaseRunner):
+class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, BaseRunner):
     """LangGraph 框架运行时
 
     透传原生 LangGraph 功能，支持任意 State 格式
@@ -59,18 +58,31 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
 
     def _load_agent(self, *, force_reload: bool) -> None:
         """加载 LangGraph 编译后的图"""
-        self._agent, self._module = load_agent_module(
+        managed_saver = None
+        if force_reload and self._managed_checkpoint_pool is not None:
+            managed_saver = getattr(self._agent, "checkpointer", None)
+            if managed_saver is None:
+                managed_saver = getattr(self._agent, "_checkpointer", None)
+        agent, module = load_agent_module(
             self.project_dir,
             self.detection_result.entry_point,
             self.detection_result.agent_variable,
             force_reload=force_reload,
         )
+        if managed_saver is not None:
+            # Reloading the model recreates the module's default MemorySaver.
+            # Recompile with our existing durable saver and pool so every
+            # session retains its checkpoint and its stable thread identity.
+            factory = getattr(module, "ksadk_graph_factory", None)
+            if not callable(factory):
+                raise TypeError("Managed LangGraph model reload requires ksadk_graph_factory")
+            agent = factory(checkpointer=managed_saver)
+        if not callable(getattr(agent, "invoke", None)):
+            raise TypeError("加载的对象不是有效的 LangGraph CompiledGraph")
+        self._agent, self._module = agent, module
         self._loaded_model_name = self.normalize_requested_model(
             os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
         )
-
-        if not hasattr(self._agent, "invoke"):
-            raise TypeError("加载的对象不是有效的 LangGraph CompiledGraph")
 
     def prepare_for_request(self, model: str | None) -> None:
         normalized = self.sync_process_model_env(model)
@@ -1188,6 +1200,7 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
 
         return {"output": accumulated_text, "raw": {"chunks": chunks}}
 
+    @fresh_user_checkpoint
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 LangGraph 图
 
@@ -1235,6 +1248,9 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
             state = self._prepare_state_with_hook(payload, session_id, history)
         else:
             state = self._to_state(payload, history)
+
+        if not is_resume and not is_checkpoint_resume:
+            state = await fresh_memory_input(self._agent, config, state)
 
         try:
             if is_checkpoint_resume:
@@ -1407,3 +1423,81 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
         metadata = await self._latest_checkpoint_metadata(latest_config)
         if metadata:
             yield {"type": "checkpoint", "metadata": metadata}
+
+    @staticmethod
+    def _tool_events_from_graph_update(
+        node_output: Any,
+        *,
+        tool_names: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Preserve LangGraph update-mode tool messages as structured runner events."""
+
+        if isinstance(node_output, Mapping):
+            messages = node_output.get("messages")
+        else:
+            messages = getattr(node_output, "messages", None)
+        if not isinstance(messages, (list, tuple)):
+            return []
+
+        events: list[dict[str, Any]] = []
+        for message in messages:
+            if isinstance(message, Mapping):
+                tool_calls = message.get("tool_calls")
+                tool_call_id = message.get("tool_call_id")
+                message_name = message.get("name")
+                message_content = message.get("content")
+                message_status = message.get("status")
+            else:
+                tool_calls = getattr(message, "tool_calls", None)
+                tool_call_id = getattr(message, "tool_call_id", None)
+                message_name = getattr(message, "name", None)
+                message_content = getattr(message, "content", None)
+                message_status = getattr(message, "status", None)
+
+            if isinstance(tool_calls, (list, tuple)):
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, Mapping):
+                        call_id = str(tool_call.get("id") or tool_call.get("tool_call_id") or "")
+                        name = str(tool_call.get("name") or "tool")
+                        args = tool_call.get("args")
+                    else:
+                        call_id = str(
+                            getattr(tool_call, "id", None)
+                            or getattr(tool_call, "tool_call_id", None)
+                            or ""
+                        )
+                        name = str(getattr(tool_call, "name", None) or "tool")
+                        args = getattr(tool_call, "args", None)
+                    if call_id:
+                        tool_names[call_id] = name
+                    events.append(
+                        {
+                            "type": "tool_call",
+                            "tool_call_id": call_id or name,
+                            "tool_name": name,
+                            "tool_args": args,
+                        }
+                    )
+
+            if tool_call_id:
+                call_id = str(tool_call_id)
+                name = str(message_name or tool_names.get(call_id) or "tool")
+                status = str(message_status or "").lower()
+                events.append(
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": call_id,
+                        "tool_name": name,
+                        "tool_output": message_content,
+                        "error": message_content if status in {"error", "failed"} else None,
+                    }
+                )
+        return events
+
+    def _filter_tool_tags(self, content: str) -> str:
+        """过滤 <tool_call> 标签"""
+        if not isinstance(content, str):
+            return content
+        content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
+        content = re.sub(r"</?(?:tool_call|arg_key|arg_value)>", "", content)
+        return content

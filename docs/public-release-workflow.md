@@ -1,32 +1,18 @@
 # KsADK 公开分支与发布流程
 
-本文档定义内部 `master` 与 GitHub 公开 `main` 的长期维护方式。它是发布和公开同步的执行依据。
+本文档定义镜像 `master` 与 GitHub `main` 的长期维护方式。它是发布和公开同步的执行依据。
 
 ## 当前模型
 
-`master` 是内部源主干，GitHub `main` 是公开发布主干。两者不应该长期维护两套功能代码或两套发布门禁。公开版本由内部 `master` 的已审核状态通过 clean export 生成，导出脚本只移除不适合公开的材料。
+`master` 与 GitHub `main` 保持同一提交和代码树，二者都只能包含可公开源码、安全测试与发布门禁。GitHub `main` 是公开审核入口，镜像主干在审核后同步到同一提交。
 
-公开 `main` 应包含：
+共享主干包含 SDK、运行时、Studio 源码、公开契约、文档站、可重复构建输入和必要回归测试。生成的 UI 静态资源只进入 wheel/sdist；内部设计、部署清单、个人环境、凭证与原始验证日志保留在共享主干之外。
 
-- 公开 SDK 源码：`ksadk/`、`ksadk_runtime_common/`，包括 `ksadk/studio/react-ui` 的源码与固定依赖锁。
-- `ksadk/server/static` 和 `ksadk/studio/static` 由构建流程生成，只进入 wheel/sdist，不提交 Git，也不从内部工作树复制到公开候选。
-- 公开构建与发布门禁：`Makefile`、`scripts/open_source_audit.py`、`scripts/check_*`、`.github/workflows/*`。
-- 公开文档站：`docs-site/`。
-- 公开 README、CHANGELOG、LICENSE、CONTRIBUTING、AGENTS、CLAUDE。
-- 公开发布所需的最小测试集。
-
-内部 `master` 可以额外包含：
-
-- 内部 docs、archive、runbook、设计草稿和预览材料。
-- 内部 agent skills / operator playbooks。
-- 内部验证脚本、E2E、长任务和平台集成测试。
-- 内部部署资产、临时缓存、zread/site/build 产物等。
-
-因此不能简单理解为“只差 docs 和 skills 两个目录”。准确说法是：**公开导出的源码和发布门禁必须与 `master` 的公开子集一致；非公开材料由导出脚本排除**。
+已有内部历史不得直接合入共享主干。先生成 clean export，保留有效修复，检查当前文件及可达历史，再经过相同的公开测试与 review。
 
 ## 硬性规则
 
-1. 不直接 `merge master -> main`，也不把内部 `master` 直接 push 到 GitHub。
+1. 不把包含内部材料的分支或历史直接合入共享主干；同步使用经审核的同一安全提交。
 2. 公开同步必须走 clean export candidate 或等价的公开候选分支。
 3. 公开候选必须先通过 `make public-preflight`。
 4. npm、PyPI、GitHub Pages 都必须由可信 GitHub workflow 发布；不使用本地 `npm publish`、本地 `twine upload` 或手工上传 Pages。
@@ -60,12 +46,12 @@ npm pack --dry-run --access public
 - workflow 使用 `npm publish --provenance` 发布。
 - 发布后用 `npm view @kingsoftcloud/ksadk-web@<version>` 确认 registry 可见。
 
-## 准备内部 master
+## 准备共享主干
 
 在 `agentengine/ksadk-python` 内部主干完成代码、文档、版本和审批记录：
 
 ```bash
-git checkout master
+git checkout -b codex/public-candidate github/main
 git status --short --branch
 uv run pytest <相关测试>
 git diff --check
@@ -73,11 +59,11 @@ git diff --check
 
 如果本次需要绑定新的 UI 版本，确认 `KSADK_WEB_VERSION` 默认值、README、docs-site、approval record 都引用同一个 npm 版本。
 
-Phase 2 发布还必须在最终内部 `master` 提交上重新生成本地制品证据，并在 npm 包发布、Hosted UI 以 digest 部署、发布候选环境浏览器矩阵完成后运行：
+Phase 2 发布还必须在最终共享主干 提交上重新生成本地制品证据，并在 npm 包发布、Hosted UI 以 digest 部署、发布候选环境浏览器矩阵完成后运行：
 
 ```bash
 make release-candidate-gate \
-  RELEASE_FINAL_COMMIT=<final-internal-master-commit> \
+  RELEASE_FINAL_COMMIT=<final-reviewed-source-commit> \
   RELEASE_LOCAL_EVIDENCE=<local-phase2-evidence.json> \
   RELEASE_WEB_REGISTRY_EVIDENCE=<npm-registry-evidence.json> \
   RELEASE_DEPLOYMENT_EVIDENCE=<hosted-ui-deployment-evidence.json> \
@@ -92,20 +78,20 @@ RuntimeEvent schema v2 发布的额外约束：当 Python 发布把运行事件�
 
 ```bash
 uv run python scripts/check_approval_record.py \
-  --expected-current-commit <reviewed-internal-master-commit>
+  --expected-current-commit <reviewed-source-commit>
 uv run pytest tests/test_check_approval_record.py tests/test_public_release_positioning.py -q
 ```
 
 审批记录必须写清：
 
-- reviewed internal `ksadk-python` commit。
+- reviewed public `ksadk-python` commit。
 - `ksadk-web` npm version 和 source commit。
 - 已执行的 public preflight / docs build / package audit 证据。
 - Maintainer、Security reviewer、Release owner sign-off。
 
 ## 生成公开候选
 
-公开候选从内部 master clean export 生成：
+公开候选从共享主干 clean export 生成：
 
 ```bash
 cd agentengine/ksadk-python
@@ -181,7 +167,7 @@ make public-preflight PUBLIC_PREFLIGHT_MODE=source-sync \
 4. 等 CI / release-check / docs-site build 通过并完成 review。
 5. 合并 PR，使 GitHub `main` 成为唯一公开发布源。
 
-如果维护者明确选择 fast-forward 或直接更新 `main`，也必须满足同样门禁和 review 条件。不要从内部 `master` 创建公开 release 资产。
+如果维护者明确选择 fast-forward 或直接更新 `main`，也必须满足同样门禁和 review 条件。仅从已审核的 GitHub `main` 提交创建公开 release 资产。
 
 ## Tag 与 GitHub Release
 
@@ -237,7 +223,7 @@ PY
 
 1. `ksadk-web` 合入 GitHub `main`，由 GitHub workflow 发布 npm。
 2. 内部 `ksadk-python/master` 记录版本、文档、approval evidence。
-3. 从内部 master 生成 clean export。
+3. 从共享主干 生成 clean export。
 4. 在 public candidate 运行 `make public-preflight`。
 5. public candidate 通过 GitHub PR 合入公开 `main`。
 6. 在公开 `main` commit 上打 `v<version>` tag。
@@ -246,3 +232,9 @@ PY
 9. 运行 post-publish publication check。
 
 这不是“提交 PR 到 main 后手工打 tag 和 release 文件”就结束。PR 到 `main` 只是公开源码同步；真正的 npm、PyPI、Pages 发布必须由 GitHub workflow 完成并通过发布后核对。
+
+## 镜像同步核验
+
+审核完成后，将镜像主干同步到 GitHub `main` 的同一提交。同步前确认目标分支没有并发更新，涉及历史替换时使用绑定旧 SHA 的 lease，并保留本地恢复副本。分支保护需要维护者审批时保持保护，先提供候选和验证结果。
+
+再次读取两端主干的 SHA，要求精确相等；仅祖先包含或代码树相等都不足以说明提交一致。当前树和候选可达历史都要通过敏感路径、凭证与私有部署信息检查。历史 tag、PR 缓存等其他引用的清理范围另行记录，不把主干检查扩大为平台已彻底删除旧对象。

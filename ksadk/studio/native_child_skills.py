@@ -28,9 +28,11 @@ class StudioChildSkills:
         source: StudioNativeSkillSource,
         authorize: ToolAuthorizer,
         activation_binding_digest: str,
+        metadata_policy: str | None = None,
     ) -> None:
         self.scope, self.store, self.source, self.authorize = scope, store, source, authorize
         self.refs = tuple(source.refs)
+        self.metadata_policy = metadata_policy
         if not self.refs:
             raise ValueError("child_skill_bindings_empty")
         self.tool_names = tuple(definition.name for definition in DEFINITIONS)
@@ -40,6 +42,7 @@ class StudioChildSkills:
                 "activation_binding": activation_binding_digest,
                 "refs": self.refs,
                 "bundle_claims": source.binding_claims,
+                **({"metadata_policy": metadata_policy} if metadata_policy is not None else {}),
             }
         )
 
@@ -69,4 +72,5 @@ class StudioChildSkills:
             skill_refs=self.refs,
             authorize=self.authorize,
             store=self.store,
+            metadata_policy=self.metadata_policy,
         )

@@ -18,6 +18,9 @@ test -n "$wheel" || {
   exit 1
 }
 
+# Reject a stale or mixed wheel before touching the existing application bundle.
+python3 scripts/reviewed_web_assets.py verify --wheel "$wheel" >/dev/null
+
 rm -rf "$BUILD_RES"
 mkdir -p "$RUNTIME" "$NODE_ROOT" "$TOOLCHAINS/dsh"
 
@@ -99,7 +102,9 @@ cat > "$BUILD_RES/manifest.json" <<MANIFEST
   "platform": "windows",
   "arch": "x64",
   "source_commit": "$(git rev-parse HEAD 2>/dev/null || echo unavailable)",
-  "ksadk_web_version": "${KSADK_WEB_VERSION:-0.3.13}"
+  "ksadk_web_version": "$(python3 scripts/reviewed_web_assets.py identity --field package_version)",
+  "ksadk_web_source_commit": "$(python3 scripts/reviewed_web_assets.py identity --field source_commit)",
+  "ksadk_web_artifact_sha256": "$(python3 scripts/reviewed_web_assets.py identity --field artifact_sha256)"
 }
 MANIFEST
 

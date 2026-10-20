@@ -56,6 +56,10 @@ async def _invoke(spec, payload, config, *, surface, result_envelope=False):
     binding = _binding.get()
     if binding is None:
         raise RuntimeError("A2A_MANAGED_INVOCATION_CONTEXT_REQUIRED")
+    from ksadk.a2a.tool_outcomes import assert_target_outcome_known, unknown_service_outcome
+
+    if binding.runtime is not None:
+        await assert_target_outcome_known(binding.runtime.authority, spec.target_agent_id)
     resolved = binding.provider(spec, payload, config, surface)
     if inspect.isawaitable(resolved):
         resolved = await resolved
@@ -99,13 +103,25 @@ async def _invoke(spec, payload, config, *, surface, result_envelope=False):
                         part.part_id: part.text
                         for part in snapshot.parts if isinstance(part, TextContent)
                     }
-    except (asyncio.CancelledError, TimeoutError):
+    except asyncio.CancelledError:
         try:
             await asyncio.shield(service.cancel(service.handle(request.scope_id)))
         finally:
             raise
+    except Exception as exc:
+        unknown = unknown_service_outcome(service, request.scope_id)
+        if unknown is not None:
+            raise unknown from exc
+        if isinstance(exc, TimeoutError):
+            try:
+                await asyncio.shield(service.cancel(service.handle(request.scope_id)))
+            finally:
+                raise
+        raise
     handle = service.handle(request.scope_id)
     latest = service.snapshot(handle)
+    if unknown := unknown_service_outcome(service, request.scope_id):
+        raise unknown
     if latest is None or latest.status != "completed":
         raise RuntimeError("A2A_INVOCATION_NOT_COMPLETED")
     reply = select_terminal_reply(latest.output_refs, snapshots, item_kinds)

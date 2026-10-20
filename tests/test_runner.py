@@ -632,17 +632,9 @@ async def test_adk_runner_request_input_resume_sends_function_response(
     assert response.id == "city-input-1"
     assert response.name == "adk_request_input"
     assert response.response == expected_response
-    import json
+    from google.adk.workflow.utils._rehydration_utils import _unwrap_response
 
-    from ksadk.compat.adk_compat import adk_version_at_least
-
-    assert json.loads(response.response["result"]) == answer
-    if adk_version_at_least("2.5.0"):
-        # The workflow consumer exists at the ADK 2.5+ anchor; the wire contract above
-        # is verified on both supported anchors.
-        from google.adk.workflow.utils._rehydration_utils import _unwrap_response
-
-        assert _unwrap_response(response.response) == answer
+    assert _unwrap_response(response.response) == answer
 
 
 def test_adk_runner_checkpoint_metadata_includes_backend_info(tmp_path):

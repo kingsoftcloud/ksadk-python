@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import os
 import time
 from collections import Counter
 from typing import Any
@@ -33,23 +35,36 @@ _HISTORY_ACTIONS = frozenset({
     "ListToolReceipts", "GetCheckpointResumePreview",
 })
 
+def history_request_seconds() -> float:
+    """Read once per middleware instance; legacy BUDGET_TIMEOUT is an alias."""
+    name = ("KSADK_HISTORY_REQUEST_SECONDS" if "KSADK_HISTORY_REQUEST_SECONDS" in os.environ
+            else "BUDGET_TIMEOUT")
+    try:
+        value = float(os.getenv(name, "15"))
+        if math.isfinite(value) and value > 0:
+            return value
+    except ValueError:
+        pass
+    logger.warning("Invalid %s; using history deadline 15 seconds", name)
+    return 15.0
+
 
 class _ResponseBufferLimitExceeded(RuntimeError):
     pass
 
 
-def _remaining_ms(raw: str) -> int | None:
+def _remaining_ms(raw: str) -> int | float | None:
     if raw.startswith("-") and raw[1:] and raw[1:].isascii() and raw[1:].isdecimal():
         return 0
     if not raw or not raw.isascii() or not raw.isdecimal():
         return None
-    # This carrier only shortens our 2.6-second cap. Avoid Python's maximum
+    # This carrier only shortens our configured cap. Avoid Python's maximum
     # integer-string conversion limit and safely saturate oversized values.
     significant = raw.lstrip("0")
     if not significant:
         return 0
     if len(significant) > 18:
-        return 2600
+        return math.inf
     try:
         return int(significant)
     except ValueError:  # pragma: no cover - bounded ASCII digits above
@@ -59,6 +74,7 @@ def _remaining_ms(raw: str) -> int | None:
 class HistoryDeadlineMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
+        self.budget_seconds = history_request_seconds()
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http":
@@ -70,7 +86,7 @@ class HistoryDeadlineMiddleware:
             return
 
         started = time.monotonic()
-        budget = 2.6
+        budget = self.budget_seconds
         headers = Headers(scope=scope)
         try:
             trusted = not trusted_invocation_identity_from_headers(headers).is_empty

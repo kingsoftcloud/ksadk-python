@@ -561,23 +561,16 @@ def test_settings_api_saved_credentials_reach_signed_resource_admission(
     assert [urlsplit(item[0]).path for item in state["calls"]] == ["/iam", "/iam", "/aicp"]
 
 
-def test_preprod_control_plane_http_is_exact_and_root_only():
-    endpoint = "https://control.example.test"
+def test_configured_custom_http_control_plane_is_rejected():
+    endpoint = "http://control.example.test"
     environment = {
         "KSYUN_ACCESS_KEY": "fixture-access",
         "KSYUN_SECRET_KEY": "fixture-secret",
-        "AGENTENGINE_REGION": "pre-online",
+        "AGENTENGINE_REGION": "cn-beijing-6",
         "AGENTENGINE_SERVER_URL": endpoint,
     }
-    policy = resource_authority_policy_from_environment(environment)
-    assert policy.allowed_data_endpoints == (endpoint,)
-    assert policy.iam_endpoint == "https://iam.api.ksyun.com"
     with pytest.raises(ValueError, match="HTTPS"):
-        ResourceAuthorityPolicy(
-            iam_endpoint="https://iam.api.ksyun.com",
-            allowed_data_endpoints=(endpoint,),
-            allowed_regions=("cn-beijing-6",),
-        )
+        resource_authority_policy_from_environment(environment)
     for suffix in (".attacker.example", ":8080", "/alternate", "?redirect=evil", "#fragment"):
         with pytest.raises(ValueError):
             resource_authority_policy_from_environment({

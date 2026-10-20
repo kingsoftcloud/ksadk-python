@@ -825,8 +825,8 @@
 - Dashboard private 链接服务端默认有效期调整为 24 小时；CLI 在未显式传入 `--expires-seconds` 时交给服务端默认处理，以兼容尚未升级的控制面，OpenClaw / Hermes 默认仍进入 `/chat`。
 - `agentengine create` 的快速开始提示按 Windows PowerShell / cmd.exe 与 POSIX shell 分别生成可复制命令，包含空格的项目目录会被正确 quoting。
 - Docker daemon 未运行时，Windows 环境提示用户启动 Docker Desktop，不再输出 Linux `systemctl` 提示。
-- Hermes 默认镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.16-ksadk-v1`，上游 Hermes ref 保持 `v2026.5.16`。
-- OpenClaw 默认镜像更新为 `hub.kce.ksyun.com/agentengine-public/openclaw:2026.5.20`，基础镜像 pin 到 `ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb`。
+- Hermes 默认镜像更新为 `<registry>/<namespace>/hermes-agent:2026.5.16-ksadk-v1`，上游 Hermes ref 保持 `v2026.5.16`。
+- OpenClaw 默认镜像更新为 `<registry>/<namespace>/openclaw:2026.5.20`，基础镜像 pin 到 `ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb`。
 - `deploy/openclaw-user-template` 及示例模板默认基础镜像同步升级到 OpenClaw `2026.5.20-slim`。
 - 文档补充 hosted UI 生产路由与独立部署说明；`ksadk-python` 继续保留本地 SDK UI 静态资源，生产 hosted UI 由独立服务发布。
 
@@ -1014,7 +1014,7 @@
 - OpenClaw 部署新增 `OPENCLAW_CHANNEL_BOOTSTRAP_JSON`、Agentspace bootstrap 配置与 `OPENCLAW_BROWSER_SSRF_POLICY_JSON` 透传，便于渠道预配置和内网访问策略收口。
 - 新增 `agentengine openclaw repair`，并支持 `agentengine openclaw gateway doctor --fix` 通过控制面直接触发 `doctor-fix` 修复动作。
 - code mode 构建新增 Linux Runtime 兼容性 / ABI 校验，关键原生扩展不兼容时会在打包阶段提前失败。
-- 默认 Hermes 共享 runtime 镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.23`，并把构建默认 `HERMES_AGENT_REF` 同步到上游 `v2026.4.23`。
+- 默认 Hermes 共享 runtime 镜像更新为 `<registry>/<namespace>/hermes-agent:2026.4.23`，并把构建默认 `HERMES_AGENT_REF` 同步到上游 `v2026.4.23`。
 - 默认 OpenClaw 基础镜像 pin 到官方 `ghcr.io/openclaw/openclaw:2026.4.24@sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9`，同步刷新自定义镜像模板和一键部署文档。
 
 ### 修复

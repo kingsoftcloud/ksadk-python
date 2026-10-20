@@ -84,12 +84,12 @@
 - 未经用户明确批准，不得改 `pyproject.toml` / `ksadk/version.py` 版本号，不得新增或改写 CHANGELOG 发版条目。
 - 用户批准发布后，正式 PyPI 发布优先走 GitHub Release / `workflow_dispatch` 触发的 Trusted Publishing；本地 `make publish` / `make publish-test` 仅作为明确批准的应急路径，不绕过 Makefile 手写上传命令。
 - 不得在同一轮协作中擅自连续发布多个版本承载中间修复。
-- `master` 是内部开发主干；GitHub `main` 是公开主干。不得直接 `merge master -> main`，公开同步必须走 clean export candidate、GitHub PR 或等价的受审核公开候选流程。
-- GitHub 侧不得存在可写的 `master` 公开分支，也不得把内部 `master` 直接 push 到 GitHub；如果误推到了 `github/master`，第一时间删除远端分支并清理本地跟踪引用，再重新走公开候选流程。
+- `master` 与 GitHub `main` 使用同一份可公开源码和安全历史，保持精确提交一致。内部设计、部署材料和凭证只保留在共享主干之外；同步必须经过 clean export candidate、GitHub PR 或等价的受审核公开候选流程，不把带内部材料的历史合回主干。
+- GitHub 侧不得存在可写的 `master` 公开分支，也不得把未审核或包含内部材料的历史 push 到 GitHub；如果误推到了 `github/master`，第一时间删除远端分支并清理本地跟踪引用，再重新走公开候选流程。
 - 公开候选必须先通过 `make public-preflight` 和 review，再合入 GitHub `main`；npm、PyPI、GitHub Pages 都必须由可信 GitHub workflow 发布，不走本地 publish/upload。
 - 公开发布前必须运行 `make public-preflight`。如果只做发布状态核对，运行 `make public-publish-check`。失败时不得发布。
 - 每次公开 GitHub Release 对应的公开提交都必须打 tag 留痕，优先使用 `make public-release-tag V=x.y.z`。
-- 公开分支长期工作树可以保留，但只能作为公开同步/发布工作区，不做日常内部开发。
+- 公开候选长期工作树可以保留；日常开发使用短生命周期分支，合入共享主干前执行公开安全与测试门禁。
 - 不得把 `.pypirc`、私有 registry 凭证、kubeconfig、真实 API Key 或临时 token 放入仓库根目录；正式 PyPI 发布默认使用 Trusted Publishing，只有应急本地发布才允许 PyPI 凭证来自 `~/.pypirc`、环境变量或 CI Secret。
 - 完整公开同步流程见 `docs/public-release-workflow.md`；该文档优先于口头约定。
 

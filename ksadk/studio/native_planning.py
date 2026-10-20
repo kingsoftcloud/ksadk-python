@@ -63,6 +63,8 @@ def _studio_model_message_budget(message: dict, *, profile: ModelProfile) -> int
 def build_studio_context_planner(
     profile: ModelProfile, *, context: ContextSpec | None = None,
     planner_factory=ContextPlanner,
+    summary_output_policy=None,
+    delivery_feedback_policy=None,
 ) -> ContextPlanner:
     """One locked token/media policy for parent and child Native Runs."""
     defaults = CompactionPolicy()
@@ -87,9 +89,31 @@ def build_studio_context_planner(
         # Keep the target separate from provider usage; admit the complete
         # continuation/post-summary request within the locked context window.
         summary_budget_mode="context_bounded_estimate",
+        summary_output_policy=summary_output_policy,
+        delivery_feedback_policy=delivery_feedback_policy,
         summary_completion_policy="bounded-committed-summary/v1",
+        compaction_message_projection=(
+            compaction.native_message_projection if compaction is not None
+            else "current-user-after-summary/v1"
+        ),
+        session_history_projection=(
+            compaction.native_session_history_projection if compaction is not None
+            else "sealed-session-summary/v1"
+        ),
+        summary_prompt_policy=compaction.native_summary_policy if compaction is not None else None,
         subagent_continuity_policy="accounted_child_runs/v1",
-        source_progress_policy="receipt-source-progress/v2",
+        source_progress_policy=(
+            compaction.native_source_progress_policy
+            if compaction is not None and compaction.native_source_progress_policy is not None
+            else "receipt-source-progress/v2"
+        ),
+        execution_budget_policy="prepared-execution-budget/v1",
+        search_fragment_policy=(
+            compaction.native_search_fragment_policy if compaction is not None else None
+        ),
+        task_goal_projection_policy=(
+            compaction.native_task_goal_projection_policy if compaction is not None else None
+        ),
         # The estimate and provider tokens can differ. Reserve a
         # bounded share of the locked context for the summary.
         # A fixed 2 KiB limit
@@ -100,7 +124,7 @@ def build_studio_context_planner(
             enabled=compaction.enabled if compaction is not None else defaults.enabled,
             prune_tool_results=(
                 compaction.prune_tool_results
-                if compaction is not None else defaults.prune_tool_results
+                if compaction is not None else False
             ),
             trigger_ratio=trigger,
             target_ratio=target,
@@ -128,6 +152,7 @@ def _native_effect_timeout_seconds(
     vision: ModelProfile | None = None,
     *,
     browser_tool_seconds: int = 0,
+    owned_wait_tool_seconds: int = 0,
 ) -> float:
     """Keep the outer effect lease through browser execution and vision captioning."""
     profiles = (main, vision) if vision is not None else (main,)
@@ -135,7 +160,23 @@ def _native_effect_timeout_seconds(
     if browser_tool_seconds:
         caption_seconds = vision.request_timeout_seconds or 60.0 if vision else 0.0
         bound = max(bound, browser_tool_seconds + caption_seconds + 15.0)
+    if owned_wait_tool_seconds:
+        bound = max(bound, owned_wait_tool_seconds + 30.0)
     return bound
+
+
+def _locked_background_wait_timeout_seconds(build: Mapping[str, object]) -> int:
+    capabilities = build.get("capabilities")
+    tools = capabilities.get("tools") if isinstance(capabilities, Mapping) else None
+    for tool in tools if isinstance(tools, (list, tuple)) else ():
+        if (isinstance(tool, Mapping) and tool.get("name") == "read_command_output"
+                and tool.get("executor", "builtin") == "builtin"
+                and tool.get("enabled", True) is not False):
+            value = tool.get("timeoutSeconds", 20)
+            if type(value) is int and 1 <= value <= 3600:
+                return min(610, value)  # SDK waits never exceed 600 seconds.
+            raise ValueError("native_studio_background_wait_timeout_invalid")
+    return 0
 
 
 def _locked_browser_timeout_seconds(build: Mapping[str, object]) -> int:

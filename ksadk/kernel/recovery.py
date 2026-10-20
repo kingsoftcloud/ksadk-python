@@ -507,7 +507,7 @@ class RecoveryCoordinator:
                         interaction.interaction_id, interaction.revision, guard=guard
                     )
         runtime_store = RuntimeEventStore(self._session_events, session_id=run.session_id)
-        findings = await scan_open_runs(runtime_store, run.session_id)
+        findings = await scan_open_runs(runtime_store, run.session_id, run_id=run.run_id)
         finding = next((item for item in findings if item.run_id == run.run_id), None)
         written: list[RuntimeEvent] = []
         last_seq: int | None = None

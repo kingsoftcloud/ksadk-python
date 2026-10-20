@@ -228,7 +228,7 @@ def convert_tool_choice(tc):
 
 # 各上游模型族的 reasoning_effort 上限(qwen3.7 系实测 xhigh 400;报错文案会列出
 # xhigh 但 DashScope 后端实际只认到 high,故不能用报错文案反推)。未列出的族原样透传。
-_EFFORT_RANK = {"none": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5}
+_EFFORT_RANK = {"none": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 5}
 _EFFORT_CAP_PREFIXES = (
     ("qwen3.7", "high"),
     ("qwen3.6", "high"),
@@ -242,8 +242,7 @@ _EFFORT_CAP_PREFIXES = (
 _EFFORT_ALLOWED_SETS = {
     "glm-5.3-flash": ("low", "high", "max"),
 }
-# 值域裁剪用的档位表:max 视为与 xhigh 同级(5),仅在值域裁剪内部使用,
-# 不改 _EFFORT_RANK(影响 cap 路径)。
+# max 与 xhigh 同级，值域投影和上限钳制都必须识别最高档。
 _ALLOWED_RANK = {**_EFFORT_RANK, "max": 5}
 
 
@@ -260,7 +259,7 @@ class ReasoningEffortPolicy:
 
 def reasoning_effort_policy() -> ReasoningEffortPolicy:
     return ReasoningEffortPolicy(
-        version="model-effort-map/v1",
+        version="model-effort-map/v2",
         ranks=tuple(_EFFORT_RANK.items()),
         allowed_ranks=tuple(_ALLOWED_RANK.items()),
         allowed_sets=tuple(

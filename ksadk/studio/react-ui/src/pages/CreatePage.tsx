@@ -47,7 +47,7 @@ import {
 
 /* 四种创建方式；quick 模式即四步向导。 */
 type Mode = "quick" | "conversation" | "import" | "project";
-type Template = "blank" | "research";
+type Template = "blank" | "research" | "coding";
 
 interface ResItem {
   resourceId: string; kind: string; name: string; displayName: string;
@@ -68,7 +68,7 @@ const quickDraftSchema = z.object({
     name: z.string().max(128), slug: z.string().max(63),
     description: z.string().max(1024), prompt: z.string().max(32768),
     runtimeType: z.enum(["harness", "codex", "adk", "langgraph", "plugin"]),
-    template: z.enum(["blank", "research"]), audience: z.string().max(256),
+    template: z.enum(["blank", "research", "coding"]), audience: z.string().max(256),
     language: z.enum(["zh-CN", "en-US"]), depth: z.enum(["focused", "standard", "deep"]),
     format: z.enum(["report", "brief", "evidence-table"]),
     systemPrompt: z.string().max(32768), taskPrompt: z.string().max(32768),
@@ -692,7 +692,13 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
     maxSteps,
     timeoutSeconds,
-  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy, maxSteps, timeoutSeconds]);
+    // Carry the chosen runtime into compose so the produced AgentSpec already
+    // has the runtime and validates Harness-specific fields (timeoutSeconds=0)
+    // immediately. Without this, compose builds a runtime-less spec that the
+    // validator rejects for timeoutSeconds=0, before submitWizard can inject
+    // the runtime.
+    runtimeType: runtime || undefined,
+  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy, maxSteps, timeoutSeconds, runtime]);
 
   const composeAgent = useCallback(async ({ preservePrompt = true, goalOverride } = {} as { preservePrompt?: boolean; goalOverride?: string }) => {
     const seq = ++composeSeq.current;
@@ -718,7 +724,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
       if (ids.length) setSelectedModels(ids);
       if (!preservePrompt || !systemPrompt.trim()) {
         const fallbackSystemPrompt = composition.spec?.instructions?.system || prompt.trim();
-        quickForm.setValue("systemPrompt", goalOverride?.trim() || fallbackSystemPrompt, { shouldDirty: true });
+        quickForm.setValue("systemPrompt", template === "coding"
+          ? fallbackSystemPrompt : goalOverride?.trim() || fallbackSystemPrompt, { shouldDirty: true });
       }
       if (!preservePrompt || !taskPrompt.trim()) {
         quickForm.setValue("taskPrompt", composition.spec?.instructions?.task || "", { shouldDirty: true });
@@ -892,7 +899,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     try {
       await composeAgent({ preservePrompt: false, goalOverride: defaultPrompt });
       if (!compositionRef.current) throw new Error("未能生成 Agent 配置，请稍后重试。");
-      await submitWizard(nextValues);
+      await submitWizard(quickForm.getValues());
     } finally {
       setSubmitting(false);
     }
@@ -1837,11 +1844,41 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                       onValueChange={value => {
                         if (!value) return;
                         quickForm.setValue("runtimeType", value as QuickAgentFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true });
+                        if (value === "harness" && template === "blank") {
+                          quickForm.setValue("template", "coding", { shouldDirty: true });
+                          if (!quickForm.getFieldState("timeoutSeconds").isDirty) {
+                            quickForm.setValue("timeoutSeconds", 0, { shouldDirty: false });
+                          }
+                        } else if (value !== "harness" && template !== "blank") {
+                          quickForm.setValue("template", "blank", { shouldDirty: true });
+                          if (!quickForm.getFieldState("timeoutSeconds").isDirty) {
+                            quickForm.setValue("timeoutSeconds", 600, { shouldDirty: false });
+                          }
+                        }
+                        compositionRef.current = null;
+                        setPromptStatus("idle");
                         markDirty();
                       }}
                     />
                   </FormField>
-                  {runtime === "harness" && <HarnessPermission approved={harnessApproved} onChange={setHarnessApproved} />}
+                  {runtime === "harness" && <>
+                    <FormField label="工作方式" htmlFor="quickTemplate">
+                      <StudioSelect id="quickTemplate" ariaLabel="工作方式" value={template}
+                        options={[
+                          { value: "coding", label: "编码与验证", description: "绑定工作区工具与浏览器验证 Skill" },
+                          { value: "blank", label: "通用助手", description: "自主选择指令与能力" },
+                          { value: "research", label: "深度调研", description: "来源检索与证据报告" },
+                        ]}
+                        onValueChange={value => {
+                          if (!value) return;
+                          quickForm.setValue("template", value as Template, { shouldDirty: true });
+                          compositionRef.current = null;
+                          setPromptStatus("idle");
+                          markDirty();
+                        }} />
+                    </FormField>
+                    <HarnessPermission approved={harnessApproved} onChange={setHarnessApproved} />
+                  </>}
                   {runtime === "plugin" && (
                     <div className="template-specific" data-testid="external-provider-config">
                       <FormField
@@ -1916,11 +1953,11 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                   <details className="secondary-settings" open={Boolean(quickForm.formState.errors.slug || quickForm.formState.errors.description || quickForm.formState.errors.maxSteps || quickForm.formState.errors.timeoutSeconds) || undefined}>
                     <summary>高级配置</summary>
                     <div className="form-grid two-columns">
-                      <FormField label="最大步骤" htmlFor="quickMaxSteps" error={quickForm.formState.errors.maxSteps?.message}>
+                      <FormField label="最大步骤" hint={runtime === "harness" ? "兼容字段；Native 调用额度由运行策略单独管理。" : undefined} htmlFor="quickMaxSteps" error={quickForm.formState.errors.maxSteps?.message}>
                         <input id="quickMaxSteps" type="number" min={1} max={100} step={1} {...quickForm.register("maxSteps", { valueAsNumber: true, onChange: markDirty })} />
                       </FormField>
-                      <FormField label="超时时间（秒）" htmlFor="quickTimeoutSeconds" error={quickForm.formState.errors.timeoutSeconds?.message}>
-                        <input id="quickTimeoutSeconds" type="number" min={1} max={3600} step={1} {...quickForm.register("timeoutSeconds", { valueAsNumber: true, onChange: markDirty })} />
+                      <FormField label="超时时间（秒）" hint={runtime === "harness" ? "0 表示不设整轮期限，单次工具仍有超时。" : undefined} htmlFor="quickTimeoutSeconds" error={quickForm.formState.errors.timeoutSeconds?.message}>
+                        <input id="quickTimeoutSeconds" type="number" min={runtime === "harness" ? 0 : 1} max={3600} step={1} {...quickForm.register("timeoutSeconds", { valueAsNumber: true, onChange: markDirty })} />
                       </FormField>
                     <GeneratedIdField
                       value={slug}
@@ -2219,6 +2256,13 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                     <span><strong>{isManagedRuntime ? "创建后立即校验 YAML 声明并打开会话" : "创建后立即构建并打开会话"}</strong><small>{isManagedRuntime ? "只冻结 YAML 和 runtime 摘要；部署时不会上传代码包。" : "生成不可变 AgentBundle，完成后进入 Chat 工作台"}</small></span>
                   </label>
                 </section>
+
+                {step >= 3 && compositionRef.current?.warnings?.length > 0 && (
+                  <div className="inline-alert warning" role="status">
+                    <CircleAlert size={16} />
+                    <div>{compositionRef.current.warnings.map((warning: string) => <p key={warning}>{warning}</p>)}</div>
+                  </div>
+                )}
 
                 {createError && (
                   <div className="inline-alert error wizard-error-summary" role="alert">

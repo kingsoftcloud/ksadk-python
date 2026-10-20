@@ -298,11 +298,11 @@ A2A 内部控制面和云评测数据集客户端。知识库和记忆库通过�
 | `KSADK_SESSION_BACKEND` | Sessions | 否 | `local` | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 开发者 / 平台 | 否 | 会话存储 backend。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | Secret | 否 | PostgreSQL DSN。`postgres` / `database` backend 时必传。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_PATH` | Sessions | 否 | 项目目录下本地 sqlite 路径 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite 会话路径。 |
-| `KSADK_SESSION_CONNECT_TIMEOUT` | Sessions | 否 | `5` | `KSADK_SESSION_PG_CONNECT_TIMEOUT` | 否 | 开发者 / 平台 | 否 | PostgreSQL 会话 backend 连接超时秒数。 |
-| `KSADK_SESSION_PG_CONNECT_TIMEOUT` | Sessions 旧兼容 | 否 | `5` | `KSADK_SESSION_CONNECT_TIMEOUT` | 否 | 兼容旧部署 | 否 | 旧 PostgreSQL session 连接超时变量。新部署优先 `KSADK_SESSION_CONNECT_TIMEOUT`。 |
+| `KSADK_SESSION_CONNECT_TIMEOUT` | Sessions | 否 | `2` | `KSADK_SESSION_PG_CONNECT_TIMEOUT` | 否 | 开发者 / 平台 | 否 | `KSADK_DB_CONNECT_SECONDS` 的兼容别名；标准变量优先。 |
+| `KSADK_SESSION_PG_CONNECT_TIMEOUT` | Sessions 旧兼容 | 否 | `2` | `KSADK_SESSION_CONNECT_TIMEOUT` | 否 | 兼容旧部署 | 否 | 旧 PostgreSQL session 连接超时变量。新部署优先 `KSADK_DB_CONNECT_SECONDS`。 |
 | `KSADK_SESSION_NAMESPACE` | Sessions | 否 | 未设置 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 会话 namespace。 |
 | `KSADK_PERSISTENCE_PROBE_CACHE_TTL` | Sessions | 否 | `30` | 无 | 否 | 开发者 / 平台 | 否 | PostgreSQL 持久化 readiness 探测结果的缓存秒数。 |
-| `KSADK_PERSISTENCE_PROBE_TIMEOUT` | Sessions | 否 | `2` | 无 | 否 | 开发者 / 平台 | 否 | PostgreSQL 持久化 readiness 探测的超时秒数。 |
+| `KSADK_PERSISTENCE_PROBE_TIMEOUT` | Sessions | 否 | `5` | 无 | 否 | 开发者 / 平台 | 否 | PostgreSQL 持久化 readiness 探测的超时秒数。 |
 | `KSADK_CHECKPOINT_BACKEND` | LangGraph checkpoint | 否 | `local` | `local` 等价本地 SQLite；也支持 `sqlite`、`memory`、`postgres` | 否 | 开发者 / 平台 | 否 | LangGraph checkpoint backend。`agentengine web` 本地调试默认优先使用 SQLite。 |
 | `KSADK_CHECKPOINT_PATH` | LangGraph checkpoint | 否 | 项目目录下 `.agentengine/ui/checkpoints.sqlite` | 无 | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite checkpoint 文件路径。 |
 | `KSADK_HARNESS_STATE_DIR` | Harness / Runtime server | 否 | 未设置；无默认持久目录 | 无；CLI `--state-dir` 优先 | 否 | 开发者 / 部署配置 | 否 | 保存 Run 索引与工具回执，并在未配置 `KSADK_CHECKPOINT_DSN` 时使用目录内的 SQLite checkpoint。目录与 checkpoint DSN 均未设置时，checkpoint 回退到内存，不提供重启恢复。目录应按部署隔离并配置持久存储，不应打入 Agent Bundle。 |
@@ -413,7 +413,7 @@ A2A 内部控制面和云评测数据集客户端。知识库和记忆库通过�
 | `KSADK_UI_PATH` | 本地 Web UI / Runtime bootstrap | 否 | `/` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 挂载路径，例如 `/research`。 |
 | `KSADK_UI_URL` | Runtime bootstrap | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 外部自定义 UI URL。 |
 | `KSADK_UI_BUNDLE_PATH` | Runtime bootstrap | 否 | 自动探测 `research-ui/dist` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 静态 bundle 相对项目路径。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.13` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.12` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
@@ -793,20 +793,34 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |
-| `KSADK_DB_CONNECT_SECONDS` | 0.5 | connect 阶段预算 |
-| `KSADK_DB_READ_ACQUIRE_SECONDS` | 0.3 | read acquire 阶段预算 |
-| `KSADK_DB_READ_SQL_SECONDS` | 1 | read sql 阶段预算 |
-| `KSADK_DB_WRITE_ACQUIRE_SECONDS` | 0.5 | write acquire 阶段预算 |
-| `KSADK_DB_WRITE_SQL_SECONDS` | 3 | write sql 阶段预算 |
-| `KSADK_DB_WRITE_OPERATION_SECONDS` | 5 | write operation 阶段预算 |
-| `KSADK_DB_LOCK_SECONDS` | 0.5 | lock 阶段预算 |
-| `KSADK_DB_CLEANUP_SECONDS` | 1 | cleanup 阶段预算 |
-| `KSADK_DB_REPLAY_OPERATION_SECONDS` | 30 | replay operation 阶段预算 |
-| `KSADK_DB_REPLAY_SQL_SECONDS` | 3 | replay sql 阶段预算 |
+| `KSADK_DB_CONNECT_SECONDS` | 2 | connect 阶段预算 |
+| `KSADK_DB_READ_ACQUIRE_SECONDS` | 3 | read acquire 阶段预算，允许 2 秒 connect 及调度余量 |
+| `KSADK_DB_READ_SQL_SECONDS` | 8 | read sql 阶段预算 |
+| `KSADK_DB_WRITE_ACQUIRE_SECONDS` | 3 | write acquire 阶段预算 |
+| `KSADK_DB_EVENT_OBSERVE_RECOVERY_SECONDS` | 60 | 已准入 A2A 的内部事件只读恢复预算；从原游标继续，不重发任务 |
+| `KSADK_DB_WRITE_SQL_SECONDS` | 15 | write sql 阶段预算 |
+| `KSADK_DB_WRITE_OPERATION_SECONDS` | 30 | write operation 阶段预算 |
+| `KSADK_DB_CHECKPOINT_READ_OPERATION_SECONDS` | 45 | 原生检查点整次读取，包含 saver 锁等待和至多一次瞬态纯读重试；每条 SQL 仍使用读取 SQL 预算 |
+| `KSADK_DB_LOCK_SECONDS` | 2 | lock 阶段预算 |
+| `KSADK_DB_CLEANUP_SECONDS` | 2 | cleanup 阶段预算 |
+| `KSADK_DB_REPLAY_OPERATION_SECONDS` | 60 | replay operation 阶段预算 |
+| `KSADK_DB_REPLAY_SQL_SECONDS` | 10 | replay sql 阶段预算 |
+| `KSADK_HISTORY_REQUEST_SECONDS` | 15 | 元数据/历史 HTTP 总预算（正有限秒数）；启动时读取；不限制 RunAgent/SSE |
+| `BUDGET_TIMEOUT` | 未设置 | 上述配置的兼容别名；显式设置标准变量时以标准变量为准 |
 | `KSADK_HISTORY_INITIAL_EVENTS` | 256 | 初始投影窗口，范围 32–256 条 |
+| `KSADK_HISTORY_EVENT_PAGE_BYTES` | 524288 | 原始事件 HTTP 页字节目标，范围 64 KiB～4 MiB；保留完整事实 |
 | `KSADK_HISTORY_READ_CONCURRENCY` | 4 | 每进程 PG 历史传输并发，范围 1–32 |
 
 完整 replay 使用独立预算；普通分页不会隐式恢复全部会话。数据库恢复不会覆盖尚有未持久化事件的内存会话。
+
+历史 HTTP 预算与单次数据库读取预算独立。可信 `X-AgentEngine-Remaining-Ms` 只能缩短本地上限；公开请求不能扩大预算。调大 Runtime 历史预算时，还须协调 Server/Gateway 的上限，不能只改某一层。非法值（包括空值、零、负数、NaN、Infinity）记录警告并回退 15 秒。
+
+默认数据库读 acquire/SQL/cleanup 为 1/5/2 秒，SDK 历史 HTTP 为 15 秒。共享历史查询跟随该 HTTP 配置，预留最多 1 秒给序列化（默认共享查询 14 秒），不再另设 2.4 秒短上限；最后一个等待者取消仍会取消并清理共享查询。断线后纯读取重试与持久化恢复探测使用 read acquire + SQL（默认 6 秒），仍受原请求截止时间约束，不再硬编码 2 秒。`KSADK_PERSISTENCE_PROBE_TIMEOUT` 默认为 5 秒，非法值回退。
+
+`AGENT_KERNEL_LEASE_TTL_SECONDS` 的 SDK 未配置默认值为 90 秒，与平台投影默认值对齐；续租约每 30 秒一次。该设置决定所有权失效/接管时间，不是模型执行时长，也不改变 fence 校验。已有显式配置仍优先。队列默认 100、历史读并发默认 4、初始窗口 256、16 MiB 读取上限及缓存大小/TTL 保持原值。
+
+Kernel 续聊只查询 continuation 元数据；managed A2A 的根事件按当前 run 查询。数据库超时、锁等待和瞬时连接故障使用 0.5–30 秒退避恢复，保留 fencing 和幂等命令身份。provider 启动结果不确定时先收口原 run，不重复执行外部副作用。确定性坏历史继续隔离，新命令返回 `session_quarantined`；健康信息分别提供 recovering/quarantined session 数量与 ID。
+
 ## 18. Studio Native 与 Harness 运行控制
 
 以下变量由开发者或可信启动配置提供，均非业务自定义变量，也没有兼容别名。启动时的 Native 选择不会迁移已有会话：已有 Managed 会话继续使用其原执行引擎；Native 会话仍须遵守冻结 Build 和身份边界。
@@ -827,3 +841,39 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | `KSADK_RUN_STALL_WARN_SECONDS` | 否 | 默认 `60`；Studio 连续无进展达到此秒数时记录警告，`<=0` 关闭停滞监测。 |
 | `KSADK_RUN_STALL_DUMP_SECONDS` | 否 | 默认 `120`；无进展达到此秒数后按此间隔捕获诊断。 |
 | `KSADK_RUN_STALL_MAX_DUMPS` | 否 | 默认 `5`；同一次持续停滞最多保留的诊断次数。 |
+
+
+### Managed A2A 分阶段等待上限
+
+| 变量 | 默认秒数 | 配置方/来源 | 用途 |
+| --- | ---: | --- | --- |
+| `KSADK_A2A_PREPARE_SECONDS` | 30 | 业务或部署环境，可选 | 策略核对、准备和绑定控制 RPC |
+| `KSADK_A2A_CONTROL_SECONDS` | 25 | 业务或部署环境，可选 | Managed 控制面 HTTP |
+| `KSADK_A2A_CONNECT_SECONDS` | 30 | 业务或部署环境，可选 | 数据流握手（含响应头），数据面 HTTP 连接 / 池 / 写入 |
+| `KSADK_A2A_FIRST_EVENT_SECONDS` | 300 | 业务或部署环境，可选 | 首个远端事件 |
+| `KSADK_A2A_IDLE_SECONDS` | 300 | 业务或部署环境，可选 | 远端事件间隔 |
+| `KSADK_A2A_TRANSPORT_READ_SECONDS` | 300 | 业务或部署环境，可选 | 数据面 HTTP 流读取 |
+| `KSADK_A2A_NATIVE_TRIGGER_SECONDS` | 15 | 业务或部署环境，可选 | 真实 LangGraph 工具身份的持久化确认 |
+
+这些配置接受正有限秒数，非法值告警并使用默认值；没有兼容别名。每阶段仍受原始 invocation 绝对截止时间约束，不会因审批恢复或重连重置整体时间。历史 HTTP 的短请求预算不作用于远端模型生成。非 Managed 通用客户端和显式 `A2AInvocationTimeouts` 参数保留各自语义。详细分层关系、完整回放和取消语义见 [历史读取与数据库预算配置](../历史读取与数据库预算配置.md)。
+
+
+### Kernel SSE 传输心跳
+
+`KSADK_KERNEL_STREAM_HEARTBEAT_SECONDS` 默认 15 秒，为可选业务/部署环境配置，无兼容别名；必须为正有限数，非法值告警后使用默认。只发送 SSE 注释心跳，不写 session event、不产生 cursor、不修改 checkpoint。Hosted 每次心跳仍验证原许可，过期即停止，不能靠心跳延长授权。
+
+`KSADK_HISTORY_EVENT_PAGE_BYTES`：原始事件 HTTP 页的字节目标，默认 524288，范围 65536～4194304；保留单条完整事实，按实际返回数/游标继续读取。内部查询与完整 replay 不受此分页目标影响。
+
+
+`KSADK_A2A_INBOUND_ADMISSION_SECONDS` 默认 60 秒，必须为正有限值。这是接收方对同一平台 task、原消息及幂等 Kernel 命令的准入恢复总时钟；临时未就绪或丢失回执时，重新取得同一命令的 accepted/duplicate 回执，不重新发送 A2A 消息、不创建远端 task。权限、协议、目标/命令身份漂移等错误立即失败，取消传播；结果仍不确定时保留未知状态。
+
+`KSADK_A2A_CHECKPOINT_READY_SECONDS` 默认 45 秒。在发布 A2A 审批/输入等待前，等同一次 native checkpoint 后台写入完成并出现可恢复的 pending state，只读轮询、不执行图或工具；不可恢复错误立即失败，取消传播。到期仍明确拒绝，不凭空宣称持久化成功。
+
+`KSADK_A2A_INVOCATION_SECONDS` 默认 600 秒，统一用于 LangGraph、ADK 与 Codex 托管调用的整次 invocation；显式 RemoteAgentSpec.timeout_seconds 优先。准入、检查点准备及网络各阶段消耗同一次剩余时间，恢复旧调用不会刷新原 deadline。首事件/空闲仍默认 300 秒，不修改授权 TTL。该总期限适用于长工具研究，不用于历史 HTTP 读取。
+
+## 显式部署端点与清理期限
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `KSADK_SERVERLESS_ENDPOINT` | 未设置 | 私有 Serverless 部署使用的显式服务地址；SDK 不内置预发地址。 |
+| `KSADK_E2B_KILL_TIMEOUT_SECONDS` | `10` | E2B 终止请求的截止时间，单位为秒。 |

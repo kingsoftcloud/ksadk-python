@@ -22,6 +22,25 @@ def _locked_definition_matches(studio, record, expected_digest: str) -> bool:
         return False
 
 
+def _native_policy_bound(studio, agent_id: str, draft) -> bool:
+    """Whether a Build for this draft pins compiler-stamped Native policy.
+
+    A Native Harness Build seals the compiler's default Native call limits and
+    owned-command lifecycle policy into the resolved definition digest. That
+    policy can change without a Draft revision, so an ordinary new Native turn
+    must compare the current compiled digest even when no builtin tool binding
+    is present; otherwise it reuses a stale sealed Build and keeps running
+    under the old call cap. Non-Native Framework/Codex agents and Harness
+    agents the host did not select for Native do not consume the stamped policy
+    at runtime and keep their existing admission path (reuse a Build at the
+    same Draft revision).
+    """
+    runtime = draft.spec.runtime
+    if runtime is None or runtime.type != "harness":
+        return False
+    return studio._native_harness_default or agent_id in studio._native_harness_agent_ids
+
+
 async def resolve_current_build(studio, agent_id: str):
     """Return the Build that is eligible for a local Studio turn.
 
@@ -61,13 +80,18 @@ async def resolve_current_build(studio, agent_id: str):
     composition_required = studio.plugin_compositions.required_for(draft)
     resources_required = resource_build_required(draft)
     # SDK catalog definitions can change without a Draft revision (e.g. a
-    # corrected builtin argument schema). Keep each existing Build immutable,
-    # but select a fresh Build for new turns when a bound definition changed.
-    # Agents without builtin bindings keep their existing admission path.
+    # corrected builtin argument schema), and a Native Harness Build pins
+    # compiler-stamped Native policy (call limits, owned-command lifecycle)
+    # that can also change without a Draft revision. Keep each existing Build
+    # immutable, but select a fresh Build for new turns when the current
+    # compiled definition digest no longer matches the sealed lock. Non-Native
+    # Framework/Codex agents and non-selected Harness agents keep their
+    # existing admission path (reuse a Build at the same Draft revision).
     builtin_bindings = any(
         binding.enabled and binding.resource_id.startswith("tool:builtin:")
         for binding in draft.spec.bindings.tools
     )
+    native_policy_bound = _native_policy_bound(studio, agent_id, draft)
     current_definition_digest = None
     for record in studio.builds.list_for_agent(agent_id):
         if record.status == BuildStatus.SUCCEEDED:
@@ -84,7 +108,7 @@ async def resolve_current_build(studio, agent_id: str):
                 continue
             if resources_required and not studio._build_has_resources(record):
                 continue
-            if builtin_bindings:
+            if builtin_bindings or native_policy_bound:
                 if current_definition_digest is None:
                     compiled = await asyncio.to_thread(studio.builder.compiler.compile, draft)
                     current_definition_digest = compiled.resolved.resolved_digest

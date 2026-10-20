@@ -17,13 +17,10 @@ def bool_env(name: str, default: bool = True) -> bool:
 
 
 def _resolve_sandbox_api_url() -> str:
-    """Probe sandbox control-plane URL at runtime (in-Pod).
+    """Use the configured sandbox URL, with a reachable private service fallback.
 
-    agentengine-server injects public E2B_API_URL on the management cluster.
-    public_only compute pods can reach the public address directly; private_only
-    pods have no public egress. Strategy: try the original (public) URL first;
-    if reachable keep it, otherwise fall back to the 198 public-service-net
-    internal address. Mirrors KSPMAS get_kspmas_api_base(): probe runs in-Pod.
+    Hosted workloads may have restricted egress. Probe the supplied endpoint
+    before selecting its service-provider network alternative.
     """
     raw = (os.environ.get("E2B_API_URL") or "").strip()
     if not raw:

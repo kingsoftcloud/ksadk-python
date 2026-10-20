@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from ksadk.a2a.timeouts import invocation_seconds
 from ksadk.a2a.invocation_types import (
     A2AInvocationContext, A2AInvocationHandle, A2AInvocationMessage, A2AInvocationRequest,
 )
@@ -66,7 +67,7 @@ class LangGraphInvocationContextProvider:
         snapshot = ContentSnapshot(parts=(ToolCallContent(
             part_id=part, call_id=call, name=spec.local_name, arguments={},
         ),))
-        previous = {e.event_id: e for e in await authority.list(authority.session_id)}
+        previous = {e.event_id: e for e in await authority.list(authority.session_id, item_kinds=["tool_call"])}
         prefix = []
         for kind in ("item.started", "item.completed"):
             event_id = stable_event_id("langgraph", scope, item, kind, part, call, 0)
@@ -130,7 +131,7 @@ class LangGraphInvocationContextProvider:
                 caller_agent_id=self.caller,
                 audit_id=stable_item_id("a2a", handle.scope_id, "audit"),
             ),
-            deadline_unix_seconds=float(self.clock()) + (spec.timeout_seconds or 300.0),
+            deadline_unix_seconds=float(self.clock()) + invocation_seconds(spec.timeout_seconds),
             idempotency_token=stable_item_id("a2a", handle.scope_id, "initial-send"),
         )
         return ManagedLangGraphInvocation(request, trigger, service, tuple(prefix))

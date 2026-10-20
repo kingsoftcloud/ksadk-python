@@ -176,6 +176,15 @@ class SessionServiceEventStore:
     def session_service(self) -> BaseSessionService:
         return self._service
 
+    async def get_max_seq_id(self, session_id: str) -> int | None:
+        """Read an indexed delivery watermark without replaying event bodies.
+
+        Older/custom backends can omit this optimization. None means unknown,
+        whereas zero is an authoritative empty log.
+        """
+        read = getattr(self._service, "get_max_seq_id", None)
+        return await read(session_id) if callable(read) else None
+
     async def append(
         self, envelope: SessionEventEnvelope, *, guard: SessionEventWriteGuard
     ) -> SessionEventEnvelope:
@@ -207,6 +216,48 @@ class SessionServiceEventStore:
         if persisted is None:  # pragma: no cover - packed by this module
             raise RuntimeError("SessionEventEnvelope lost its storage marker")
         return persisted
+
+    async def has_run_transition(self, session_id, run_id, state):
+        from ksadk.sessions.base import SessionEventQuery
+
+        cursor = 0
+        while True:
+            rows = await self._service.query_events(SessionEventQuery(
+                session_ids=[session_id], invocation_id=run_id,
+                event_types=["control.run_transition"], after_seq_id=cursor,
+                from_start=True, order_by_seq=True, limit=256))
+            if not rows:
+                return False
+            for row in rows:
+                event = session_event_to_envelope(row)
+                if (event is not None and event.family == "control"
+                        and event.run_id == run_id and event.payload.get("state") == state):
+                    return True
+            next_cursor = max(row.seq_id for row in rows)
+            if next_cursor <= cursor:
+                raise RuntimeError("run transition cursor did not advance")
+            cursor = next_cursor
+
+    async def find_interaction_resolution(self, record):
+        from ksadk.interaction.resolution import matches_resolution
+        from ksadk.sessions.base import SessionEventQuery
+
+        cursor = 0
+        while True:
+            rows = await self._service.query_events(SessionEventQuery(
+                session_ids=[record.session_id], invocation_id=record.run_id,
+                event_types=["interaction.resolved"], after_seq_id=cursor,
+                from_start=True, order_by_seq=True, limit=256))
+            if not rows:
+                return None
+            for row in rows:
+                event = session_event_to_envelope(row)
+                if event is not None and matches_resolution(event, record):
+                    return event
+            next_cursor = max(row.seq_id for row in rows)
+            if next_cursor <= cursor:
+                raise RuntimeError("interaction resolution cursor did not advance")
+            cursor = next_cursor
 
     async def read(
         self, session_id: str, after_seq: int, limit: int

@@ -65,6 +65,9 @@ dependencies = [
     "kingsoftcloud-sdk-python>=1.5.8.94",
     "cryptography>=44.0.0",
     "websockets>=12.0,<16.0",
+    # Studio 的默认浏览器工具在干净安装中也必须能导入驱动。
+    # 浏览器可执行文件仍由本机 Chrome 或显式安装的 Chromium 提供。
+    "playwright>=1.50.0",
     "qrcode>=7.4.0",
     # 生产多副本共享会话后端
     "asyncpg>=0.30.0,<1.0.0",
@@ -179,7 +182,6 @@ dev = [
     "types-python-dateutil>=2.9.0",
     "types-qrcode>=8.2.0",
     "types-requests>=2.32.0",
-    "playwright>=1.50.0",
 ]
 # 全部依赖
 all = [
@@ -225,5 +227,5 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
 markers = [
-    "local_process_heavy: spawns real OS subprocesses (Native recovery/sandbox/skill runtime). 在单进程全量套件尾部 fork 资源受限的 runner 上会 Cannot fork / 超时,CI 用独立 job 串行跑(见 ci.yml test-local-process-heavy)。",
+    "local_process_heavy: spawns real OS subprocesses (sandbox/skill runtime). 在单进程全量套件尾部 fork 资源受限的 runner 上会 Cannot fork / 超时,CI 用独立 job 跑(见 ci.yml test-local-process-heavy)。",
 ]

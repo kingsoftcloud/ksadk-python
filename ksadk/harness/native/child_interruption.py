@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .call_budget import call_room
 from .child_budget import validate_child_budget_admission
 from .child_lifecycle_contract import ChildInterruptedReceipt
 from .model import ModelToolCall
@@ -71,8 +72,8 @@ def admit_interrupted_child_receipts(
         usage = frame.result.resource_usage
         if (
             frame.result.child_budget_settlement is not None
-            or usage.model_calls > budget.max_model_calls_remaining
-            or usage.tool_calls > budget.max_tool_calls_remaining
+            or not call_room(budget.max_model_calls_remaining, 0, usage.model_calls)
+            or not call_room(budget.max_tool_calls_remaining, 0, usage.tool_calls)
             or frame.result.child_budget_reservation is None
             and not usage.child_run_ids
         ):
