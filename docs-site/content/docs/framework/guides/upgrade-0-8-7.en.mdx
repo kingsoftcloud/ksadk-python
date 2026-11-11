@@ -33,6 +33,9 @@ still require configuration for the target environment.
 - Studio preserves initial drafts, confirmed session URLs, and workspace ownership. DSH probes run
   outside the HTTP event loop. Cancellation cleans up owned models and plugin process groups;
   unknown process visibility keeps conservative cleanup budgets.
+- Browser delivery checks retain entry-binding and observation boundaries. An ambiguous entry or
+  blocked click remains unverified and does not automatically request a code repair. Screenshots
+  and auxiliary pages do not replace verification of the delivered page.
 - PostgreSQL startup reuses installed schemas, with compatibility paths for 9.6 and 16. Back up
   existing databases first. Shared storage, multiple replicas, and target-service authorization
   require validation in their actual environments.

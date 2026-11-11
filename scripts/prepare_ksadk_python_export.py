@@ -138,6 +138,24 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    # Keep the regressions uncovered by the full internal alignment suite.
+    "tests/cli/test_web_managed_checkpoint_env.py",
+    "tests/test_local_event_sequence_concurrency.py",
+    "tests/test_sessions_service.py",
+    "tests/test_stm_config.py",
+    "tests/studio/native_control_fixture.py",
+    "tests/studio/test_native_browser_port.py",
+    "tests/studio/test_native_delivery_evidence_routing.py",
+    "tests/studio/test_native_final_shape.py",
+    "tests/studio/test_native_product_child_approval.py",
+    "tests/studio/test_native_product_child_deadline.py",
+    "tests/studio/test_native_product_durability.py",
+    "tests/studio/test_native_product_edit_revision.py",
+    "tests/studio/test_native_workspace_diagnostics.py",
+    "tests/studio/test_run_service.py",
+    "tests/studio/test_runtime_prewarm.py",
+    "tests/studio/test_scheduler_dsh_harness_product.py",
+    "tests/studio/test_scheduler_history.py",
     "tests/postgres_isolation.py",
     "tests/resource_runtime/test_discovery_worker.py",
     "tests/resource_runtime/test_skill_packages.py",
