@@ -156,6 +156,8 @@ PUBLIC_TEST_FILES = {
     "tests/studio/test_runtime_prewarm.py",
     "tests/studio/test_scheduler_dsh_harness_product.py",
     "tests/studio/test_scheduler_history.py",
+    "tests/harness/native/lsp_fixture.py",
+    "tests/harness/native/test_language_diagnostics.py",
     "tests/postgres_isolation.py",
     "tests/resource_runtime/test_discovery_worker.py",
     "tests/resource_runtime/test_skill_packages.py",

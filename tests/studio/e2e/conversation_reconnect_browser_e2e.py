@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from urllib.request import urlopen
 
 from playwright.sync_api import Page, Route, expect, sync_playwright
@@ -64,6 +65,37 @@ def _first_reasoning_prefix(body: str) -> str:
     raise AssertionError("initial stream did not contain a reasoning delta")
 
 
+def _capture_failure(page: Page, api_events: list[dict[str, object]]) -> None:
+    artifacts = Path(mkdtemp(prefix="ksadk-conversation-reconnect-failure-"))
+    location = urlsplit(page.url)
+    route, _, query = location.fragment.partition("?")
+    selection = parse_qs(query)
+    # Core bootstrap URLs can carry private query parameters. Keep only the
+    # fixture's explicit conversation selection in persisted diagnostics.
+    safe_query = urlencode({
+        key: selection[key][0] for key in ("agentId", "sessionId") if selection.get(key)
+    })
+    safe_url = urlunsplit((
+        location.scheme, location.netloc, location.path, "",
+        f"{route}?{safe_query}" if safe_query else route,
+    ))
+    composer = page.get_by_role("textbox", name="发送消息…", exact=True)
+    send = page.get_by_role("button", name="发送消息", exact=True)
+    diagnostic = {
+        "url": safe_url,
+        "composerValue": composer.input_value() if composer.count() == 1 else None,
+        "sendEnabled": send.is_enabled() if send.count() == 1 else None,
+        "workspaceConnecting": page.get_by_role("status", name="正在连接工作区").count(),
+        "agentConnecting": page.get_by_role("status", name="正在连接 Agent").count(),
+        "apiEvents": api_events,
+    }
+    (artifacts / "state.json").write_text(
+        json.dumps(diagnostic, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"Reconnect browser failure diagnostics: {artifacts}", flush=True)
+    page.screenshot(path=str(artifacts / "page.png"), full_page=True, timeout=5_000)
+
+
 def _exercise_reconnect(page: Page, base_url: str) -> None:
     initial_posts = 0
     stream_cut = False
@@ -101,8 +133,11 @@ def _exercise_reconnect(page: Page, base_url: str) -> None:
     composer = page.get_by_role("textbox", name="发送消息…", exact=True)
     expect(composer).to_be_enabled()
 
+    send = page.get_by_role("button", name="发送消息", exact=True)
     composer.fill("检查一次")
-    page.get_by_role("button", name="发送消息").click()
+    expect(composer).to_have_value("检查一次")
+    expect(send).to_be_enabled()
+    send.click()
     answer = page.get_by_text(FINAL_ANSWER, exact=True)
     expect(answer).to_have_count(1, timeout=15_000)
     expect(composer).to_have_value("")
@@ -114,7 +149,9 @@ def _exercise_reconnect(page: Page, base_url: str) -> None:
     # answer text must remain visible twice because item identity, not text,
     # controls reduction.
     composer.fill("再检查一次")
-    page.get_by_role("button", name="发送消息").click()
+    expect(composer).to_have_value("再检查一次")
+    expect(send).to_be_enabled()
+    send.click()
     expect(answer).to_have_count(2, timeout=15_000)
     assert initial_posts == 2
 
@@ -140,7 +177,29 @@ def main() -> None:
                     page = browser.new_page(viewport={"width": 1440, "height": 960})
                     page_errors: list[str] = []
                     page.on("pageerror", lambda error: page_errors.append(str(error)))
-                    _exercise_reconnect(page, base_url)
+                    api_events: list[dict[str, object]] = []
+
+                    def record_api(
+                        event: str, url: str, method: str, status: int | None = None,
+                    ) -> None:
+                        path = urlsplit(url).path
+                        if path == "/api/v1/system/bootstrap" or path.startswith("/agentengine/api/v1/"):
+                            api_events.append({
+                                "event": event, "path": path, "method": method, "status": status,
+                            })
+
+                    page.on("request", lambda request: record_api("request", request.url, request.method))
+                    page.on("response", lambda response: record_api(
+                        "response", response.url, response.request.method, response.status
+                    ))
+                    try:
+                        _exercise_reconnect(page, base_url)
+                    except Exception:
+                        try:
+                            _capture_failure(page, api_events)
+                        except Exception as diagnostic_error:
+                            print(f"Reconnect diagnostics unavailable: {type(diagnostic_error).__name__}", flush=True)
+                        raise
                     assert page_errors == [], f"Uncaught React page errors: {page_errors}"
                     page.unroute_all(behavior="wait")
                 finally:
