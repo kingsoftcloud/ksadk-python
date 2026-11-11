@@ -30,6 +30,7 @@
     "---[Network]Events and Interoperability---",
     "guides/hosted-ui-events",
     "guides/a2a-runtime",
+    "guides/tunnel",
     "---[Cloud]Build and Deploy---",
     "guides/managed-runtime",
     "guides/build-and-package",

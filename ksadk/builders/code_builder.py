@@ -678,6 +678,13 @@ class CodeBuilder(BaseBuilder):
             return True
         if self._env_flag_enabled("KSADK_BUILD_ENABLE_MCP"):
             return True
+        if self._project_env_value("KSADK_ENABLE_TUNNEL").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return True
         if self._project_env_has_configured_value("KSADK_MCP_SERVERS"):
             return True
         if self._project_env_value("KSADK_ENABLE_MCP_TOOLS").strip().lower() in {
@@ -687,7 +694,7 @@ class CodeBuilder(BaseBuilder):
             "on",
         }:
             return True
-        return self._project_imports_any({"mcp", "langchain_mcp_adapters"})
+        return self._project_imports_any({"mcp", "langchain_mcp_adapters", "ksadk.tunnel"})
 
     def _postgres_session_runtime_enabled(self) -> bool:
         if self._env_flag_enabled("KSADK_BUILD_ENABLE_POSTGRES_SESSION"):
@@ -756,6 +763,12 @@ class CodeBuilder(BaseBuilder):
         return normalized.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://"))
 
     def _project_imports_any(self, module_names: set[str]) -> bool:
+        def matches(import_name: str) -> bool:
+            return any(
+                import_name == name or import_name.startswith(f"{name}.")
+                for name in module_names
+            )
+
         for py_file in self._iter_project_py_files():
             if self._should_skip_project_file(py_file):
                 continue
@@ -766,12 +779,16 @@ class CodeBuilder(BaseBuilder):
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        root = alias.name.split(".", 1)[0]
-                        if root in module_names:
+                        if matches(alias.name):
                             return True
                 elif isinstance(node, ast.ImportFrom) and node.module:
-                    root = node.module.split(".", 1)[0]
-                    if root in module_names:
+                    if matches(node.module):
+                        return True
+                    if (
+                        node.module == "ksadk"
+                        and "ksadk.tunnel" in module_names
+                        and any(alias.name == "tunnel" for alias in node.names)
+                    ):
                         return True
         return False
 
@@ -2272,6 +2289,7 @@ from ksadk.detection import DetectionResult, FrameworkType
 from ksadk.agui.config import agui_config_for_detection
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
 from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
+from ksadk.tunnel.config import tunnel_self_url_for_start
 import uvicorn
 
 # 检测结果 (构建时固化)
@@ -2342,6 +2360,7 @@ app = create_runtime_app(
         agui=agui_config_for_detection(detection_result),
         a2a=_managed_a2a_bootstrap,
         a2a_runtime_adapter=_a2a_adapter,
+        tunnel_self_url=tunnel_self_url_for_start(int(os.environ.get("PORT", 8080))),
     ),
     configure_runtime_app,
 )

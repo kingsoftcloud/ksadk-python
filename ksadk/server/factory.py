@@ -137,6 +137,9 @@ class RuntimeAppState:
         self.agui_agent: Any = None
         self.agui_config: Any = None
         self.local_interactions: Any = None
+        # Optional per-app Tunnel configuration. The registry itself lives in
+        # launch_context.services so the HTTP mount and ADKRunner share it.
+        self.tunnel: Any = None
         self.persistence_capability = PersistenceCapabilityCoordinator()
 
     def resolve_session_service(self) -> Any:
@@ -239,6 +242,7 @@ class RuntimeAppConfig:
         teams_host_factory: Any | None = None,
         a2ui_catalog_registry: Any | None = None,
         local_mcp_oauth: bool = False,
+        tunnel_self_url: str | None = None,
     ) -> None:
         self.runtime_type = runtime_type
         self.route_groups: set[str] = (
@@ -260,6 +264,14 @@ class RuntimeAppConfig:
         self.a2ui_catalog_registry = a2ui_catalog_registry
         # Composition-only switch. Never populated from Agent YAML or env.
         self.local_mcp_oauth = local_mcp_oauth
+        self.tunnel: Any = None
+        if launch_context is not None:
+            from ksadk.tunnel.config import prepare_tunnel_context
+
+            self.launch_context, self.tunnel = prepare_tunnel_context(
+                launch_context,
+                self_url=tunnel_self_url,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +358,14 @@ async def shutdown_runtime_resources(state: RuntimeAppState) -> None:
     if state.local_interactions is not None:
         await state.local_interactions.close()
 
+    if state.launch_context is not None:
+        tunnel_registry = state.launch_context.services.tunnel_registry
+        if tunnel_registry is not None:
+            try:
+                await tunnel_registry.close()
+            except Exception:
+                logger.exception("failed to close Tunnel registry on shutdown")
+
     for service in state.session_services():
         close = getattr(service, "aclose", None)
         if callable(close):
@@ -415,6 +435,7 @@ def create_runtime_app(
         session_service_provider=config.session_service_provider,
         session_backend_provider=config.session_backend_provider,
     )
+    state.tunnel = config.tunnel
     from ksadk.kernel.teams_runtime_bootstrap import CloudTeamsRuntimeHost
 
     teams_host = config.teams_host_factory or CloudTeamsRuntimeHost.from_env()

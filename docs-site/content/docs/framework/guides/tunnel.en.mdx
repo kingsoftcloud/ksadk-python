@@ -1,0 +1,226 @@
+---
+title: "On-prem MCP Tunnel"
+description: "Let a cloud ADK Agent call on-prem Streamable HTTP MCP tools through an outbound WebSocket tunnel established by the enterprise side."
+status: new
+---
+
+KsADK Tunnel connects MCP Servers inside an enterprise network to a cloud ADK Agent through an **outbound** WebSocket. The enterprise side does not need to open an inbound port, and the Agent can discover and call tunneled tools on subsequent turns.
+
+<Callout type="warning" title="First-version boundaries">
+The first version supports only the root ADK Agent and Streamable HTTP MCP. The registry lives in one Runtime process, so deployment requires one worker and one replica, or a verified sticky-routing topology. WS/WSS forwarding through the actual gateway requires separate acceptance testing.
+</Callout>
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph onprem["Enterprise network"]
+        M["Streamable HTTP MCP Server"]
+        C["TunnelConnector"]
+        C -- "Local HTTP" --> M
+    end
+    subgraph cloud["Cloud Runtime: one process"]
+        W["/tunnel/connect"]
+        R["Per-app TunnelRegistry"]
+        T["ADKRunner + TunnelToolset"]
+        P["/tunnel/mcp/*"]
+        W --> R --> T --> P
+    end
+    C -- "Outbound WS/WSS: registration and request frames" --> W
+    P -- "Forwarded over WebSocket" --> C
+```
+
+1. The cloud ADK Runtime mounts Tunnel routes from environment configuration.
+2. The enterprise connector registers one or more MCP Servers, sending only names, protocols, and tool filters.
+3. ADKRunner injects `TunnelToolset` when it first loads the root Agent, without importing the user's `root_agent` during app bootstrap.
+4. Each subsequent tool enumeration reads the currently online services. New services appear on the next turn, and offline services are removed.
+5. MCP requests travel through the in-process proxy and WebSocket to the connector, which calls the real on-prem service.
+
+## Enable the cloud side
+
+Tunnel is disabled by default, and the first version only supports the ADK Runtime. `KSADK_TUNNEL_TOKEN` is required when Tunnel is enabled; other Runtimes must not set the enable flag.
+
+### Project-scoped configuration
+
+From the project root, use `config set` to write the configuration to the current project's `.env`:
+
+```bash title="bash"
+agentengine config set \
+  KSADK_ENABLE_TUNNEL=1 \
+  KSADK_TUNNEL_TOKEN=<tunnel-token>
+
+agentengine run . --port 8080
+```
+
+For an ADK project, you can also run `agentengine config` and enable Tunnel in the interactive wizard. The wizard reads the token through a password prompt and does not generate `KSADK_TUNNEL_SELF_URL`. Tunnel is project-scoped and cannot be saved to the global configuration. Even with `--global`, these variables are only written to the current project and a notice is displayed.
+
+For temporary local debugging, you can still use the shell directly:
+
+```bash title="bash"
+export KSADK_ENABLE_TUNNEL=1
+export KSADK_TUNNEL_TOKEN=<tunnel-token>
+ksadk web . --port 8080
+```
+
+### Code/Container deployment
+
+The standard `agentengine deploy` and `agentengine launch` commands inject Tunnel settings from the project `.env`, the shell, or an explicit environment file. Precedence is `--env` / `--env-file` > shell > project `.env`. For example:
+
+```bash title="bash"
+agentengine deploy . --repackage
+# Or build and deploy in one command:
+agentengine launch . --no-cache
+```
+
+No extra rebuild option is needed for an initial build. If an older artifact might not contain the MCP Runtime dependencies, use `--repackage` or `--no-cache` instead of reusing that artifact.
+
+For CI, or when deployment inputs should be reviewed explicitly, create an untracked `prod.env`:
+
+```bash title="prod.env"
+KSADK_ENABLE_TUNNEL=1
+KSADK_TUNNEL_TOKEN=<tunnel-token>
+```
+
+```bash title="bash"
+agentengine deploy . --env-file ./prod.env
+```
+
+Hot updates use environment-variable upserts. Removing a variable from the local `.env` does not delete the existing server-side value. Set `KSADK_ENABLE_TUNNEL=0` and redeploy to disable Tunnel; deploy a new value explicitly when rotating the token.
+
+Standard entrypoints derive `KSADK_TUNNEL_SELF_URL` from the actual listening port. Set it explicitly only when a special deployment cannot derive it correctly:
+
+```bash title="bash"
+export KSADK_TUNNEL_SELF_URL=http://127.0.0.1:8080
+```
+
+This must be the loopback HTTP(S) base URL of the FastAPI app in the same process. It cannot contain credentials, a query, or a fragment. Do not reuse a self URL that only matches a local port as deployment configuration.
+
+### Ingress gateway and connection URL
+
+For cloud deployment, the outer ingress gateway must forward `/tunnel/connect` to the FastAPI instance running the ADK Runtime and allow WebSocket Upgrade. Allowing ordinary Agent HTTP requests is not sufficient for Tunnel. If this path is not configured, is rejected by the gateway, or is handled as ordinary HTTP, the connector cannot reach the Agent and complete registration.
+
+Without a path prefix, the complete cloud connection URL is:
+
+```text
+wss://<agent-host>/tunnel/connect
+```
+
+A complete example using a reserved domain is:
+
+```text
+wss://agent.example.com/tunnel/connect
+```
+
+If the external endpoint is `https://agent.example.com/gateway/agent-a`, the complete connection URL is:
+
+```text
+wss://agent.example.com/gateway/agent-a/tunnel/connect
+```
+
+For local plaintext testing, use `ws://127.0.0.1:8080/tunnel/connect`. `TunnelConnector.cloud_url` must contain the HTTP(S) or WS(S) **base URL**. The connector converts the scheme, preserves the base path and existing query, and appends `/tunnel/connect`. Do not pass a complete URL that already contains `/tunnel/connect` as `cloud_url`, or the path will be appended twice.
+
+By default, the Tunnel token is sent in the WebSocket handshake header `Authorization: Bearer <tunnel-token>`. The URL contains no token, and the Agent name is sent as `register.agent` in the first frame. If the outer gateway already consumes `Authorization`, pass the gateway credential through `TunnelConnector.extra_headers` and send the Tunnel token as a URL-encoded query parameter instead:
+
+```text
+wss://<agent-host>/<base-path>/tunnel/connect?token=<url-encoded-tunnel-token>
+```
+
+Without a base path, use `wss://<agent-host>/tunnel/connect?token=<url-encoded-tunnel-token>`. The gateway must preserve the required Authorization header, query parameters, and WebSocket Upgrade, and its idle timeout, maximum frame size, and long-lived connection behavior must be validated. Expose only `/tunnel/connect` as needed. `/tunnel/mcp/*` is the Runtime's internal loopback proxy and must not be exposed publicly just to establish a connector. `/tunnel/servers` is not required for registration; expose and authenticate it separately only when external online-service queries are needed.
+
+### Agent name
+
+The `agent` value used during connector registration is the Agent name detected by KsADK:
+
+- Prefer `name` from `agentengine.yaml` when explicitly configured.
+- Otherwise, use the name shown in detection output.
+- It can differ from `root_agent.name` in code; use the CLI detection result as the reference.
+
+The cloud side only allows registration to an Agent name allowed for the current app.
+
+## Enterprise connector
+
+Run the following example inside the enterprise network. `TUNNEL_TOKEN` is only the local environment variable read by this connector process, and its value must match the cloud `KSADK_TUNNEL_TOKEN`.
+
+```python title="connector.py"
+import asyncio
+import os
+
+from ksadk.tunnel import LocalServer, TunnelConnector
+
+
+async def main():
+    connector = TunnelConnector(
+        cloud_url="https://agent.example.com",
+        agent="ops_agent",
+        token=os.environ["TUNNEL_TOKEN"],
+        servers=[
+            LocalServer(
+                name="internal_docs",
+                protocol="mcp",
+                address="http://127.0.0.1:9000/mcp",
+                tool_filter=["search"],
+                headers={"Authorization": "Bearer <local-mcp-token>"},
+            )
+        ],
+    )
+    await connector.start()
+
+
+asyncio.run(main())
+```
+
+`address`, `headers`, and `query` remain on the connector side. Registration messages and cloud `/tunnel/servers` responses do not include these local connection secrets.
+
+The first-version `start()` does not promise automatic reconnection. When the process exits or the connection closes, outstanding local requests are cancelled and the cloud services are removed during the next tool enumeration.
+
+## Authentication boundaries
+
+| Credential | Purpose | Location |
+| --- | --- | --- |
+| Tunnel token | Authenticate connector registration at `/tunnel/connect` | Cloud Secret and connector configuration |
+| Internal proxy credential | Authenticate `TunnelToolset` calls to `/tunnel/mcp/*` in the same process | Randomly generated by Runtime and held only in per-app tunnel state |
+| Local MCP credential | Authenticate the connector to the real on-prem MCP Server | Only `LocalServer.headers` or `query` on the enterprise side |
+
+The internal proxy credential requires no user configuration. The cloud side removes it after verification and never sends it to the connector or the on-prem MCP Server.
+
+Listing online services also requires the Tunnel token:
+
+```bash title="bash"
+curl -H "Authorization: Bearer ${TUNNEL_TOKEN}" \
+  "https://agent.example.com/tunnel/servers?agent=ops_agent"
+```
+
+### Separate gateway credentials from the Tunnel token
+
+If the gateway already consumes `Authorization`, put the gateway credential in `extra_headers`; the Tunnel token is then sent as a correctly URL-encoded query parameter:
+
+```python
+connector = TunnelConnector(
+    cloud_url="https://agent.example.com",
+    agent="ops_agent",
+    token=os.environ["TUNNEL_TOKEN"],
+    extra_headers={"Authorization": "Bearer <gateway-token>"},
+    servers=[...],
+)
+```
+
+Never put real credentials in source code, documentation, logs, or deployment artifacts.
+
+## Tool exposure and safety
+
+- Use `tool_filter` to expose only necessary tools instead of exposing an entire privileged on-prem MCP Server to the model.
+- Tunnel registration does not imply business approval. Existing tool approval, audit, and sandbox boundaries must still be configured independently.
+- `/tunnel/mcp/*` and `/tunnel/servers` are authenticated and cannot be used as anonymous public proxies.
+- A response-head timeout returns 504, a disconnected server returns 503, and a connector-side local request failure returns 502 if the response has not started.
+- Cancellation and connector disconnects clean up pending requests. A mid-stream failure is not treated as a successful EOF.
+
+## Deployment limits
+
+1. **One process**: the process owning the WebSocket and the process executing the Agent must share the same per-app registry.
+2. **One replica or sticky routing**: randomly load-balanced multi-replica deployment is unsupported.
+3. **WebSocket gateway**: production acceptance must cover WS/WSS, custom headers, idle timeouts, and maximum frame sizes.
+4. **Dynamic behavior**: tool changes apply to subsequent turns and do not modify a turn that has already started.
+5. **Protocol scope**: stdio MCP, generic non-MCP binary proxying, and automatic tool injection for other Runtimes are unsupported.
+6. **State recovery**: the registry does not survive process restart, so connectors must register again.
+
+Passing a local MCP smoke test is not proof of cloud E2E success. Before release, use an isolated environment to verify the actual gateway, WSS, both authentication layers, tool invocation, and disconnect behavior.

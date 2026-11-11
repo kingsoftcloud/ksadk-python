@@ -82,6 +82,7 @@ def test_export_plan_includes_public_preflight_contract_files():
         "tests/studio/e2e/studio_responsive_smoke.py",
         "tests/studio/test_style_system.py",
         "tests/test_config_env_registry.py",
+        "tests/cli/test_cmd_config_tunnel.py",
         "tests/runners/test_adapter_contract.py",
         "ksadk/studio/react-ui/package.json",
         "ksadk/studio/react-ui/package-lock.json",

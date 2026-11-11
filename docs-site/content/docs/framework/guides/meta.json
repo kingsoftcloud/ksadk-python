@@ -21,6 +21,7 @@
     "hosted-ui-events",
     "channel-connector",
     "a2a-runtime",
+    "tunnel",
     "---[Cloud]构建与部署---",
     "managed-runtime",
     "build-and-package",

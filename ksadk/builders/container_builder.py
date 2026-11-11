@@ -535,6 +535,7 @@ from ksadk.detection import DetectionResult, FrameworkType
 from ksadk.agui.config import agui_config_for_detection
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
 from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
+from ksadk.tunnel.config import tunnel_self_url_for_start
 import uvicorn
 
 # 检测结果 (构建时固化)
@@ -604,6 +605,7 @@ app = create_runtime_app(
         agui=agui_config_for_detection(detection_result),
         a2a=_managed_a2a_bootstrap,
         a2a_runtime_adapter=_a2a_adapter,
+        tunnel_self_url=tunnel_self_url_for_start(int(os.environ.get("PORT", 8080))),
     ),
     configure_runtime_app,
 )

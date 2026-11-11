@@ -33,7 +33,12 @@ def _managed_a2a_card() -> Any:
     return build_managed_a2a_card_if_configured()
 
 
-def create_runtime_web_app(detection: Any, agent_path: Path) -> FastAPI:
+def create_runtime_web_app(
+    detection: Any,
+    agent_path: Path,
+    *,
+    port: int | None = None,
+) -> FastAPI:
     """Compose one detected project around the canonical RuntimeExecutor."""
 
     config = dict(getattr(detection, "raw_config", None) or {})
@@ -80,6 +85,11 @@ def create_runtime_web_app(detection: Any, agent_path: Path) -> FastAPI:
     ):
         executor.configure_managed_a2a(managed_a2a)
         adapter = executor.create_adapter(context)
+    tunnel_self_url = None
+    if port is not None:
+        from ksadk.tunnel.config import tunnel_self_url_for_start
+
+        tunnel_self_url = tunnel_self_url_for_start(port)
     return create_runtime_app(
         RuntimeAppConfig(
             runtime_executor=executor,
@@ -88,6 +98,7 @@ def create_runtime_web_app(detection: Any, agent_path: Path) -> FastAPI:
             a2a=managed_a2a,
             a2a_runtime_adapter=adapter,
             local_mcp_oauth=not managed_runtime,
+            tunnel_self_url=tunnel_self_url,
         ),
         configure_runtime_app,
     )

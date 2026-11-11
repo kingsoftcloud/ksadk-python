@@ -26,6 +26,9 @@ LANGCHAIN_ECOSYSTEM_REQUIREMENTS = (
 
 DEEPAGENTS_REQUIREMENTS = ("deepagents>=0.6.2,<1.0.0",)
 
+# Runtime-only dependency used by ADK Tunnel's Streamable HTTP MCP handler.
+TUNNEL_MCP_REQUIREMENT = "mcp>=1.26.0,<2.0.0"
+
 # codex runtime:openai-codex SDK(自带 codex CLI 二进制,见 PyPI cli-bin wheel)。
 # 版本必须与 pyproject.toml 的 ksadk[codex] extra 保持一致:适配层
 # (ksadk/codex/client.py)依赖 app-server 私有协议,SDK/CLI 是精确 co-pin。

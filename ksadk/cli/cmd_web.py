@@ -313,7 +313,7 @@ def web(agent_dir: str, port: int, host: str, model: str, no_open: bool):
 
     try:
         print_info("初始化 RuntimeAdapter...")
-        runtime_app = create_runtime_web_app(result, agent_path)
+        runtime_app = create_runtime_web_app(result, agent_path, port=port)
     except Exception as e:
         print_exception("RuntimeAdapter 初始化失败", e)
         raise SystemExit(1)

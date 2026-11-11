@@ -30,6 +30,7 @@
     "---[Network]统一事件与互操作---",
     "guides/hosted-ui-events",
     "guides/a2a-runtime",
+    "guides/tunnel",
     "---[Cloud]构建与部署---",
     "guides/managed-runtime",
     "guides/build-and-package",

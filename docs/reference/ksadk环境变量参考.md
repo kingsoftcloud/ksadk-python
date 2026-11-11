@@ -73,6 +73,16 @@ A2A 内部控制面和云评测数据集客户端。知识库和记忆库通过�
 | `KSADK_MCP_KEY` | 否 | 无 | 是 | 开发者 / 平台 Secret | MCP 服务 API key；ksyun web search provider 未配 `KSADK_WEB_SEARCH_API_KEY` 时也回退到此。 |
 | `KSADK_MCP_SERVERS` | 条件必传 | 无 | 是 | 开发者 / 平台 Secret | JSON 数组，配置 MCP server url、api_key、tool_filter、tool_name_prefix。可能包含 token。 |
 
+#### 2.3.1 ADK 内网 MCP Tunnel
+
+| 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `KSADK_ENABLE_TUNNEL` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `0`。设为 `1/true/yes/on` 时为 ADK Runtime 开启内网 MCP Tunnel；其他 Runtime 不支持。 |
+| `KSADK_TUNNEL_TOKEN` | 开启 Tunnel 时必传 | 无 | 是 | 开发者 / 平台 Secret | connector 注册到 `/tunnel/connect` 时使用的共享 token。不得写入源码或日志。 |
+| `KSADK_TUNNEL_SELF_URL` | 否 | 无 | 否 | 开发者 / Runtime | `TunnelToolset` 访问本进程代理的 loopback base URL。标准启动入口按实际端口生成，仅特殊部署需要显式覆盖。 |
+
+上述变量均为项目级 Runtime 配置，不支持通过 `agentengine config set --global` 保存到全局配置。Tunnel token 应按项目或环境独立生成。标准部署只需要开启开关和 token；`KSADK_TUNNEL_SELF_URL` 通常不要写入项目或部署环境文件，由标准启动入口按实际端口推导。
+
 ### 2.4 Skill Runtime 本地模式
 
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
