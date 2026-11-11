@@ -14,6 +14,7 @@ def _clear_persistence_env(monkeypatch):
         *cmd_web._SESSION_ENV_NAMES,
         *cmd_web._STM_ENV_NAMES,
         *cmd_web._LOCAL_UI_ENV_NAMES,
+        "KSADK_PROJECT_DIR",
         "KSADK_LANGGRAPH_AUTO_CHECKPOINT",
         "AGENT_KERNEL_ENABLED",
         "AGENT_KERNEL_STORE_DRIVER",
@@ -35,6 +36,7 @@ def test_web_persistence_fixture_restores_new_environment_values(tmp_path, monke
         *cmd_web._SESSION_ENV_NAMES,
         *cmd_web._STM_ENV_NAMES,
         *cmd_web._LOCAL_UI_ENV_NAMES,
+        "KSADK_PROJECT_DIR",
         "KSADK_LANGGRAPH_AUTO_CHECKPOINT",
         "AGENT_KERNEL_ENABLED",
         "AGENT_KERNEL_STORE_DRIVER",
@@ -45,6 +47,7 @@ def test_web_persistence_fixture_restores_new_environment_values(tmp_path, monke
     with pytest.MonkeyPatch.context() as runtime_env:
         _clear_persistence_env(runtime_env)
         cmd_web.configure_local_runtime_persistence(tmp_path, "langgraph")
+        assert os.environ["KSADK_PROJECT_DIR"] == str(tmp_path)
         assert os.environ["AGENTENGINE_UI_DIR"] == str(tmp_path / ".agentengine/ui")
         assert os.environ["KSADK_SESSION_BACKEND"] == "local"
         assert os.environ["KSADK_SESSION_PATH"] == str(tmp_path / ".agentengine/ui/sessions.sqlite")
