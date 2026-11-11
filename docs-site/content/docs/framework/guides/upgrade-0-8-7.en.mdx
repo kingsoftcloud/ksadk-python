@@ -22,6 +22,10 @@ Choose either `ksadk` or `agentengine-sdk-python`: both own the same `ksadk` imp
 Distributions include built frontend assets. Models, browsers, and official Provider toolchains
 still require configuration for the target environment.
 
+ADK validation covers 1.34.3, the development lock's 2.5.0, and the current default installation's
+2.14.0. Wheel installation resolves dependencies again, so candidate checks cover both the locked
+environment and the default dependency set, using Python 3.12.
+
 ## Preserved and updated behavior
 
 - MCP OAuth declarations travel with builds; tools resolve connections at execution time. Credentials,

@@ -117,6 +117,7 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
         name="non-curated-docs",
         prefixes=("docs/",),
         allowed_paths=(
+            "docs/adk-multi-version-compat.md",
             "docs/maintainer-approval-record.md",
             "docs/public-release-workflow.md",
             "docs/ksadk\u73af\u5883\u53d8\u91cf\u53c2\u8003.md",

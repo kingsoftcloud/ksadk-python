@@ -32,6 +32,8 @@ jobs:
     env:
       KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      R86_TEST_CHECKPOINT_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      KSADK_TEST_A2UI_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
     steps:
       - uses: actions/checkout@v7
 
@@ -100,7 +102,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9
+          version: "10.33.2"
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -201,8 +203,8 @@ jobs:
       - name: Run React Studio browser gate
         run: make studio-react-test
 
-  # goal-00: google-adk 多版本 matrix。依赖窗口 >=1.34.0,<3.0,
-  # 对最低锚点 1.34.x 与最新 2.x(2.5.x)各跑一遍全量测试,防止任何一端回归。
+  # Google ADK 兼容窗口 >=1.34.0,<3.0：覆盖最低版本、开发锁文件和
+  # 2026-11-11 实际默认解析的 2.14.0；当前默认依赖组合独立升级验证。
   # 版本差异统一由 ksadk/compat/adk_compat.py 收口(见 docs/adk-multi-version-compat.md)。
   test-adk-matrix:
     name: full pytest (google-adk ${{ matrix.google-adk }})
@@ -225,10 +227,12 @@ jobs:
       KSADK_WEB_VERSION: "0.3.18"
       KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      R86_TEST_CHECKPOINT_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      KSADK_TEST_A2UI_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
     strategy:
       fail-fast: false
       matrix:
-        google-adk: ["1.34.3", "2.5.0"]
+        google-adk: ["1.34.3", "2.5.0", "2.14.0"]
     steps:
       - uses: actions/checkout@v7
 
@@ -266,24 +270,30 @@ jobs:
       - name: Build package artifacts
         run: uv build
 
+      # Resolve defaults after builds, which may synchronize the development lock.
+      - name: Resolve current default dependencies
+        if: matrix.google-adk == '2.14.0'
+        run: uv pip install --upgrade ".[all,dev]"
+
       # --no-sync: 防止 uv run 按 lock 重新同步、把上一步行覆盖的 adk 版本回退。
-      # -m "not local_process_heavy": 真实 fork 子进程的 sandbox/skill 测试在
-      # 2-core runner 上进程表/内存耗尽(Cannot fork/超时)。
-      # 这些测试由下方 test-local-process-heavy job 在干净进程表里单独跑,不丢覆盖。
-      # -n auto: pytest-xdist 并行(实测 4 核 19:52→6:25, 7039 全过)。
+      # 常规测试用 xdist 并行；真实进程测试在下方独立 job 中执行，
+      # 避免进程表和内存累积，两个分组都必须通过。
       - name: Pin google-adk for this matrix leg
         run: uv pip install "google-adk==${{ matrix.google-adk }}"
+
+      - name: Install disposable PostgreSQL test server
+        run: uv pip install "pgserver==0.1.4"
 
       - name: Run full test suite
         env:
           EXPECTED_GOOGLE_ADK: ${{ matrix.google-adk }}
         run: |
-          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected)'
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
           uv run --no-sync pytest tests/ -q -m "not local_process_heavy" -n auto
 
-  # goal-00 补充:真实 fork 子进程的 sandbox/skill/browser 测试(local_process_heavy)。
-  # 与全量套件拆开跑——单独 pytest 进程没有前面 7000 测试累积的资源占用,不会 Cannot fork。
-  # 版本矩阵对齐主套件,防止 adk 1.34/2.5 两端回归。
+  # 真实 fork 子进程的 sandbox/skill/browser 测试(local_process_heavy)。
+  # 使用独立 job 和串行 pytest，避免常规测试累积的资源占用。
+  # 版本矩阵及默认依赖解析与主套件保持一致。
   test-local-process-heavy:
     name: local-process heavy tests (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
@@ -292,7 +302,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        google-adk: ["1.34.3", "2.5.0"]
+        google-adk: ["1.34.3", "2.5.0", "2.14.0"]
     steps:
       - uses: actions/checkout@v7
 
@@ -317,9 +327,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra all
 
-      - name: Install Chromium
-        run: uv run playwright install --with-deps chromium
-
       # browser e2e 起真实 HTTP server 服务 Studio 静态 bundle;resource_build_artifacts
       # 校验打包产物。与主套件同样构建,避免 heavy job 缺产物。
       - name: Prepare companion Web source
@@ -331,8 +338,17 @@ jobs:
       - name: Build package artifacts
         run: uv build
 
+      - name: Resolve current default dependencies
+        if: matrix.google-adk == '2.14.0'
+        run: uv pip install --upgrade ".[all,dev]"
+
       - name: Pin google-adk for this matrix leg
         run: uv pip install "google-adk==${{ matrix.google-adk }}"
+
+      # Default resolution can upgrade Playwright, so install its matching browser
+      # afterward and keep the verified ADK pin with --no-sync.
+      - name: Install Chromium for the verified matrix environment
+        run: uv run --no-sync playwright install --with-deps chromium
 
       - name: Run local_process_heavy tests
         env:
@@ -340,7 +356,7 @@ jobs:
         # Native recovery regressions must remain in the public candidate.
         # Missing tests and zero collection must fail this gate.
         run: |
-          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected)'
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
           test -f tests/harness/native/test_partial_summary_process.py
           test -f tests/harness/native/test_summary_recovery_process.py
           test -f tests/harness/native/test_compaction_reserve_process_recovery.py

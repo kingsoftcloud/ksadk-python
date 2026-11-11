@@ -146,6 +146,15 @@ def test_public_repo_audit_allows_curated_environment_reference_doc():
     assert result.violations == []
 
 
+def test_public_repo_audit_allows_only_the_curated_adk_compatibility_doc():
+    audit = _load_audit_module()
+
+    assert audit.audit_paths("public-repo", ["docs/adk-multi-version-compat.md"]).ok
+    blocked = audit.audit_paths("public-repo", ["docs/adk-internal-rollout-plan.md"])
+    assert not blocked.ok
+    assert [item.rule for item in blocked.violations] == ["non-curated-docs"]
+
+
 def test_public_export_manifest_rejects_internal_inventory(tmp_path):
     audit = _load_audit_module()
     manifest = {

@@ -28,6 +28,7 @@ DOCUMENTATION_URL = "https://kingsoftcloud.github.io/ksadk-python/"
 DEFAULT_OUTPUT_DIR = Path("/tmp/ksadk-python-export-candidate")
 
 CURATED_DOCS: set[str] = {
+    "docs/adk-multi-version-compat.md",
     "docs/maintainer-approval-record.md",
     "docs/public-release-workflow.md",
 }
