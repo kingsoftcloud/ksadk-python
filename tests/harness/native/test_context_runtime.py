@@ -190,7 +190,10 @@ def test_ready_context_preserves_goal_and_required_descriptions_without_compacti
 
 
 @pytest.mark.parametrize("failed", [False, True])
-def test_new_reader_observations_are_seen_before_compaction_without_rewriting_receipts(failed):
+@pytest.mark.parametrize("allow_compaction", [False, True])
+def test_new_reader_observations_are_seen_before_compaction_without_rewriting_receipts(
+    failed, allow_compaction,
+):
     calls, results = [], []
     for i in range(4):
         path = f"source-{i}.txt"
@@ -233,12 +236,15 @@ def test_new_reader_observations_are_seen_before_compaction_without_rewriting_re
             context_role="workspace_read",
         ),
     )
-    result = plan(instance, messages=raw, tools=tools)
+    result = plan(instance, messages=raw, tools=tools, allow_compaction=allow_compaction)
     if failed:
         assert result.action != "ready"
     else:
         assert result.action == "ready", result.reason
-        assert result.reason == "fresh_reader_observations_within_budget"
+        assert result.reason == (
+            "fresh_reader_observations_within_budget" if allow_compaction
+            else "finalization_reader_observations_within_budget"
+        )
         for i, message in enumerate(result.prepared.messages[-4:]):
             receipt = json.loads(message["content"])
             excerpt = receipt["content"]["content"]
@@ -1023,7 +1029,7 @@ def test_multiple_bounded_summary_requests_cover_all_dropped_history():
     assert current.prepared.counted_input_tokens + profile().max_output_tokens <= 4000
 
 
-def test_segmented_summary_rejects_changed_source_and_enforces_chunk_cap(monkeypatch):
+def test_segmented_summary_rejects_changed_source_and_uses_validated_finite_bound(monkeypatch):
     raw = (
         {"role": "user", "content": "Build the game."},
         *(
@@ -1043,15 +1049,18 @@ def test_segmented_summary_rejects_changed_source_and_enforces_chunk_cap(monkeyp
             current_continuity=continuity(),
             current_messages=(*raw, {"role": "user", "content": "new"}),
         )
-    with pytest.raises(ContextRuntimeError, match="compaction_chunk_limit"):
-        monkeypatch.setattr("ksadk.harness.native.context_runtime._MAX_SUMMARY_CHUNKS", 1)
-        controller.advance(
-            request,
-            "Partial summary.",
-            current_revision=9,
-            current_continuity=continuity(),
-            current_messages=raw,
-        )
+    monkeypatch.setattr("ksadk.harness.native.context_runtime._MAX_SUMMARY_CHUNKS", 1)
+    before = request.model_dump_json()
+    advanced = controller.advance(
+        request,
+        "Partial summary.",
+        current_revision=9,
+        current_continuity=continuity(),
+        current_messages=raw,
+    )
+    assert advanced.chunk_index == 2
+    assert advanced.summary_partition.covered_count > 0
+    assert request.model_dump_json() == before
 
 
 def test_segmented_summary_keeps_parallel_tool_batches_in_one_chunk():
@@ -1569,6 +1578,49 @@ def test_latest_complete_source_batch_survives_soft_target_when_hard_budget_fits
         sealed.prepared.counted_input_tokens + profile().max_output_tokens
         <= profile().context_window
     )
+
+
+def test_existing_summary_above_output_estimate_does_not_strand_fresh_tool_batch():
+    from ksadk.harness.native.context_runtime_contracts import _refs
+
+    instance = planner(target_ratio=0.25)
+    prefix = (
+        {"role": "user", "content": continuity().goal},
+        {"role": "assistant", "content": "Previously investigated source."},
+    )
+    raw = (*prefix, {
+        "role": "assistant",
+        "tool_calls": [{"id": "fresh", "type": "function", "function": {
+            "name": "read_workspace_file", "arguments": '{"path":"source.txt"}',
+        }}],
+    }, {
+        "role": "tool", "tool_call_id": "fresh",
+        "content": json.dumps({"status": "ok", "content": {
+            "ok": True, "path": "source.txt", "content": "source fact " * 300,
+        }}),
+    })
+    original = copy.deepcopy(raw)
+    history = CompactionHistory(
+        count=1, prefix_message_count=len(prefix), prefix_digest=source_context_digest(prefix),
+        contract_digest=continuity().contract_digest, retained_message_refs=(_refs(raw)[0],),
+        summary_text="prior evidence " * 150, tokenizer_id=instance.tokenizer_id,
+        last_model_turn=1, last_workspace_revision="workspace-v2",
+    )
+    instructions = "Host policy " * 500
+    active = (raw[0], *raw[2:])
+    fixed = instance.fixed_request_cost(
+        instructions=instructions, continuity=continuity(), contract=contract(), tools=READ_TOOLS,
+    )
+    window = (fixed + profile().max_output_tokens + instance.summary_reservation(profile())
+              + sum(instance.count_model_message(m, profile()) for m in active) + 1)
+    result = plan(instance, messages=raw, profile=profile(window), instructions=instructions,
+                  history=history)
+    assert result.action == "compact", result.reason
+    request = result.request
+    assert request.retained_message_refs == (_refs(raw)[0],)
+    assert "source fact " * 300 in json.dumps(request.summary_messages)
+    assert history.summary_text in json.dumps(request.summary_messages)
+    assert raw == original
 
 
 def test_large_completed_tool_result_is_excerpted_only_in_summary_projection():

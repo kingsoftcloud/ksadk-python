@@ -851,7 +851,7 @@ def test_remaining_header_requires_canonical_decimal():
     assert _remaining_ms("00") == 0
     assert _remaining_ms("01") == 1
     assert _remaining_ms("-1") == 0
-    assert _remaining_ms("1" * 100) == 2600
+    assert __import__("math").isinf(_remaining_ms("1" * 100))
     for invalid in ("", "1.5", "+1", " 1", "1 ",
                     "1e3", "NaN", "inf", "١"):
         assert _remaining_ms(invalid) is None

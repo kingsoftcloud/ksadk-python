@@ -140,6 +140,18 @@ def _canonical_completed_message(
 def _transcript_event_projection(
     event: SessionEvent,
 ) -> tuple[str, str, tuple[str, tuple[str, str]] | None]:
+    raw = (event.content or {}).get("runtime_event")
+    source = raw.get("source") if isinstance(raw, Mapping) else None
+    metadata = source.get("metadata") if isinstance(source, Mapping) else None
+    if (
+        isinstance(raw, Mapping)
+        and raw.get("item_kind") in ("message", "reasoning")
+        and isinstance(metadata, Mapping)
+        and metadata.get("conversation_visibility", metadata.get("visibility"))
+        in ("internal", "hidden")
+    ):
+        # Do not let canonical private traces fall back to legacy carrier.parts.
+        return "runtime.internal", "", None
     canonical_message = _canonical_completed_message(event)
     if canonical_message is not None:
         event_id, text, item_identity = canonical_message

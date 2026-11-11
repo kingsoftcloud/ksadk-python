@@ -19,9 +19,10 @@ from ksadk.sandbox import (
 from ksadk.sandbox import (
     SandboxInputFile as RuntimeSandboxInputFile,
 )
-from ksadk.sandbox.backends.e2b import E2BSandboxSessionError
-from ksadk.sandbox.diagnostics import e2b_diagnostic_step
+from ksadk.sandbox.backends.e2b import E2BSandboxSessionError, _with_startup_retry
+from ksadk.sandbox.diagnostics import e2b_diagnostic_step, e2b_error_detail
 from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
+from ksadk.sandbox.e2b_errors import is_e2b_unavailable
 from ksadk.skills.events import (
     SKILL_EVENT_FILE_ENV,
     SkillEvent,
@@ -45,6 +46,23 @@ logger = logging.getLogger(__name__)
 
 PINNED_PROTOCOL = "pinned_v1"
 PROTOCOL_ENV = "KSADK_SKILL_SANDBOX_PROTOCOL"
+
+# A lost Process Start response may follow a successful mkdir. Accept only our
+# private directory on replay; never adopt a symlink, ordinary file or public dir.
+_PREPARE_PINNED_DIRECTORY = """
+import os
+import stat
+import sys
+path = sys.argv[1]
+try:
+    os.mkdir(path, 0o700)
+except FileExistsError:
+    pass
+info = os.lstat(path)
+if (not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
+        or info.st_uid != os.geteuid()):
+    raise RuntimeError("Unsafe pinned Skill delivery directory")
+"""
 
 _SANDBOX_VERSION_FIELDS = frozenset(
     {
@@ -248,6 +266,7 @@ class E2BSkillRuntimeBackend:
         timeout: int = 900,
     ) -> SkillRuntimeResult:
         session = None
+        sandbox_env = env or {}
         connection = getattr(self.sandbox_backend, "connection", None)
         diagnostic_secrets = (connection.api_key.get_secret_value(),) if connection else ()
         started = time.monotonic()
@@ -336,11 +355,18 @@ class E2BSkillRuntimeBackend:
                         env=sandbox_env,
                         sensitive_values=diagnostic_secrets,
                     ):
-                        probe = session.run_command(
-                            "python -I -c 'from ksadk.skills.runtime.agent import "
-                            "PINNED_PACKAGE_PROTOCOL_VERSION, ARTIFACT_DELIVERY_PROTOCOL_VERSION; "
-                            'print(f"{PINNED_PACKAGE_PROTOCOL_VERSION}:{ARTIFACT_DELIVERY_PROTOCOL_VERSION}")\'',
-                            timeout=min(effective_timeout, 10),
+                        probe = _with_startup_retry(
+                            lambda: session.run_command(
+                                "python -I -c 'from ksadk.skills.runtime.agent import "
+                                "PINNED_PACKAGE_PROTOCOL_VERSION, "
+                                "ARTIFACT_DELIVERY_PROTOCOL_VERSION; "
+                                'print(f"{PINNED_PACKAGE_PROTOCOL_VERSION}:{ARTIFACT_DELIVERY_PROTOCOL_VERSION}")\'',
+                                timeout=min(effective_timeout, 10),
+                                env=sandbox_env,
+                            ),
+                            step="pinned.protocol_probe",
+                            runtime_id=session.sandbox_id,
+                            sensitive_values=diagnostic_secrets,
                             env=sandbox_env,
                         )
                         if probe.exit_code != 0 or probe.stdout.strip() != "1:1":
@@ -357,9 +383,18 @@ class E2BSkillRuntimeBackend:
                     env=sandbox_env,
                     sensitive_values=diagnostic_secrets,
                 ):
-                    prepared = session.run_command(
-                        f"mkdir -m 700 {delivery}",
-                        timeout=min(effective_timeout, 10),
+                    prepared = _with_startup_retry(
+                        lambda: session.run_command(
+                            "python -I -c "
+                            + shlex.quote(_PREPARE_PINNED_DIRECTORY)
+                            + " "
+                            + shlex.quote(delivery),
+                            timeout=min(effective_timeout, 10),
+                            env=sandbox_env,
+                        ),
+                        step="pinned.prepare_directory",
+                        runtime_id=session.sandbox_id,
+                        sensitive_values=diagnostic_secrets,
                         env=sandbox_env,
                     )
                     if prepared.exit_code != 0:
@@ -502,9 +537,14 @@ class E2BSkillRuntimeBackend:
                     else str(sandbox.get("runtime_id") or "")
                 ),
                 "duration_ms": int((time.monotonic() - started) * 1000),
-                "timed_out": "timeout" in error_type.lower(),
+                "timed_out": "timeout" in error_type.lower()
+                and not is_e2b_unavailable(reported_exc),
                 "error_type": error_type,
-                "error_message": _redact(str(reported_exc)),
+                "error_message": e2b_error_detail(
+                    reported_exc,
+                    sensitive_values=diagnostic_secrets,
+                    env=sandbox_env,
+                ),
             }
             runtime_result = (
                 replace(runtime_result, **values)

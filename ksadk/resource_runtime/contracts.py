@@ -32,6 +32,7 @@ class RetrievalPolicy(PluginContractModel):
     mode: Literal["tool"] = "tool"
     top_k: int = Field(default=5, ge=1, le=100, strict=True)
     max_chars: int = Field(default=16000, ge=1, le=100000, strict=True)
+    custom_instruction: str = Field(default="", max_length=4000)
 
 
 class SelectedSkill(PluginContractModel):
@@ -95,13 +96,17 @@ class ResourceConfig(PluginContractModel):
 
 
 def validate_resource_bindings(configs: tuple[ResourceConfig, ...]) -> None:
-    """First release supports one binding of each resource kind per Agent."""
+    """Validate resource binding uniqueness and per-kind cardinality."""
     ids = [config.binding.id for config in configs]
     kinds = [config.binding.resource.kind for config in configs]
     if len(ids) != len(set(ids)):
         raise ValueError("resource binding IDs must be unique within an Agent")
-    if len(kinds) != len(set(kinds)):
-        raise ValueError("only one resource binding of each kind is supported")
+    kb_count = sum(1 for kind in kinds if kind == "knowledge-base")
+    if kb_count > 10:
+        raise ValueError("at most 10 knowledge-base bindings are supported per Agent")
+    non_kb_kinds = [kind for kind in kinds if kind != "knowledge-base"]
+    if len(non_kb_kinds) != len(set(non_kb_kinds)):
+        raise ValueError("only one resource binding of each non-knowledge-base kind is supported")
 
 
 class InvocationIdentity(PluginContractModel):

@@ -32,16 +32,16 @@ Studio source is included in the public export. Static assets are generated at b
 # Default: pull the verified npm version
 make sync-ksadk-web-static
 
-# Pin the concrete 0.8.6 candidate version
-make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.13
+# Assert the version pinned in the current source manifest
+make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.18
 ```
 
 <Callout type="warning" title="Do not pull GitHub latest release at wheel build time">
 `latest` is not reproducible, introduces network and supply-chain risk, and
 cannot guarantee wheel contents match the release record. Release candidates
-must pin `KSADK_WEB_VERSION` to a concrete version. To fall back in a
-network-restricted environment, use `KSADK_WEB_RELEASE_URL` to point at an
-audited tarball.
+use a reviewed manifest that pins the version, source commit and hashes.
+Changing `KSADK_WEB_VERSION` alone does not select another reviewed release.
+For local development, explicitly set `KSADK_WEB_TARBALL=/absolute/path/package.tgz`; package identity, complete distributions and safe extraction are still checked.
 </Callout>
 
 
@@ -50,7 +50,7 @@ audited tarball.
 `make build` and `make build-wheel` consume pinned `ksadk-web` assets, build React Studio from its dependency lock, and then build the wheel. Internal and public Git trees use the same path:
 
 ```bash
-make build-wheel KSADK_WEB_VERSION=0.3.13
+make build-wheel KSADK_WEB_VERSION=0.3.18
 ```
 
 Wheel users do not need to compile the frontend. The universal wheel does not include framework dependencies or native toolchains; fully disconnected installation also needs an appropriate dependency wheelhouse.
@@ -59,30 +59,25 @@ Wheel users do not need to compile the frontend. The universal wheel does not in
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `KSADK_WEB_VERSION` | `0.3.13` | target npm package version; publication must verify registry visibility |
-| `KSADK_WEB_PACKAGE` | `@kingsoftcloud/ksadk-web` | npm package name |
-| `KSADK_WEB_TARBALL_NAME` | `kingsoftcloud-ksadk-web-<version>.tgz` | Tarball filename, derived from the version |
-| `KSADK_WEB_TARBALL` | empty | Reviewed local tarball for candidate validation |
-| `KSADK_WEB_RELEASE_URL` | empty | Explicit tarball URL fallback; takes precedence over `npm pack` |
-| `KSADK_WEB_CACHE_DIR` | `.cache/ksadk-web` | Local cache directory for extraction |
-| `KSADK_WEB_REGISTRY` | `https://registry.npmjs.org` | npm registry; used to resolve the tarball URL only when no `npm` CLI is available |
+| `KSADK_WEB_VERSION` | manifest-pinned `0.3.18` | Version assertion; a release update also updates the source manifest, Studio dependency and lock |
+| `KSADK_WEB_TARBALL` | empty | Explicit local npm archive; bypasses the release pin while retaining safety checks and recording actual hashes |
+| `KSADK_WEB_REGISTRY` | `https://registry.npmjs.org` | Registry for Studio npm commands; the SDK archive URL is pinned by the manifest |
 
-Sync precedence: `KSADK_WEB_TARBALL` > cached version tarball >
-`KSADK_WEB_RELEASE_URL` > `npm pack` > registry resolution. Regardless of the path taken, the `dist-ksadk` directory is verified
-to exist before it is copied over `ksadk/server/static`.
+Default builds verify the official npm archive's SHA-256, integrity, provenance and both distribution hashes. Downloads are cached in `.cache/ksadk-web`; verification failures never fall back to an older package.
+Legacy `KSADK_WEB_RELEASE_URL`, `KSADK_WEB_TARBALL_NAME` and `KSADK_WEB_CACHE_DIR` settings do not select assets in the current manifest-based build. Use `KSADK_WEB_TARBALL` for a local archive.
 
 ## Release Record
 
 Each `ksadk-python` release note should record:
 
-- The `ksadk-python` version (e.g. `0.8.6`).
-- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.6` maps to `@kingsoftcloud/ksadk-web@0.3.13`).
-- The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.13`).
+- The `ksadk-python` version (e.g. `0.8.5`).
+- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.5` maps to `@kingsoftcloud/ksadk-web@0.3.12`).
+- The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.12`).
 - The wheel / sdist audit result (`make public-build-check` / `twine check dist/*`).
 
-<Callout type="info" title="0.8.6 candidate record example">
-- `ksadk-python`: `0.8.6`
-- npm package: `@kingsoftcloud/ksadk-web@0.3.13`
-- frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.13`
-- audit: record actual command results and artifact hashes after validation; an example is not a passing release record
+<Callout type="info" title="Historical 0.8.5 release record format example">
+- `ksadk-python`: `0.8.5`
+- npm package: `@kingsoftcloud/ksadk-web@0.3.12`
+- frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.12`
+- audit: `make public-build-check` passed, `twine check dist/*` passed
 </Callout>

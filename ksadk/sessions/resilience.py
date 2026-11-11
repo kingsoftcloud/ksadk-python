@@ -8,6 +8,22 @@ from ksadk.sessions.errors import SessionBackendUnavailable
 logger = logging.getLogger(__name__)
 
 
+def is_transient_session_backend_failure(exc: BaseException) -> bool:
+    """Recoverable storage failure, excluding invalid data and authorization."""
+    if isinstance(exc, (FileNotFoundError, PermissionError)):
+        return False
+    for current in _exception_chain(exc):
+        state = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+        if state in {"57014", "55P03", "40001", "40P01"}:
+            return True
+        if state:
+            return str(state).startswith(("08", "53", "57P", "58"))
+        if (type(current).__module__.startswith(("psycopg", "psycopg_pool."))
+                and type(current).__name__ in {"OperationalError", "InterfaceError", "PoolTimeout"}):
+            return True
+    return is_session_backend_failure(exc)
+
+
 def is_session_connection_failure(exc: BaseException) -> bool:
     """A broken transport, not an exhausted budget or a rejected SQL command."""
     for current in _exception_chain(exc):

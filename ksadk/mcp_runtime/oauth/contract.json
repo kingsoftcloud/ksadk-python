@@ -1,0 +1,32 @@
+{
+  "schema": "mcp.authorization/v1",
+  "operation": "resolve_external_authorization",
+  "event_types": [
+    "mcp.authorization.requested",
+    "mcp.authorization.updated"
+  ],
+  "wait_binding": [
+    "run_id",
+    "thread_id",
+    "interrupt_id",
+    "subject",
+    "config_version",
+    "deadline"
+  ],
+  "public_actions": [
+    "GetMcpAuthorizationWait",
+    "OpenMcpAuthorization",
+    "RetryMcpAuthorization",
+    "RetryMcpConnection",
+    "CancelMcpAuthorizationWait"
+  ],
+  "credential_visibility": "runtime-only",
+  "ordinary_interaction_completion": false,
+  "client_extension": "mcp.authorization",
+  "agent_configuration": "versioned-mcp-declaration/v1",
+  "public_snapshot_optional": [
+    "display_name"
+  ],
+  "credential_tool_rules": "json-schema-2020-12",
+  "browser_binding": "single-use-start-cookie"
+}

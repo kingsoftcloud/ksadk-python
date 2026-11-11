@@ -27,7 +27,6 @@ overwrite push is complete.
 - `Publish PyPI` must remain limited to GitHub Release `published` and manual
   `workflow_dispatch` events. It must not run on plain `push`.
 - The public candidate must pass the complete local `make public-preflight`
-  and required PR checks before merge. The `Publish PyPI` workflow rechecks
+  and required PR checks before merge. `Publish PyPI` rechecks
   `make public-preflight-publish` and `make public-publish-gate`, then builds
-  and audits both Python distributions before the first
-  `pypa/gh-action-pypi-publish` upload.
+  and audits both Python distributions before the first upload.

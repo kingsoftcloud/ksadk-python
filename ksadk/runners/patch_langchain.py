@@ -59,9 +59,11 @@ def _patched_convert_delta_to_message_chunk(
         try:
             tool_call_chunks = [
                 tool_call_chunk(
-                    name=rtc["function"].get("name"),
+                    # Empty identity fillers are common on argument-only
+                    # chunks. Native v3 merging must retain the started call.
+                    name=rtc["function"].get("name") or None,
                     args=rtc["function"].get("arguments"),
-                    id=rtc.get("id"),
+                    id=rtc.get("id") or None,
                     index=rtc["index"],
                 )
                 for rtc in raw_tool_calls

@@ -64,6 +64,8 @@ async def dispatch_effect(
     workspace: WorkspacePort | None,
     artifacts: ArtifactPort | None,
     emit,
+    flush_callback: Callable[[], None] | None = None,
+    flush_interval: float = 0.2,
     tool_budget: ToolBudget | None = None,
     on_parallel_child: Callable[[int, dict, str, ToolResult], Awaitable[None]] | None = None,
     reconcile_tool: bool = False,
@@ -118,7 +120,12 @@ async def dispatch_effect(
             request = model_request(snapshot, config, key=key, payload=intent.payload)
         except RequestMediaError:
             return ModelRequestDispatchDenial(operation_key=key)
-        return await exchange(model, request, None if summary or review else emit)
+        return await exchange(
+            model, request,
+            None if summary or review else emit,
+            flush_callback=flush_callback,
+            flush_interval=flush_interval,
+        )
     if intent.kind == "tool":
         if intent.payload.get("parallel_readonly") is True:
             calls = intent.payload.get("calls")
@@ -151,6 +158,8 @@ async def dispatch_effect(
                     workspace=workspace,
                     artifacts=artifacts,
                     emit=emit,
+                    flush_callback=flush_callback,
+                    flush_interval=flush_interval,
                     tool_budget=(
                         dispatch_tool_budget(snapshot, config, batch_size=len(calls), index=index)
                         if delegation

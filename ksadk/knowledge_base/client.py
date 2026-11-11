@@ -4,7 +4,8 @@
 支持从环境变量自动配置，由各框架 Runner 自动集成。
 
 环境变量:
-    KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
+    KSADK_KB_DATASET_ID: 知识库 ID (单个，兼容老版本)
+    KSADK_KB_DATASET_IDS: 知识库 ID 列表 (逗号分隔，多选，新版本优先读此变量)
     KSADK_KB_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY / KSYUN_ACCESS_KEY_ID)
     KSADK_KB_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY / KSYUN_SECRET_ACCESS_KEY)
     KSADK_KB_SESSION_TOKEN: STS 临时会话 token (可选，默认取 KSYUN_SESSION_TOKEN)
@@ -26,6 +27,13 @@
         access_key="ak",
         secret_key="sk",
     )
+
+    # 手动创建 (多 dataset)
+    client = KnowledgeBaseClient(
+        dataset_ids=["kb-001", "kb-002"],
+        access_key="ak",
+        secret_key="sk",
+    )
 """
 
 import json
@@ -40,6 +48,12 @@ from ksadk.common.cloud_headers import build_cloud_headers, resolve_traffic_sour
 
 logger = logging.getLogger(__name__)
 
+#: 每个 dataset 检索后保留的最大结果数，合并后再按 score 截取 top_k。
+_PER_DATASET_TOP_K_MULTIPLIER = 2
+
+#: 多 dataset 检索时的最大并发数。
+_MAX_CONCURRENT_DATASETS = 10
+
 
 class KnowledgeBaseResult(BaseModel):
     """单条知识库检索结果"""
@@ -52,6 +66,7 @@ class KnowledgeBaseResult(BaseModel):
     position: int = 0
     answer: str = ""
     keywords: List[str] = []
+    dataset_id: str = ""
 
 
 class KnowledgeBaseClient(BaseModel):
@@ -69,9 +84,12 @@ class KnowledgeBaseClient(BaseModel):
         score_threshold: 分数阈值
         score_threshold_enabled: 是否启用阈值过滤
         reranking_enable: 是否启用重排序
+    支持单 dataset (dataset_id) 和多 dataset (dataset_ids) 两种模式。
+    多 dataset 模式下，search() 并发检索所有 dataset，合并结果后按 score 排序取 top_k。
     """
 
-    dataset_id: str
+    dataset_id: str = ""
+    dataset_ids: List[str] = Field(default_factory=list)
     access_key: str = ""
     secret_key: str = ""
     session_token: str = ""
@@ -84,6 +102,9 @@ class KnowledgeBaseClient(BaseModel):
     score_threshold: float = 0.0
     score_threshold_enabled: bool = False
     reranking_enable: bool = False
+    # Per-dataset custom instructions for runtime-level usage hints.
+    # Populated from KSADK_KB_INSTRUCTION_<dataset_id> env vars.
+    dataset_instructions: dict[str, str] = Field(default_factory=dict)
     # 最近一次检索失败原因（成功调用前置空，失败时填充）。供
     # KnowledgeBaseService.build_context 区分"后端吞错返空"与"真无结果"，
     # 避免错误伪装成"未找到"注入模型上下文。
@@ -101,7 +122,12 @@ class KnowledgeBaseClient(BaseModel):
         return resolve_traffic_source(value)
 
     def model_post_init(self, __context: Any) -> None:
-        if not self.dataset_id:
+        if self.dataset_ids and not self.dataset_id:
+            object.__setattr__(self, "dataset_id", self.dataset_ids[0])
+        if self.dataset_id and not self.dataset_ids:
+            object.__setattr__(self, "dataset_ids", [self.dataset_id])
+
+        if not self.active_dataset_ids:
             raise ValueError("dataset_id is required for KnowledgeBaseClient")
 
         if not self.access_key or not self.secret_key:
@@ -110,6 +136,13 @@ class KnowledgeBaseClient(BaseModel):
                 "API calls will fail. Set KSADK_KB_ACCESS_KEY/KSADK_KB_SECRET_KEY "
                 "or KSYUN_ACCESS_KEY/KSYUN_SECRET_KEY."
             )
+
+    @property
+    def active_dataset_ids(self) -> List[str]:
+        """Return the non-empty list of dataset IDs to search."""
+        return [ds for ds in self.dataset_ids if ds] or (
+            [self.dataset_id] if self.dataset_id else []
+        )
 
     def _get_client(self):
         """懒加载 AICP 客户端"""
@@ -186,7 +219,7 @@ class KnowledgeBaseClient(BaseModel):
         logger.debug("KnowledgeBaseClient initialized")
         return self._aicp_client
 
-    def _build_params(self, query: str, top_k: Optional[int] = None) -> dict:
+    def _build_params(self, query: str, top_k: Optional[int] = None, dataset_id: str = "") -> dict:
         """构建 RetrieveKnowledge 请求参数 (JSON 嵌套格式)"""
         effective_top_k = top_k if top_k is not None else self.top_k
 
@@ -196,7 +229,7 @@ class KnowledgeBaseClient(BaseModel):
             "RerankingEnable": self.reranking_enable,
         }
         params: dict[str, Any] = {
-            "DatasetId": self.dataset_id,
+            "DatasetId": dataset_id or self.dataset_id,
             "Query": query,
             "RetrievalModel": retrieval_model,
         }
@@ -207,7 +240,7 @@ class KnowledgeBaseClient(BaseModel):
 
         return params
 
-    def _parse_response(self, response: str) -> List[KnowledgeBaseResult]:
+    def _parse_response(self, response: str, dataset_id: str = "") -> List[KnowledgeBaseResult]:
         """解析 RetrieveKnowledge 响应"""
         try:
             data = json.loads(response) if isinstance(response, str) else response
@@ -263,6 +296,7 @@ class KnowledgeBaseClient(BaseModel):
                     position=segment.get("Position", 0),
                     answer=segment.get("Answer", ""),
                     keywords=segment.get("Keywords", []),
+                    dataset_id=dataset_id,
                 )
             )
 
@@ -278,19 +312,81 @@ class KnowledgeBaseClient(BaseModel):
         Returns:
             匹配的文档片段列表
         """
+        datasets = self.active_dataset_ids
+        if not datasets:
+            return []
+
+        if len(datasets) == 1:
+            return self._search_single(query, datasets[0], top_k)
+
+        # Multi-dataset: search concurrently, merge, sort by score
+        import asyncio
+
+        effective_top_k = top_k if top_k is not None else self.top_k
+        per_dataset_k = effective_top_k * _PER_DATASET_TOP_K_MULTIPLIER
+
+        async def _async_search_all() -> List[List[KnowledgeBaseResult]]:
+            semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DATASETS)
+
+            async def _search_one(ds_id: str) -> List[KnowledgeBaseResult]:
+                async with semaphore:
+                    return await asyncio.to_thread(
+                        self._search_single, query, ds_id, per_dataset_k
+                    )
+
+            tasks = [_search_one(ds) for ds in datasets]
+            return await asyncio.gather(*tasks, return_exceptions=True)
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    all_results = pool.submit(
+                        asyncio.run, _async_search_all()
+                    ).result(timeout=30)
+            else:
+                all_results = asyncio.run(_async_search_all())
+        except RuntimeError:
+            all_results = asyncio.run(_async_search_all())
+
+        merged: List[KnowledgeBaseResult] = []
+        failed_datasets: list[str] = []
+        for ds_id, result_batch in zip(datasets, all_results):
+            if isinstance(result_batch, Exception):
+                logger.warning("KnowledgeBase search partial failure for dataset %s: %s", ds_id, result_batch)
+                failed_datasets.append(ds_id)
+                continue
+            merged.extend(result_batch)
+
+        # B4/B5/O2: Collect all failures so callers can distinguish
+        # "all datasets failed" from "genuinely no results".
+        if not merged and failed_datasets:
+            self.last_error = f"all datasets failed: {', '.join(failed_datasets)}"
+        elif failed_datasets:
+            self.last_error = f"partial failure: {', '.join(failed_datasets)}"
+
+        merged.sort(key=lambda r: r.score, reverse=True)
+        return merged[:effective_top_k]
+
+    def _search_single(
+        self, query: str, dataset_id: str, top_k: Optional[int] = None
+    ) -> List[KnowledgeBaseResult]:
+        """Search a single dataset and return raw results."""
         self.last_error = ""
         self.last_request_id = ""
         self.last_http_status = None
         try:
             client = self._get_client()
-            params = self._build_params(query, top_k)
+            params = self._build_params(query, top_k, dataset_id)
             response = client.call("RetrieveKnowledge", params, options={"IsPostJson": True})
-            results = self._parse_response(response)
-            logger.debug("Knowledge base returned %d results", len(results))
+            results = self._parse_response(response, dataset_id=dataset_id)
+            logger.debug("Knowledge base returned %d results for dataset %s", len(results), dataset_id)
             return results
         except Exception as e:
             self.last_error = str(e)
-            logger.error("Knowledge base search failed (%s)", type(e).__name__)
+            logger.error("Knowledge base search failed for dataset %s (%s)", dataset_id, type(e).__name__)
             raise
 
     @classmethod
@@ -303,10 +399,19 @@ class KnowledgeBaseClient(BaseModel):
         Raises:
             ValueError: 如果 KSADK_KB_DATASET_ID 未设置
         """
-        dataset_id = os.environ.get("KSADK_KB_DATASET_ID", "")
-        if not dataset_id:
+        # Read multi-select IDs first, fallback to single ID for backward compat.
+        dataset_ids_raw = os.environ.get("KSADK_KB_DATASET_IDS", "").strip()
+        if dataset_ids_raw:
+            dataset_ids: list[str] = [s.strip() for s in dataset_ids_raw.split(",") if s.strip()]
+        else:
+            single_id = os.environ.get("KSADK_KB_DATASET_ID", "").strip()
+            dataset_ids = [single_id] if single_id else []
+        dataset_id = dataset_ids[0] if dataset_ids else ""
+
+        if not dataset_ids:
             raise ValueError(
-                "KSADK_KB_DATASET_ID environment variable is required to enable knowledge base."
+                "KSADK_KB_DATASET_ID or KSADK_KB_DATASET_IDS environment variable "
+                "is required to enable knowledge base."
             )
 
         access_key = (
@@ -332,8 +437,17 @@ class KnowledgeBaseClient(BaseModel):
         reranking_enable = reranking_str.lower() in ("true", "1", "yes")
         connection = resolve_aicp_connection("KSADK_KB")
 
+        # Parse per-dataset custom instructions from KSADK_KB_INSTRUCTION_<id> env vars.
+        dataset_instructions: dict[str, str] = {}
+        for ds_id in dataset_ids:
+            instr = os.environ.get(f"KSADK_KB_INSTRUCTION_{ds_id}", "").strip()
+            if instr:
+                dataset_instructions[ds_id] = instr
+
         return cls(
             dataset_id=dataset_id,
+            dataset_ids=dataset_ids,
+            dataset_instructions=dataset_instructions,
             access_key=access_key,
             secret_key=secret_key,
             session_token=session_token,
@@ -350,4 +464,4 @@ class KnowledgeBaseClient(BaseModel):
     @staticmethod
     def is_configured() -> bool:
         """检查环境变量是否已配置知识库"""
-        return bool(os.environ.get("KSADK_KB_DATASET_ID"))
+        return bool(os.environ.get("KSADK_KB_DATASET_IDS", "").strip() or os.environ.get("KSADK_KB_DATASET_ID", "").strip())

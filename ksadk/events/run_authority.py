@@ -154,6 +154,21 @@ class RunEventAuthority:
         self._require(session_id, run_id)
         return await self._store.list(session_id, run_id=run_id, **kwargs)
 
+    async def latest(self, session_id, **kwargs):
+        self._require(session_id, self.run_id)
+        return await self._store.latest(session_id, run_id=self.run_id, **kwargs)
+
+    async def first(self, session_id, **kwargs):
+        self._require(session_id, self.run_id)
+        return await self._store.first(session_id, run_id=self.run_id, **kwargs)
+
+    async def event_by_id(self, session_id, event_id):
+        self._require(session_id, self.run_id)
+        event = await self._store.event_by_id(session_id, event_id)
+        if event is not None:
+            self._require(session_id, event.run_id)
+        return event
+
 
 _current: ContextVar[RunEventAuthority | None] = ContextVar("canonical_run_authority", default=None)
 

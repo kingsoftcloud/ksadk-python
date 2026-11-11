@@ -4,8 +4,10 @@ import json
 from dataclasses import dataclass, field
 
 from ksadk._model_json import load_model_json
-from ksadk.studio.errors import StudioError
-from ksadk.studio.model_wire_identity import invalid_model_frame
+from ksadk.studio.model_wire_identity import (
+    incomplete_tool_call_frame,
+    invalid_model_frame,
+)
 from ksadk.studio.model_wire_tools import WireTool, _identity, _index, _object, _text
 
 
@@ -127,17 +129,27 @@ class ChatToolCalls:
                 current.arguments += text
 
     def finish(self) -> tuple[WireTool, ...]:
-        result = [self.calls[index] for index in sorted(self.calls)]
-        # Validate every identity before classifying incomplete arguments: an
-        # early empty call cannot hide a later slot's permanent protocol error.
-        for current in result:
-            current.seal()
-        for current in result:
+        # First pass: seal every call batch-wide. A missing or blank name/id
+        # is a hostile frame and stays terminal regardless of call order; an
+        # unfilled argument at a lower index must not mask another call's
+        # invalid identity by raising incomplete before it is validated.
+        for index in sorted(self.calls):
+            self.calls[index].seal()
+        # Second pass: classify. An unfilled call under a success/missing
+        # finish is incomplete safe inference (zero tool effects): surface as
+        # a bounded retryable error, never terminal and never promoted to {}
+        # execution. A filled call that arrived without any finish signal is a
+        # protocol violation; a sealed filled call under a success finish
+        # executes.
+        result = []
+        for index in sorted(self.calls):
+            current = self.calls[index]
             # Missing/empty input cannot acquire {} execution authority.
             # Nonempty bad JSON stays available for nonexecutable feedback in
             # the original ModelPort/normalizer; no repair happens here.
             if not current.arguments:
-                raise StudioError("MODEL_RESPONSE_INCOMPLETE", "Model tool input was not completed", status_code=502)
+                raise incomplete_tool_call_frame()
+            result.append(current)
         if self.calls and not self.finished:
-            raise StudioError("MODEL_RESPONSE_INCOMPLETE", "Model tool stream was not completed", status_code=502)
+            raise invalid_model_frame()
         return tuple(result)

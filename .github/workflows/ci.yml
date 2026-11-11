@@ -10,11 +10,14 @@ on:
 
 jobs:
   test-postgres:
-    name: PostgreSQL persistence gates
+    name: ${{ matrix.postgres == '16' && 'PostgreSQL persistence gates' || 'PostgreSQL 9.6.21 persistence gates' }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        postgres: ["9.6.21", "16"]
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_USER: ksadk_ci
           POSTGRES_PASSWORD: ksadk_ci_password
@@ -47,6 +50,8 @@ jobs:
         run: |
           set +e
           uv run --no-sync pytest \
+            tests/kernel/test_orphan_sessions.py \
+            tests/kernel/test_scheduler_metadata_postgres.py \
             tests/server/test_checkpoint_resume_audit.py \
             tests/server/test_postgres_jsonb_codec_guard.py \
             tests/server/test_checkpoint_resume_attempt_audit.py \
@@ -59,6 +64,8 @@ jobs:
             tests/test_resilient_unknown_commit.py \
             tests/test_runtime_db_history_contract.py \
             tests/test_subscription_reads_postgres.py \
+            tests/test_mcp_oauth_extension.py \
+            tests/test_mcp_oauth_recovery.py \
             -q --junitxml="$RUNNER_TEMP/postgres-junit.xml"
           test_code=$?
           set -e
@@ -78,7 +85,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.13"
+      KSADK_WEB_VERSION: "0.3.18"
     steps:
       - uses: actions/checkout@v7
 
@@ -215,7 +222,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      KSADK_WEB_VERSION: "0.3.13"
+      KSADK_WEB_VERSION: "0.3.18"
       KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
     strategy:
@@ -274,14 +281,14 @@ jobs:
           uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected)'
           uv run --no-sync pytest tests/ -q -m "not local_process_heavy" -n auto
 
-  # 真实 fork 子进程的 Native recovery/sandbox/skill/browser 测试。
+  # goal-00 补充:真实 fork 子进程的 sandbox/skill/browser 测试(local_process_heavy)。
   # 与全量套件拆开跑——单独 pytest 进程没有前面 7000 测试累积的资源占用,不会 Cannot fork。
   # 版本矩阵对齐主套件,防止 adk 1.34/2.5 两端回归。
   test-local-process-heavy:
     name: local-process heavy tests (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.13"
+      KSADK_WEB_VERSION: "0.3.18"
     strategy:
       fail-fast: false
       matrix:
@@ -330,8 +337,8 @@ jobs:
       - name: Run local_process_heavy tests
         env:
           EXPECTED_GOOGLE_ADK: ${{ matrix.google-adk }}
-        # Native SIGKILL 恢复用例也在公开导出树内，必须在这里串行执行。
-        # 公开候选缺少测试或零收集都必须失败，不能用绿色 job 掩盖漏测。
+        # Native recovery regressions must remain in the public candidate.
+        # Missing tests and zero collection must fail this gate.
         run: |
           uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected)'
           test -f tests/harness/native/test_partial_summary_process.py

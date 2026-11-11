@@ -477,6 +477,13 @@ In strict mode, medium / high / critical risk tools return a structured `approva
 
 ## Skill Loading Sequence
 
+For metadata HTTP failures (listing skills or obtaining a download URL),
+`SkillServiceHTTPError` remains a `ValueError` and exposes safe `action` and `status_code`
+classification. Public error messages do not echo request URLs, response bodies, or credentials.
+The resource worker treats metadata 401/403 as binding authorization failure. Object-download
+denials or expired download links remain recoverable download errors and do not revoke the whole
+Skill Space binding. Signing endpoint, explicit credential, and hash verification rules remain.
+
 `load_skills()` in `ksadk/skills/runtime/loader.py` merges local skills with
 remote skill manifests at agent load time. Remote skills are first listed
 through the Skill Service, then their download URL is fetched, the archive is

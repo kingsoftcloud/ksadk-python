@@ -46,7 +46,8 @@ def postgres_dsn() -> str:
 @pytest.mark.asyncio
 async def test_adk_state_events_restart_and_lock_budget(postgres_dsn: str) -> None:
     app = "budget-adk-" + uuid4().hex
-    primary = BoundedADKDatabaseSessionService(db_url=_normalize_database_url(postgres_dsn))
+    primary = BoundedADKDatabaseSessionService(db_url=_normalize_database_url(postgres_dsn),
+        budget=DatabaseBudget(read_sql_seconds=1.0, lock_seconds=0.5))
     service = ResilientADKSessionService(primary)
     try:
         session = await service.create_session(
@@ -62,7 +63,8 @@ async def test_adk_state_events_restart_and_lock_budget(postgres_dsn: str) -> No
         )
         await primary.db_engine.dispose()
 
-        restarted = BoundedADKDatabaseSessionService(db_url=_normalize_database_url(postgres_dsn))
+        restarted = BoundedADKDatabaseSessionService(db_url=_normalize_database_url(postgres_dsn),
+            budget=DatabaseBudget(read_sql_seconds=1.0, lock_seconds=0.5))
         try:
             recovered = await restarted.get_session(app_name=app, user_id="u", session_id="s")
             assert recovered is not None
@@ -148,7 +150,7 @@ async def test_langgraph_checkpoint_put_get_list_writes_restart(postgres_dsn: st
 
 @pytest.mark.asyncio
 async def test_langgraph_checkpoint_row_lock_is_bounded(postgres_dsn: str) -> None:
-    saver, pool = await create_bounded_postgres_saver(postgres_dsn)
+    saver, pool = await create_bounded_postgres_saver(postgres_dsn, budget=DatabaseBudget(lock_seconds=0.5))
     thread = "budget-lg-lock-" + uuid4().hex
     config = {"configurable": {"thread_id": thread, "checkpoint_ns": ""}}
     checkpoint = empty_checkpoint()
@@ -494,7 +496,9 @@ async def test_checkpoint_write_phase_and_reset_preserve_constraint_error(
 @pytest.mark.asyncio
 async def test_checkpoint_cancel_closes_only_its_checked_out_connection(postgres_dsn: str) -> None:
     budget = DatabaseBudget(write_operation_seconds=0.05, cleanup_seconds=0.25)
-    saver, pool = await create_bounded_postgres_saver(postgres_dsn, budget=budget)
+    saver, pool = await create_bounded_postgres_saver(postgres_dsn)
+    # Initialize schema outside the intentionally tiny cancellation budget.
+    saver.db_budget = budget
     started = asyncio.Event()
     release = asyncio.Event()
     backend_pid: int | None = None

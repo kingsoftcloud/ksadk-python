@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, JsonValue, SecretStr, field_validator
 
 from ksadk.conversations.contracts import ConversationInput
 from ksadk.evaluation import EvaluationConfig as PublicEvaluationConfig
@@ -28,6 +28,10 @@ class SessionExchangeRequest(ContractModel):
 class WorkspaceOpenRequest(ContractModel):
     path: str
     create: bool = False
+
+
+class ProjectInstructionTrustRequest(ContractModel):
+    trusted: bool = Field(strict=True)
 
 
 class LinkedDirectoryRequest(ContractModel):
@@ -87,7 +91,7 @@ class QuickAuthoringRequest(ContractModel):
     name: str = Field(min_length=1, max_length=128)
     slug: str | None = Field(default=None, min_length=1, max_length=63)
     runtime_type: Literal["harness", "codex", "adk", "langgraph", "plugin"]
-    template: Literal["blank", "research"] = "blank"
+    template: Literal["blank", "research", "coding"] = "blank"
     description: str = Field(default="", max_length=1024)
     spec: AgentSpec | None = None
 
@@ -260,7 +264,7 @@ class CloudChatInteractionSubmitRequest(ContractModel):
     interaction_id: str = Field(min_length=1, max_length=256)
     expected_revision: int = Field(ge=1)
     action: Literal["approve", "reject", "submit", "cancel"]
-    response: dict[str, Any] = Field(default_factory=dict)
+    response: JsonValue = Field(default_factory=dict)
     idempotency_key: str = Field(min_length=1, max_length=256)
 
 

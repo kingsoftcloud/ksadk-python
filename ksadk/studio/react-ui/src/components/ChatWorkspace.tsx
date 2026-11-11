@@ -632,6 +632,7 @@ export function ChatWorkspace({
             thinkingEnabled={Boolean(chat.uiCapabilities.Thinking)}
             runtimeCapabilityMatrix={chat.uiCapabilities.RuntimeCapabilityMatrix}
             pendingInteractions={chat.pendingInteractions}
+            mcpAuthorization={api.mcpAuthorization}
             onRespondInteraction={input => { void chat.respondInteraction(input); }}
             localCatalog={chat.localCatalog}
           />

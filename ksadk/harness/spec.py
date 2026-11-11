@@ -201,6 +201,12 @@ class SubAgentBinding(_SpecModel):
     #: 在未显式授权时扩大外部系统访问面。
     inherit_skills: bool = True
     inherit_mcp: bool = False
+    #: 宿主在可信角色绑定中为该子 Agent 选定的 Model Profile 资源 id。
+    #: None（默认）继承父 Agent 当前激活选中的模型；显式值必须引用宿主已为本
+    #: Agent 绑定的 Model Profile，由 Revision 编译期解析并封存进 Build。
+    #: 模型只能由宿主/用户在可信绑定中选择，不可由模型调用注入任意端点/凭证；
+    #: 显式但无效/越权/缺资源的声明必须在 Build 解析期失败，不静默回退父模型。
+    model_profile_id: str | None = Field(default=None, min_length=1, max_length=256)
 
     @field_validator("output_schema")
     @classmethod

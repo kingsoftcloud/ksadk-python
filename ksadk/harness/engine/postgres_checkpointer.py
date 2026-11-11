@@ -20,8 +20,33 @@ from ksadk.sessions.db_budget import (
     DatabaseOperationDeadline,
     session_db_budget,
 )
+from ksadk.sessions.resilience import is_transient_session_backend_failure
 
 logger = logging.getLogger(__name__)
+# Session lock: official migrations include CREATE INDEX CONCURRENTLY and
+# therefore cannot share a transaction-scoped advisory lock or one big TX.
+_CHECKPOINT_MIGRATION_LOCK = 0x4B5341444B4C4750
+
+
+@asynccontextmanager
+async def _bounded_checkout(pool, seconds):
+    from psycopg_pool import PoolTimeout
+
+    lease = pool.connection(timeout=seconds)
+    try:
+        # psycopg's check callback and retry backoff can exceed its getconn
+        # deadline. Bound acquisition only, never graph execution or SQL here.
+        async with asyncio.timeout(seconds):
+            connection = await lease.__aenter__()
+    except TimeoutError as exc:
+        raise PoolTimeout("checkpoint pool checkout deadline exceeded") from exc
+    try:
+        yield connection
+    except BaseException as exc:
+        if not await lease.__aexit__(type(exc), exc, exc.__traceback__):
+            raise
+    else:
+        await lease.__aexit__(None, None, None)
 
 
 class CheckpointCommitUnknown(RuntimeError):
@@ -59,6 +84,8 @@ def bounded_postgres_saver_class() -> Any:
     from psycopg_pool import AsyncConnectionPool
 
     class BoundedAsyncPostgresSaver(AsyncPostgresSaver):
+        fresh_checkpoint_view_on_read = True
+
         def __init__(self, conn: AsyncConnectionPool, *, budget: DatabaseBudget | None = None):
             super().__init__(conn)
             self.db_budget = budget or session_db_budget()
@@ -69,7 +96,8 @@ def bounded_postgres_saver_class() -> Any:
             self._cleanup_deadlines: dict[asyncio.Task[Any], float] = {}
 
         async def _run_write(
-            self, operation: Any, deadline: DatabaseOperationDeadline | None = None
+            self, operation: Any, deadline: DatabaseOperationDeadline | None = None,
+            *, cancel_before_close: bool = False,
         ) -> Any:
             seconds = (
                 deadline.remaining_seconds()
@@ -93,6 +121,10 @@ def bounded_postgres_saver_class() -> Any:
                 )
                 self._cleanup_deadlines[task] = cleanup_deadline
                 task.cancel()
+                if cancel_before_close:
+                    # Setup holds a session lock. Give the driver a bounded
+                    # chance to cancel SQL and unlock before dropping its socket.
+                    await asyncio.wait((task,), timeout=self.db_budget.cleanup_seconds / 2)
                 connection = self._active_connections.get(task)
                 if connection is not None:
                     try:
@@ -128,9 +160,14 @@ def bounded_postgres_saver_class() -> Any:
             write = pipeline or self._write_phase.get()
             acquire = budget.write_acquire_seconds if write else budget.read_acquire_seconds
             sql = budget.write_sql_seconds if write else budget.read_sql_seconds
-            await asyncio.wait_for(self.lock.acquire(), budget.lock_seconds)
+            # This is the saver serialization lock, not a PostgreSQL row lock.
+            # A concurrent full checkpoint read can legitimately hold it longer
+            # than lock_timeout. Its wait still consumes the enclosing operation.
+            wait = (budget.write_operation_seconds if write else
+                    budget.checkpoint_read_operation_seconds)
+            await asyncio.wait_for(self.lock.acquire(), wait)
             try:
-                async with self.conn.connection(timeout=acquire) as conn:
+                async with _bounded_checkout(self.conn, acquire) as conn:
                     current = asyncio.current_task()
                     if current is not None:
                         self._active_connections[current] = conn
@@ -179,17 +216,17 @@ def bounded_postgres_saver_class() -> Any:
                                 async with asyncio.timeout(remaining):
                                     await conn.execute("RESET statement_timeout")
                                     await conn.execute("RESET lock_timeout")
-                        except BaseException:
-                            try:
-                                await conn.close()
-                            except Exception:
-                                logger.exception(
-                                    "Could not close checkpoint connection after reset failure"
-                                )
-                            if original_error is None:
+                        except BaseException as cleanup_error:
+                            # The pipeline/transaction has already exited. A
+                            # failed RESET cannot undo its confirmed result.
+                            # Discard the socket without another network wait.
+                            conn.pgconn.finish()
+                            if (original_error is None and
+                                    isinstance(cleanup_error, asyncio.CancelledError)):
                                 raise
                             logger.warning(
-                                "Checkpoint connection reset failed after operation error"
+                                "Discarded checkpoint connection after cleanup failure (%s)",
+                                type(cleanup_error).__name__,
                             )
             finally:
                 if current := asyncio.current_task():
@@ -197,7 +234,46 @@ def bounded_postgres_saver_class() -> Any:
                 self.lock.release()
 
         async def setup(self) -> None:
-            await self._run_write(super().setup())
+            async def migrate() -> None:
+                # Reuse one bounded checkout, including for a max_size=1 pool.
+                # The official saver runs its unchanged migrations on this
+                # same autocommit connection while the session lock is held.
+                async with self._cursor() as cur:
+                    acquired = False
+                    error: BaseException | None = None
+                    try:
+                        # A blocked pg_advisory_lock SELECT retains a snapshot
+                        # which CREATE INDEX CONCURRENTLY may wait for. Poll
+                        # short autocommit statements instead, under one cap.
+                        async with asyncio.timeout(self.db_budget.lock_seconds):
+                            while not acquired:
+                                await cur.execute(
+                                    "SELECT pg_try_advisory_lock(%s) AS locked",
+                                    (_CHECKPOINT_MIGRATION_LOCK,),
+                                )
+                                acquired = bool((await cur.fetchone())["locked"])
+                                if not acquired:
+                                    await asyncio.sleep(0.02)
+                        await AsyncPostgresSaver(cur.connection).setup()
+                    except BaseException as exc:
+                        error = exc
+                        raise
+                    finally:
+                        if not acquired:
+                            # Acquisition may have succeeded before a lost
+                            # reply. Never return a possibly locked session.
+                            cur.connection.pgconn.finish()
+                        else:
+                            try:
+                                await cur.execute(
+                                    "SELECT pg_advisory_unlock(%s)", (_CHECKPOINT_MIGRATION_LOCK,)
+                                )
+                            except BaseException:
+                                cur.connection.pgconn.finish()
+                                if error is None:
+                                    raise
+
+            await self._run_write(migrate(), cancel_before_close=True)
 
         async def aput(self, *args: Any, **kwargs: Any) -> Any:
             deadline = DatabaseOperationDeadline(self.db_budget)
@@ -237,12 +313,12 @@ def bounded_postgres_saver_class() -> Any:
                 writes = args[1] if len(args) > 1 else kwargs["writes"]
                 task_id = args[2] if len(args) > 2 else kwargs["task_id"]
                 try:
-                    stored = await deadline.run(self.aget_tuple(config))
+                    confirmed = await deadline.run(
+                        self.reconcile_writes_commit(config, writes, task_id)
+                    )
                 except Exception:
-                    stored = None
-                if stored is not None and all(
-                    (task_id, channel, value) in stored.pending_writes for channel, value in writes
-                ):
+                    confirmed = False
+                if confirmed:
                     return None
                 address = config["configurable"]
                 raise CheckpointCommitUnknown(
@@ -258,19 +334,54 @@ def bounded_postgres_saver_class() -> Any:
                 thread_id = args[0] if args else kwargs["thread_id"]
                 raise CheckpointCommitUnknown(thread_id, "", "adelete_thread") from exc
 
+        async def _run_read(self, operation: Any) -> Any:
+            # A read can wait behind a legitimate 30s checkpoint write. Its
+            # whole deadline includes that queue, acquisition, SQL, cleanup
+            # and at most one new checkout; it never encloses graph/tool work.
+            async with asyncio.timeout(self.db_budget.checkpoint_read_operation_seconds):
+                try:
+                    return await operation()
+                except Exception as exc:
+                    if not is_transient_session_backend_failure(exc):
+                        raise
+                    await asyncio.sleep(0.2)
+                    return await operation()
+
         async def aget_tuple(self, *args: Any, **kwargs: Any) -> Any:
-            budget = self.db_budget
-            async with asyncio.timeout(budget.read_acquire_seconds + budget.read_sql_seconds):
-                return await super().aget_tuple(*args, **kwargs)
+            read = super().aget_tuple
+            saved = await self._run_read(lambda: read(*args, **kwargs))
+            from ksadk.runtime.langgraph_checkpoint_view import fresh_checkpoint_view
+
+            return fresh_checkpoint_view(args[0] if args else kwargs["config"], saved)
+
+        async def apeek_latest_checkpoint_id(self, config: Any) -> str | None:
+            """Publication probe without decoding any graph state or tool body."""
+            address = config["configurable"]
+            if address.get("checkpoint_id"):
+                return str(address["checkpoint_id"])
+
+            async def read():
+                async with self._cursor() as cur:
+                    await cur.execute(
+                        "SELECT checkpoint_id FROM checkpoints WHERE thread_id=%s "
+                        "AND checkpoint_ns=%s ORDER BY checkpoint_id DESC LIMIT 1",
+                        (address["thread_id"], address.get("checkpoint_ns", "")),
+                    )
+                    row = await cur.fetchone()
+                    return row["checkpoint_id"] if row is not None else None
+
+            return await self._run_read(read)
 
         async def alist(self, *args: Any, **kwargs: Any):
             # Upstream fetches all rows before yielding, but keeps its cursor
             # open while the caller consumes them. Materialize and close first
             # so consumer/Agent time is never part of a DB deadline.
-            async with asyncio.timeout(
-                self.db_budget.read_acquire_seconds + self.db_budget.read_sql_seconds
-            ):
-                items = [item async for item in super().alist(*args, **kwargs)]
+            read = super().alist
+
+            async def collect():
+                return [item async for item in read(*args, **kwargs)]
+
+            items = await self._run_read(collect)
             for item in items:
                 yield item
 
@@ -279,13 +390,43 @@ def bounded_postgres_saver_class() -> Any:
             checkpoint_id = str(config.get("configurable", {}).get("checkpoint_id") or "")
             if not checkpoint_id:
                 return "unknown"
+            address = config["configurable"]
             try:
-                stored = await self.aget_tuple(config)
+                async with self._cursor() as cur:
+                    await cur.execute(
+                        "SELECT 1 FROM checkpoints WHERE thread_id=%s "
+                        "AND checkpoint_ns=%s AND checkpoint_id=%s",
+                        (address["thread_id"], address.get("checkpoint_ns", ""), checkpoint_id),
+                    )
+                    return "committed" if await cur.fetchone() else "unknown"
             except Exception:
                 return "unknown"
-            if stored is not None and stored.checkpoint.get("id") == checkpoint_id:
-                return "committed"
-            return "unknown"
+
+        async def reconcile_writes_commit(self, config: Any, writes: Any, task_id: str) -> bool:
+            """Verify only the submitted keys and payloads, without graph replay."""
+            address = config["configurable"]
+            params = await asyncio.to_thread(
+                self._dump_writes, address["thread_id"], address.get("checkpoint_ns", ""),
+                address["checkpoint_id"], task_id, "", writes,
+            )
+            if not params:
+                return True
+            async with self._cursor() as cur:
+                await cur.execute(
+                    "SELECT NOT EXISTS (SELECT 1 FROM "
+                    "unnest(%s::int[], %s::text[], %s::text[], %s::bytea[]) "
+                    "AS expected(idx, channel, type, blob) WHERE NOT EXISTS ("
+                    "SELECT 1 FROM checkpoint_writes AS actual "
+                    "WHERE actual.thread_id=%s AND actual.checkpoint_ns=%s "
+                    "AND actual.checkpoint_id=%s AND actual.task_id=%s "
+                    "AND actual.idx=expected.idx AND actual.channel=expected.channel "
+                    "AND actual.type=expected.type AND actual.blob=expected.blob)) AS confirmed",
+                    ([p[5] for p in params], [p[6] for p in params],
+                     [p[7] for p in params], [p[8] for p in params],
+                     address["thread_id"], address.get("checkpoint_ns", ""),
+                     address["checkpoint_id"], task_id),
+                )
+                return bool((await cur.fetchone())["confirmed"])
 
     return BoundedAsyncPostgresSaver
 

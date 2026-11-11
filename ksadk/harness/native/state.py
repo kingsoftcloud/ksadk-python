@@ -4,16 +4,35 @@ from __future__ import annotations
 
 import hashlib
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from .delivery_review_contract import DeliveryReviewState
+from .execution_budget import ExecutionBudgetObservation
 from .model import ModelInputReceipt, ModelReplayMetadata, ModelToolCall
 
 
 class Contract(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class DeliveryArtifacts(Contract):
+    """Successful host-observed writes scoped to one goal in this Run."""
+
+    goal_revision: int = Field(strict=True, ge=0)
+    paths: tuple[str, ...] = Field(min_length=1, max_length=2048)
+
+    @model_validator(mode="after")
+    def canonical_paths(self):
+        if len(set(self.paths)) != len(self.paths) or any(
+            not p or p == "." or "\\" in p or PurePosixPath(p).is_absolute()
+            or ".." in PurePosixPath(p).parts or str(PurePosixPath(p)) != p
+            for p in self.paths
+        ):
+            raise ValueError("delivery artifact paths must be unique workspace-relative paths")
+        return self
 
 
 class RunPhase(str, Enum):
@@ -73,6 +92,20 @@ class ForkCommand(Contract):
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class NotificationCommand(Contract):
+    """Immutable background-notification admission binding.
+
+    The notification Run ID is a deterministic function of (scope, source run,
+    task_id), so a repeat admission reads the already-created turn. This command
+    binds the admitted request (Build/config/identity) so a different request for
+    the same task_id is rejected, not silently treated as idempotent.
+    """
+
+    task_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_run_id: str = Field(min_length=1)
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ChildBudgetReservation(Contract):
     """Parent-owned allowance, distinct from the child's actual usage.
 
@@ -111,6 +144,47 @@ class ToolBatchInterruption(Contract):
     calls: tuple[InterruptedToolCall, ...] = Field(min_length=1)
 
 
+class ToolErrorAction(Contract):
+    name: str = Field(min_length=1)
+    # A locked readonly query can differ by input. Mutations cannot escape
+    # the guard merely by changing arguments or a model-generated call ID.
+    arguments_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class ToolErrorRecovery(Contract):
+    action: ToolErrorAction
+    failure_fingerprint: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None
+    )
+    started_model_call: int = Field(strict=True, ge=0)
+    prior_model_calls_spent: int = Field(
+        default=0, strict=True, ge=0, exclude_if=lambda value: value == 0
+    )
+    observation_revision: int = Field(strict=True, ge=0)
+    goal_revision: int = Field(strict=True, ge=0)
+    workspace_revision: str | None = None
+    diagnostic_observation_seen: bool = Field(default=False, strict=True)
+    diagnostic_model_call: int | None = Field(
+        default=None, strict=True, ge=0, exclude_if=lambda value: value is None
+    )
+    trial_consumed: bool = Field(default=False, strict=True, exclude_if=lambda value: not value)
+    trial_call_id: str | None = None
+    trial_model_call: int | None = Field(default=None, strict=True, ge=0)
+
+
+class BackgroundCommandRef(Contract):
+    """A host-issued locator bound to the actual launcher receipt."""
+
+    task_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_run_id: str = Field(min_length=1)
+    operation_key: str = Field(min_length=1)
+
+
+class BackgroundCommandState(Contract):
+    ref: BackgroundCommandRef
+    notified: bool = Field(default=False, strict=True)
+
+
 class RunSnapshot(Contract):
     schema_version: Literal["ksadk.native-run/v1"] = "ksadk.native-run/v1"
     scope: RunScope
@@ -120,6 +194,16 @@ class RunSnapshot(Contract):
     parent_run_id: str | None = Field(default=None, min_length=1)
     fork_source: ForkSource | None = Field(default=None, exclude_if=lambda value: value is None)
     fork_command: ForkCommand | None = Field(default=None, exclude_if=lambda value: value is None)
+    notification_command: NotificationCommand | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    # Host-trusted task-chain identity. A new user goal starts a fresh chain; a
+    # background-notification turn inherits the source run's chain so its budget
+    # accrues to the original task, not a reset allowance. Legacy snapshots (and
+    # ordinary runs that opt out) leave this None. Model/tool text cannot set it.
+    task_chain_id: str | None = Field(
+        default=None, min_length=1, max_length=128, exclude_if=lambda value: value is None
+    )
     revision: int = Field(default=0, ge=0)
     event_seq: int = Field(default=0, ge=0)
     phase: RunPhase = RunPhase.CREATED
@@ -134,6 +218,9 @@ class RunSnapshot(Contract):
     messages: tuple[dict[str, JsonValue], ...] = ()
     context_binding: str = ""
     prepared_context: dict[str, JsonValue] | None = None
+    execution_budget_observation: ExecutionBudgetObservation | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     context_source_goal_revision: int | None = Field(
         default=None, strict=True, ge=0, exclude_if=lambda value: value is None
     )
@@ -179,6 +266,12 @@ class RunSnapshot(Contract):
     repeated_tool_error_model_call: int | None = Field(default=None, ge=0)
     repeated_tool_error_goal_revision: int = Field(default=0, ge=0)
     repeated_tool_error_workspace_revision: str | None = None
+    repeated_tool_error_action: ToolErrorAction | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    tool_error_recovery: ToolErrorRecovery | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     # Host-owned failed interaction evidence is not lost when messages compact.
     unresolved_interaction_observation: dict[str, JsonValue] | None = None
     # Latest successful host-browser screenshot; unlike model text, this is a
@@ -197,6 +290,9 @@ class RunSnapshot(Contract):
     descendant_model_calls: int = Field(default=0, ge=0)
     descendant_tool_calls: int = Field(default=0, ge=0)
     child_run_ids: tuple[str, ...] = ()
+    background_commands: tuple[BackgroundCommandState, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     child_lifecycle_cursor: str | None = Field(default=None, exclude_if=lambda value: value is None)
     child_lifecycle_failure: Literal["poll", "wait", "cancel"] | None = Field(
         default=None, exclude_if=lambda value: value is None,
@@ -255,6 +351,9 @@ class RunSnapshot(Contract):
     workspace_changed_paths: tuple[str, ...] = ()
     # Host-observed changes retained across later reads and compaction.
     workspace_modified_paths: tuple[str, ...] = ()
+    delivery_artifacts: DeliveryArtifacts | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     workspace_observation_status: Literal["initial", "captured", "unavailable"] = "unavailable"
     workspace_observation_reason: str | None = None
     workspace_observation_cursor: str | None = None

@@ -33,6 +33,7 @@ from ksadk.events.identity import (
     stable_part_id,
     stable_scope_id,
 )
+from ksadk.events.usage import LANGGRAPH_USAGE_CONTRACT
 from ksadk.runners.base_runner import BaseRunner
 
 # Native content-block types that carry a tool call identity.
@@ -41,7 +42,8 @@ _TOOL_CALL_BLOCKS = frozenset(
 )
 # Native tool-call delta shapes accepted without a payload translation.
 _TOOL_DELTA_TYPES = frozenset(
-    "tool_call tool_call_chunk tool_call-delta server_tool_call server_tool_call_chunk".split()
+    "tool_call tool_call_chunk tool_call-delta tool-call-delta "
+    "server_tool_call server_tool_call_chunk".split()
 )
 # Lifecycle native types that close the nested scope without a run-progress event.
 _LIFECYCLE_QUIET_TYPES = frozenset({"interrupted"})
@@ -123,9 +125,12 @@ class _MessageState:
     llm_run_id: str
     message_id: str
     node: str
+    visibility: dict[str, str] = field(default_factory=dict)
     lanes: dict[str, _ItemLane] = field(default_factory=dict)
+    tool_start_names: dict[int, str] = field(default_factory=dict)
     block_lanes: dict[int, str] = field(default_factory=dict)
     finished_blocks: set[int] = field(default_factory=set)
+    source: SourceRef | None = None
 
 
 @dataclass
@@ -183,17 +188,17 @@ def _new_lane(
     state: _MessageState,
     item_kind: Literal["message", "reasoning", "tool_call", "tool_result"],
     native_item_id: str,
+    *,
+    segment_index: int | None = None,
 ) -> _ItemLane:
-    if item_kind == "message":
+    if item_kind in {"message", "reasoning"}:
+        segment = () if segment_index is None else ("block", segment_index)
         item_id = stable_item_id(
-            "langgraph", state.scope_id, "message", state.llm_run_id, state.message_id
+            "langgraph", state.scope_id, item_kind, state.llm_run_id, state.message_id, *segment
         )
-        phase: Literal["commentary", "final_answer"] = "final_answer"
-    elif item_kind == "reasoning":
-        item_id = stable_item_id(
-            "langgraph", state.scope_id, "reasoning", state.llm_run_id, state.message_id
+        phase: Literal["commentary", "final_answer"] = (
+            "final_answer" if item_kind == "message" else "commentary"
         )
-        phase = "commentary"
     elif item_kind == "tool_call":
         item_id = stable_item_id(
             "langgraph", state.scope_id, "tool_call", state.llm_run_id, native_item_id
@@ -233,6 +238,8 @@ def _lane_for_content(
     block_type = _required_string(content.get("type"), "content block type")
     if block_type in _TOOL_CALL_BLOCKS:
         call_id = _required_string(content.get("id"), "tool_call.id")
+        if isinstance(content.get("name"), str):
+            state.tool_start_names[index] = content["name"]
         lane_key, item_kind, native_item_id = f"tool_call:{call_id}", "tool_call", call_id
     elif block_type == "server_tool_result":
         call_id = _required_string(content.get("tool_call_id"), "server_tool_result.tool_call_id")
@@ -251,10 +258,20 @@ def _lane_for_content(
             "content.type",
             f"Unsupported LangGraph content block type: {block_type}",
         )
+    segment_index = None
+    if item_kind in {"message", "reasoning"} and lane_key in state.lanes:
+        # Adjacent same-kind parts share an item. A later segment across a
+        # thought, message or tool gets its own place in the timeline.
+        previous = next(reversed(state.block_lanes.values()))
+        if state.lanes[previous].item_kind == item_kind:
+            lane_key = previous
+        else:
+            segment_index = index
+            lane_key = f"{item_kind}:block:{index}"
     lane = state.lanes.get(lane_key)
     created = lane is None
     if lane is None:
-        lane = _new_lane(state, item_kind, native_item_id)
+        lane = _new_lane(state, item_kind, native_item_id, segment_index=segment_index)
         state.lanes[lane_key] = lane
     state.block_lanes[index] = lane_key
     return lane, created
@@ -345,6 +362,8 @@ def _map_whole_message(
             "graph_run_id": context.graph_run_id,
             "namespace": list(frame.namespace),
             "node": state.node,
+            "message_delivery": "snapshot",
+            **_message_visibility(metadata),
         },
     )
     env = _envelope(context, frame.occurrence_key, frame.timestamp)
@@ -429,27 +448,43 @@ def _map_whole_message(
                 ),
             )
         )
-    usage = BaseRunner._message_usage(payload)
-    if usage:
-        usage_item_id = stable_item_id("langgraph", state.scope_id, "$run")
-        emitted.append(
-            UsageReported(
-                **env(
-                    state.scope_id,
-                    state.parent_scope_id,
-                    usage_item_id,
-                    "usage.reported",
-                    "usage",
-                    source,
-                ),
-                input_tokens=usage["input_tokens"],
-                output_tokens=usage["output_tokens"],
-                total_tokens=usage["total_tokens"],
-                cached_tokens=_usage_detail(usage.get("input_token_details"), "cached"),
-                reasoning_tokens=_usage_detail(usage.get("output_token_details"), "reasoning"),
-            )
-        )
+    emitted.extend(_message_usage_events(state, env, source, BaseRunner._message_usage(payload)))
     return tuple(emitted)
+
+
+def _message_usage_events(
+    state: _MessageState,
+    env: Callable[..., dict[str, Any]],
+    source: SourceRef,
+    usage: Any,
+) -> tuple[UsageReported, ...]:
+    if not isinstance(usage, Mapping) or not usage:
+        return ()
+    input_tokens = BaseRunner._int_usage_value(usage.get("input_tokens"))
+    output_tokens = BaseRunner._int_usage_value(usage.get("output_tokens"))
+    source = source.model_copy(update={"metadata": {
+        **source.metadata, "usage_contract": LANGGRAPH_USAGE_CONTRACT,
+    }})
+    return (
+        UsageReported(
+            **env(
+                state.scope_id,
+                state.parent_scope_id,
+                stable_item_id("langgraph", state.scope_id, "$run"),
+                "usage.reported",
+                "usage",
+                source,
+            ),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=BaseRunner._int_usage_value(
+                usage.get("total_tokens", input_tokens + output_tokens)
+            ),
+            cached_tokens=_usage_detail(usage.get("input_token_details"), "cached"),
+            reasoning_tokens=_usage_detail(usage.get("output_token_details"), "reasoning"),
+            mode="delta",
+        ),
+    )
 
 
 def _usage_detail(details: Any, key: str) -> int:
@@ -505,6 +540,22 @@ def _envelope(
         }
 
     return env
+
+
+def _message_visibility(metadata: Mapping[str, Any]) -> dict[str, str]:
+    """Copy only explicit public presentation hints, never arbitrary metadata."""
+    extra = {}
+    visibility = metadata.get("conversation_visibility")
+    if visibility not in ("public", "internal", "hidden"):
+        # Preserve the original runner hint; an explicit new visibility wins.
+        if metadata.get("ksadk_output_visibility") == "internal":
+            visibility = "internal"
+    if visibility in ("public", "internal", "hidden"):
+        extra["conversation_visibility"] = visibility
+    operation = metadata.get("ksadk_internal_operation")
+    if isinstance(operation, str) and operation:
+        extra["ksadk_internal_operation"] = operation
+    return extra
 
 
 def _source_ref(

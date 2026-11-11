@@ -13,16 +13,29 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "agentkit",
     ),
     *STUDIO_ENV_VAR_REGISTRY_ITEMS,
-    EnvVarSpec("KSADK_DB_CONNECT_SECONDS", "sessions", "Database connect budget in seconds.", ".5"),
-    EnvVarSpec("KSADK_DB_READ_ACQUIRE_SECONDS", "sessions", "Database read acquire budget in seconds.", ".3"),
-    EnvVarSpec("KSADK_DB_READ_SQL_SECONDS", "sessions", "Database read sql budget in seconds.", "1"),
-    EnvVarSpec("KSADK_DB_WRITE_ACQUIRE_SECONDS", "sessions", "Database write acquire budget in seconds.", ".5"),
-    EnvVarSpec("KSADK_DB_WRITE_SQL_SECONDS", "sessions", "Database write sql budget in seconds.", "3"),
-    EnvVarSpec("KSADK_DB_WRITE_OPERATION_SECONDS", "sessions", "Database write operation budget in seconds.", "5"),
-    EnvVarSpec("KSADK_DB_LOCK_SECONDS", "sessions", "Database lock budget in seconds.", ".5"),
-    EnvVarSpec("KSADK_DB_CLEANUP_SECONDS", "sessions", "Database cleanup budget in seconds.", "1"),
-    EnvVarSpec("KSADK_DB_REPLAY_OPERATION_SECONDS", "sessions", "Database replay operation budget in seconds.", "30"),
-    EnvVarSpec("KSADK_DB_REPLAY_SQL_SECONDS", "sessions", "Database replay sql budget in seconds.", "3"),
+    EnvVarSpec("KSADK_KERNEL_STREAM_HEARTBEAT_SECONDS", "server",
+               "Transport-only authenticated Kernel SSE heartbeat interval; positive finite seconds.", "15"),
+    EnvVarSpec("KSADK_A2A_INBOUND_ADMISSION_SECONDS", "a2a", "Bounded recovery of the same inbound Task's Kernel command admission.", "60"),
+    EnvVarSpec("KSADK_A2A_CHECKPOINT_READY_SECONDS", "a2a", "Wait for a pending native checkpoint before publishing managed approval.", "45"),
+    EnvVarSpec("KSADK_A2A_INVOCATION_SECONDS", "a2a", "Default whole managed invocation budget; explicit RemoteAgentSpec timeout wins.", "600"),
+    EnvVarSpec("KSADK_DB_CONNECT_SECONDS", "sessions", "Database connect budget in seconds.", "2"),
+    EnvVarSpec("KSADK_DB_READ_ACQUIRE_SECONDS", "sessions", "Database read acquire budget in seconds.", "3"),
+    EnvVarSpec("KSADK_DB_READ_SQL_SECONDS", "sessions", "Database read sql budget in seconds.", "8"),
+    EnvVarSpec("KSADK_DB_WRITE_ACQUIRE_SECONDS", "sessions", "Database write acquire budget in seconds.", "3"),
+    EnvVarSpec("KSADK_DB_EVENT_OBSERVE_RECOVERY_SECONDS", "sessions", "Admitted A2A event read recovery budget in seconds.", "60"),
+    EnvVarSpec("KSADK_DB_CHECKPOINT_READ_OPERATION_SECONDS", "sessions", "Native checkpoint read budget including the saver queue and one transient read retry.", "45"),
+    EnvVarSpec("KSADK_DB_WRITE_SQL_SECONDS", "sessions",
+               "Database write sql budget in seconds.", "15"),
+    EnvVarSpec("KSADK_DB_WRITE_OPERATION_SECONDS", "sessions",
+               "Database write operation budget in seconds.", "30"),
+    EnvVarSpec("KSADK_HISTORY_EVENT_PAGE_BYTES", "sessions",
+               "Raw HTTP event page byte target; whole facts are preserved.", "524288"),
+    EnvVarSpec("KSADK_DB_LOCK_SECONDS", "sessions", "Database lock budget in seconds.", "2"),
+    EnvVarSpec("KSADK_DB_CLEANUP_SECONDS", "sessions", "Database cleanup budget in seconds.", "2"),
+    EnvVarSpec("KSADK_DB_REPLAY_OPERATION_SECONDS", "sessions", "Database replay operation budget in seconds.", "60"),
+    EnvVarSpec("KSADK_DB_REPLAY_SQL_SECONDS", "sessions", "Database replay sql budget in seconds.", "10"),
+    EnvVarSpec("KSADK_HISTORY_REQUEST_SECONDS", "server", "Finite metadata/history HTTP deadline in seconds.", "15"),
+    EnvVarSpec("BUDGET_TIMEOUT", "server", "Compatibility alias of KSADK_HISTORY_REQUEST_SECONDS."),
     EnvVarSpec("KSADK_HISTORY_INITIAL_EVENTS", "sessions", "Initial history projection window (32–256 events).", "256"),
     EnvVarSpec("KSADK_HISTORY_READ_CONCURRENCY", "sessions", "Concurrent PostgreSQL history transfers per process (1–32).", "4"),
     EnvVarSpec(
@@ -228,6 +241,10 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     *PCM_ENV_VAR_REGISTRY_ITEMS,
     EnvVarSpec(
+        "KSADK_E2B_KILL_TIMEOUT_SECONDS", "sandbox",
+        "Maximum wait for an E2B background-command kill RPC, in seconds.", "10",
+    ),
+    EnvVarSpec(
         "KSADK_DEPLOYMENT_MODE",
         "runtime",
         "Deployment-mode ownership declaration.",
@@ -263,6 +280,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_KB_ACCESS_KEY", "knowledge_base", "Knowledge-base API access key.", sensitive=True
     ),
     EnvVarSpec("KSADK_KB_DATASET_ID", "knowledge_base", "Knowledge-base dataset id."),
+    EnvVarSpec("KSADK_KB_DATASET_IDS", "knowledge_base", "Knowledge-base dataset IDs (comma-separated for multi-select)."),
     EnvVarSpec(
         "KSADK_KB_ENDPOINT", "knowledge_base", "Knowledge-base API endpoint.", "aicp.api.ksyun.com"
     ),
@@ -290,6 +308,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
+        "KSADK_KB_INSTRUCTION",
+        "knowledge_base",
+        "Per-knowledge-base custom instruction prefix (KSADK_KB_INSTRUCTION_<dataset_id>).",
+    ),
+    EnvVarSpec(
         "KSADK_CHECKPOINT_DSN",
         "sessions",
         "Framework-agnostic PostgreSQL checkpoint DSN.",
@@ -305,8 +328,9 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_LANGGRAPH_AUTO_CHECKPOINT",
         "sessions",
         (
-            "Allow a hosted LangGraph runner to rebuild a factory-exported graph with the "
-            "managed PostgreSQL saver."
+            "Automatically bind storage to an unconfigured LangGraph graph: use effective "
+            "PostgreSQL configuration, otherwise local SQLite. Preserve existing savers "
+            "and explicit opt-out; PostgreSQL failures never fall back to local storage."
         ),
         "false",
     ),
@@ -427,6 +451,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("KSADK_LTM_INDEX", "memory", "Long-term-memory index name."),
     EnvVarSpec("KSADK_LTM_NAMESPACE", "memory", "Long-term-memory memory collection id."),
+    EnvVarSpec(
+        "KSMEM_MEMORY_ID",
+        "memory",
+        "Platform Ksmem instance id; aliases KSADK_LTM_NAMESPACE and selects the SDK backend.",
+    ),
     EnvVarSpec("KSADK_LTM_REGION", "memory", "Long-term-memory region.", "cn-beijing-6"),
     EnvVarSpec("KSADK_LTM_SCENE_ID", "memory", "Long-term-memory scene id.", "_sys_general"),
     EnvVarSpec("KSADK_LTM_SCHEME", "memory", "Long-term-memory API scheme.", "https"),
@@ -453,6 +482,18 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec(
         "KSADK_MCP_SERVERS", "mcp_runtime", "JSON array of MCP server configs.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_MCP_OAUTH_PROJECTION",
+        "configs",
+        "OAuth connection settings injected by the platform into the managed runtime.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_MCP_OAUTH_CONFIG_FILE",
+        "configs",
+        "OAuth configuration file for an explicitly configured local runtime.",
+        documented=False,
     ),
     EnvVarSpec("KSADK_MEMORY_BACKEND", "memory", "Generic memory backend selector.", "memory"),
     EnvVarSpec("KSADK_MEMORY_PREFIX", "memory", "Generic memory key prefix.", "ksadk:memory:"),
@@ -544,7 +585,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_PERSISTENCE_PROBE_TIMEOUT",
         "sessions",
         "PostgreSQL persistence readiness timeout seconds.",
-        "2",
+        "5",
     ),
     EnvVarSpec("KSADK_PG_EVENTS_TABLE", "sessions", "Internal PostgreSQL events table constant."),
     EnvVarSpec(
@@ -740,8 +781,8 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_SESSION_CONNECT_TIMEOUT",
         "sessions",
-        "Conversation PostgreSQL connection timeout seconds.",
-        "5",
+        "Legacy alias of KSADK_DB_CONNECT_SECONDS.",
+        "2",
     ),
     EnvVarSpec(
         "KSADK_SESSION_DSN", "sessions", "Conversation session database DSN.", sensitive=True
@@ -751,6 +792,17 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_AGENT_ID",
         "platform",
         "Stable AgentEngine agent identity used only as a fallback checkpoint namespace.",
+    ),
+    EnvVarSpec(
+        "KSADK_ENABLE_KERNEL",
+        "kernel",
+        (
+            "Per-Agent ZIP or Container deployment opt-in read by AgentEngine Server: "
+            "1/true/yes/on or 0/false/no/off (case-insensitive); missing means "
+            "ordinary mode unless bound to an A2A Space. This is not the trusted AGENT_KERNEL_ENABLED "
+            "runtime switch. Managed A2A retains its existing admission rules."
+        ),
+        "false",
     ),
     EnvVarSpec(
         "KSADK_AGENT_KERNEL",
@@ -765,8 +817,8 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_SESSION_PG_CONNECT_TIMEOUT",
         "sessions",
-        "Legacy PostgreSQL session connection timeout seconds.",
-        "5",
+        "Legacy alias of KSADK_DB_CONNECT_SECONDS.",
+        "2",
     ),
     EnvVarSpec(
         "KSADK_SKILLS_MODE", "skills", "Skill loading mode: auto, local, or sandbox.", "auto"
@@ -927,8 +979,8 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_WEB_VERSION",
         "web",
-        "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.13",
+        "Optional build assertion; must match the reviewed Web source manifest.",
+        "",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

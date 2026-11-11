@@ -19,6 +19,7 @@ from ksadk.toolsets.workspace_editing import (
     _apply_single_edit,
     _budget_diff,
     _build_diff,
+    _change_counts,
     _commit_workspace_edit,
     _dict_result,
     _read_workspace_text,
@@ -482,21 +483,21 @@ def write_workspace_file(
 
 def _workspace_write_precondition(
     path: str, *, overwrite: bool
-) -> tuple[Path, str, dict[str, Any] | None]:
+) -> tuple[Path, str, dict[str, Any] | None, str]:
     target = resolve_workspace_path(path)
     relative = workspace_relative(target)
     if not target.exists():
-        return target, relative, None
+        return target, relative, None, ""
     if not overwrite:
         return target, relative, {
             "ok": False,
             "path": relative,
             "error_type": "file_exists",
             "error_message": f"workspace file already exists: {path}",
-        }
+        }, ""
     current, error = _read_workspace_text(target)
     if error is not None:
-        return target, relative, {**error, "path": relative}
+        return target, relative, {**error, "path": relative}, ""
     state = get_read_state(relative)
     if state is not None and state.partial:
         return target, relative, {
@@ -507,7 +508,7 @@ def _workspace_write_precondition(
             "suggested_action": (
                 f"Call read_workspace_file(path={relative!r}) without a line range, then retry."
             ),
-        }
+        }, ""
     validation = _validate_read_state(target, relative, state=state, content=current)
     if validation is not None:
         if validation.get("error_type") == "file_not_read":
@@ -518,14 +519,14 @@ def _workspace_write_precondition(
                     f"Call read_workspace_file(path={relative!r}) before overwriting it."
                 ),
             }
-        return target, relative, validation
-    return target, relative, None
+        return target, relative, validation, ""
+    return target, relative, None, current
 
 
 @_workspace_file_guard
 def _write_workspace_file_impl(path: str, content: str, overwrite: bool = True) -> dict[str, Any]:
     create_only = not resolve_workspace_path(path).exists()
-    target, relative, error = _workspace_write_precondition(path, overwrite=overwrite)
+    target, relative, error, previous = _workspace_write_precondition(path, overwrite=overwrite)
     if error is not None:
         return error
     written = content or ""
@@ -544,6 +545,7 @@ def _write_workspace_file_impl(path: str, content: str, overwrite: bool = True) 
         "path": relative,
         "absolute_path": str(target),
         "size": stat.st_size,
+        **_change_counts(previous, written),
     }
 
 
@@ -585,7 +587,9 @@ def _write_workspace_files_impl(
         prepared.append((path, str(item.get("content") or "")))
     with locked_workspace_paths(resolve_workspace_path(path) for path, _ in prepared):
         for path, _ in prepared:
-            _target, _relative, error = _workspace_write_precondition(path, overwrite=overwrite)
+            _target, _relative, error, _previous = _workspace_write_precondition(
+                path, overwrite=overwrite
+            )
             if error is not None:
                 return error
         written = []
@@ -593,7 +597,8 @@ def _write_workspace_files_impl(
             result = _write_workspace_file_impl(path, content, overwrite=overwrite)
             if not result.get("ok"):
                 return result
-            written.append({"path": result["path"], "size": result["size"]})
+            written.append({key: result[key] for key in
+                            ("path", "size", "diff_additions", "diff_deletions") if key in result})
         return {"ok": True, "written": written, "truncated": len(files) > len(written)}
 
 
@@ -676,6 +681,7 @@ def _edit_workspace_file_impl(
         "replacements": edit_result["replacements"],
         "used_quote_normalization": edit_result["used_quote_normalization"],
         **diff_budget,
+        **_change_counts(text, updated),
         "size": new_stat.st_size,
         "mtime_ns": new_stat.st_mtime_ns,
     }
@@ -781,6 +787,7 @@ def _multi_edit_workspace_file_impl(
         "replacements": total_replacements,
         "edits": diagnostics,
         **diff_budget,
+        **_change_counts(original, updated),
         "size": new_stat.st_size,
         "mtime_ns": new_stat.st_mtime_ns,
     }

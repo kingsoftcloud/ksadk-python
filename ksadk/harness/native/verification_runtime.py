@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from .call_budget import call_room
 from .completion import (
     VerificationItemResult,
     VerificationReport,
@@ -158,7 +159,7 @@ def reduce_verification(
         if review := schedule_delivery_review(updated, config, reason=decision.reason):
             return review
         return finish(updated, decision.outcome, decision.reason)
-    if updated.model_budget_claimed >= config.limits.max_model_calls:
+    if not call_room(config.limits.max_model_calls, updated.model_budget_claimed):
         # The candidate already consumed the last possible model exchange.
         # A text-only task may still repair without tools while model budget
         # remains, so tool availability is not a valid reason to stop here.

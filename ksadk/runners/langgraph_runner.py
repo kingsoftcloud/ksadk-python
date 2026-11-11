@@ -10,11 +10,17 @@ import os
 import re
 import sqlite3
 import uuid
-from typing import Any, AsyncIterator, Dict, Mapping
+from typing import Any, Dict, Mapping
 
 from langgraph.types import Command
 
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
+from ksadk.runners._langgraph_checkpoint_binding import (
+    LocalCheckpointBindingMixin,
+    bind_native_checkpointer,
+)
+from ksadk.runners._langgraph_fresh_turn import fresh_memory_input, fresh_user_checkpoint
+from ksadk.runners._langgraph_output import extract_output
 from ksadk.runners._langgraph_runner_streams import _LangGraphStreamMixin
 from ksadk.runners._langgraph_state_reader import (
     interrupt_info_from_state,
@@ -30,10 +36,10 @@ from ksadk.sessions import resolve_persistence_topology
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.sessions.db_budget import session_db_budget
 
-from ksadk.runners._langgraph_tool_projection import _LangGraphToolProjectionMixin
 
-
-class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMixin, _LangGraphStreamMixin, BaseRunner):
+class LangGraphRunner(
+    LangGraphSessionIdentityMixin, LocalCheckpointBindingMixin, _LangGraphStreamMixin, BaseRunner
+):
     """LangGraph 框架运行时
 
     透传原生 LangGraph 功能，支持任意 State 格式
@@ -42,6 +48,12 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
     # ToolGateway approvals can occur after a terminal-looking tool call, so
     # the semantic stream must remain resumable for a follow-up decision.
     supports_gateway_approval_semantic_resume = True
+
+    @property
+    def prefers_canonical_stream(self):
+        from langgraph.graph.state import CompiledStateGraph
+
+        return isinstance(self._agent, CompiledStateGraph)
 
     def __init__(self, detection_result: Any, project_dir: str):
         super().__init__(detection_result, project_dir)
@@ -54,23 +66,59 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
         self._identity_thread_bindings: dict[str, str] = {}
         self._identity_thread_lock = asyncio.Lock()
 
+    def _sdk_mcp_agent(self, graph=None):
+        graph = self._agent if graph is None else graph
+        builder = getattr(graph, "builder", None)
+        return vars(builder).get("_ksadk_mcp_agent") if hasattr(builder, "__dict__") else None
+
+    def _graph_factory(self, *, module=None, agent=None):
+        module = self._module if module is None else module
+        agent = self._agent if agent is None else agent
+        factory = getattr(module, "ksadk_graph_factory", None)
+        if callable(factory):
+            return factory
+        if self._sdk_mcp_agent(agent) is not None:
+            return lambda *, checkpointer: bind_native_checkpointer(agent, checkpointer)
+        return None
+
     def load_agent(self) -> None:
         self._load_agent(force_reload=False)
 
     def _load_agent(self, *, force_reload: bool) -> None:
         """加载 LangGraph 编译后的图"""
-        self._agent, self._module = load_agent_module(
+        managed_saver = None
+        if force_reload and self._managed_checkpoint_pool is not None:
+            managed_saver = getattr(self._agent, "checkpointer", None)
+            if managed_saver is None:
+                managed_saver = getattr(self._agent, "_checkpointer", None)
+        agent, module = load_agent_module(
             self.project_dir,
             self.detection_result.entry_point,
             self.detection_result.agent_variable,
             force_reload=force_reload,
         )
+        local_saver = getattr(self, "_sdk_local_saver", None)
+        if local_saver is not None and getattr(agent, "checkpointer", None) is None:
+            factory = self._graph_factory(module=module, agent=agent)
+            agent = (
+                factory(checkpointer=local_saver)
+                if callable(factory)
+                else bind_native_checkpointer(agent, local_saver)
+            )
+        if managed_saver is not None:
+            # Reloading the model recreates the module's default MemorySaver.
+            # Recompile with our existing durable saver and pool so every
+            # session retains its checkpoint and its stable thread identity.
+            factory = self._graph_factory(module=module, agent=agent)
+            if not callable(factory):
+                raise TypeError("Managed LangGraph model reload requires ksadk_graph_factory")
+            agent = factory(checkpointer=managed_saver)
+        if not callable(getattr(agent, "invoke", None)):
+            raise TypeError("加载的对象不是有效的 LangGraph CompiledGraph")
+        self._agent, self._module = agent, module
         self._loaded_model_name = self.normalize_requested_model(
             os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
         )
-
-        if not hasattr(self._agent, "invoke"):
-            raise TypeError("加载的对象不是有效的 LangGraph CompiledGraph")
 
     def prepare_for_request(self, model: str | None) -> None:
         normalized = self.sync_process_model_env(model)
@@ -279,6 +327,13 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
         checkpointer = getattr(agent, "checkpointer", None)
         if checkpointer is None:
             checkpointer = getattr(agent, "_checkpointer", None)
+        if checkpointer is False:
+            return {
+                "Supported": False, "Backend": "none", "Scope": "unknown",
+                "Durable": False, "SharedAcrossPods": False, "ResumeMode": "none",
+                "ReasonCode": "CHECKPOINT_DISABLED",
+                "Reason": "LangGraph checkpointer is explicitly disabled",
+            }
         if checkpointer is None:
             lazy_capability = self.describe_lazy_checkpoint_capability()
             if lazy_capability is not None:
@@ -304,12 +359,16 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
                 "ReasonCode": "CHECKPOINTER_NOT_DURABLE",
                 "Reason": "LangGraph graph has no configured checkpointer",
             }
-        backend = self._checkpoint_backend_from_saver(checkpointer)
-        if backend == "unknown":
+        return self.checkpoint_capability_for_saver(checkpointer)
+
+    @classmethod
+    def checkpoint_capability_for_saver(cls, checkpointer: Any) -> dict[str, Any]:
+        backend = cls._checkpoint_backend_from_saver(checkpointer)
+        if backend == "unknown" and checkpointer is not None and checkpointer is not False:
             configured_backend = str(os.getenv("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
             if configured_backend in {"postgres", "sqlite", "memory"}:
                 backend = configured_backend
-        return self._checkpoint_capability_for_backend(backend, checkpointer=checkpointer)
+        return cls._checkpoint_capability_for_backend(backend, checkpointer=checkpointer)
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
@@ -398,6 +457,12 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
 
     async def prepare_runtime_capabilities(self) -> None:
         await self._prepare_managed_checkpoint(allow_transient_retry=False)
+        if (
+            self._effective_session_target is not None
+            and self._managed_checkpoint_error is not None
+        ):
+            code, _ = self._managed_checkpoint_error
+            raise RuntimeError(f"{code}: managed Kernel checkpoint initialization failed")
 
     async def refresh_runtime_capabilities(self) -> None:
         await self._prepare_managed_checkpoint(allow_transient_retry=True)
@@ -437,7 +502,6 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
         if not bool(
             capability.get("Supported")
             and capability.get("Durable")
-            and capability.get("SharedAcrossPods")
         ):
             return False
 
@@ -525,23 +589,45 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
             if self._managed_checkpoint_state == "transient_failure" and not allow_transient_retry:
                 return
 
+            auto_enabled = self._env_flag("KSADK_LANGGRAPH_AUTO_CHECKPOINT")
+            if auto_enabled and self._agent is None:
+                self.load_agent()
+
             checkpointer = getattr(self._agent, "checkpointer", None)
             if checkpointer is None:
                 checkpointer = getattr(self._agent, "_checkpointer", None)
-            if self._checkpoint_backend_from_saver(checkpointer) == "postgres":
+            # A caller-owned saver (including False) is never an invitation to replace it.
+            if checkpointer is not None:
                 self._managed_checkpoint_prepared = True
                 self._managed_checkpoint_state = "ready"
                 return
 
-            auto_enabled = self._env_flag("KSADK_LANGGRAPH_AUTO_CHECKPOINT")
-            checkpoint_target = resolve_persistence_topology(framework="langgraph").checkpoint
-            if (
-                not auto_enabled
-                or checkpoint_target.backend != "postgres"
-                or not checkpoint_target.dsn
-            ):
+            if not auto_enabled:
                 self._managed_checkpoint_prepared = True
                 self._managed_checkpoint_state = "terminal_failure"
+                return
+
+            topology = resolve_persistence_topology(
+                framework="langgraph", effective_session=self._effective_session_target,
+            )
+            checkpoint_target = topology.checkpoint
+            if not checkpoint_target.dsn:
+                backend = os.getenv("KSADK_CHECKPOINT_BACKEND", "").strip().lower()
+                if backend == "postgres" or topology.session.backend == "postgres":
+                    self._managed_checkpoint_error = (
+                        "CHECKPOINT_DSN_REQUIRED",
+                        "PostgreSQL checkpoint was selected without a connection address",
+                    )
+                    self._managed_checkpoint_prepared = True
+                    self._managed_checkpoint_state = "terminal_failure"
+                    return
+                if backend not in {"", "local", "sqlite", "memory"}:
+                    raise ValueError("Unsupported LangGraph checkpoint backend")
+                await self._bind_local_checkpoint(
+                    backend="memory" if backend == "memory" else "sqlite",
+                )
+                self._managed_checkpoint_prepared = True
+                self._managed_checkpoint_state = "ready"
                 return
 
             # 探测路径可能先于首个 chat 请求 probe（本地调试与手动部署形态的
@@ -551,7 +637,7 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
             if self._agent is None:
                 self.load_agent()
 
-            factory = getattr(self._module, "ksadk_graph_factory", None)
+            factory = self._graph_factory()
             if not callable(factory):
                 self._managed_checkpoint_error = (
                     "LANGGRAPH_FACTORY_REQUIRED",
@@ -567,7 +653,7 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
             # 一遍，与 checkpointer 恢复的 messages 双重叠加。托管 checkpoint 必须同时
             # 提供 hook，否则 fail-closed，避免生产 auto checkpoint 下静默双重注入。
             prepare_state_hook = getattr(self._module, "ksadk_prepare_state", None)
-            if not callable(prepare_state_hook):
+            if not callable(prepare_state_hook) and self._sdk_mcp_agent() is None:
                 self._managed_checkpoint_error = (
                     "PREPARE_STATE_HOOK_REQUIRED",
                     "Managed PostgreSQL checkpoint requires ksadk_prepare_state hook to "
@@ -635,6 +721,7 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
                 self._managed_checkpoint_prepared = True
 
     async def close(self) -> None:
+        await self._close_local_checkpoint()
         pool = self._managed_checkpoint_pool
         self._managed_checkpoint_pool = None
         if pool is not None:
@@ -933,7 +1020,10 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
 
     def _has_prepare_state_hook(self) -> bool:
         module = getattr(self, "_module", None)
-        return callable(getattr(module, "ksadk_prepare_state", None))
+        return (
+            callable(getattr(module, "ksadk_prepare_state", None))
+            or self._sdk_mcp_agent() is not None
+        )
 
     def _prepare_state_with_hook(
         self,
@@ -946,6 +1036,9 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
         module = getattr(self, "_module", None)
         prepare_state = getattr(module, "ksadk_prepare_state", None)
         if not callable(prepare_state):
+            saver = getattr(self._agent, "checkpointer", None)
+            if self._has_prepare_state_hook() and saver and not getattr(saver, "_ksadk_resume_only", False):
+                return self._to_state(payload, [])
             return self._to_state(payload, history)
 
         normalized_payload = self._strip_platform_context_fields(payload)
@@ -1188,6 +1281,7 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
 
         return {"output": accumulated_text, "raw": {"chunks": chunks}}
 
+    @fresh_user_checkpoint
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 LangGraph 图
 
@@ -1235,6 +1329,9 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
             state = self._prepare_state_with_hook(payload, session_id, history)
         else:
             state = self._to_state(payload, history)
+
+        if not is_resume and not is_checkpoint_resume:
+            state = await fresh_memory_input(self._agent, config, state)
 
         try:
             if is_checkpoint_resume:
@@ -1304,26 +1401,7 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
             raise
 
     def _extract_output(self, result: Any) -> str:
-        """从结果中提取输出文本"""
-        if isinstance(result, dict):
-            # 自定义 output 字段是业务显式出参，优先于内部 messages state。
-            if "output" in result:
-                return str(result["output"])
-            # LangGraph 示例常用 answer 作为最终业务回答字段。
-            if "answer" in result:
-                return str(result["answer"])
-            # 标准 messages 格式
-            if "messages" in result:
-                messages = result["messages"]
-                if messages:
-                    last = messages[-1]
-                    content = (
-                        last.get("content", str(last))
-                        if isinstance(last, dict)
-                        else getattr(last, "content", str(last))
-                    )
-                    return str(content)
-        return str(result) if result else ""
+        return extract_output(result)
 
     async def _read_graph_state(
         self,
@@ -1340,70 +1418,12 @@ class LangGraphRunner(_LangGraphToolProjectionMixin, LangGraphSessionIdentityMix
         """从 state 中获取 interrupt 信息（含子图嵌套任务）。"""
         return interrupt_info_from_state(state)
 
-    async def _stream_checkpoint_resume_updates(
-        self,
-        *,
-        stream_input: Any,
-        config: dict[str, Any],
-        context: dict[str, Any] | None,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        if not callable(getattr(self._agent, "astream", None)):
-            return
 
-        kwargs = self._build_optional_call_kwargs(
-            self._agent.astream,
-            config=config,
-            context=context,
-        )
-        if self._callable_accepts_keyword(self._agent.astream, "stream_mode"):
-            kwargs["stream_mode"] = "updates"
 
-        latest_output: Any = None
-        emitted_update = False
-        tool_names: dict[str, str] = {}
-        async for update in self._agent.astream(stream_input, **kwargs):
-            emitted_update = True
-            latest_output = update
-            if isinstance(update, Mapping):
-                for node_name, node_output in update.items():
-                    for tool_event in self._tool_events_from_graph_update(
-                        node_output,
-                        tool_names=tool_names,
-                    ):
-                        yield tool_event
-                    yield {
-                        "type": "graph_update",
-                        "node": str(node_name),
-                        "output": node_output,
-                    }
-            else:
-                yield {"type": "graph_update", "output": update}
-
-        latest_config = self._latest_checkpoint_config(config)
-        state_usage = await self._latest_state_usage(latest_config)
-        state_output = ""
-        result_fields: dict[str, Any] = {}
-        try:
-            state = None
-            if callable(getattr(self._agent, "aget_state", None)):
-                state = await self._agent.aget_state(latest_config)
-            elif callable(getattr(self._agent, "get_state", None)):
-                state = self._agent.get_state(latest_config)
-            values = getattr(state, "values", None)
-            if values is not None:
-                state_output = self._extract_output(values)
-                result_fields = skill_eval_response_fields(values)
-        except Exception:
-            state_output = ""
-        final_output = state_output or self._extract_output(latest_output)
-        yield {
-            "type": "final",
-            "output": final_output,
-            **result_fields,
-            **({"usage": state_usage} if state_usage else {}),
-            **({"resume_noop": True} if not emitted_update else {}),
-        }
-
-        metadata = await self._latest_checkpoint_metadata(latest_config)
-        if metadata:
-            yield {"type": "checkpoint", "metadata": metadata}
+    def _filter_tool_tags(self, content: str) -> str:
+        """过滤 <tool_call> 标签"""
+        if not isinstance(content, str):
+            return content
+        content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
+        content = re.sub(r"</?(?:tool_call|arg_key|arg_value)>", "", content)
+        return content

@@ -20,9 +20,10 @@
       "enum": [
         "openclaw_default",
         "mem0",
-        "lancedb"
+        "lancedb",
+        "ksmem"
       ],
-      "description": "Memory backend type. Supports 'openclaw_default', 'mem0', and 'lancedb'."
+      "description": "Memory backend type. Supports 'openclaw_default', 'mem0', 'lancedb', and 'ksmem'."
     },
     "config": {
       "type": "object",
@@ -41,6 +42,15 @@
         "mem0_region": {
           "type": "string",
           "description": "Mem0 instance region."
+        },
+        "ksmem_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ksmem instance id (required when backend_type is 'ksmem')."
+        },
+        "ksmem_instance_name": {
+          "type": "string",
+          "description": "Ksmem instance display name."
         },
         "dbPath": {
           "type": "string",
@@ -140,6 +150,21 @@
         "properties": {
           "config": {
             "required": ["mem0_instance_id"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "backend_type": { "const": "ksmem" }
+        }
+      },
+      "then": {
+        "required": ["config"],
+        "properties": {
+          "config": {
+            "required": ["ksmem_instance_id"]
           }
         }
       }

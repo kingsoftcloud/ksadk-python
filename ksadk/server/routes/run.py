@@ -111,6 +111,20 @@ async def run_agent_action(
     )
     run_user_id = authorized_session.user_id
     run_session_id = authorized_session.id
+    if not request.Background and extract_responses_resume_input(request.ResponsesInput) is None:
+        # The local native graph uses the same ledger for foreground legacy
+        # requests (notably attachment inputs) as for AG-UI. Hosted and explicit
+        # opt-out compositions retain their established admission boundary.
+        from ksadk.server.factory import get_state
+
+        local = get_state().local_interactions
+        if local is not None and await local.ensure() is not None:
+            return await _kernel_run_agent_action(
+                request, launch_context, invocation_identity, session=authorized_session,
+            )
+    from .local_kernel_control import require_idle_local_session
+
+    await require_idle_local_session(launch_context, run_session_id)
     resume_input = (
         extract_responses_resume_input(request.ResponsesInput)
         if request.ResponsesInput is not None
@@ -334,6 +348,8 @@ async def _kernel_run_agent_action(
     request: RunAgentActionRequest,
     launch_context,
     invocation_identity: PlatformIdentityContext,
+    *,
+    session=None,
 ):
     """kernel 路径（灰度 opt-in）：RunAgent -> AgentControlCommand -> receipt。
 
@@ -343,7 +359,7 @@ async def _kernel_run_agent_action(
     from .kernel_ingress import _kernel_submit
 
     run_user_id = _clean_optional_string(request.UserId) or "user"
-    session = await ensure_conversation_session(
+    session = session or await ensure_conversation_session(
         agent_id=request.AgentId,
         user_id=run_user_id,
         session_id=request.SessionId,
@@ -386,6 +402,18 @@ async def _kernel_run_agent_action(
     requested_model = _clean_optional_string(request.Model)
     if requested_model:
         runtime_options["model"] = requested_model
+    custom_metadata, request_metadata = _split_custom_metadata(request.Metadata)
+    if request.PreviousResponseId:
+        request_metadata["previous_response_id"] = request.PreviousResponseId
+    if (request.ApiFormat or "responses").strip().lower() == "responses":
+        request_metadata["responses_conversation"] = True
+    runtime_options["conversation"] = {
+        "model_metadata": request.ModelMetadata,
+        "model_options": request.ModelOptions,
+        "request_metadata": request_metadata,
+        "custom_metadata": custom_metadata,
+        "account_id": request.AccountId,
+    }
     receipt, trusted = await _kernel_submit(
         mapper="map_run_request",
         session_id=session_id,
@@ -395,6 +423,7 @@ async def _kernel_run_agent_action(
         source_kind="system",
         runtime_options=runtime_options or None,
         invocation_identity=invocation_identity,
+        launch_context=launch_context,
     )
     if receipt.status not in ("accepted", "duplicate"):
         return _kernel_error_response(receipt)

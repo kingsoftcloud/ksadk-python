@@ -23,7 +23,6 @@ import logging
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
 from typing import Literal
 
 from ksadk.interaction.provider import (
@@ -32,7 +31,6 @@ from ksadk.interaction.provider import (
     UnavailableInteractionProvider,
 )
 from ksadk.interaction.providers import default_interaction_providers
-from ksadk.kernel.approval_presentation import approval_presentation
 from ksadk.kernel.contracts import (
     ActivationLease,
     ActivationWriteGuard,
@@ -58,6 +56,7 @@ from ksadk.kernel.store import (
 )
 from ksadk.kernel.worker_controls import WorkerControlMixin
 from ksadk.kernel.worker_identity import prepare_worker_identity
+from ksadk.kernel.worker_interactions import WorkerInteractionMixin
 from ksadk.runtime.adapter import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
     RunHandle,
@@ -65,8 +64,6 @@ from ksadk.runtime.adapter import (
     StartRequest,
 )
 from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY
-
-from ksadk.kernel.worker_interactions import _WorkerInteractionMixin
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +104,7 @@ class WorkResult:
     error: Exception | None = None
 
 
-class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
+class AgentKernelWorker(WorkerInteractionMixin, WorkerControlMixin):
     def __init__(
         self,
         store: AgentKernelStore,
@@ -117,8 +114,10 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
         interaction_providers: Mapping[str, InteractionProvider] | None = None,
         start_request_defaults: Mapping[str, object] | None = None,
         session_service: object | None = None,
+        mcp_authorization: object | None = None,
     ) -> None:
         self._store = store
+        self._mcp_authorization = mcp_authorization
         self._adapter_factory = adapter_factory
         # SessionEventStore（typed RuntimeEventStore 的 envelope 写路径）。
         # 缺省时不落 runtime 事件，仅保证 stream 被消费到自然结束。
@@ -227,6 +226,47 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
 
         return self._executions.get(durable_run_id)
 
+    async def close(self) -> None:
+        """Stop process-owned streams without inventing durable user decisions."""
+        executions = list(self._executions.values())
+        self._executions.clear()
+        await self._close_attachments(executions)
+        self._background_stream_errors.clear()
+
+    async def close_retired_session_attachments(self, session_id: str, *, missing: bool = False) -> None:
+        # A deleted WAITING session may still own an idle adapter and waiters.
+        # Only release handles for runs already retired durably by the store.
+        retired = []
+        for run_id, execution in list(self._executions.items()):
+            if execution.handle.session_id != session_id:
+                continue
+            if not missing:
+                run = await self._store.load_run(run_id)
+                if (run is None or run.state is not RunState.INTERRUPTED
+                        or run.metadata.get("interruption_reason") not in ("session_deleted", "session_missing")):
+                    continue
+            if self._executions.get(run_id) is not execution:
+                continue
+            del self._executions[run_id]
+            self._background_stream_errors.pop(run_id, None)
+            for waiter in execution.managed_interaction_waiters.values():
+                waiter.close()
+            retired.append(execution)
+        await self._close_attachments(retired)
+
+    async def _close_attachments(self, executions: list[ActiveExecution]) -> None:
+        tasks = [item.stream_task for item in executions if item.stream_task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for item in executions:
+            try:
+                await item.adapter.close(item.handle)
+            except Exception:
+                logger.exception("Failed to close a process-owned runtime attachment")
+
     def take_stream_failure(self, run_id: str, activation: ActivationLease) -> Exception | None:
         """Hand a failed stream back only to its original fenced owner."""
         failure = self._background_stream_errors.pop(run_id, None)
@@ -275,6 +315,9 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
         session_id: str | None,
     ) -> WorkResult:
         fence = activation.fencing_token
+        if self._mcp_authorization is not None and session_id is not None:
+            if await self._mcp_authorization.tick(self, activation, session_id):
+                return WorkResult(outcome="completed")
         pending = await self._store.list_pending(
             agent_instance_id, session_id=session_id, fencing_token=fence
         )
@@ -369,6 +412,7 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
                         "status": "rejected",
                         "reason": getattr(error, "code", "unsupported"),
                     },
+                    run_id=await self._interaction_rejection_run_id(command),
                 ),
                 expected_fence=fence,
                 agent_instance_id=command.agent_instance_id,
@@ -390,6 +434,7 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
                             "status": "rejected",
                             "reason": error.code,
                         },
+                        run_id=await self._interaction_rejection_run_id(command),
                     ),
                     expected_fence=fence,
                     agent_instance_id=command.agent_instance_id,
@@ -500,9 +545,11 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
             # back to one occurrence without matching text or wall-clock time.
             metadata={
                 "command_id": str(command.command_id),
+                "authorization_ref": command.authorization_ref,
                 # Presentation is durable run metadata, never a model/provider option.
                 "presentation_profile": (
-                    "agent-block-v1" if command.payload.get("presentation_profile") == "agent-block-v1"
+                    "agent-block-v1"
+                    if command.payload.get("presentation_profile") == "agent-block-v1"
                     else "flat-v1"
                 ),
                 **({"execution_grant_id": grant_id} if grant_id else {}),
@@ -511,11 +558,13 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
                 "correlation_id": command.correlation_id,
             },
         )
-        created = await self._store.save_run_transition(pending, expected_fence=fence)
         prepare_continuation = getattr(adapter, "prepare_session_continuation", None)
         continuation_metadata = await self._session_continuation_metadata(
             command.session_id, include_run=callable(prepare_continuation),
         )
+        # A read timeout before provider start is safely retryable. Do not
+        # leave a PENDING run that makes the next attempt look uncertain.
+        created = await self._store.save_run_transition(pending, expected_fence=fence)
         defaults = self._start_request_defaults
         runtime_options = command.payload.get("runtime_options")
         if not isinstance(runtime_options, Mapping):
@@ -535,6 +584,15 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
             else default_model
         )
         request_config = dict(defaults.get("config") or {})
+        if command.source.kind == "agui":
+            # Only the documented UI context crosses this ingress; arbitrary
+            # client state cannot override trusted runner configuration.
+            agui_options = runtime_options.get("ag-ui")
+            if isinstance(agui_options, Mapping):
+                request_config["ag-ui"] = dict(agui_options)
+                request_config["copilotkit"] = {
+                    "actions": list(agui_options.get("tools") or [])
+                }
         requested_collaboration = str(
             runtime_options.get("collaborationMode")
             or runtime_options.get("collaboration_mode")
@@ -563,6 +621,14 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
         )
 
         conversation_metadata = {}
+        from ksadk.kernel.conversation_input import conversation_input
+
+        prepared_conversation = conversation_input(
+            command, invocation_identity=invocation_identity, invocation_id=run_id,
+        )
+        if prepared_conversation is not None:
+            conversation_metadata[CONVERSATION_PREPROCESSING_METADATA_KEY] = prepared_conversation
+            conversation_metadata["invocation_id"] = run_id
         if adapter.runtime.runtime_type == "harness" and self._session_events is not None:
             from ksadk.kernel.worker_history import harness_conversation_messages
 
@@ -622,12 +688,6 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
                 ),
             },
         )
-        start_snapshot = (
-            start_request.model_dump(mode="json")
-            if adapter.runtime.runtime_type == "adk"
-            or getattr(adapter, "requires_durable_start_request", False)
-            else None
-        )
         # Some adapters (notably ADK) consume their first native events inside
         # ``start`` in order to discover the invocation id.  Checkpoint/event
         # writes performed there must use the same Kernel-owned session service
@@ -648,6 +708,12 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
                     tenant_id=command.tenant_id,
                 )
             handle = await adapter.start(start_request)
+        start_snapshot = (
+            start_request.model_dump(mode="json")
+            if adapter.runtime.runtime_type == "adk"
+            or getattr(adapter, "requires_durable_start_request", False)
+            else None
+        )
         running_update: dict = {
             "state": RunState.RUNNING,
             "handle": handle.model_dump(mode="json"),
@@ -697,9 +763,15 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
         from ksadk.events.canonical import ContinuationCreated, ContinuationResumed, RunCompleted
         from ksadk.events.canonical_store import RuntimeEventStore
 
-        events = await RuntimeEventStore(self._session_events).list(session_id, limit=256)
+        types = ["continuation.created", "continuation.resumed"]
+        if include_run:
+            types.append("run.completed")
+        events = await RuntimeEventStore(self._session_events).latest(
+            session_id, event_types=types, limit=256,
+        )
         for event in reversed(events):
-            if include_run and isinstance(event, RunCompleted) and event.source.framework == "codex":
+            if (include_run and isinstance(event, RunCompleted)
+                    and event.source.framework == "codex"):
                 # A long turn can evict its initial continuation fact from this
                 # tail window; its completed fact carries the same thread scope.
                 completed_thread = str(event.source.metadata.get("thread_id") or "").strip()
@@ -833,195 +905,12 @@ class AgentKernelWorker(_WorkerInteractionMixin, WorkerControlMixin):
             if self._session_service is not None
             else nullcontext()
         )
-        with bind_run_event_authority(authority), session_scope:
+        from ksadk.mcp_runtime.oauth.langgraph import bind_oauth_extension
+        with bind_run_event_authority(authority), session_scope, bind_oauth_extension(self._mcp_authorization):
             return await self._consume_owned_stream(execution, run, guard)
 
-    async def _consume_owned_stream(
-        self,
-        execution: ActiveExecution,
-        run: RunRecord,
-        guard: ActivationWriteGuard,
-    ) -> None:
-        """消费 run 的事件流并把每个事实落为 family=runtime/v2 事件。
 
-        事件 run_id 统一改写为 durable run_id（adapter 私有 run_id 通过
-        RunRecord.metadata.runtime_run_id 记录映射）。stream 自然结束后
-        才把 run 收口为 COMPLETED；任何异常原样上抛。
-        """
 
-        from ksadk.events.canonical import (
-            InteractionRequested,
-            InteractionResolved,
-            RunCompleted,
-            RunInterrupted,
-            SourceRef,
-        )
-
-        runtime_store = None
-        recovery_reconciler = None
-        if self._session_events is not None:
-            # 延迟导入：ksadk.events 反向依赖 kernel.contracts，避免模块环。
-            from ksadk.events.canonical_store import RuntimeEventStore
-
-            runtime_store = RuntimeEventStore(self._session_events, session_id=run.session_id)
-            if execution.recovering:
-                from ksadk.kernel.recovery_projection import RecoveryEventReconciler
-
-                recovery_reconciler = RecoveryEventReconciler(
-                    await runtime_store.list(run.session_id, run_id=run.run_id)
-                )
-        current_run = run
-        terminal_state: RunState | None = None
-        last_source: SourceRef | None = None
-        async for event in execution.adapter.stream(execution.handle):
-            if isinstance(event, InteractionRequested):
-                current_run = await self._record_interaction_request(
-                    execution, current_run, event, guard
-                )
-                # The ledger's interaction/v1 SessionEvent is the single fact
-                # for this request.  Do not append a second runtime/v2 copy.
-                continue
-            if isinstance(event, InteractionResolved):
-                # The submitted command's ledger transition is first-wins and
-                # already emitted interaction.resolved; ignore framework echo.
-                continue
-            if (
-                isinstance(event, RunInterrupted)
-                and event.interaction_id
-                and current_run.state is RunState.WAITING
-            ):
-                # Framework adapters emit this after InteractionRequested to
-                # describe a temporarily blocked native turn.  The durable
-                # Kernel state for that condition is WAITING and the
-                # Interaction/v1 ledger is its authority.  Treating the
-                # companion run.interrupted event as a terminal fact closes the
-                # process-local adapter before a human can answer, so the later
-                # SubmitInteraction receipt can never resolve.  Do not publish
-                # a contradictory terminal runtime event; preserve the live
-                # execution until InteractionResolved resumes the same stream.
-                continue
-            if runtime_store is None:
-                continue
-            if event.run_id != current_run.run_id:
-                update: dict = {"run_id": run.run_id}
-                if getattr(event, "scope_id", None) == f"run:{execution.handle.run_id}":
-                    update["scope_id"] = f"run:{run.run_id}"
-                event = event.model_copy(update=update)
-            last_source = event.source
-            events_to_append = (
-                recovery_reconciler.accept(event) if recovery_reconciler is not None else (event,)
-            )
-            for candidate in events_to_append:
-                await runtime_store.append(candidate, guard=guard)
-            remember = getattr(execution.adapter, "remember_managed_checkpoint", None)
-            if callable(remember):
-                remember(execution.handle, event)
-            terminal_state = {
-                "run.completed": RunState.COMPLETED,
-                "run.failed": RunState.FAILED,
-                "run.canceled": RunState.CANCELLED,
-                "run.interrupted": RunState.INTERRUPTED,
-            }.get(event.event_type)
-            if terminal_state is not None:
-                # App-server style providers keep their notification channel
-                # open across turns.  A canonical terminal RuntimeEvent closes
-                # this run even when the transport itself does not produce
-                # EOF; waiting for EOF here leaves the durable run RUNNING and
-                # every later FIFO command queued forever.
-                break
-
-        if recovery_reconciler is not None and runtime_store is not None:
-            for candidate in recovery_reconciler.flush():
-                await runtime_store.append(candidate, guard=guard)
-
-        # ``submit_interaction`` may resolve a live provider while this task is
-        # blocked in the framework stream.  It transitions the durable run
-        # WAITING -> RUNNING, but ``current_run`` above is deliberately a
-        # local snapshot used to preserve event ordering.  Refresh it before
-        # deciding whether natural stream exhaustion can settle the run;
-        # otherwise a Codex approval continuation finishes successfully but
-        # remains permanently WAITING because this task still sees its stale
-        # pre-response snapshot.
-        latest_run = await self._store.find_active_run(run.agent_instance_id, run.session_id)
-        if latest_run is not None and latest_run.run_id == current_run.run_id:
-            current_run = latest_run
-
-        # ``RuntimeAdapter`` is expected to emit a terminal RuntimeEvent, but
-        # a number of framework streams naturally exhaust after their last
-        # progress/item event.  The Kernel is the lifecycle owner, so it must
-        # publish a fenced ``run.completed`` fact before recording COMPLETED.
-        # Otherwise foreground callers and Studio SSE wait forever even though
-        # the durable RunRecord says completion succeeded.
-        if terminal_state is None and current_run.state is not RunState.WAITING:
-            terminal_state = RunState.COMPLETED
-            if runtime_store is not None:
-                source = last_source or SourceRef(
-                    framework="ksadk",
-                    native_run_id=execution.runtime_run_id,
-                )
-                await runtime_store.append(
-                    RunCompleted(
-                        schema_version=2,
-                        event_id=f"{current_run.run_id}:kernel-completed",
-                        seq=0,
-                        timestamp=datetime.now(timezone.utc).timestamp(),
-                        run_id=current_run.run_id,
-                        scope_id=f"run:{current_run.run_id}",
-                        source=source,
-                        status="completed",
-                        output_refs=(),
-                    ),
-                    guard=guard,
-                )
-        if terminal_state is not None:
-            # Managed A2A waiters can end on their own deadline without a
-            # SubmitInteraction command. A terminal run must not leave their
-            # durable approval/input prompts pending in replay. Native provider
-            # interactions retain their existing lifecycle.
-            now = datetime.now(timezone.utc)
-            for record in await self._store.list_pending_interactions(
-                str(current_run.metadata.get("tenant_id") or ""), current_run.session_id
-            ):
-                if (
-                    record.run_id != current_run.run_id
-                    or record.agent_instance_id != current_run.agent_instance_id
-                    or record.provider_id != "managed-a2a"
-                ):
-                    continue
-                expired = record.expires_at is not None and datetime.fromisoformat(record.expires_at) <= now
-                settle = self._store.expire if expired else self._store.cancel
-                await settle(record.interaction_id, record.revision, guard=guard)
-                waiter = execution.managed_interaction_waiters.pop(record.interaction_id, None)
-                if waiter is not None:
-                    waiter.close()
-            current_run = await self._store.save_run_transition(
-                current_run.model_copy(update={"state": terminal_state}),
-                expected_fence=guard.fencing_token,
-            )
-        current = self._executions.get(execution.durable_run_id)
-        if (
-            terminal_state is not None
-            and current is not None
-            and current.handle == execution.handle
-        ):
-            self._executions.pop(execution.durable_run_id, None)
-        if terminal_state is not None:
-            # Each enqueue owns the adapter instance created in ``_start_run``.
-            # Once its stream is terminal there is no live interaction left to
-            # preserve, so release the provider transport as part of that same
-            # lifecycle.  Codex otherwise leaves one app-server child alive per
-            # turn; a later process trying to resume the persisted thread can
-            # then block behind the stale owner indefinitely.
-            try:
-                await execution.adapter.close(execution.handle)
-            except Exception:  # noqa: BLE001
-                # The durable terminal event and RunRecord are already fenced
-                # and committed.  A transport cleanup failure is observable but
-                # must not rewrite a successful run into a retryable command.
-                logger.exception(
-                    "failed to close terminal runtime transport for durable run %s",
-                    execution.durable_run_id,
-                )
 
     # 控制命令必须作用于 active Run 且本进程持有 live execution。
     def _replace_handle(self, execution: ActiveExecution, handle: RunHandle) -> ActiveExecution:

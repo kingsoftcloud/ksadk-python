@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from .call_budget import call_room, remaining_calls
 from .ports import ToolDefinition, ToolRequest, ToolResourceUsage, ToolResult
 from .state import RunSnapshot
 
@@ -27,20 +28,19 @@ def validate_child_budget_admission(request: ToolRequest, result: ToolResult) ->
     if reservation is None:
         return
     remaining = request.budget
-    model_slots = remaining.max_model_calls_remaining - (
-        0 if remaining.parent_finalization_reserved else 1
-    )
+    model_slots = remaining_calls(remaining.max_model_calls_remaining, 0,
+                                 0 if remaining.parent_finalization_reserved else 1)
     if (
         request.definition.child_budget_policy not in {"start/v1", "delegate/v1"}
         or reservation.parent_operation_key != request.operation_key
         or reservation.parent_tool_call_id != request.call.call_id
-        or reservation.max_model_calls > model_slots
-        or reservation.max_tool_calls + (
+        or not call_room(model_slots, 0, reservation.max_model_calls)
+        or not call_room(remaining.max_tool_calls_remaining, 0, reservation.max_tool_calls + (
             # Dispatcher grants already exclude the invoking parent calls.
             # Legacy start also reserves an explicit collection/control slot;
             # owned delegates use host collection without an extra tool fee.
             0 if request.definition.child_budget_policy == "delegate/v1" else 1
-        ) > remaining.max_tool_calls_remaining
+        ))
     ):
         # An owner breached its admission contract after dispatch. Do not
         # silently accept this or encourage a second, unaccounted launch.

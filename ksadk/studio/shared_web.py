@@ -238,19 +238,28 @@ class StudioSharedWebBridge:
         messages: list[dict[str, Any]] = []
         sequence = 0
         for run in runs:
-            sequence += 1
-            messages.append(
-                {
-                    "MessageId": f"{run.id}:user",
-                    "Role": "user",
-                    "Content": {"text": run.input},
-                    "Timestamp": self._timestamp(run.started_at),
-                    "SeqId": sequence,
-                    "InvocationId": run.id,
-                }
+            events = self.studio.event_store.events(run.id)
+            notification = any(
+                event.type == "run.created" and event.data.get("notification") is True
+                for event in events
             )
+            # Notifications retain their source input for immutable runtime
+            # binding, but that is not another user submission. Reserve its
+            # old sequence slot so persisted history cursors remain valid.
+            sequence += 1
+            if not notification:
+                messages.append(
+                    {
+                        "MessageId": f"{run.id}:user",
+                        "Role": "user",
+                        "Content": {"text": run.input},
+                        "Timestamp": self._timestamp(run.started_at),
+                        "SeqId": sequence,
+                        "InvocationId": run.id,
+                    }
+                )
             last_steer_at = None
-            for event in self.studio.event_store.events(run.id):
+            for event in events:
                 if event.type != "run.steer_requested":
                     continue
                 text = event.data.get("text")
@@ -1194,6 +1203,22 @@ class StudioSharedWebBridge:
             }
         else:
             return None
+        if event_type.startswith(("tool.", "command.")):
+            from ksadk.harness.tool_display_contract import safe_tool_display
+
+            # Live Responses must carry the same curated receipt as replay.
+            # Never reconstruct presentation from private arguments/results.
+            # Older completion events can omit it; retain their start receipt.
+            for source_data in (data, started):
+                runtime_event = source_data.get("runtimeEvent") or {}
+                source = runtime_event.get("source") or {}
+                metadata = source.get("metadata") or {}
+                raw_display = metadata.get("tool_display")
+                if raw_display is not None:
+                    display = safe_tool_display(raw_display)
+                    if display is not None:
+                        item["tool_display"] = display
+                    break
         response_event = "response.output_item.done" if done else "response.output_item.added"
         return response_event, {"type": response_event, "item": item}
 
@@ -1218,10 +1243,11 @@ class StudioSharedWebBridge:
         *,
         invocation_id: str,
         delta: str,
+        item_id: str | None = None,
     ) -> dict[str, Any]:
         return {
             "type": event_name,
-            "item_id": f"msg_{invocation_id}",
+            "item_id": item_id or f"msg_{invocation_id}",
             "output_index": 0,
             "content_index": 0,
             "delta": delta,

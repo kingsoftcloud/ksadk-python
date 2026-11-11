@@ -14,6 +14,8 @@ import logging
 import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import wraps
+from threading import RLock
 from typing import Any, Optional
 from urllib.parse import unquote
 
@@ -68,6 +70,8 @@ _exporter_instance: Optional[InMemoryExporter] = None
 _tracing_initialized: bool = False
 _adk_instrumented: bool = False
 _managed_span_processors: list[Any] = []
+_routed_processor: Any = None
+_initialization_lock = RLock()
 
 
 @dataclass(frozen=True)
@@ -597,6 +601,16 @@ def _register_span_processor(provider: Any, processor: Any) -> None:
     _managed_span_processors.append(processor)
 
 
+def _serialized_setup(function):
+    @wraps(function)
+    def initialize(*args, **kwargs):
+        with _initialization_lock:
+            return function(*args, **kwargs)
+
+    return initialize
+
+
+@_serialized_setup
 def setup_tracing(
     enable_inmemory: bool = True,
     enable_langfuse: bool | None = None,
@@ -742,6 +756,17 @@ def setup_tracing(
         except ImportError:
             logger.warning("OTLP exporter not installed")
 
+    _instrument_frameworks(enable_adk_instrumentation)
+
+    # Register graceful shutdown
+    atexit.register(shutdown_tracing)
+
+    _tracing_initialized = True
+    return _exporter_instance
+
+
+def _instrument_frameworks(enable_adk_instrumentation: bool) -> None:
+    global _adk_instrumented
     # 5. ADK Auto-Instrumentation (for Google ADK projects)
     if enable_adk_instrumentation and not _adk_instrumented:
         try:
@@ -775,11 +800,41 @@ def setup_tracing(
         except Exception as e:
             logger.error(f"LangChain instrumentation failed: {e}")
 
-    # Register graceful shutdown
-    atexit.register(shutdown_tracing)
 
+@_serialized_setup
+def setup_routed_tracing(*, enable_adk_instrumentation: bool = True, **limits):
+    """Initialize explicit request routing once, before any static setup call.
+
+    Returns the owned processor for delivery status and bounded force_flush.
+    Static environment credentials are never consulted by this mode.
+    """
+    global _tracing_initialized, _routed_processor
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from ksadk.tracing.routed import RoutedSpanProcessor, _routed_resource
+
+    if _tracing_initialized:
+        if _routed_processor is not None:
+            return _routed_processor
+        raise RuntimeError("Cannot enable routed tracing after static tracing; restart required")
+    provider = trace.get_tracer_provider()
+    if hasattr(provider, "add_span_processor"):
+        processors = getattr(
+            getattr(provider, "_active_span_processor", None), "_span_processors", ()
+        )
+        if processors:
+            raise RuntimeError("Cannot enable routed tracing with existing static span processors")
+    else:
+        provider = TracerProvider(resource=_routed_resource(Resource.create()))
+        trace.set_tracer_provider(provider)
+    processor = RoutedSpanProcessor(**limits)
+    _register_span_processor(provider, processor)
+    _routed_processor = processor
     _tracing_initialized = True
-    return _exporter_instance
+    _instrument_frameworks(enable_adk_instrumentation)
+    atexit.register(shutdown_tracing)
+    return processor
 
 
 def shutdown_tracing():

@@ -62,6 +62,7 @@ const mocks = vi.hoisted(() => {
   return {
     chat,
     useAgentChat: vi.fn(() => chat),
+    mcpAuthorization: vi.fn(),
     facadeOptions: [] as Array<Record<string, unknown>>,
     timelineProps: null as Record<string, unknown> | null,
     composerProps: null as Record<string, unknown> | null,
@@ -74,6 +75,7 @@ vi.mock("@kingsoftcloud/ksadk-web/hooks", () => ({
 vi.mock("@kingsoftcloud/ksadk-web/runtime", () => ({
   AgentEngineClient: class { postJsonAction = vi.fn(); },
   ApiFacadeImpl: class {
+    mcpAuthorization = mocks.mcpAuthorization;
     constructor(options: Record<string, unknown>) {
       mocks.facadeOptions.push(options);
     }
@@ -97,6 +99,7 @@ vi.mock("./ConfirmDialog", () => ({ ConfirmDialog: () => <div data-testid="confi
 
 describe("ChatWorkspace shared conversation composition", () => {
   beforeEach(() => {
+    localStorage.clear();
     // Preserve durable-ledger behavior within a case, without prior cases' input.
     new OutboxStore().clear();
     vi.restoreAllMocks();
@@ -508,6 +511,7 @@ describe("ChatWorkspace shared conversation composition", () => {
       approvalEnabled: true,
       thinkingEnabled: true,
       pendingInteractions: mocks.chat.pendingInteractions,
+      mcpAuthorization: mocks.mcpAuthorization,
     });
 
     (mocks.timelineProps?.onStopGeneration as () => void)();

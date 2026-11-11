@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-AGUI_PROTOCOL_VERSION = "0.1.19"
-AGUI_LANGGRAPH_VERSION = "0.0.42"
-COPILOTKIT_VERSION = "0.1.94"
+AGUI_PROTOCOL_VERSION = "1.0"
+AGUI_PACKAGE_VERSION = "1.0.0"
+AGUI_LANGGRAPH_VERSION = "0.0.47"
+COPILOTKIT_VERSION = "0.1.96"
+AGUI_TEXT_MESSAGE_SNAPSHOT_NAME = "ksadk.text_message_snapshot"
 
 _REQUIRED_DISTRIBUTIONS = {
-    "ag-ui-protocol": AGUI_PROTOCOL_VERSION,
+    "ag-ui-protocol": AGUI_PACKAGE_VERSION,
     "ag-ui-langgraph": AGUI_LANGGRAPH_VERSION,
     "copilotkit": COPILOTKIT_VERSION,
 }
@@ -26,6 +29,7 @@ class AGUIConfig:
     agent_name: str = "ksadk"
     runtime_type: str = "langgraph"
     preferred: bool = True
+    auto_local_interactions: bool = True
 
 
 def agui_dependency_errors() -> list[str]:
@@ -46,6 +50,14 @@ def agui_dependencies_available() -> bool:
     return not agui_dependency_errors()
 
 
+def hosted_agui_requested(runtime_type: str) -> bool:
+    if runtime_type != "langgraph" or not os.getenv("AGENT_RUNTIME_ID"):
+        return True
+    enabled = {"1", "true", "yes", "on"}
+    return all(os.getenv(key, "").strip().lower() in enabled
+               for key in ("KSADK_ENABLE_KERNEL", "AGENT_KERNEL_ENABLED"))
+
+
 def agui_config_for_detection(detection: Any) -> AGUIConfig:
     """Build the production AG-UI config from a detected framework.
 
@@ -59,7 +71,7 @@ def agui_config_for_detection(detection: Any) -> AGUIConfig:
     runtime_type = str(getattr(framework_type, "value", framework_type) or "").lower()
     agent_name = str(getattr(detection, "name", None) or "ksadk")
     return AGUIConfig(
-        enabled=runtime_type in ("langgraph", "codex") and agui_dependencies_available(),
+        enabled=runtime_type in ("langgraph", "codex") and hosted_agui_requested(runtime_type) and agui_dependencies_available(),
         agent_name=agent_name,
         runtime_type=runtime_type or "unknown",
     )
@@ -82,7 +94,9 @@ def require_agui_dependencies() -> None:
 __all__ = [
     "AGUIConfig",
     "AGUI_LANGGRAPH_VERSION",
+    "AGUI_PACKAGE_VERSION",
     "AGUI_PROTOCOL_VERSION",
+    "AGUI_TEXT_MESSAGE_SNAPSHOT_NAME",
     "COPILOTKIT_VERSION",
     "agui_dependencies_available",
     "agui_dependency_errors",

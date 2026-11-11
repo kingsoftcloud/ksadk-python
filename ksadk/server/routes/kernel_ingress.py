@@ -38,6 +38,7 @@ async def _kernel_submit(
     source_kind: str,
     runtime_options: dict[str, Any] | None = None,
     invocation_identity: PlatformIdentityContext | None = None,
+    launch_context=None,
 ) -> tuple[AgentControlReceipt, ingress.TrustedRuntimeContext]:
     trusted = ingress.trusted_context(
         source_kind=source_kind,
@@ -47,6 +48,7 @@ async def _kernel_submit(
         # the same session's canonical stream.  It remains session-bound, but
         # needs explicit authority for both operations.
         operations=("enqueue", "subscribe_events"),
+        launch_context=launch_context,
     )
     correlation_kwarg = {
         "map_run_request": "invocation_id",
@@ -133,6 +135,10 @@ def _responses_projector(envelope: Any) -> tuple[str, dict[str, Any]] | None:
 
     payload = envelope.payload or {}
     event_type = envelope.event_type
+    if event_type.startswith("mcp.authorization."):
+        return event_type, {"event_type": event_type, "family": "control",
+            "session_id": envelope.session_id, "run_id": envelope.run_id,
+            "seq": envelope.seq, "payload": payload}
     if event_type == "interaction.requested":
         # Runtime facts precede the authoritative Kernel interaction record.
         # Projecting them as approvals closes the foreground stream before
@@ -144,7 +150,9 @@ def _responses_projector(envelope: Any) -> tuple[str, dict[str, Any]] | None:
             return "interaction.requested", {
                 "event_type": "interaction.requested",
                 "family": "interaction",
-                "session_id": str(getattr(envelope, "session_id", "") or payload.get("session_id") or ""),
+                "session_id": str(
+                    getattr(envelope, "session_id", "") or payload.get("session_id") or ""
+                ),
                 "run_id": str(getattr(envelope, "run_id", "") or payload.get("run_id") or ""),
                 "seq": getattr(envelope, "seq", 0),
                 "payload": payload,
@@ -257,6 +265,16 @@ async def kernel_conversation_turn(
         after_seq=int(receipt.accepted_seq or 0),
         projector=_new_responses_projector(),
     ):
+        if projected and projected[0] == "interaction.requested":
+            payload = build_payload(output_text)
+            data = payload.get("Data", payload)
+            data["status"] = "incomplete"
+            data["incomplete_details"] = {"reason": "interaction_required"}
+            data["interaction"] = projected[1]["payload"]
+            return JSONResponse(
+                status_code=ingress.receipt_http_status(receipt), content=payload,
+                headers=ingress.receipt_response_headers(receipt),
+            )
         if projected and projected[0] == "response.completed":
             output_text = str(projected[1].get("output_text") or output_text)
             break

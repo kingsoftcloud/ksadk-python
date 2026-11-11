@@ -12,6 +12,7 @@ export function compactHarnessMessages(messages: Message[]): Array<Message & { s
     if (!turn.length) return;
     const activities = new Map<string, string>();
     const blocks: Block[] = [];
+    const publicThinking = new Map<string, number>();
     let thinking = false;
     const summarize = (text: string) => {
       // Older Responses snapshots concatenated adjacent bullet lists without
@@ -30,7 +31,7 @@ export function compactHarnessMessages(messages: Message[]): Array<Message & { s
     for (const message of turn) {
       thinking ||= Boolean(message.reasoning);
       summarize(message.reasoning || "");
-      const source = message.blocks?.length ? message.blocks : [
+      const source: Block[] = message.blocks?.length ? message.blocks : [
         ...(message.reasoning ? [{ id: `${message.id}:thought`, type: "thinking" as const, status: "done" as const, content: message.reasoning }] : []),
         ...Object.entries(message.tools || {}).map(([key, tool]) => ({
           id: key, type: "tool" as const, toolName: tool.name, args: tool.args,
@@ -49,7 +50,27 @@ export function compactHarnessMessages(messages: Message[]): Array<Message & { s
           if (tool) block = { ...block, status: tool.status, args: tool.args, output: tool.output,
             extra: { ...block.extra, ...tool } };
         }
-        if (block.type === "thinking") { thinking = true; summarize(block.content); continue; }
+        if (block.type === "thinking") {
+          if (block.source === "public_summary" || block.source === "provider_reasoning") {
+            // Hosted canonical replay prefixes the same provider item id that
+            // the Responses stream uses directly. They are snapshots of one
+            // segment, not two segments. Retain its first timeline position
+            // and stable React key while accepting the latest snapshot.
+            const identity = `${block.source}:${block.id.replace(/^conversation-block:/, "")}`;
+            const index = publicThinking.get(identity);
+            if (index === undefined) {
+              publicThinking.set(identity, blocks.length);
+              blocks.push(block);
+            } else {
+              const previous = blocks[index];
+              if (previous.type === "thinking" && previous.status === "streaming") {
+                blocks[index] = { ...block, id: previous.id };
+              }
+            }
+          }
+          else { thinking = true; summarize(block.content); }
+          continue;
+        }
         // Pending/rejected approvals and failures stay actionable, never compacted away.
         if (block.type === "tool" && !block.extra?.approvalRequestId && block.status !== "error" && block.status !== "paused") {
           const name = block.toolName.toLowerCase();
@@ -62,7 +83,14 @@ export function compactHarnessMessages(messages: Message[]): Array<Message & { s
           blocks.push({
             id: block.id, type: "tool", toolName: block.toolName,
             status: block.status, args: "",
-            extra: { summary: block.status === "running" ? "正在运行" : "已完成" },
+            extra: {
+              summary: block.status === "running" ? "正在运行" : "已完成",
+              ...(typeof block.extra?.callId === "string" ? { callId: block.extra.callId } : {}),
+              ...(typeof block.extra?.call_id === "string" ? { call_id: block.extra.call_id } : {}),
+              ...(block.extra?.toolDisplay && typeof block.extra.toolDisplay === "object"
+                && (block.extra.toolDisplay as { version?: unknown }).version === "tool-display/v1"
+                ? { toolDisplay: block.extra.toolDisplay } : {}),
+            },
           });
           continue;
         }
@@ -87,8 +115,8 @@ export function compactHarnessMessages(messages: Message[]): Array<Message & { s
     } else {
       // Separate runs must not inherit one another's progress or failure state.
       const previous = turn[turn.length - 1];
-      const previousRun = previous?.invocationId || previous?.runId || previous?.responseId;
-      const currentRun = message.invocationId || message.runId || message.responseId;
+      const previousRun = previous?.runId || previous?.invocationId || previous?.responseId;
+      const currentRun = message.runId || message.invocationId || message.responseId;
       if (previousRun && currentRun && previousRun !== currentRun) flush();
       turn.push(message);
     }

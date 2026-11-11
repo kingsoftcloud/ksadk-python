@@ -1,5 +1,8 @@
 # All dotfiles/dotdirs (e.g. .env, .agentengine, .xxx)
 .*
+# Only the reviewed provenance manifest belongs in Git; archives stay local.
+ksadk/studio/react-ui/vendor/*
+!ksadk/studio/react-ui/vendor/ksadk-web-source.json
 !.git*
 !.dockerignore
 !.worktree

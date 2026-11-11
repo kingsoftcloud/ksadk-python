@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 
-from .completion_text import abandon_continuation, complete_continuation, fragment_digest
+from .call_budget import call_room
+from .completion_text import complete_continuation, fragment_digest
+from .context_continuation import ContextRuntimeError, restart_continuation
 from .delivery_review import delivery_review_readers, reduce_delivery_review, review_pending
 from .final_output import normalize_final_output
 from .final_submission import FINAL_SUBMISSION_TOOL, submitted_final_text
@@ -41,6 +43,12 @@ from .tool_budget import (
     refuse_pending_batch,
     refused_pending_tools,
     tools_exhausted,
+)
+from .tool_error_recovery import (
+    advance_diagnostic_recovery,
+    recovery_boundary,
+    refuse_undiagnosed_action,
+    reserve_diagnostic_trial,
 )
 from .tool_error_streak import advance_tool_error_streak, tool_error_streak_exhausted
 from .tool_hook_runtime import (
@@ -271,9 +279,11 @@ def next_transition(snapshot: RunSnapshot, config: RunConfiguration) -> CommitBa
             "run.started" if snapshot.event_seq == 0 else "run.phase_changed",
         )
     if phase == RunPhase.PREPARING_CONTEXT:
+        if recovery := recovery_boundary(snapshot, config):
+            return recovery
         if resolved := host_resolved_candidate(snapshot, config):
             return resolved
-        if snapshot.model_budget_claimed >= config.limits.max_model_calls:
+        if not call_room(config.limits.max_model_calls, snapshot.model_budget_claimed):
             updated = finish(snapshot, "budget_exhausted", "model_budget_exhausted")
         else:
             updated = move(snapshot, RunPhase.REQUESTING_MODEL)
@@ -291,10 +301,14 @@ def next_transition(snapshot: RunSnapshot, config: RunConfiguration) -> CommitBa
 
         return capture_request_context(snapshot, prepare_effect(snapshot, "model", payload), config)
     if phase == RunPhase.EXECUTING_TOOLS:
+        if refused := refuse_undiagnosed_action(snapshot):
+            return refused
         if hook := prepare_tool_hook(snapshot, config):
             return hook
         if not snapshot.pending_tools:
-            if tool_error_streak_exhausted(snapshot):
+            if recovery := recovery_boundary(snapshot, config):
+                return recovery
+            if tool_error_streak_exhausted(snapshot) and snapshot.tool_error_recovery is None:
                 updated = finish(snapshot, "blocked", "repeated_tool_error_no_progress")
                 return commit_transition(
                     snapshot,
@@ -341,7 +355,7 @@ def next_transition(snapshot: RunSnapshot, config: RunConfiguration) -> CommitBa
                 dispatch_tool_budget(snapshot, config, batch_size=len(calls), index=index)
                 .model_dump(mode="json") for index in range(len(calls))
             ]
-        return prepare_effect(snapshot, "tool", payload)
+        return reserve_diagnostic_trial(snapshot, prepare_effect(snapshot, "tool", payload))
     if phase == RunPhase.VERIFYING:
         if any(child.settled_usage_digest is None for child in snapshot.child_budget_reservations):
             return commit_transition(
@@ -517,6 +531,16 @@ def reduce_model(
             return finish(updated, "budget_exhausted", "tool_call_after_budget_exhaustion")
         if finalization_only(snapshot, config):
             return finish(updated, "budget_exhausted", "tool_call_after_finalization_reserve")
+        from .delivery_artifacts import delivery_read_outside_paths
+
+        if delivery_read_outside_paths(snapshot, config, result.tool_calls):
+            declared = begin_tool_batch(snapshot, updated, result)
+            return move(declared, RunPhase.PREPARING_CONTEXT).model_copy(update={
+                "pending_tools": (),
+                "messages": (*declared.messages, *refused_pending_tools(
+                    declared, reason="delivery_read_path_not_written",
+                )),
+            })
         advertised = {tool.name for tool in model_tool_surface(snapshot, config)}
         if any(call.name not in advertised for call in result.tool_calls):
             # Never execute a batch containing a call outside current admission. Pair all
@@ -560,8 +584,7 @@ def reduce_model(
         if config.final_submission_schema is not None:
             errors = snapshot.model_errors + 1
             if errors > config.profile.max_retries or (
-                updated.model_budget_claimed
-                >= config.limits.max_model_calls
+                not call_room(config.limits.max_model_calls, updated.model_budget_claimed)
             ):
                 return finish(updated, "unverified", "final_submission_missing")
             # The provider completed a real assistant step, but used ordinary
@@ -612,11 +635,16 @@ def reduce_model(
     if kind == "output_limit":
         if snapshot.continuations >= config.profile.max_continuations:
             if snapshot.output_restarts < config.limits.max_output_restarts:
+                try:
+                    messages, history = restart_continuation(snapshot, result.text)
+                except ContextRuntimeError as exc:
+                    return finish(updated, "blocked", str(exc))
                 return move(updated, RunPhase.PREPARING_CONTEXT).model_copy(
                     update={
                         "continuations": 0,
                         "output_restarts": snapshot.output_restarts + 1,
-                        "messages": abandon_continuation(snapshot.messages, result.text),
+                        "messages": messages,
+                        "compaction_history": history,
                     }
                 )
             return finish(updated, "unverified", "continuation_budget_exhausted")
@@ -746,6 +774,11 @@ def reduce_tool(
                 "interaction": None,
             }
         )
+    from .background_commands import remember_command
+
+    updated = updated.model_copy(update={
+        "background_commands": remember_command(snapshot, result, definition),
+    })
     budget_snapshot, usage = apply_child_budget(snapshot, result, definition)
     updated = updated.model_copy(update={"child_approval": None})
     updated = updated.model_copy(update={
@@ -785,8 +818,11 @@ def reduce_tool(
         if previous is not None and previous != ref:
             return finish(updated, "failed", "artifact_reference_conflict")
         artifacts[ref.uri] = ref
+    from .delivery_artifacts import remember_delivery_write
+
     values = {
         "pending_tools": snapshot.pending_tools[1:],
+        "delivery_artifacts": remember_delivery_write(snapshot, result, definition),
         "messages": append_executed_tool_message(snapshot.messages, message),
         "artifact_refs": tuple(ref.model_dump(mode="json") for ref in artifacts.values()),
         "workspace_modified_paths": tuple(
@@ -843,6 +879,7 @@ def reduce_tool(
         except ValueError:
             # A conforming reserved port cannot return ok for an invalid plan.
             return finish(updated, "failed", "invalid_task_progress_receipt")
+    values.update(advance_diagnostic_recovery(snapshot, result, definition, values))
     return updated.model_copy(update=values)
 
 

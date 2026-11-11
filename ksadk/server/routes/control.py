@@ -27,6 +27,7 @@ from ksadk.conversations.runtime_streaming import stream_runtime_responses_conve
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
 from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.server.factory import get_runtime_execution, get_state
+from ksadk.sessions.persistence import persistence_probe_timeout
 
 from ..invocation_identity import (
     coerce_trusted_invocation_identity,
@@ -465,7 +466,7 @@ async def _runtime_capability_snapshot(*, force: bool) -> Any:
 
     state = get_state()
     runner = _resolve_active_runner()
-    wait_timeout = max(0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2"))
+    wait_timeout = persistence_probe_timeout()
     return await state.persistence_capability.get_snapshot(
         runner=runner,
         framework=_runner_framework(runner),

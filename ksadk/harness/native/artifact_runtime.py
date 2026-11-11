@@ -26,6 +26,7 @@ from ksadk.tools.captured_source_artifact import CAPTURED_SOURCE_MIME, encode_ca
 from .model import ModelImageContent, ModelTextContent
 from .ports import (
     ArtifactPort,
+    ArtifactReadRequest,
     ArtifactRef,
     ArtifactWriteRequest,
     ToolModelObservation,
@@ -75,6 +76,44 @@ def _valid_ref(ref: ArtifactRef, content: str, mime_type: str = _ARTIFACT_MIME) 
         and ref.content_hash == "sha256:" + hashlib.sha256(encoded).hexdigest()
         and ref.mime_type == mime_type
     )
+
+
+async def _earned_source_ref(
+    artifacts: ArtifactPort, request: ToolRequest, content: str,
+) -> ArtifactRef | None:
+    """Reuse exact immutable source, never an execution receipt or a guessed URI.
+
+    Each operation still keeps its own canonical ToolResult. Only its source
+    locator is shared, after the bound port verifies the earned ref and every
+    stored byte. Missing/corrupt/foreign artifacts fall back to a fresh write.
+    """
+    encoded = content.encode("utf-8")
+    content_hash = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    for ref in request.available_artifacts:
+        if (ref.mime_type != CAPTURED_SOURCE_MIME or ref.size_bytes != len(encoded)
+                or ref.content_hash != content_hash):
+            continue
+        try:
+            offset = 0
+            while offset < len(content):
+                page = await artifacts.read(ArtifactReadRequest(
+                    scope=request.scope, run_id=request.run_id, ref=ref,
+                    offset_chars=offset, limit_chars=min(32000, len(content) - offset),
+                ))
+                end = min(offset + 32000, len(content))
+                if (page.ref != ref or page.offset_chars != offset
+                        or page.next_offset_chars != end
+                        or page.content != content[offset:end]
+                        or page.complete != (end == len(content))):
+                    break
+                offset = end
+            else:
+                return ref
+        except Exception:
+            # Reuse cannot grant authority or repair a damaged old artifact.
+            # The new observation may still be archived normally below.
+            continue
+    return None
 
 
 def _bounded_content(content: dict, status: str, max_bytes: int) -> dict:
@@ -245,7 +284,11 @@ async def govern_tool_result(
     ref: ArtifactRef | None = None
     if artifacts is not None:
         try:
-            written = await artifacts.write(
+            reused = (
+                await _earned_source_ref(artifacts, request, archive_payload)
+                if archive_mime == CAPTURED_SOURCE_MIME else None
+            )
+            written = reused or await artifacts.write(
                 ArtifactWriteRequest(
                     scope=request.scope,
                     run_id=request.run_id,

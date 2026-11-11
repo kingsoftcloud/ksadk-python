@@ -28,6 +28,15 @@ _PRIVATE_KOP_HOSTS = frozenset(
 )
 
 
+class SkillServiceHTTPError(ValueError):
+    """Service metadata failure retaining only safe transport classification."""
+
+    def __init__(self, action: str, status_code: int):
+        self.action = action
+        self.status_code = status_code
+        super().__init__(f"Skill Service request failed (HTTP {status_code})")
+
+
 class SkillServiceClient:
     def __init__(
         self,
@@ -36,6 +45,8 @@ class SkillServiceClient:
         token: str = "",
         access_key: str = "",
         secret_key: str = "",
+        security_token: str = "",
+        custom_source: str = "",
         account_id: str = "",
         region: str = "",
         api_version: str = "",
@@ -53,20 +64,32 @@ class SkillServiceClient:
         resolve_env = _env if allow_env_fallback else lambda *names: ""
         self.base_url = _normalize_base_url(base_url)
         self.token = token
+        self.security_token = security_token
         self.access_key = access_key or resolve_env(
             "KSADK_SKILL_SERVICE_ACCESS_KEY", "KSYUN_ACCESS_KEY", "KS3_ACCESS_KEY"
         )
         self.secret_key = secret_key or resolve_env(
             "KSADK_SKILL_SERVICE_SECRET_KEY", "KSYUN_SECRET_KEY", "KS3_SECRET_KEY"
         )
+        if access_key or secret_key or security_token:
+            if bool(access_key) != bool(secret_key):
+                raise ValueError("Both signing credentials are required")
+            if token:
+                raise ValueError("Skill clients cannot mix token and signing credentials")
+            if security_token and not (access_key and secret_key):
+                raise ValueError("Security token requires signing credentials")
+            if not self._is_kop_mode():
+                raise ValueError("Signing credentials require a canonical KOP endpoint")
         self.account_id = account_id or resolve_env(
             "KSADK_SKILL_SERVICE_ACCOUNT_ID", "KSYUN_ACCOUNT_ID"
         )
         self.logical_region = (
-            region or resolve_env("KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION") or "cn-beijing-6"
+            (region or resolve_env("KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION") or "cn-beijing-6")
+            if allow_env_fallback
+            else region.strip()
         )
         if not allow_env_fallback:
-            if not region or region.strip().lower() == "pre-online":
+            if region.strip().lower() == "pre-online":
                 raise ValueError("Explicit Skill clients require a concrete region")
             if token and (access_key or secret_key):
                 raise ValueError("Explicit Skill clients cannot mix token and signing credentials")
@@ -77,7 +100,7 @@ class SkillServiceClient:
             if allow_env_fallback
             else self.logical_region.strip()
         )
-        self.custom_source = (
+        self.custom_source = custom_source or (
             _resolve_custom_source(self.logical_region) if allow_env_fallback else ""
         )
         self.api_version = (
@@ -263,27 +286,52 @@ class SkillServiceClient:
     def _get_json(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if self._is_kop_mode():
             return self._get_json_kop(action, params)
-        with httpx.Client(**self._client_kwargs()) as client:
-            response = client.get(self.action_url(action), params=params, headers=self._headers())
-            response.raise_for_status()
-            return self._decode_response(action, response)
+        try:
+            with httpx.Client(**self._client_kwargs()) as client:
+                response = client.get(
+                    self.action_url(action), params=params, headers=self._headers()
+                )
+                response.raise_for_status()
+                return self._decode_response(action, response)
+        except httpx.HTTPStatusError as error:
+            raise SkillServiceHTTPError(action, error.response.status_code) from None
+        except httpx.HTTPError:
+            raise ValueError("Skill Service request failed") from None
 
     def _post_json(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
-        with httpx.Client(**self._client_kwargs()) as client:
-            response = client.post(self.action_url(action), json=payload, headers=self._headers())
-            response.raise_for_status()
-            return self._decode_response(action, response)
+        try:
+            with httpx.Client(**self._client_kwargs()) as client:
+                response = client.post(
+                    self.action_url(action), json=payload, headers=self._headers()
+                )
+                response.raise_for_status()
+                return self._decode_response(action, response)
+        except httpx.HTTPStatusError as error:
+            raise SkillServiceHTTPError(action, error.response.status_code) from None
+        except httpx.HTTPError:
+            raise ValueError("Skill Service request failed") from None
 
     def _decode_response(self, action: str, response: httpx.Response) -> dict[str, Any]:
-        data = response.json()
+        return self._decode_payload(action, response.json())
+
+    def _redact(self, value: Any) -> str:
+        text = str(value)
+        for secret in (self.token, self.access_key, self.secret_key, self.security_token):
+            if secret:
+                text = text.replace(secret, "[redacted]")
+        return text
+
+    def _decode_payload(self, action: str, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValueError(f"Skill Service returned non-object response for {action}")
         code = data.get("Code", data.get("code"))
         if code not in (None, 0, 200, "0", "200"):
-            request_id = str(data.get("RequestId") or data.get("request_id") or "")
-            message = str(data.get("Message") or data.get("message") or "")
+            request_id = self._redact(data.get("RequestId") or data.get("request_id") or "")
+            message = self._redact(
+                data.get("Message") or data.get("message") or data.get("Error") or ""
+            )
             raise ValueError(
-                f"Skill Service {action} failed: code={code}, "
+                f"Skill Service {action} failed: code={self._redact(code)}, "
                 f"request_id={request_id}, message={message}"
             )
         return data
@@ -321,38 +369,49 @@ class SkillServiceClient:
     def _get_json_kop(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         query = {"Action": action, "Version": self.api_version, **params}
         headers = self._headers(action=action)
-        if self.transport is not None:
-            with httpx.Client(**self._client_kwargs()) as client:
-                response = client.get(self._kop_base_url() + "/", params=query, headers=headers)
-                response.raise_for_status()
-                return self._decode_response(action, response)
+        if self.token or (self.transport is not None and not self._auth.is_enabled):
+            try:
+                with httpx.Client(**self._client_kwargs()) as client:
+                    response = client.get(self._kop_base_url() + "/", params=query, headers=headers)
+                    response.raise_for_status()
+                    return self._decode_response(action, response)
+            except httpx.HTTPStatusError as error:
+                raise SkillServiceHTTPError(action, error.response.status_code) from None
+            except httpx.HTTPError:
+                raise ValueError("Skill Service request failed") from None
         if not self._auth.is_enabled:
-            raise ValueError(
-                "AICP Skill Service endpoint requires signing credentials. "
-                "Set KSADK_SKILL_SERVICE_ACCESS_KEY/KSADK_SKILL_SERVICE_SECRET_KEY "
-                "or KSYUN_ACCESS_KEY/KSYUN_SECRET_KEY."
+            raise ValueError("AICP Skill Service endpoint requires signing credentials")
+        # Sign only the canonical KOP request. KSYUN STS requires this header
+        # outside SignedHeaders, so add it after AWSV4Auth signs the request.
+        try:
+            prepared = requests.Request(
+                "GET",
+                self._kop_base_url() + "/",
+                params=query,
+                headers=headers,
+            ).prepare()
+            self._auth.sign_request(prepared)
+            if self.security_token:
+                prepared.headers["X-Ksc-Security-Token"] = self.security_token
+            if self.transport is not None:
+                with httpx.Client(**self._client_kwargs()) as client:
+                    response = client.get(prepared.url, headers=dict(prepared.headers))
+                    response.raise_for_status()
+                    return self._decode_response(action, response)
+            response = self._requests().send(
+                prepared,
+                timeout=self.timeout,
+                allow_redirects=False,
             )
-        requests_response = self._requests().get(
-            self._kop_base_url() + "/",
-            params=query,
-            headers=headers,
-            auth=self._auth.get_auth(),
-            timeout=self.timeout,
-            allow_redirects=False,
-        )
-        requests_response.raise_for_status()
-        data = requests_response.json()
-        if not isinstance(data, dict):
-            raise ValueError(f"Skill Service returned non-object response for {action}")
-        code = data.get("Code", data.get("code"))
-        if code not in (None, 0, 200, "0", "200"):
-            request_id = str(data.get("RequestId") or data.get("request_id") or "")
-            message = str(data.get("Message") or data.get("message") or data.get("Error") or "")
-            raise ValueError(
-                f"Skill Service {action} failed: code={code}, "
-                f"request_id={request_id}, message={message}"
-            )
-        return data
+            response.raise_for_status()
+            return self._decode_payload(action, response.json())
+        except (requests.HTTPError, httpx.HTTPStatusError) as error:
+            if error.response is not None:
+                raise SkillServiceHTTPError(action, error.response.status_code) from None
+            raise ValueError("Skill Service signed request failed") from None
+        except (requests.RequestException, httpx.HTTPError):
+            # A failed response can echo credentials in its URL/reason text.
+            raise ValueError("Skill Service signed request failed") from None
 
     def _requests(self) -> requests.Session:
         if self._requests_session is None:

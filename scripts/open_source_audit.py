@@ -813,22 +813,24 @@ def merge_results(target: str, results: Sequence[AuditResult]) -> AuditResult:
 
 def git_files(root: Path) -> list[str]:
     completed = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=root,
         check=True,
         text=True,
         stdout=subprocess.PIPE,
     )
     deleted = subprocess.run(
-        ["git", "ls-files", "--deleted"],
+        ["git", "ls-files", "-z", "--deleted"],
         cwd=root,
         check=True,
         text=True,
         stdout=subprocess.PIPE,
     )
-    deleted_paths = {normalize_path(path) for path in deleted.stdout.splitlines()}
+    deleted_paths = {normalize_path(path) for path in deleted.stdout.split("\0") if path}
     return sorted(
-        path for path in completed.stdout.splitlines() if normalize_path(path) not in deleted_paths
+        path
+        for path in completed.stdout.split("\0")
+        if path and normalize_path(path) not in deleted_paths
     )
 
 

@@ -390,7 +390,7 @@ def parse_runtime_event_lenient(
 def dump_runtime_event(event: RuntimeEvent) -> dict[str, JsonValue]:
     """Serialize a canonical event to a JSON-compatible dictionary."""
 
-    return cast(
+    payload = cast(
         dict[str, JsonValue],
         _RUNTIME_EVENT_ADAPTER.dump_python(
             event,
@@ -399,6 +399,28 @@ def dump_runtime_event(event: RuntimeEvent) -> dict[str, JsonValue]:
             exclude_none=True,
         ),
     )
+    _restore_required_nulls(event, payload)
+    return payload
+
+
+def _restore_required_nulls(value: object, payload: object) -> None:
+    """Omit optional envelope fields while keeping required JSON null values.
+
+    Pydantic's recursive exclude_none also removes required JsonValue fields,
+    including a structured answer or a tool result whose value is null. Such
+    output cannot be parsed back as the original event.
+    """
+    if isinstance(value, BaseModel) and isinstance(payload, dict):
+        for name, field in type(value).model_fields.items():
+            key = field.alias or name
+            child = getattr(value, name)
+            if child is None and field.is_required():
+                payload[key] = None
+            elif key in payload:
+                _restore_required_nulls(child, payload[key])
+    elif isinstance(value, (tuple, list)) and isinstance(payload, list):
+        for child, serialized in zip(value, payload):
+            _restore_required_nulls(child, serialized)
 
 
 __all__ = [

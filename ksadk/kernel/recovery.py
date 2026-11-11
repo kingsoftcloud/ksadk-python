@@ -240,6 +240,31 @@ class RecoveryCoordinator:
                 adapter,
                 handle,
             )
+            hold = getattr(adapter, "recovery_hold_reason", None)
+            hold_reason = hold(handle, run) if callable(hold) else None
+            if hold_reason:
+                run = await self._store.save_run_transition(
+                    run.model_copy(
+                        update={
+                            "state": RunState.WAITING,
+                            "metadata": {
+                                **run.metadata,
+                                "native_reconciliation_required": list(
+                                    handle.native_ref.get("native_waits", {})
+                                ),
+                            },
+                        }
+                    ),
+                    expected_fence=fence,
+                )
+                return await self._decide(
+                    agent_instance_id,
+                    activation,
+                    run,
+                    outcome="attached",
+                    reason=hold_reason,
+                    guard=guard,
+                )
             if run.state is RunState.WAITING:
                 # A durable interaction checkpoint has no remaining events
                 # until a user/approver replies.  Empty stream output here is
@@ -507,7 +532,7 @@ class RecoveryCoordinator:
                         interaction.interaction_id, interaction.revision, guard=guard
                     )
         runtime_store = RuntimeEventStore(self._session_events, session_id=run.session_id)
-        findings = await scan_open_runs(runtime_store, run.session_id)
+        findings = await scan_open_runs(runtime_store, run.session_id, run_id=run.run_id)
         finding = next((item for item in findings if item.run_id == run.run_id), None)
         written: list[RuntimeEvent] = []
         last_seq: int | None = None

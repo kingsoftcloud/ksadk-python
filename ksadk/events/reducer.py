@@ -40,6 +40,7 @@ from ksadk.events.canonical import (
     dump_runtime_event,
 )
 from ksadk.events.content import ContentValue, DataContent, JsonContent, TextContent
+from ksadk.events.usage import apply_usage_report
 
 RunStatus = Literal["running", "interrupted", "completed", "failed", "canceled"]
 ItemStatus = Literal["open", "completed", "failed"]
@@ -197,7 +198,7 @@ class StreamReducer:
         self._interactions: OrderedDict[tuple[str, str], InteractionProjection] = OrderedDict()
         self._continuations: OrderedDict[tuple[str, str], ContinuationProjection] = OrderedDict()
         self._context_compactions: list[ContextCompactionProjection] = []
-        self._usage = UsageProjection()
+        self._usage: UsageProjection | None = None
         self._output_refs: tuple[OutputRef, ...] = ()
         self._recent_events: OrderedDict[int, _RecentEvent] = OrderedDict()
         self._recent_event_ids: dict[str, int] = {}
@@ -308,6 +309,10 @@ class StreamReducer:
             ) from exc
         return True
 
+    def usage_snapshot(self) -> UsageProjection | None:
+        """Return the run's applied usage, or None before a usage fact arrives."""
+        return self._usage.model_copy() if self._usage is not None else None
+
     def snapshot(self) -> RunProjection:
         """Return a detached projection suitable for live output or replay."""
 
@@ -326,7 +331,7 @@ class StreamReducer:
             context_compactions=tuple(
                 compaction.model_copy(deep=True) for compaction in self._context_compactions
             ),
-            usage=self._usage.model_copy(deep=True),
+            usage=self.usage_snapshot() or UsageProjection(),
         )
 
     def _apply_event(self, event: RuntimeEvent) -> ProjectionPatch:
@@ -384,13 +389,8 @@ class StreamReducer:
             self._context_compactions.append(projection)
             return self._patch(event)
         if isinstance(event, UsageReported):
-            self._usage = UsageProjection(
-                input_tokens=event.input_tokens,
-                output_tokens=event.output_tokens,
-                total_tokens=event.total_tokens,
-                cached_tokens=event.cached_tokens,
-                reasoning_tokens=event.reasoning_tokens,
-            )
+            current = self._usage.model_dump() if self._usage is not None else {}
+            self._usage = UsageProjection(**apply_usage_report(current, event))
             return self._patch(event)
         raise TypeError(f"unsupported runtime event: {type(event).__name__}")
 

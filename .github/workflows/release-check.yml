@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - "pyproject.toml"
+      - "uv.lock"
       - "MANIFEST.in"
       - "Makefile"
       - "ksadk/**"
@@ -16,18 +17,23 @@ on:
       - "tests/plugins/test_dsh_node_provider_e2e.py"
       - "tests/fixtures/dsh-node-agent-provider/**"
       - "tests/packaging/test_release_preflight.py"
+      - "tests/packaging/test_alias_distribution.py"
+      - "tests/test_cloud_headers.py"
+      - "tests/test_prepare_ksadk_python_export.py"
+      - "tests/studio/test_native_default_install.py"
       - "tests/studio/e2e/**"
       - "scripts/open_source_audit.py"
       - "scripts/audit_release_artifacts.py"
       - "scripts/build_alias_distribution.py"
-      - "tests/packaging/test_alias_distribution.py"
       - "scripts/release_preflight.py"
+      - "scripts/reviewed_web_assets.py"
       - "scripts/verify_ksadk_web_static.py"
       - "scripts/write_build_provenance.py"
       - "docs/release-plugin-compatibility.md"
       - "docs-site/content/docs/framework/guides/agentkit-studio-release.mdx"
       - ".github/workflows/release-agentkit-studio.yml"
       - ".github/workflows/release-check.yml"
+      - ".github/actions/prepare-web-candidate/action.yml"
 
 jobs:
   artifacts:
@@ -70,7 +76,7 @@ jobs:
 
       - name: Build pinned frontend static assets
         env:
-          KSADK_WEB_VERSION: "0.3.13"
+          KSADK_WEB_VERSION: "0.3.18"
         run: make build-frontend
 
       - name: Verify clean release source

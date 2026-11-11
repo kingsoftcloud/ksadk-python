@@ -10,10 +10,14 @@ from ksadk.a2ui.models import (
     PendingInteraction,
     Surface,
 )
+from ksadk.a2ui.presentation import build_a2ui_presentation
+from ksadk.a2ui.registry import A2uiCatalogRegistry
 from ksadk.a2ui.renderer import A2UIRenderer, RenderedNode, submit_a2ui_action
 
 __all__ = [
     "A2UICore",
+    "A2uiCatalogRegistry",
+    "build_a2ui_presentation",
     "A2UIRenderer",
     "RenderedNode",
     "submit_a2ui_action",

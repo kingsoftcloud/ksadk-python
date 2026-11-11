@@ -18,6 +18,7 @@ from ksadk.harness.artifact_adapters.native_page_budget import (
     ArtifactPagePolicy,
 )
 from ksadk.harness.artifact_adapters.native_tool import ARTIFACT_READ_DEFINITION
+from ksadk.harness.native.artifact_catalog_contract import ARTIFACT_CATALOG_POLICY
 from ksadk.harness.native.artifact_partial_read_capacity import (
     PARTIAL_ARTIFACT_CAPACITY_POLICY,
     partial_artifact_group_admission,
@@ -31,10 +32,12 @@ from ksadk.harness.native.artifact_single_read_capacity import (
     single_artifact_group_admission,
 )
 from ksadk.harness.native.context_driver import ContextDriver
+from ksadk.harness.native.context_request_projection import FINALIZATION_READER_PROJECTION_POLICY
 from ksadk.harness.native.context_runtime import ContextPlanner
 from ksadk.harness.native.model import ModelProfile
 from ksadk.harness.native.ports import RunConfiguration, ToolDefinition, digest
 from ksadk.harness.native.state import RunSnapshot
+from ksadk.harness.native.tool_batch_capacity import source_request_identity
 from ksadk.tools.artifact_observation import (
     ARCHIVE_MODEL_POLICY,
     ARCHIVE_SEARCH_MODEL_POLICY,
@@ -161,11 +164,14 @@ class StudioSourceReadPolicy:
                          page_feedback="preseal-active-capacity-reasons/v2",
                          prospective_refs="archive-producing-readers-only/v1")
         if self.context_planner is not None:
-            value.update(version="studio-source-page-budget/v17",
+            value.update(version="studio-source-page-budget/v20",
+                         artifact_inventory_projection=ARTIFACT_CATALOG_POLICY,
                          single_artifact_admission=SINGLE_ARTIFACT_CAPACITY_POLICY,
                          partial_capacity_projection=PARTIAL_ARTIFACT_CAPACITY_POLICY,
                          capacity_projection=ARTIFACT_CAPACITY_POLICY,
                          retained_summary_reserve="bound-planner-summary-and-framing/v1",
+                         captured_workspace_admission="next-request-without-future-summary/v1",
+                         no_summary_reader_projection=FINALIZATION_READER_PROJECTION_POLICY,
                          result_counter="complete-projected-message/v1",
                          context_tokenizer=self.context_planner.tokenizer_id,
                          context_policy=self.context_planner.policy.model_dump(mode="json"))
@@ -280,6 +286,19 @@ class StudioSourceReadPolicy:
         )
         if self.context_planner is not None:
             rolling_reserve = self.context_planner.summary_reservation(self.profile)
+            # A captured workspace result may itself be summarized when the
+            # complete subsequent request needs compaction. Unlike a quoted
+            # ArtifactRead working set, it does not require a simultaneous
+            # future summary beside that result. Reserving both here can
+            # reject even the saved-unread envelope while the real next
+            # request still fits. Keep output, prospective artifact locators
+            # and complete result framing charged; ContextPlanner remains the
+            # hard authority and must preserve/quote the observation on overflow.
+            workspace_names = {tool.name for tool in definitions
+                               if tool.read_only and tool.context_role == "workspace_read"}
+            if (self.retain_requested_source and self.artifact_only_fallback
+                    and all(c["function"]["name"] in workspace_names for c in readers)):
+                rolling_reserve = 0
         result_allowance = (available - rolling_reserve) // len(readers) - outer
         return SourceReadBudget(
             allowance,
@@ -408,8 +427,7 @@ class StudioSourceReadPolicy:
                         or configuration.limits.max_tool_result_bytes
                         != self.artifact_result_max_bytes
                         or configuration.tools != definitions
-                        or request.call.model_dump(mode="json") not in snapshot.pending_tools
-                        or request.operation_key != snapshot.pending_intent):
+                        or not source_request_identity(snapshot, request, configuration)):
                     raise ValueError("artifact_search_configuration_mismatch")
                 quote = search_group_capacity(snapshot, configuration, driver)
                 if quote is None:

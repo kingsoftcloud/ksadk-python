@@ -8,7 +8,6 @@ from typing import Any
 from ksadk_runtime_common.memory_backend.manifest import MemoryBackendManifest
 from ksadk_runtime_common.memory_backend.registry import RenderResult
 
-
 _LANCEDB_API_KEY_FALLBACK_ENVS = ("OPENAI_API_KEY", "OPENCLAW_MODEL_API_KEY")
 
 
@@ -44,7 +43,7 @@ class LanceDBProvider:
                 },
             },
             plugin_ids=["memory-lancedb"],
-            disabled_plugin_ids=["openclaw-mem0"],
+            disabled_plugin_ids=["openclaw-mem0", "openclaw-ksmem"],
         )
 
     @staticmethod

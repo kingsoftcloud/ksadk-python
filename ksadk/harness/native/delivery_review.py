@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
+from .call_budget import call_room
 from .completion_text import candidate_model_message, complete_continuation, fragment_digest
 from .context_history import _unambiguous_json_object
 from .delivery_review_contract import DeliveryReviewState, DeliveryReviewSuggestion
@@ -63,9 +64,9 @@ def delivery_review_readers(snapshot: RunSnapshot, config: RunConfiguration) -> 
         review is None
         or policy is None
         or review.read_rounds >= policy.max_read_rounds
-        or snapshot.tool_budget_claimed >= config.limits.max_tool_calls
-        or config.limits.max_model_calls - snapshot.model_budget_claimed
-        < max(config.limits.finalization_reserve_model_calls, 1) + 3
+        or not call_room(config.limits.max_tool_calls, snapshot.tool_budget_claimed)
+        or not call_room(config.limits.max_model_calls, snapshot.model_budget_claimed,
+                         max(config.limits.finalization_reserve_model_calls, 1) + 3)
     ):
         return ()
     return tuple(
@@ -156,10 +157,10 @@ def schedule_delivery_review(
         )
         or snapshot.repair_attempts >= config.limits.max_repairs
         or (
-            config.limits.max_model_calls - snapshot.model_budget_claimed
-            < max(config.limits.finalization_reserve_model_calls, 1) + 2
+            not call_room(config.limits.max_model_calls, snapshot.model_budget_claimed,
+                             max(config.limits.finalization_reserve_model_calls, 1) + 2)
         )
-        or snapshot.tool_budget_claimed >= config.limits.max_tool_calls
+        or not call_room(config.limits.max_tool_calls, snapshot.tool_budget_claimed)
         or not any(
             not tool.read_only
             and (
@@ -211,9 +212,8 @@ def reduce_delivery_review(
         if (
             snapshot.continuations < config.profile.max_continuations
             and (
-                config.limits.max_model_calls
-                - snapshot.model_budget_claimed
-                >= max(config.limits.finalization_reserve_model_calls, 1) + 2
+                call_room(config.limits.max_model_calls, snapshot.model_budget_claimed,
+                          max(config.limits.finalization_reserve_model_calls, 1) + 2)
             )
             and len(fragments) <= 6
             and sum(len(str(m.get("content", ""))) for m in fragments) + len(result.text) <= 30000
@@ -301,7 +301,7 @@ def reduce_delivery_review(
         return move(updated, RunPhase.VERIFYING)
     if (
         snapshot.repair_attempts >= config.limits.max_repairs
-        or snapshot.model_budget_claimed >= config.limits.max_model_calls
+        or not call_room(config.limits.max_model_calls, snapshot.model_budget_claimed)
     ):
         return move(updated, RunPhase.VERIFYING)
     feedback = {

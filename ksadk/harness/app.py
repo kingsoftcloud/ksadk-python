@@ -169,7 +169,7 @@ class HarnessApp:
         return adapter
 
     def _route_groups(self) -> set[str]:
-        groups = {"health_meta", "models", "feedback", "tools", "ui_bootstrap"}
+        groups = {"health_meta", "models", "feedback", "tools", "ui_bootstrap", "database_access"}
         if self._capabilities.responses:
             groups.update({"run", "openai_compat"})
         if self._capabilities.sessions:

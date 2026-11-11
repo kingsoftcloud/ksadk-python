@@ -117,6 +117,30 @@ def project_managed_platform_resources(
             "true" if _memory_write_enabled(manifest, resources) else "false"
         ),
     }
+
+    # Collect knowledge-base bindings for multi-select projection.
+    kb_items = [item for item in resources if item.binding.resource.kind == "knowledge-base"]
+    if kb_items:
+        kb_ids = [item.binding.resource.id for item in kb_items]
+        first_kb = kb_items[0]
+        policy = first_kb.retrieval
+        projected_env.update(
+            {
+                "KSADK_KB_DATASET_ID": kb_ids[0],
+                "KSADK_KB_DATASET_IDS": ",".join(kb_ids),
+                "KSADK_KB_REGION": first_kb.binding.resource.region,
+                # TOP_K uses the first KB's policy; per-KB top_k not yet supported.
+                "KSADK_KB_TOP_K": str(policy.top_k if policy is not None else 5),
+            }
+        )
+        # Per-knowledge-base custom instructions from retrieval policy.
+        for item in kb_items:
+            item_policy = item.retrieval
+            if item_policy is not None and item_policy.custom_instruction:
+                projected_env[f"KSADK_KB_INSTRUCTION_{item.binding.resource.id}"] = (
+                    item_policy.custom_instruction
+                )
+
     for item in resources:
         resource = item.binding.resource
         if resource.kind == "memory-instance":
@@ -126,15 +150,6 @@ def project_managed_platform_resources(
                     "KSADK_LTM_NAMESPACE": resource.id,
                     "KSADK_LTM_REGION": resource.region,
                     "KSADK_LTM_AGENT_ID": projected_env["KSADK_PLATFORM_RESOURCE_AGENT_ID"],
-                }
-            )
-        elif resource.kind == "knowledge-base":
-            policy = item.retrieval
-            projected_env.update(
-                {
-                    "KSADK_KB_DATASET_ID": resource.id,
-                    "KSADK_KB_REGION": resource.region,
-                    "KSADK_KB_TOP_K": str(policy.top_k if policy is not None else 5),
                 }
             )
         elif resource.kind == "skill-space":

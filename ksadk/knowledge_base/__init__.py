@@ -4,7 +4,7 @@
 用户通过环境变量配置即可自动启用知识库检索。
 
 环境变量:
-    KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
+    KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用，逗号分隔支持多选)
     KSADK_KB_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY)
     KSADK_KB_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY)
     KSADK_KB_REGION: 区域 (默认 cn-beijing-6)

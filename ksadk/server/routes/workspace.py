@@ -261,6 +261,13 @@ async def cancel_run_action(
                 session_service_provider=lambda: service,
                 invocation_identity=invocation_identity,
             )
+        from .local_kernel_control import cancel_local_kernel_run
+
+        kernel_result = await cancel_local_kernel_run(
+            launch_context, scoped_session_id, request.InvocationId,
+        )
+        if kernel_result is not None:
+            return kernel_result
         if (
             detached is None
             and handle is None

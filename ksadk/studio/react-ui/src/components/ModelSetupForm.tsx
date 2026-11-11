@@ -18,6 +18,10 @@ const modelSetupSchema = z.object({
   manualModel: z.string().trim().max(256, "模型 ID 不能超过 256 个字符").default(""),
   temperature: z.coerce.number().min(0, "temperature 需在 0-2 之间").max(2, "temperature 需在 0-2 之间").default(0.2),
   maxTokens: z.coerce.number().int("max_tokens 需为 1-131072 的整数").min(1, "max_tokens 需为 1-131072 的整数").max(131072, "max_tokens 需为 1-131072 的整数").default(2048),
+  thinkingMode: z.enum(["", "enabled", "disabled"]).default(""),
+  reasoningEffort: z.enum(["", "low", "medium", "high", "xhigh", "max"]).default(""),
+  imageInput: z.boolean().default(false),
+  providerThinkingDisplay: z.boolean().default(false),
   credentialEnv: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "环境变量名需为合法标识符").default("MODEL_API_KEY"),
 });
 
@@ -78,6 +82,10 @@ export function ModelSetupForm({ onSaved }: { onSaved: () => void }) {
       manualModel: "",
       temperature: 0.2,
       maxTokens: 2048,
+      thinkingMode: "",
+      reasoningEffort: "",
+      imageInput: false,
+      providerThinkingDisplay: false,
       credentialEnv: "MODEL_API_KEY",
     },
   });
@@ -154,6 +162,11 @@ export function ModelSetupForm({ onSaved }: { onSaved: () => void }) {
       setSaveError(probe?.models.length ? "请至少选择一个模型" : "请选择模型或手动填写模型 ID");
       return;
     }
+    if (values.thinkingMode === "enabled" && probe?.recommended?.wireApi
+        && probe.recommended.wireApi !== "chat") {
+      setSaveError("当前连接协议不支持这个思考开关，请保留模型默认设置。");
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -174,9 +187,13 @@ export function ModelSetupForm({ onSaved }: { onSaved: () => void }) {
           provider: "openai-compatible",
           model: modelId,
           credentialRef,
-          parameters: { temperature: values.temperature, max_tokens: values.maxTokens },
+          parameters: { temperature: values.temperature, max_tokens: values.maxTokens,
+            ...(values.providerThinkingDisplay ? { provider_thinking_display: true } : {}),
+            ...(values.reasoningEffort ? { reasoning_effort: values.reasoningEffort } : {}),
+            ...(values.thinkingMode ? { thinking_mode: values.thinkingMode } : {}) },
         };
         if (wireApi) spec.wireApi = wireApi;
+        if (values.imageInput) spec.metadata = { capabilities: { multimodal_input_image: true } };
         spec.endpointUrl = endpointUrl;
         const res = await apiFetch("/api/v1/catalog/model-profiles", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -303,6 +320,29 @@ export function ModelSetupForm({ onSaved }: { onSaved: () => void }) {
           <FormField label="max_tokens" requirement="optional" htmlFor="setupMaxTokens" error={form.formState.errors.maxTokens?.message}>
             <input id="setupMaxTokens" type="number" min={1} max={131072} {...form.register("maxTokens", { valueAsNumber: true })} />
           </FormField>
+          <FormField label="思考模式" requirement="optional" htmlFor="setupThinkingMode" hint="支持思考开关的模型可显式启用；启用后工具调用也会保留思考。">
+            <select id="setupThinkingMode" {...form.register("thinkingMode")}>
+              <option value="">模型默认</option>
+              <option value="enabled">启用</option>
+              <option value="disabled">关闭</option>
+            </select>
+          </FormField>
+          <FormField label="推理强度" requirement="optional" htmlFor="setupReasoningEffort" hint="作为 Agent 默认配置保存；单次任务选择可以覆盖。">
+            <select id="setupReasoningEffort" {...form.register("reasoningEffort")}>
+              <option value="">模型默认</option>
+              <option value="low">低</option><option value="medium">中</option>
+              <option value="high">高</option><option value="xhigh">更高</option>
+              <option value="max">最高</option>
+            </select>
+          </FormField>
+          <label className="field-label">
+            <input type="checkbox" aria-label="支持图像输入" {...form.register("imageInput")} />支持图像输入
+            <small>所选模型与接口支持图像时启用，用于读取截图。</small>
+          </label>
+          <label className="field-label">
+            <input type="checkbox" {...form.register("providerThinkingDisplay")} />
+            展示模型返回的思考过程
+          </label>
         </div>
         <FormField label="凭证环境变量名" requirement="required" htmlFor="setupCredentialEnv" error={form.formState.errors.credentialEnv?.message}>
           <input id="setupCredentialEnv" className="mono" placeholder="MODEL_API_KEY" {...form.register("credentialEnv")} />

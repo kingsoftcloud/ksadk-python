@@ -3,10 +3,9 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 from urllib.parse import urlparse
-
-import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT_URL = "https://kingsoftcloud.github.io/ksadk-python/"
@@ -305,10 +304,11 @@ def test_docs_navigation_exposes_the_083_user_journeys():
 
 def test_docs_versioned_facts_match_084_source():
     makefile = _read("Makefile")
-    web_version_match = re.search(r"^KSADK_WEB_VERSION \?= (\S+)$", makefile, re.MULTILINE)
+    web_version_match = re.search(r"^KSADK_WEB_VERSION := (.+)$", makefile, re.MULTILINE)
     assert web_version_match is not None
     web_version = web_version_match.group(1)
-    assert web_version == "0.3.13"
+    assert web_version.startswith("$(shell")
+    assert "reviewed_web_assets.py identity --field package_version" in makefile
 
     versioned_docs = "\n".join(
         path.read_text(encoding="utf-8") for path in sorted(DOCS_CONTENT_ROOT.rglob("*.mdx"))
@@ -334,8 +334,12 @@ def test_docs_versioned_facts_match_084_source():
     ):
         assert stale not in public_surfaces
 
-    assert 'version = "0.8.6"' in _read("pyproject.toml")
-    assert "0.8.6" in _read("docs-site/app/[lang]/(home)/page.tsx")
+    version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
+    assert version in _read("docs-site/app/[lang]/(home)/page.tsx")
+    reviewed_web = json.loads(
+        _read("ksadk/studio/react-ui/vendor/ksadk-web-source.json")
+    )
+    web_version = reviewed_web["package_version"]
 
     for relative in (
         "framework/guides/web-ui-source.mdx",
@@ -343,7 +347,10 @@ def test_docs_versioned_facts_match_084_source():
         "references/environment-variables.mdx",
         "references/environment-variables.en.mdx",
     ):
-        assert f"`{web_version}`" in _read(f"docs-site/content/docs/{relative}")
+        # Public release docs keep their published version while a reviewed
+        # source candidate explicitly remains unpublished.
+        if reviewed_web["registry_release"]:
+            assert f"`{web_version}`" in _read(f"docs-site/content/docs/{relative}")
 
     a2a_dependency = re.search(r'"a2a-sdk\[fastapi\]==([^"]+)"', _read("pyproject.toml"))
     assert a2a_dependency is not None
@@ -433,8 +440,9 @@ def test_public_metadata_uses_runtime_platform_positioning():
     version_text = _read("ksadk/version.py")
     changelog = _read("CHANGELOG.md")
 
-    assert pyproject["project"]["version"] == "0.8.6"
-    assert 'VERSION = "0.8.6"' in version_text
+    version_match = re.search(r'^VERSION = "([^"\n]+)"$', version_text, re.MULTILINE)
+    assert version_match is not None
+    assert pyproject["project"]["version"] == version_match.group(1)
     assert "## [0.8.4] - 2026-09-09" in changelog
     assert "## [0.8.1] - 2026-08-10" in changelog
     assert "`langchain-openai` 仅随" in changelog
@@ -496,6 +504,7 @@ def test_changelog_marks_0_6_7_ready_for_authorized_release():
 def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     workflow = _read(".github/workflows/publish-pypi.yml")
     ci_workflow = _read(".github/workflows/ci.yml")
+    release_check_workflow = _read(".github/workflows/release-check.yml")
     makefile = _read("Makefile")
 
     assert "id-token: write" in workflow
@@ -506,10 +515,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.3.13"' in workflow
+    assert 'default: "0.3.18"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.13' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.18' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -522,14 +531,22 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "if: env.PUBLISH_TARGET == 'full'" in workflow
     assert "Publish alias package to PyPI" in workflow
     assert "packages-dir: dist-alias" in workflow
+    assert workflow.index("- name: Build alias distribution") < workflow.index(
+        "uses: pypa/gh-action-pypi-publish@release/v1"
+    )
+    assert '- "scripts/build_alias_distribution.py"' in release_check_workflow
+    assert (
+        "- name: Build and audit compatibility distribution\n"
+        "        run: make public-build-alias-check" in release_check_workflow
+    )
     assert "github.event.inputs.publish_target != 'alias-only'" in workflow
     assert "make open-source-audit-dist" in ci_workflow
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.3.13"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.18"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.3.13" in makefile
+    assert "KSADK_WEB_VERSION := $(shell python3 scripts/reviewed_web_assets.py" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py "
         "tests/studio/test_scheduler_runtime.py "
@@ -557,7 +574,6 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "scripts/audit_docs_site_output.py" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
-    assert workflow.index("name: Build alias distribution") < workflow.index("name: Publish to PyPI")
 
 
 def test_ksadk_web_npm_consumers_use_the_configured_registry():
@@ -565,35 +581,17 @@ def test_ksadk_web_npm_consumers_use_the_configured_registry():
     registry = "https://registry.example.test/npm"
 
     assert 'KSADK_WEB_NPM := npm --registry="$(KSADK_WEB_REGISTRY)"' in makefile
-    assert (
-        '$(KSADK_WEB_NPM) pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))"'
-        in makefile
-    )
-    # The test target delegates installation to the registry-aware build target.
+    # Registry selection applies to dependency installation, never to selection
+    # of another Hosted UI: both applications are pinned by the reviewed archive.
     assert "studio-react-test: build-studio-static" in makefile
     assert '$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" ci' in makefile
-    assert (
-        "REGISTRY_JSON=$$(curl -fsSL "
-        '"$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)")' in makefile
-    )
-    assert 'npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))"' not in makefile
-    assert "KSADK_WEB_VERSION ?= 0.3.13" in makefile
-
     sync_dry_run = subprocess.run(
-        [
-            "make",
-            "-n",
-            "sync-ksadk-web-static",
-            f"KSADK_WEB_REGISTRY={registry}",
-            "KSADK_WEB_CACHE_DIR=/tmp/ksadk-web-registry-contract",
-        ],
-        cwd=ROOT,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
+        ["make", "-n", "sync-ksadk-web-static", f"KSADK_WEB_REGISTRY={registry}"],
+        cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE,
     ).stdout
-    assert f'npm --registry="{registry}" pack "@kingsoftcloud/ksadk-web@0.3.13"' in sync_dry_run
-    assert f'curl -fsSL "{registry}/@kingsoftcloud/ksadk-web/0.3.13"' in sync_dry_run
+    assert "reviewed_web_assets.py sync" in sync_dry_run
+    assert "npm " not in sync_dry_run
+    assert "curl " not in sync_dry_run
 
     studio_dry_run = subprocess.run(
         ["make", "-n", "build-studio-static", f"KSADK_WEB_REGISTRY={registry}"],
@@ -625,24 +623,33 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "Secret Pattern Audit / scan" in branch_protection
     assert "CodeQL / analyze" in branch_protection
     assert "pypi environment" in branch_protection
-    assert "Branch protection and publish environment are configured" in approval_record
+    assert "Branch protection and publish environment must be verified" in approval_record
 
 
-def test_public_release_approval_is_current_or_explicitly_historical():
+def test_public_release_approval_matches_current_version_and_state():
     approval_record = _read("docs/maintainer-approval-record.md")
 
     current_version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
     current_approval = f"| Python package version | {current_version} |"
-    historical_approval = "| Python package version | 0.8.5 |"
-    if current_approval in approval_record:
-        assert "This is the historical" not in approval_record
-        from scripts.check_approval_record import validate_approval_record
+    assert current_approval in approval_record
+    # A version bump must not silently reuse another release's sign-off.
+    from scripts.check_approval_record import validate_approval_record
 
-        checks = validate_approval_record(ROOT / "docs/maintainer-approval-record.md", version=current_version)
-        assert all(check.ok for check in checks), [check for check in checks if not check.ok]
-    else:
-        assert historical_approval in approval_record
+    checks = validate_approval_record(
+        ROOT / "docs/maintainer-approval-record.md", version=current_version,
+    )
+    assert all(check.ok for check in checks if check.name.startswith("decision:"))
+    if "Candidate only:" in approval_record:
         assert "does not authorize PyPI publication" in approval_record
+        for role in ("Maintainer", "Security reviewer", "Release owner"):
+            assert f"| {role} | Pending | Pending |" in approval_record
+        assert {check.name for check in checks if not check.ok} >= {
+            "signoff:Maintainer", "signoff:Security reviewer", "signoff:Release owner",
+        }
+    else:
+        # A later authorized release can record real current-version sign-offs
+        # without weakening or deleting the candidate's regression coverage.
+        assert all(check.ok for check in checks), checks
 
 
 def test_0_8_changelog_is_ready_for_authorized_release():
@@ -669,7 +676,8 @@ def test_0_8_1_changelog_pins_the_compatible_ksadk_web_release():
 def test_public_release_sync_compares_exported_file_contents():
     workflow = _read("docs/public-release-workflow.md")
 
-    assert "rsync -a --checksum --delete --exclude .git" in workflow
+    assert "rsync -a --checksum --exclude .git" in workflow
+    assert all("--delete" not in line for line in workflow.splitlines() if line.startswith("rsync "))
 
 
 def test_source_repository_does_not_track_generated_ksadk_web_static():

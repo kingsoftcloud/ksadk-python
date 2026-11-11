@@ -118,6 +118,56 @@ def _register_mcporter(env: dict[str, str]) -> None:
     logger.info("mcporter registration: %s", MCP_NAME)
 
 
+def _unregister_openclaw() -> None:
+    """Remove the Skill Center MCP server from openclaw.json."""
+    config_path = os.environ.get("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/openclaw.json")
+    if not os.path.isfile(config_path):
+        return
+    try:
+        with open(config_path) as f:
+            cfg = json.load(f)
+        mcp = cfg.get("mcp", {})
+        servers = mcp.get("servers", {})
+        if MCP_NAME in servers:
+            del servers[MCP_NAME]
+            with open(config_path, "w") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+            logger.info("OpenClaw config removal: %s -> %s", MCP_NAME, config_path)
+    except Exception as exc:
+        logger.warning("OpenClaw config removal failed: %s", exc)
+
+
+def _unregister_hermes() -> None:
+    """Remove the Skill Center MCP server from Hermes config.yaml."""
+    try:
+        import yaml
+    except ImportError:
+        return
+    config_path = os.environ.get("HERMES_CONFIG_PATH", os.path.join(_hermes_home(), "config.yaml"))
+    if not os.path.isfile(config_path):
+        return
+    try:
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        servers = cfg.get("mcp_servers", {})
+        if MCP_NAME in servers:
+            del servers[MCP_NAME]
+            with open(config_path, "w") as f:
+                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+            logger.info("Hermes config removal: %s -> %s", MCP_NAME, config_path)
+    except Exception as exc:
+        logger.warning("Hermes config removal failed: %s", exc)
+
+
+def _unregister_mcporter() -> None:
+    """Remove the Skill Center MCP server from mcporter."""
+    import subprocess
+    if not shutil.which("mcporter"):
+        return
+    subprocess.run(["mcporter", "config", "remove", MCP_NAME], capture_output=True)
+    logger.info("mcporter removal: %s", MCP_NAME)
+
+
 def _register_openclaw(env: dict[str, str]) -> None:
     config_path = os.environ.get("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/openclaw.json")
     if not os.path.isfile(config_path):
@@ -377,6 +427,12 @@ def register_skill_center_mcp() -> None:
     )
     skill_space_id = os.environ.get("SKILL_SPACE_ID", "").strip()
     if not skill_space_id:
+        # Skill Space was removed; clean up any previously registered MCP config
+        # so the agent no longer loads Skill Center tools.
+        _unregister_openclaw()
+        _unregister_hermes()
+        _unregister_mcporter()
+        logger.info("Skill Center MCP unregistered (SKILL_SPACE_ID is empty)")
         return
     if not shutil.which("python3"):
         logger.info("python3 not found; skipping Skill Center MCP registration")

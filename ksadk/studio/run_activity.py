@@ -76,6 +76,14 @@ def project_run_activities(run: Any, events: list[Any]) -> dict[str, Any]:
     status = str(getattr(run.status, "value", run.status)).lower()
     observed_at = time.time()
     result = {"runId": run.id, "status": status, "activities": []}
+    # Scheduler completion is not task acceptance. Expose only persisted,
+    # enumerated host facts, never infer success from a model's final answer.
+    if status in {"completed", "failed", "cancelled", "interrupted", "timed_out"}:
+        terminal = {"status": status}
+        outcome = getattr(run, "verification_outcome", None)
+        if outcome in {"verified", "unverified", "partial", "blocked"}:
+            terminal["outcome"] = outcome
+        result["terminal"] = terminal
     from ksadk.studio.shared_web_response_events import _APPROVAL_DECISIONS
 
     approvals = {}

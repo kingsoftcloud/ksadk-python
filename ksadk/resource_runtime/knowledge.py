@@ -55,7 +55,7 @@ class BoundKnowledgeService:
         resource = config.binding.resource
         if resource.kind != "knowledge-base":
             raise ValueError("Knowledge service requires a knowledge-base binding")
-        if client.dataset_id != resource.id or client.region != resource.region:
+        if resource.id not in client.active_dataset_ids or client.region != resource.region:
             raise ValueError("Knowledge client does not match its frozen binding")
         self._config = config
         self._client = client

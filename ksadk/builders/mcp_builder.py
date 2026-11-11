@@ -380,7 +380,9 @@ class MCPContainerBuilder(ContainerBuilder):
             if item.is_dir():
                 if dest.exists():
                     shutil.rmtree(dest)
-                shutil.copytree(item, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                shutil.copytree(
+                    item, dest, ignore=shutil.ignore_patterns(".agentengine", "__pycache__", "*.pyc")
+                )
             else:
                 shutil.copy2(item, dest)
 

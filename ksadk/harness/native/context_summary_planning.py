@@ -53,6 +53,7 @@ from .context_source_fragments import (
     source_part_view,
     source_text_carrier,
 )
+from .context_summary_prompt import replacement_output_directive, rolling_work_state_instructions
 from .model import ModelProfile
 from .tool_observation import (
     history_observation_message,
@@ -60,9 +61,24 @@ from .tool_observation import (
 
 
 class ContextSummaryPlanning:
+    def _summary_directive(self, profile):
+        if self.summary_prompt_policy not in {"rolling-work-state/v2", "rolling-work-state/v3"}:
+            return ()
+        limit = min(self.policy.summary_max_tokens, profile.max_output_tokens) if profile else (
+            self.policy.summary_max_tokens
+        )
+        return (replacement_output_directive(
+            limit, self.summary_budget_unit,
+            preserve_evidence_scope=self.summary_prompt_policy == "rolling-work-state/v3",
+        ),)
+
     def _summary_request_fits(self, counted: int, profile: ModelProfile) -> bool:
         reserve = 0
-        if profile.max_continuations:
+        if (profile.max_continuations
+                and self.summary_completion_policy != "bounded-committed-summary/v1"):
+            # A protocol-finished bounded summary is sealed at its output
+            # ceiling instead of appending continuation turns. Reserve those
+            # extra turns only for the continuation-based completion policy.
             reserve = (
                 min(self.policy.summary_max_tokens, profile.max_output_tokens)
                 + (
@@ -71,7 +87,8 @@ class ContextSummaryPlanning:
                 )
                 * profile.max_continuations
             )
-        return counted + profile.max_output_tokens + reserve <= profile.context_window
+        output = self._summary_output_cap(counted, profile, full_reader_quote=False)
+        return counted + output + reserve <= profile.context_window
 
     def _summary_unit_fits(self, counted, profile, entries):
         if any(
@@ -104,9 +121,14 @@ class ContextSummaryPlanning:
         return self._summary_request_fits(counted, profile)
 
     def _summary_output_cap(self, counted, profile, *, full_reader_quote):
+        maximum = (
+            min(self.policy.summary_max_tokens, profile.max_output_tokens)
+            if self.summary_output_policy == "declared-summary-limit/v1"
+            else profile.max_output_tokens
+        )
         if full_reader_quote:
-            return min(profile.max_output_tokens, profile.context_window - counted)
-        return profile.max_output_tokens
+            return min(maximum, profile.context_window - counted)
+        return maximum
 
     def _summary_projection(
         self,
@@ -139,6 +161,7 @@ class ContextSummaryPlanning:
                     [{"type": "text", "text": history_text}, *media] if media else history_text
                 ),
             },
+            *self._summary_directive(profile),
         )
         counted = self._fixed(instructions, ()) + sum(
             self._count_message(m)
@@ -387,17 +410,30 @@ class ContextSummaryPlanning:
                 full_unit, unit, entries, previous_summary, instructions, profile,
                 source_messages, state, manifest, partition, chunk_index,
             )
-        quoted, frame, covered, last_part = fragment_view(full_unit, state, manifest, partition)
-        projected, counted = self._summary_projection(
-            quoted,
-            previous_summary,
-            instructions,
-            fragment=frame,
-            profile=profile,
-            source_messages=source_messages,
-        )
-        if not self._summary_unit_fits(counted, profile, quoted):
-            raise ContextRuntimeError("compaction_source_over_budget")
+        while True:
+            quoted, frame, covered, last_part = fragment_view(full_unit, state, manifest, partition)
+            projected, counted = self._summary_projection(
+                quoted,
+                previous_summary,
+                instructions,
+                fragment=frame,
+                profile=profile,
+                source_messages=source_messages,
+            )
+            if self._summary_unit_fits(counted, profile, quoted):
+                break
+            if partition.receipts_per_fragment == 1:
+                raise ContextRuntimeError("compaction_source_over_budget")
+            # A text prefix may fit even when the following archived receipts
+            # do not. Repack only unacknowledged receipts; keep their complete
+            # observations, the accepted prefix and the provider cap intact.
+            partition = partition.model_copy(update={
+                "receipts_per_fragment": max(1, partition.receipts_per_fragment // 2),
+            })
+        state = state.model_copy(update={"partitions": tuple(
+            partition if plan.assistant_ref == partition.assistant_ref else plan
+            for plan in state.partitions
+        )})
         state = bind_pending(state, manifest, covered, projected, chunk_index)
         remaining = entries[len(unit) :] if last_part else entries
         return projected, counted, remaining, state
@@ -582,6 +618,10 @@ class ContextSummaryPlanning:
             f"Return only a summary of at most {summary_limit} {self.summary_budget_unit}. "
             "The following host ledger is immutable:\n" + ledger
         )
+        if self.summary_prompt_policy is not None:
+            summary_instructions = rolling_work_state_instructions(
+                summary_limit, self.summary_budget_unit, ledger,
+            )
         history_entries = []
         complete_groups, _, _ = _tool_groups(metadata)
         unit_by_ref = {
@@ -687,6 +727,8 @@ class ContextSummaryPlanning:
         fresh_refs = tuple(ref for ref in refs if ref in fresh_group)
         manifest, source_messages = source_manifest(
             messages, metadata, retained_refs, capture_reader_names=capture_reader_names,
+            search_fragment_policy=self.search_fragment_policy,
+            capture_search_names=search_names if self.search_fragment_policy is not None else (),
             fresh_tool_observation_policy=FRESH_TOOL_OBSERVATION_POLICY,
             fresh_tool_message_refs=fresh_refs,
             fresh_text_fragment_policy=FRESH_TEXT_FRAGMENT_POLICY,
@@ -767,6 +809,10 @@ class ContextSummaryPlanning:
             history=history,
             source_reader_names=tuple(sorted(reader_names | search_names | artifact_reader_names)),
             source_capture_reader_names=tuple(sorted(capture_reader_names)),
+            search_fragment_policy=self.search_fragment_policy,
+            source_capture_search_names=(
+                tuple(sorted(search_names)) if self.search_fragment_policy is not None else ()
+            ),
             fresh_tool_observation_policy=FRESH_TOOL_OBSERVATION_POLICY,
             fresh_tool_message_refs=fresh_refs,
             fresh_text_fragment_policy=FRESH_TEXT_FRAGMENT_POLICY,
@@ -779,6 +825,8 @@ class ContextSummaryPlanning:
                 else None
             ),
             summary_completion_policy=self.summary_completion_policy,
+            compaction_message_projection=self.compaction_message_projection,
+            summary_prompt_policy=self.summary_prompt_policy,
             chunk_index=chunk_index,
             remaining_history_entries=remaining,
             turn_control=turn_control,

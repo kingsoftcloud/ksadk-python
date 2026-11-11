@@ -185,12 +185,14 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_CHECKPOINT_BACKEND` | checkpoint backend: `local` / `sqlite` / `memory` / `postgres`; default `local` (0.6.7) |
+| `KSADK_CHECKPOINT_BACKEND` | Backend hint when automatic binding is enabled and no PG configuration exists: `local` / `sqlite` / `memory` / `postgres`; default `local`. Configured PG takes priority. Explicit `postgres` without a DSN is a configuration error. |
 | `KSADK_CHECKPOINT_PATH` | local SQLite checkpoint path, default `.agentengine/ui/checkpoints.sqlite` (0.6.7) |
-| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph PostgreSQL checkpoint DSN; required when backend is `postgres` (0.6.7) |
-| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | Whether the managed LangGraph runner injects a controlled PostgreSQL saver; defaults to `false`, and enabled entry modules must export `ksadk_graph_factory(*, checkpointer)` and `ksadk_prepare_state(payload, session_context)`, otherwise `LANGGRAPH_FACTORY_REQUIRED` or `PREPARE_STATE_HOOK_REQUIRED` fails closed |
+| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | Framework-specific PG DSN; takes priority over `KSADK_CHECKPOINT_DSN`, then the effective PostgreSQL session DSN. |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | The single automatic-checkpoint switch, default `false`. Preserve existing savers and `checkpointer=False`. When enabled for a graph without a saver, use configured PostgreSQL or local SQLite when no PG configuration exists. The PG path still requires `ksadk_graph_factory(*, checkpointer)` and `ksadk_prepare_state(payload, session_context)`. PG failures never fall back to SQLite. |
 
-Local `agentengine web` defaults to local session backend and SQLite LangGraph checkpoints, reducing the local resume path's dependency on PostgreSQL (0.6.7).
+Local session defaults remain independent of automatic graph checkpoints. Set `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1` to enable binding; without PG configuration, SQLite uses `.agentengine/ui/checkpoints.sqlite`. Unset or false leaves an unconfigured graph unchanged. This replaces the earlier local default that bound SQLite without the unified switch.
+
+PG selection order: framework-specific checkpoint DSN → generic checkpoint DSN → effective PostgreSQL session DSN. Explicit local backend/path options do not override configured PG. Selection logs contain only backend, reason, local file path and local-only capability; never DSNs or credentials. SQLite is not shared storage and does not establish cross-Pod recovery.
 
 ## Ambient Runtime Context
 
@@ -343,11 +345,12 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the current default is `0.3.13`. Publish and verify a new version before using it in a wheel build. |
+| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the current source manifest pins `0.3.18`. Publish and verify a new version before using it in a wheel build. |
+| `KSADK_WEB_TARBALL` | Explicit local npm archive, recorded separately from the release pin; retains package, distribution and extraction checks |
 | `KSADK_WEB_PACKAGE` | npm package name used for local UI static sync; default `@kingsoftcloud/ksadk-web` |
-| `KSADK_WEB_TARBALL_NAME` | saved filename when `KSADK_WEB_RELEASE_URL` is set; npm pack mode uses the real tarball filename returned by npm |
-| `KSADK_WEB_RELEASE_URL` | optional fallback; when set, skips npm pack and downloads from this tarball URL |
-| `KSADK_WEB_CACHE_DIR` | KsADK Web package extraction cache directory; default `.cache/ksadk-web` |
+| `KSADK_WEB_TARBALL_NAME` | Legacy setting, not consumed by the current manifest-based build. Use `KSADK_WEB_TARBALL` for a local archive; the download cache is fixed at `.cache/ksadk-web`. |
+| `KSADK_WEB_RELEASE_URL` | Legacy setting, not consumed by the current manifest-based build. Use `KSADK_WEB_TARBALL` for a local archive; the download cache is fixed at `.cache/ksadk-web`. |
+| `KSADK_WEB_CACHE_DIR` | Legacy setting, not consumed by the current manifest-based build. Use `KSADK_WEB_TARBALL` for a local archive; the download cache is fixed at `.cache/ksadk-web`. |
 
 <Callout type="info">
   `make build` / `make build-wheel` automatically run `sync-ksadk-web-static`; no manual sync needed.
@@ -416,4 +419,4 @@ When one backend fails the other still works: primary failure keeps the secondar
   - Keep public docs on placeholders such as `sk-test`, `my-model`, and `https://api.example.com/v1`.
 </Callout>
 
-Current Hosted UI static asset version: `0.3.13`.
+Current Hosted UI static asset version: `0.3.12`.

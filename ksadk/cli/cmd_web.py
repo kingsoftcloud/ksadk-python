@@ -115,71 +115,37 @@ def _configure_custom_ui_env(agent_path: Path) -> str:
     return ui_path
 
 
-def _ensure_langgraph_sqlite_checkpoint_available() -> None:
-    try:
-        import langgraph.checkpoint.sqlite.aio  # noqa: F401
-    except ImportError:
-        print_error(
-            "本地 LangGraph checkpoint 需要安装 langgraph-checkpoint-sqlite：\n"
-            "  pip install langgraph-checkpoint-sqlite\n"
-            "或显式设置 KSADK_CHECKPOINT_BACKEND=memory/postgres。"
-        )
-        raise SystemExit(1)
-def _configure_langgraph_checkpoint_env(
-    agent_path: Path,
-    *,
-    explicit_checkpoint_env_names: set[str],
-) -> None:
-    checkpoint_backend = str(os.environ.get("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
-    if checkpoint_backend == "local":
-        checkpoint_backend = "sqlite"
-        os.environ["KSADK_CHECKPOINT_BACKEND"] = "sqlite"
-
-    if checkpoint_backend == "sqlite":
-        _ensure_langgraph_sqlite_checkpoint_available()
-        os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
-        os.environ.setdefault(
-            "KSADK_CHECKPOINT_PATH",
-            str(agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"),
-        )
-        return
-
-    if explicit_checkpoint_env_names.intersection(_CHECKPOINT_ENV_NAMES):
-        return
-
-    _ensure_langgraph_sqlite_checkpoint_available()
-    os.environ["KSADK_CHECKPOINT_BACKEND"] = "sqlite"
-    os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
-    os.environ["KSADK_CHECKPOINT_PATH"] = str(
-        agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"
-    )
-
-
 def _default_project_stm_if_unset(
     framework: str,
     agent_path: Path,
     *,
     explicit_session_env_names: set[str] | None = None,
-    explicit_checkpoint_env_names: set[str] | None = None,
 ) -> None:
+    from ksadk.kernel.session_storage import postgres_kernel_enabled
+
+    # Kernel chooses the PG authority; local defaults must not become user intent.
+    if postgres_kernel_enabled():
+        return
     if framework not in _PERSISTENT_STM_FRAMEWORKS:
         return
     explicit_session_env_names = explicit_session_env_names or set()
-    explicit_checkpoint_env_names = explicit_checkpoint_env_names or set()
     session_db_path = str(agent_path / ".agentengine" / "ui" / "sessions.sqlite")
-    if not any(name in os.environ for name in _STM_ENV_NAMES):
+    preserve_session_pg = False
+    if framework == "langgraph" and os.getenv(
+        "KSADK_LANGGRAPH_AUTO_CHECKPOINT", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}:
+        from ksadk.sessions.topology import resolve_persistence_topology
+
+        session_target = resolve_persistence_topology(framework="langgraph").session
+        preserve_session_pg = session_target.backend == "postgres"
+    if not preserve_session_pg and not any(name in os.environ for name in _STM_ENV_NAMES):
         os.environ["KSADK_STM_BACKEND"] = "sqlite"
         os.environ["KSADK_STM_PATH"] = session_db_path
-    if not explicit_session_env_names.intersection(_SESSION_ENV_NAMES):
+    if not preserve_session_pg and not explicit_session_env_names.intersection(_SESSION_ENV_NAMES):
         os.environ["KSADK_SESSION_BACKEND"] = "local"
         os.environ["KSADK_SESSION_PATH"] = session_db_path
         os.environ.pop("KSADK_SESSION_DSN", None)
         os.environ.pop("AGENTENGINE_SESSION_BACKEND", None)
-    if framework == "langgraph":
-        _configure_langgraph_checkpoint_env(
-            agent_path,
-            explicit_checkpoint_env_names=explicit_checkpoint_env_names,
-        )
 
 
 def configure_local_runtime_persistence(
@@ -190,17 +156,16 @@ def configure_local_runtime_persistence(
     explicit_checkpoint_env_names: set[str] | None = None,
     explicit_local_ui_env_names: set[str] | None = None,
 ) -> None:
-    """Bind locally-run agent state to its project unless the shell overrides it."""
+    """Default local session paths; the runner owns checkpoint selection.
+
+    ``explicit_checkpoint_env_names`` remains accepted for existing callers;
+    checkpoint configuration is no longer rewritten by this startup helper.
+    """
 
     project_dotenv = _project_dotenv_values(agent_path)
     if explicit_session_env_names is None:
         explicit_session_env_names = _explicit_env_names_excluding_project_dotenv(
             (*_STM_ENV_NAMES, *_SESSION_ENV_NAMES),
-            project_dotenv,
-        )
-    if explicit_checkpoint_env_names is None:
-        explicit_checkpoint_env_names = _explicit_env_names_excluding_project_dotenv(
-            _CHECKPOINT_ENV_NAMES,
             project_dotenv,
         )
     if explicit_local_ui_env_names is None:
@@ -219,7 +184,6 @@ def configure_local_runtime_persistence(
         framework,
         agent_path,
         explicit_session_env_names=explicit_session_env_names,
-        explicit_checkpoint_env_names=explicit_checkpoint_env_names,
     )
 
 

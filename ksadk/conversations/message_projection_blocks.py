@@ -26,6 +26,68 @@ def _event_text(event: Mapping[str, Any]) -> str:
     )
 
 
+def _reconcile_part_updates(events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Apply canonical replacements to the original text or reasoning chunks in timeline order."""
+    rows = list(events)
+    chunks_by_part: dict[tuple, list[int]] = {}
+    for index, event in enumerate(rows):
+        part = event.get("_stream_part")
+        if not part:
+            continue
+        chunks = chunks_by_part.setdefault(part, [])
+        text = _event_text(event)
+        if not event.get("_replace_part") or not chunks:
+            if text:
+                chunks.append(index)
+            continue
+
+        # A snapshot seals this part only. Preserve its existing positions
+        # across intervening tools and other items, including on correction.
+        offset = 0
+        for position in chunks:
+            previous = _event_text(rows[position])
+            end = offset + len(previous) if position != chunks[-1] else len(text)
+            value = text[offset:end]
+            offset = end
+            if value != previous:
+                rows[position] = {**rows[position], "Content": {"text": value}}
+        rows[index] = {**event, "Content": {"text": ""}}
+        if not text:
+            chunks.clear()
+    return rows
+
+
+def _canonical_message_windows(
+    events: Sequence[Mapping[str, Any]],
+) -> dict[str, Sequence[Mapping[str, Any]]]:
+    """Attribute events by message item even when LangGraph seals several items together."""
+    windows: dict[str, list[Mapping[str, Any]]] = {}
+    completed: set[str] = set()
+    pending: list[Mapping[str, Any]] = []
+    active = None
+    for event in events:
+        kind = event.get("EventType")
+        if kind not in {"assistant_message", "assistant_stream_delta", "assistant_stream_snapshot"}:
+            (windows[active] if active is not None else pending).append(event)
+            continue
+        item = event.get("_message_item_id")
+        if not isinstance(item, str) or not item or item in completed:
+            return {}
+        if item not in windows:
+            windows[item] = pending
+            pending = []
+            active = item
+        windows[item].append(event)
+        if kind == "assistant_message":
+            completed.add(item)
+            if active == item:
+                active = None
+    if len(completed) != len(windows) or len(windows) < 2:
+        return {}
+    windows[next(reversed(windows))].extend(pending)
+    return windows
+
+
 def _project_interleaved_blocks(
     events: Sequence[Mapping[str, Any]],
     *,
@@ -47,6 +109,7 @@ def _project_interleaved_blocks(
     """
 
     blocks: list[dict[str, Any]] = []
+    expected_block_text = expected_text
     latest_snapshot_text = ""
     saw_stream_text = False
     saw_reasoning_after_stream_text = False
@@ -93,7 +156,8 @@ def _project_interleaved_blocks(
 
         if event_type == "reasoning":
             metadata = _event_metadata(event)
-            if saw_stream_text and metadata.get("stream_boundary") != "before_text":
+            if (text and saw_stream_text and not event.get("_stream_part")
+                    and metadata.get("stream_boundary") not in ("before_text", "before_tool")):
                 saw_reasoning_after_stream_text = True
             append_thinking(text, seq_id)
             continue
@@ -121,6 +185,14 @@ def _project_interleaved_blocks(
                 append_text(text[len(latest_snapshot_text) :], seq_id)
             elif not latest_snapshot_text:
                 append_text(text, seq_id)
+            elif (
+                text and text == expected_text
+                and blocks[-1]["Type"] in {"thinking", "tool"}
+                and sum(e.get("EventType") == "assistant_message" for e in events) == 1
+            ):
+                # A single final answer after a tool or thought can omit earlier commentary.
+                append_text(text, seq_id)
+                expected_block_text = latest_snapshot_text + text
 
     if saw_reasoning_after_stream_text:
         return []
@@ -129,9 +201,9 @@ def _project_interleaved_blocks(
     # Content/Reasoning/ToolEvents projection instead of displaying stale or
     # whole-run text for one message.
     if (
-        expected_text is not None
+        expected_block_text is not None
         and "".join(block["Content"] for block in blocks if block["Type"] == "text")
-        != expected_text
+        != expected_block_text
     ):
         return []
     return blocks

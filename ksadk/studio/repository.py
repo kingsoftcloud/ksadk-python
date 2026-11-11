@@ -43,7 +43,7 @@ class AgentDraftRepository:
         spec: AgentSpec | None = None,
         labels: dict[str, str] | None = None,
     ) -> AgentDraft:
-        if template not in {"blank", "research"}:
+        if template not in {"blank", "research", "coding"}:
             raise StudioError(
                 "AGENT_TEMPLATE_UNSUPPORTED",
                 "不支持的 Agent 模板",

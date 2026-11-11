@@ -158,11 +158,14 @@ def install_artifact_tool(
     artifacts: ArtifactPort | None,
     *,
     enable_search: bool = False,
+    enable_catalog: bool = False,
     page_policy: ArtifactPagePolicy | None = None,
     search_policy: ArtifactSearchPolicy | None = None,
 ) -> tuple[RunConfiguration, ToolPort]:
     if page_policy is not None and not isinstance(page_policy, ArtifactPagePolicy):
         raise ValueError("artifact_page_policy_invalid")
+    if type(enable_catalog) is not bool:
+        raise ValueError("artifact_catalog_policy_invalid")
     if search_policy is not None and (
         not isinstance(search_policy, ArtifactSearchPolicy) or not enable_search
     ):
@@ -182,6 +185,19 @@ def install_artifact_tool(
         if existing is not None
         else (*configuration.tools, definition)
     )
+    if enable_catalog:
+        from ksadk.harness.native.artifact_catalog_contract import ARTIFACT_LIST_DEFINITION
+
+        from .native_catalog import NativeArtifactCatalogPort
+
+        catalog = next((t for t in definitions if t.name == ARTIFACT_LIST_DEFINITION.name), None)
+        if catalog is not None and catalog != ARTIFACT_LIST_DEFINITION:
+            raise ValueError("reserved_artifact_tool_conflict")
+        if catalog is None:
+            definitions = (*definitions, ARTIFACT_LIST_DEFINITION)
+        tools = NativeArtifactCatalogPort(
+            tools, max_result_bytes=configuration.limits.max_tool_result_bytes
+        )
     if enable_search:
         from .native_search import ARTIFACT_SEARCH_DEFINITION, NativeArtifactSearchPort
 

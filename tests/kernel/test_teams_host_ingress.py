@@ -292,9 +292,14 @@ async def test_canonical_result_ignores_child_and_commentary_and_includes_usage(
     )
     assert (await result())["status"] == "pending"
     await view.append(message("canonical final", "final"), guard=guard)
-    await view.append(
-        UsageReported(**event_args(), input_tokens=3, output_tokens=4, total_tokens=7), guard=guard
-    )
+    for mode, total in (("delta", 8), ("cumulative", 20), ("snapshot", 10), ("delta", 7)):
+        await view.append(
+            UsageReported(
+                **event_args(), input_tokens=total - 4, output_tokens=4,
+                total_tokens=total, mode=mode,
+            ),
+            guard=guard,
+        )
     terminal = await view.append(
         RunCompleted(
             **event_args(),
@@ -306,7 +311,7 @@ async def test_canonical_result_ignores_child_and_commentary_and_includes_usage(
     output = await result()
     assert output["status"] == "succeeded"
     assert output["candidate"] == {"result": "canonical final", "artifacts": []}
-    assert output["usage"] == {"totalTokens": 7}
+    assert output["usage"] == {"totalTokens": 17}
     assert output["terminalEvidence"].terminalSeq == terminal.seq
     assert output["terminalEvidence"].resultDigest == digest(output["candidate"])
     assert await result() == output

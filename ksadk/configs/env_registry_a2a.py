@@ -6,6 +6,48 @@ from ksadk.configs.env_var_spec import EnvVarSpec
 
 A2A_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
+        'KSADK_A2A_TRANSPORT_READ_SECONDS',
+        'a2a',
+        'Managed A2A HTTP stream read cap. Positive finite seconds; invalid values use the default.',
+        '300',
+    ),
+    EnvVarSpec(
+        'KSADK_A2A_PREPARE_SECONDS',
+        'a2a',
+        'Managed invocation policy and control preparation phase cap. Positive finite seconds; invalid values use the default.',
+        '30',
+    ),
+    EnvVarSpec(
+        'KSADK_A2A_CONNECT_SECONDS',
+        'a2a',
+        'Managed A2A stream handshake cap, including response headers. Positive finite seconds; invalid values use the default.',
+        '30',
+    ),
+    EnvVarSpec(
+        'KSADK_A2A_CONTROL_SECONDS',
+        'a2a',
+        'Managed control-plane HTTP transport cap. Positive finite seconds; invalid values use the default.',
+        '25',
+    ),
+    EnvVarSpec(
+        'KSADK_A2A_FIRST_EVENT_SECONDS',
+        'a2a',
+        'Managed first model/tool event wait cap. Positive finite seconds; invalid values use the default.',
+        '300',
+    ),
+    EnvVarSpec(
+        'KSADK_A2A_IDLE_SECONDS',
+        'a2a',
+        'Managed gap between remote events; bounded by invocation deadline. Positive finite seconds; invalid values use the default.',
+        '300',
+    ),
+    EnvVarSpec(
+        'KSADK_A2A_NATIVE_TRIGGER_SECONDS',
+        'a2a',
+        'Wait for the real persisted LangGraph tool-call identity. Positive finite seconds; invalid values use the default.',
+        '15',
+    ),
+    EnvVarSpec(
         "KSADK_A2A_API_KEY",
         "a2a",
         "Product API Key used only by product_key_http_client when api_key is omitted; "

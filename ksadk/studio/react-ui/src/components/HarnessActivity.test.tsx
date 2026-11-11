@@ -10,6 +10,70 @@ const row: Activity = { id: "child-1", label: "调研 Codex", status: "completed
   { id: "search", kind: "step", label: "搜索资料", status: "completed", details: [{ id: "query", text: "搜索资料：Codex 长任务" }] },
 ] };
 describe("expandable human-friendly activity", () => {
+  it.each([
+    ["running", "正在压缩上下文"], ["completed", "上下文已压缩"],
+    ["cancelled", "上下文压缩已取消"], ["failed", "上下文压缩失败"],
+  ])("shows real compaction state %s without a generic execution disclosure", (status, text) => {
+    const { container } = render(<HarnessActivity streaming={status === "running"}
+      showExecutionDetails={false} fallback={[{
+        id: "compact", kind: "step", category: "context", label: "压缩上下文",
+        status, durationMs: 64000, details: [{ id: "detail", text: "host summary diagnostic" }],
+      }]} />);
+    expect(screen.getByText(text)).toBeVisible();
+    expect(container).toHaveTextContent("1m04s");
+    expect(container.querySelector("details, summary, .activity-chevron")).toBeNull();
+    expect(container).not.toHaveTextContent("host summary diagnostic");
+    expect(container.querySelector(".harness-context-activity")).toHaveAttribute("data-status", status);
+  });
+  it("does not append a second compaction row after a canonical timeline", () => {
+    const { container } = render(<HarnessActivity canonicalTimeline streaming={false} fallback={[{
+      id: "compact", kind: "step", category: "context", label: "压缩上下文", status: "completed", details: [],
+    }]} />);
+    expect(container.querySelector(".harness-context-activity")).toBeNull();
+  });
+  it("reports a curated plan to the session dock without rendering it in the body", async () => {
+    const todos = [{ id: "build", content: "Build game", status: "in_progress", priority: "high" }];
+    vi.mocked(apiFetch).mockResolvedValue(new Response(JSON.stringify({ runId: "run-plan", status: "interrupted", activities: [{
+      id: "plan", kind: "step", label: "更新计划", status: "completed", details: [], tools: [{
+        id: "tool-plan", callId: "call-plan", status: "completed", display: { version: "tool-display/v1", category: "todo", todos },
+      }],
+    }] })));
+    const onPlan = vi.fn();
+    const { container } = render(<HarnessActivity runId="run-plan" streaming={false} fallback={[]}
+      canonicalTimeline showExecutionDetails={false} showPlan={false} onPlan={onPlan} />);
+    await waitFor(() => expect(onPlan).toHaveBeenCalledWith("run-plan", todos));
+    expect(container).not.toHaveTextContent("进程");
+    expect(container).not.toHaveTextContent("执行记录");
+  });
+  it.each(["unverified", "partial", "blocked"])("never presents completed/%s as full task acceptance", async outcome => {
+    vi.mocked(apiFetch).mockResolvedValue(new Response(JSON.stringify({
+      runId: "run-unaccepted", status: "completed", activities: [], terminal: { status: "completed", outcome },
+    })));
+    const onRunState = vi.fn();
+    render(<HarnessActivity runId="run-unaccepted" streaming={false} fallback={[]} onRunState={onRunState} />);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("不能视为完整任务验收通过"));
+    expect(screen.getByRole("status")).not.toHaveClass("harness-run-stopped");
+    expect(onRunState).toHaveBeenCalledWith("run-unaccepted", { status: "completed", outcome });
+  });
+  it("keeps progress in the side dock and routine execution details out of the conversation", async () => {
+    const dock = document.createElement("div"); document.body.append(dock);
+    const tool = { id: "plan", callId: "plan-call", status: "completed", display: {
+      version: "tool-display/v1" as const, category: "todo" as const,
+      todos: [{ id: "build", content: "Build game", status: "in_progress" as const, priority: "high" }],
+    } };
+    const view = render(<HarnessActivity streaming fallback={[{
+      id: "plan-step", label: "更新计划", kind: "step", status: "completed", details: [], tools: [tool],
+    }]} canonicalTimeline showExecutionDetails={false} planContainer={dock} />);
+    expect(view.container).not.toHaveTextContent("进程");
+    expect(view.container).not.toHaveTextContent("执行记录");
+    expect(dock).toHaveTextContent("进程0/1");
+    const plan = dock.querySelector("details")!;
+    expect(plan.open).toBe(false);
+    await userEvent.setup().click(dock.querySelector("summary")!);
+    expect(plan.open).toBe(true);
+    expect(dock).toHaveTextContent("Build game");
+    view.unmount(); expect(dock).toBeEmptyDOMElement(); dock.remove();
+  });
   it("expands each child and its steps independently", async () => {
     const user = userEvent.setup();
     render(<><ActivityRow activity={row} /><ActivityRow activity={{ ...row, id: "child-2", label: "调研 ADK", status: "running" }} /></>);
@@ -53,7 +117,7 @@ describe("expandable human-friendly activity", () => {
       "调研 Codex",
       "Codex 的长任务资料已核对，关键依据来自官方文档。",
       "调研 ADK",
-      "压缩上下文",
+      "上下文已压缩",
       "汇总结果",
     ];
     expect(expected.every(value => text.includes(value))).toBe(true);
@@ -121,11 +185,11 @@ describe("expandable human-friendly activity", () => {
       } : { runId: "run-1", status: "completed", activities: [child] }));
     });
     render(<HarnessActivity runId="run-1" streaming={false} fallback={[]} />);
-    expect(await screen.findByText("观测耗时 18s")).toHaveAttribute(
+    expect(await screen.findByText("18s")).toHaveAttribute(
       "title", "按记录到的事件时间计算，包含传输与排队时间。",
     );
     await userEvent.setup().click(screen.getByRole("button", { name: /调研 Codex/ }));
-    await waitFor(() => expect(screen.getAllByText("观测耗时 18s")).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByText("18s")).toHaveLength(2));
   });
   it("distinguishes a partial tool group from a failed subagent", () => {
     render(<ActivityRow activity={{ ...row, kind: "step", label: "搜索资料", status: "partial" }} />);

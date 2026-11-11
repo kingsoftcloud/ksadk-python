@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
-  Bot, Check, ChevronRight, CircleAlert, ListChecks, LoaderCircle,
+  Archive, Bot, Check, ChevronRight, CircleAlert, ListChecks, LoaderCircle,
   ShieldAlert, ShieldCheck, Sparkles,
 } from "lucide-react";
 import { apiFetch } from "../api";
 import { SubagentDetailPanel } from "./SubagentDetail";
-import { TaskPlan, ToolExecutionCard, type ToolExecution } from "./ToolExecutionCard";
+import { TaskPlan, ToolExecutionCard, type ToolExecution, type PlanRunState } from "./ToolExecutionCard";
+import { LiveThinking } from "./LiveThinking";
 import "./harnessActivity.css";
 
 export type Activity = {
@@ -18,6 +20,7 @@ export type Activity = {
   tools?: ToolExecution[];
 };
 type Payload = { runId: string; status: string; activities: Activity[];
+  terminal?: { status: string; reason?: string; outcome?: string };
   approvalAlerts?: { id: string; status: string }[] };
 const labels: Record<string, string> = {
   running: "正在运行", completed: "已完成", partial: "部分未完成",
@@ -48,7 +51,7 @@ export function ActivityDuration({ activity }: {
   const observed = activity.durationSource === "studio_observed";
   return <span className="activity-duration"
     title={observed ? "按记录到的事件时间计算，包含传输与排队时间。" : undefined}>
-    {observed ? `观测耗时 ${duration}` : duration}
+    {duration}
   </span>;
 }
 
@@ -59,6 +62,25 @@ function ActivityIcon({ activity }: { activity: Activity }) {
   if (activity.kind === "sandbox") return activity.status === "failed" ? <ShieldAlert size={14} /> : <ShieldCheck size={14} />;
   if (activity.status === "completed") return <Check size={14} />;
   return <Sparkles size={14} />;
+}
+
+export function ContextActivity({ activity }: { activity: Activity }) {
+  const text: Record<string, string> = {
+    running: "正在压缩上下文", completed: "上下文已压缩",
+    cancelled: "上下文压缩已取消", failed: "上下文压缩失败",
+    paused: "上下文压缩已暂停", unknown: "上下文压缩状态未确认",
+  };
+  return <div className="harness-context-activity" data-status={activity.status}
+    role={activity.status === "running" ? "status" : undefined}>
+    <span className="harness-context-divider-line" aria-hidden="true" />
+    <span className="harness-context-divider-label">
+      {activity.status === "running" ? <LoaderCircle className="activity-spin" size={13} />
+        : activity.status === "failed" ? <CircleAlert size={13} /> : <Archive size={13} />}
+      <span>{text[activity.status] || "上下文压缩尚未完成"}</span>
+      <ActivityDuration activity={activity} />
+    </span>
+    <span className="harness-context-divider-line" aria-hidden="true" />
+  </div>;
 }
 
 export function ActivityRow({ activity, onOpenDetail, runId }: {
@@ -111,12 +133,12 @@ function ExecutionDetails({ activities, runStatus, runId }: { activities: Activi
   if (!activities.length) return null;
   const running = activities.some(activity => activity.status === "running");
   // A recovered tool failure is evidence, not the final outcome. Only color the
-  // collapsed record as requiring attention when the parent run also ended in
-  // a non-success state (or when no authoritative run status is available).
+  // collapsed record as requiring attention when the parent run itself failed
+  // or ended uncertainly (or has no authoritative status). Stop is neutral.
   const hasImperfectStep = activities.some(activity => ["failed", "partial", "unknown"].includes(activity.status));
   const normalizedRunStatus = runStatus?.toLowerCase();
   const attention = hasImperfectStep && (!normalizedRunStatus
-    || ["failed", "cancelled", "partial", "unknown"].includes(normalizedRunStatus));
+    || ["failed", "interrupted", "timed_out", "partial", "unknown"].includes(normalizedRunStatus));
   return <details className="harness-execution-details" data-status={attention ? "attention" : running ? "running" : "completed"}>
     <summary>
       {running ? <LoaderCircle className="activity-spin" size={14} /> : attention ? <CircleAlert size={14} /> : <ListChecks size={14} />}
@@ -163,8 +185,13 @@ export function compactCommentary(activities: Activity[], limit = 4): Activity[]
 }
 
 /** Fetch only curated execution facts; do not fetch or render private reasoning. */
-export function HarnessActivity({ runId, streaming, fallback, onOpenSession }: {
+export function HarnessActivity({ runId, streaming, fallback, onOpenSession, canonicalTimeline = false, visibleThinking = false, showExecutionDetails = true, planContainer, showPlan = true, onPlan, onRunState, onResolvedRun }: {
   runId?: string; streaming: boolean; fallback: Activity[];
+  canonicalTimeline?: boolean; visibleThinking?: boolean;
+  showExecutionDetails?: boolean; planContainer?: HTMLElement | null; showPlan?: boolean;
+  onPlan?: (runId: string, items: NonNullable<ToolExecution["display"]["todos"]>) => void;
+  onRunState?: (runId: string, state: PlanRunState) => void;
+  onResolvedRun?: (reference: string, runId: string) => void;
   onOpenSession?: (sessionId: string) => void;
 }) {
   const [payload, setPayload] = useState<Payload | null>(null);
@@ -172,11 +199,14 @@ export function HarnessActivity({ runId, streaming, fallback, onOpenSession }: {
   const [detailCallId, setDetailCallId] = useState<string | null>(null);
   useEffect(() => {
     setPayload(null); setUnavailable(false); setDetailCallId(null);
+  }, [runId]);
+  useEffect(() => {
     if (!runId) return;
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     let source: EventSource | undefined;
     let streamFailed = false;
+    let failures = 0;
     const refresh = async () => {
       let again = streaming;
       try {
@@ -185,7 +215,9 @@ export function HarnessActivity({ runId, streaming, fallback, onOpenSession }: {
         const data: Payload = await response.json();
         if (!Array.isArray(data.activities)) throw new Error("invalid activity response");
         if (!abort.signal.aborted) { setPayload(data); setUnavailable(false); }
-        again ||= ["running", "pending", "waiting_input", "paused"].includes(data.status.toLowerCase());
+        again = !["completed", "failed", "cancelled", "interrupted", "timed_out"].includes(
+          data.terminal?.status || data.status.toLowerCase(),
+        ) && (streaming || ["running", "pending", "waiting_input", "paused"].includes(data.status.toLowerCase()));
         if (again && !abort.signal.aborted && !streamFailed && typeof EventSource !== "undefined") {
           source = new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/activities/stream`);
           source.addEventListener("snapshot", event => {
@@ -203,7 +235,12 @@ export function HarnessActivity({ runId, streaming, fallback, onOpenSession }: {
           };
           again = false;
         }
-      } catch { if (!abort.signal.aborted) setUnavailable(true); }
+      } catch {
+        if (!abort.signal.aborted) {
+          setUnavailable(true);
+          again = streaming || ++failures < 3;
+        }
+      }
       if (again && !abort.signal.aborted) timer = setTimeout(() => void refresh(), 2500);
     };
     void refresh();
@@ -211,11 +248,35 @@ export function HarnessActivity({ runId, streaming, fallback, onOpenSession }: {
   }, [runId, streaming]);
 
   const activities = payload?.activities.length ? payload.activities : fallback;
-  if (!activities.length && !payload?.approvalAlerts?.length) return null;
-  const visibleCommentaryIds = new Set(compactCommentary(activities).map(activity => activity.id));
+  useEffect(() => {
+    if (runId && payload?.runId && onResolvedRun) onResolvedRun(runId, payload.runId);
+  }, [runId, payload?.runId, onResolvedRun]);
+  const terminal = payload?.terminal;
+  useEffect(() => {
+    if (payload && onRunState) onRunState(payload.runId, {
+      status: payload.terminal?.status || payload.status,
+      outcome: payload.terminal?.outcome,
+    });
+  }, [payload, onRunState]);
+  const unaccepted = terminal?.status === "completed" && ["unverified", "partial", "blocked"].includes(terminal.outcome || "");
+  // An explicit Stop is a normal control outcome, already shown by the turn
+  // header. Like ZCode's TurnComplete(cancelled), it must not become a task
+  // error banner. Individual tool/approval uncertainties remain visible.
+  const stopped = terminal && ["failed", "interrupted", "timed_out"].includes(terminal.status);
+  const stopReason = terminal?.reason === "effect_outcome_unknown" ? "执行结果未确认，本轮任务尚未完成。"
+    : terminal?.reason === "compaction_summary_retry_exhausted" ? "上下文压缩未成功，本轮任务尚未完成。"
+    : terminal?.reason === "wall_time_hard_limit" ? "已达到本轮时间上限，任务尚未完成。"
+    : "本轮任务尚未完成，可在运行详情中查看原因。";
   const plan = activities.flatMap(activity => activity.tools || []).filter(tool =>
     tool.status === "completed" && tool.display.category === "todo" && tool.display.todos,
   ).at(-1)?.display.todos;
+  useEffect(() => {
+    if (runId && plan && onPlan) onPlan(runId, plan);
+  }, [runId, plan, onPlan]);
+  if (!activities.length && !payload?.approvalAlerts?.length && !stopped && !unaccepted) return null;
+  const visibleCommentaryIds = new Set(compactCommentary(activities).map(activity => activity.id));
+  const currentReasoning = activities.filter(activity => activity.status === "running"
+    && (activity.category === "reasoning" || ["思考", "分析任务", "汇总结果"].includes(activity.label))).at(-1)?.id;
   const executionDetails = activities.filter(activity => {
     if (["commentary", "subagent"].includes(activity.kind)) return false;
     if (activity.category === "reasoning" || ["思考", "分析任务", "汇总结果"].includes(activity.label)) return false;
@@ -225,12 +286,23 @@ export function HarnessActivity({ runId, streaming, fallback, onOpenSession }: {
   });
 
   return <section className="harness-activity" aria-label="执行过程">
+    {unaccepted && <p role="status" className="harness-run-verification" data-verification-outcome={terminal.outcome}>
+      <CircleAlert size={16} aria-hidden="true" />
+      <span><strong>本轮已结束</strong> · {terminal.outcome === "partial" ? "仅部分验收通过" : terminal.outcome === "blocked" ? "验收受阻" : "验收尚未确认"}，不能视为完整任务验收通过。</span>
+    </p>}
+    {stopped && <p role="alert" className="harness-run-stopped" data-status={terminal.status}>
+      <CircleAlert size={16} aria-hidden="true" />
+      <span><strong>{terminal.status === "interrupted" ? "任务已中断" : "任务未完成"}</strong> · {stopReason}</span>
+    </p>}
     {payload?.approvalAlerts?.map(alert => <p key={alert.id} role="alert" className="harness-approval-unknown">
       <ShieldAlert size={14} /> 审批结果未确认，当前记录缺少有效决策。请查看审批审计记录。
     </p>)}
-    {plan && <TaskPlan items={plan} />}
+    {plan && showPlan && (planContainer
+      ? createPortal(<TaskPlan key={runId} items={plan} runState={terminal} />, planContainer)
+      : showExecutionDetails ? <TaskPlan items={plan} runState={terminal} /> : null)}
     {activities.map(activity => {
       if (activity.kind === "commentary" && activity.text) {
+        if (canonicalTimeline) return null;
         if (!visibleCommentaryIds.has(activity.id)) return null;
         const namedConclusion = activity.label && activity.label !== "公开进展";
         return <div className="harness-activity-commentary" key={activity.id}>
@@ -260,14 +332,18 @@ export function HarnessActivity({ runId, streaming, fallback, onOpenSession }: {
         </div>;
       }
       const reasoning = activity.category === "reasoning" || ["思考", "分析任务", "汇总结果"].includes(activity.label);
+      if (reasoning && visibleThinking || canonicalTimeline && !reasoning) return null;
+      if (reasoning && canonicalTimeline) return activity.id === currentReasoning
+        ? <LiveThinking key={activity.id} text="" streaming /> : null;
       const context = activity.category === "context" || activity.label === "压缩上下文";
+      if (context) return <ContextActivity key={activity.id} activity={activity} />;
       const hiddenFinishedReasoning = reasoning && activity.status !== "running";
       const foldedExecution = !reasoning && !context && activity.status !== "running";
       return <div className="harness-activity-event" key={activity.id}>
         {!hiddenFinishedReasoning && !foldedExecution && <ActivityRow activity={activity} runId={runId} />}
       </div>;
     })}
-    <ExecutionDetails activities={executionDetails} runStatus={payload?.status} runId={runId} />
-    {unavailable && <p className="harness-activity-note">详细步骤暂时无法加载，显示已收到的进度。</p>}
+    {showExecutionDetails && <ExecutionDetails activities={executionDetails} runStatus={payload?.status} runId={runId} />}
+    {unavailable && !canonicalTimeline && <p className="harness-activity-note">详细步骤暂时无法加载，显示已收到的进度。</p>}
   </section>;
 }

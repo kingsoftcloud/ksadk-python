@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from ksadk.conversations.runtime_input import (
@@ -113,6 +113,14 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         )
         request_metadata.pop(TRUSTED_IDENTITY_METADATA_KEY, None)
     _inject_runner_deferred_tools_for_request(runner, prepared)
+    if not isinstance(raw_prepared, Mapping):
+        # A native interrupt resumes this prepared turn, not another user
+        # turn. Freeze the SDK-produced preparation for durable restoration;
+        # reusing it avoids another user echo, compaction or state mutation.
+        original = dict(request.metadata[CONVERSATION_PREPROCESSING_METADATA_KEY])
+        request.metadata[CONVERSATION_PREPROCESSING_METADATA_KEY] = {
+            **original, "prepared_turn": asdict(prepared),
+        }
     ambient_contexts = _build_runner_ambient_contexts(
         runner=runner,
         user_id=prepared.user_id or request.user_id,

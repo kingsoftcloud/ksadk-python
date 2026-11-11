@@ -362,6 +362,7 @@ class AgentStatusSnapshot(WireModel):
     agent_instance_id: str
     instance_state: Literal["ready", "degraded", "unavailable"]
     session_id: str | None = None
+    session_event_seq: int | None = Field(default=None, ge=0)
     active_run_id: str | None = None
     active_run_state: Literal["pending", "running", "paused", "waiting"] | None = None
     inbox_depth: int

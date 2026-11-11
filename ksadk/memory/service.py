@@ -23,6 +23,29 @@ from ksadk.memory.models import (
 
 logger = logging.getLogger(__name__)
 
+KSMEM_MEMORY_ID_ENV = "KSMEM_MEMORY_ID"
+
+
+def resolve_ltm_backend(backend: str | None = None) -> str:
+    """Resolve the LTM backend, treating a platform Ksmem binding as SDK-backed."""
+    if backend is not None:
+        return str(backend).strip() or "local"
+    configured = str(os.environ.get("KSADK_LTM_BACKEND") or "").strip()
+    if configured:
+        return configured
+    if str(os.environ.get(KSMEM_MEMORY_ID_ENV) or "").strip():
+        return "sdk"
+    return "local"
+
+
+def resolve_ltm_namespace() -> str:
+    """Resolve the memory collection id with native KsADK env taking precedence."""
+    return str(
+        os.environ.get("KSADK_LTM_NAMESPACE")
+        or os.environ.get(KSMEM_MEMORY_ID_ENV)
+        or ""
+    ).strip()
+
 
 def format_memory_entries(entries: list[str]) -> str:
     if not entries:
@@ -77,7 +100,7 @@ class LongTermMemoryService:
         app_name: str = "",
         backend: str | None = None,
     ) -> "LongTermMemoryService":
-        resolved_backend = backend or os.environ.get("KSADK_LTM_BACKEND", "local")
+        resolved_backend = resolve_ltm_backend(backend)
         top_k = int(os.environ.get("KSADK_LTM_TOP_K", "5"))
         index = os.environ.get("KSADK_LTM_INDEX", "")
         app_name = os.environ.get("KSADK_LTM_APP_NAME", "") or app_name
@@ -108,7 +131,7 @@ class LongTermMemoryService:
                 "region": connection["region"],
                 "endpoint": connection["endpoint"],
                 "scheme": connection["scheme"],
-                "namespace": os.environ.get("KSADK_LTM_NAMESPACE", ""),
+                "namespace": resolve_ltm_namespace(),
                 "agent_id": os.environ.get("KSADK_LTM_AGENT_ID", ""),
                 "scene_id": os.environ.get("KSADK_LTM_SCENE_ID", "_sys_general"),
             }
@@ -123,7 +146,10 @@ class LongTermMemoryService:
 
     @staticmethod
     def is_configured() -> bool:
-        return bool(str(os.environ.get("KSADK_LTM_BACKEND", "")).strip())
+        return bool(
+            str(os.environ.get("KSADK_LTM_BACKEND", "")).strip()
+            or str(os.environ.get(KSMEM_MEMORY_ID_ENV, "")).strip()
+        )
 
     def _resolve_backend(self) -> BaseLongTermMemoryBackend:
         if isinstance(self.backend, BaseLongTermMemoryBackend):

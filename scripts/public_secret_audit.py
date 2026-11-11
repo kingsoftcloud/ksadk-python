@@ -46,13 +46,13 @@ NON_PUBLIC_DOC_PREFIXES = ("docs/archive/", "docs/internal/", "docs/superpowers/
 def _source_files() -> list[str]:
     """Return tracked files, or clean-export files when no Git metadata exists."""
     tracked = subprocess.run(
-        ["git", "ls-files"],
+        ["git", "ls-files", "-z"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
     if tracked.returncode == 0:
-        return tracked.stdout.splitlines()
+        return [path for path in tracked.stdout.split("\0") if path]
 
     return [
         str(path.relative_to(ROOT))

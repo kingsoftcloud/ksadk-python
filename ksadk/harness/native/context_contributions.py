@@ -306,7 +306,8 @@ def reduce_collection(snapshot: RunSnapshot, config: RunConfiguration, key: str,
         except ContextRuntimeError:
             return finish(snapshot, "unverified", "context_goal_message_missing")
         prefix = snapshot.compaction_history.get("prefix_message_count", 0)
-        if snapshot.compaction_history.get("count", 0) and index < prefix:
+        if (snapshot.compaction_history.get("count", 0)
+                or snapshot.compaction_history.get("inherited_summary_source")) and index < prefix:
             # A fresh source cannot insert into a compacted prefix. Model
             # projection orders these live frames before the retained goal;
             # the authoritative transcript and its sealed digest stay intact.

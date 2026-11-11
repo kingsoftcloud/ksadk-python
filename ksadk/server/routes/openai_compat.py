@@ -126,6 +126,9 @@ async def responses(
     )
     resolved_session_id = authorized_session.id
     resolved_user_id = authorized_session.user_id
+    from .local_kernel_control import require_idle_local_session
+
+    await require_idle_local_session(launch_context, resolved_session_id)
 
     resume_input = extract_responses_resume_input(request.input)
     resume_input = await _resolve_checkpoint_resume_input_from_session(
@@ -318,6 +321,9 @@ async def chat_completions(
     )
     resolved_user_id = authorized_session.user_id
     resolved_session_id = authorized_session.id
+    from .local_kernel_control import require_idle_local_session
+
+    await require_idle_local_session(launch_context, resolved_session_id)
     messages = normalize_kop_messages(
         request.messages,
         owner_scope_ref=(

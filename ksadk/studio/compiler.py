@@ -20,9 +20,11 @@ from ksadk.studio.contracts import (
     AgentDraft,
     CapabilitiesSpec,
     ModelSpec,
+    NativeExecutionLimits,
+    RemoteAgentBinding,
     ResolvedAgentSpec,
     ResolvedCapabilities,
-    RemoteAgentBinding,
+    ResolvedModel,
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.resource_catalog import LocalResourceCatalog
@@ -54,8 +56,8 @@ class AgentCompiler:
         self.catalog = catalog or LocalResourceCatalog(workspace)
 
     def compile(self, draft: AgentDraft) -> CompileResult:
-        from ksadk.studio.a2a_orchestration import compile_orchestration
         from ksadk.studio.a2a_bindings import require_execution_policy
+        from ksadk.studio.a2a_orchestration import compile_orchestration
 
         orchestration = compile_orchestration(draft)
         for binding in draft.spec.bindings.remote_agents:
@@ -152,6 +154,92 @@ class AgentCompiler:
                 )
             ]
 
+        # 子 Agent 模型选择：宿主只能从本 Agent 已绑定的可信 Model Profile 中选。
+        # authorized_profile_ids 与父级 fallback 链同源，但子模型选择独立于
+        # model_failover_mode——不触发 Native 自动切换策略。每个选定模型经 Catalog
+        # 解析为 ResolvedModel 并封存进 Build；显式但越权/缺资源的声明在此失败，
+        # 不静默回退父模型（对齐 ZCode resolveSubagentSelection 的失败语义）。
+        authorized_profile_ids = {
+            materialized.spec.bindings.model_profile_id,
+            *materialized.spec.bindings.model_profile_ids,
+        }
+        authorized_profile_ids.discard(None)
+        profile_models: dict[str, ResolvedModel] = {}
+        for resource_id in authorized_profile_ids:
+            selected_bindings = materialized.spec.bindings.model_copy(
+                update={"model_profile_id": resource_id, "model_profile_ids": []}
+            )
+            selected_spec = self.catalog.resolve_model(selected_bindings)
+            if selected_spec is not None:
+                profile_models[resource_id] = self.resolver.resolve_model(selected_spec)
+        sub_agent_models: dict[str, ResolvedModel] = {}
+        for sub in materialized.spec.sub_agents:
+            if sub.model_profile_id is None:
+                continue
+            if sub.model_profile_id not in authorized_profile_ids:
+                raise StudioError(
+                    "SUBAGENT_MODEL_PROFILE_OUT_OF_SCOPE",
+                    "子 Agent 选定的模型必须由宿主在本 Agent 绑定中授权",
+                    status_code=422,
+                    field="spec.subAgents",
+                    details={
+                        "subAgent": sub.name,
+                        "modelProfileId": sub.model_profile_id,
+                    },
+                )
+            resolved_child_model = profile_models.get(sub.model_profile_id)
+            if resolved_child_model is None:
+                raise StudioError(
+                    "SUBAGENT_MODEL_PROFILE_UNAVAILABLE",
+                    "子 Agent 选定的模型资源当前不可用",
+                    status_code=409,
+                    field="spec.subAgents",
+                    details={
+                        "subAgent": sub.name,
+                        "modelProfileId": sub.model_profile_id,
+                    },
+                )
+            sub_agent_models[sub.name] = resolved_child_model
+
+        execution = materialized.spec.execution
+        if (materialized.spec.runtime is not None
+                and materialized.spec.runtime.type == "harness"
+                and execution.native_limits is None):
+            # Stamp new Builds explicitly. Replaying an older sealed bundle
+            # does not pass through this compiler and retains its old limits.
+            execution = execution.model_copy(update={"native_limits": NativeExecutionLimits()})
+        if (materialized.spec.runtime is not None
+                and materialized.spec.runtime.type == "harness"):
+            execution = execution.model_copy(update={
+                "native_command_lifecycle_policy": "owned-local-command/v1",
+                "native_stream_timeout_policy": "idle/v1",
+                "tool_error_recovery_policy": "diagnose-before-repeat/v1",
+                "native_skill_metadata_policy": "bound-skill-metadata/v1" if skills else None,
+                "native_directory_observation_policy": "studio-directory-observation/v3",
+                "native_directory_navigation_policy": "receipt-directory-progress/v1",
+                "native_wall_delivery_policy": "deadline-delivery/v7",
+                "native_background_notification_policy": (
+                    "completed-before-model/v1" if all(
+                        any(tool.name == name and tool.executor == "builtin" for tool in tools)
+                        for name in ("run_command", "read_command_output", "stop_command")
+                    ) else None
+                ),
+            })
+
+        context = materialized.spec.context
+        if (materialized.spec.runtime is not None
+                and materialized.spec.runtime.type == "harness"):
+            context = context.model_copy(update={
+                "compaction": context.compaction.model_copy(update={
+                    "native_summary_policy": "rolling-work-state/v3",
+                    "native_message_projection": "current-user-after-summary/v1",
+                    "native_session_history_projection": "sealed-session-summary/v1",
+                    "native_source_progress_policy": "receipt-source-progress/v5",
+                    "native_task_goal_projection_policy": "retained-user-goal/v2",
+                    "native_search_fragment_policy": "complete-search-fragments/v1",
+                }),
+            })
+
         resolved = ResolvedAgentSpec(
             a2a_orchestration=({**orchestration.plan, "digest": orchestration.digest} if orchestration else None),
             agent_id=draft.metadata.id,
@@ -171,12 +259,13 @@ class AgentCompiler:
                 tools=tools,
             ),
             remote_agents=sorted(materialized.spec.bindings.remote_agents, key=lambda item: (item.local_name, item.binding_id)),
-            execution=materialized.spec.execution,
-            context=materialized.spec.context,
+            execution=execution,
+            context=context,
             memory=materialized.spec.memory,
             security=materialized.spec.security,
             evaluation=materialized.spec.evaluation,
             sub_agents=materialized.spec.sub_agents,
+            sub_agent_models=sub_agent_models,
             source_digest=source_digest,
         )
         digest_payload = resolved.model_dump(

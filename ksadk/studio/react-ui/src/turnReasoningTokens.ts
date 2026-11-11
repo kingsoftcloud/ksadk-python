@@ -24,13 +24,7 @@ export function recordReasoningTokens(run: RunUsageRecord | undefined): number |
   return numberOrNull(run.usage.reasoningOutputTokens);
 }
 
-/**
- * Sum this run's `UsageReported.reasoning_tokens`.
- *
- * A run makes several model calls and Studio only keeps the *last* call in the
- * run record's usage, so the run's thinking consumption has to be summed over
- * its `usage.reported` events (the same events the run inspector reads).
- */
+/** Apply usage reports for this run. Older rows without mode are deltas. */
 export function reasoningTokensFromEvents(events: Array<ResponseStreamEvent | Record<string, unknown>>): number | null {
   let total = 0;
   let reported = false;
@@ -39,7 +33,7 @@ export function reasoningTokensFromEvents(events: Array<ResponseStreamEvent | Re
     if (String(record.type || "") !== "usage.reported") continue;
     const tokens = numberOrNull(record.reasoningTokens ?? record.reasoning_tokens);
     if (tokens === null) continue;
-    total += tokens;
+    total = record.mode === "cumulative" || record.mode === "snapshot" ? tokens : total + tokens;
     reported = true;
   }
   return reported ? total : null;

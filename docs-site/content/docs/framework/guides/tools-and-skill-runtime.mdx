@@ -457,6 +457,12 @@ strict 模式下，medium / high / critical 风险工具会先返回结构化 `a
 
 ## Skill 加载时序
 
+Skill 元数据请求（列举技能、获取下载地址）遇到 HTTP 错误时，
+`SkillServiceHTTPError` 仍可作为 `ValueError` 捕获，并提供安全的 `action`、`status_code`
+用于诊断。公开错误消息不回显请求 URL、响应正文或凭据。资源 worker 将元数据请求的
+401/403 识别为绑定授权失效；归档对象下载的拒绝或临时链接失效仍按可恢复下载错误处理，
+不据此撤销整个 Skill Space 绑定。签名端点、显式凭据及哈希校验规则保持不变。
+
 `ksadk/skills/runtime/loader.py` 的 `load_skills()` 在 Agent 装载期把本地技能与
 远程技能 manifest 合并。远程技能先经 Skill Service 列举、获取下载地址，再做 sha256
 校验与安全解压，最后交给 `load_local_skill()` 装入 `LocalSkill`。

@@ -348,6 +348,7 @@ async def _stream_responses_semantic_events(
     reasoning_output_index: int | None = None
     message_started = False
     content_started = False
+    open_calls: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
     reasoning_started = False
     completed_text = ""
     lifecycle_started = False
@@ -476,24 +477,27 @@ async def _stream_responses_semantic_events(
             )
             continue
 
-        if event_type == "tool_call":
-            args_json = json.dumps(event.get("args", {}) or {}, ensure_ascii=False)
-            call_id = str(event.get("run_id") or f"call_{uuid.uuid4().hex[:12]}")
-            item_id = f"fc_{uuid.uuid4().hex[:12]}"
-            call_output_index = _next_output_index()
-            # tool_name 是 runner stream 的字段名；name 用于向后兼容旧事件源。
+        if event_type in {"tool_call_started", "tool_call"}:
+            key = (event.get("scope_id", ""), event.get("item_id", ""))
+            opened = open_calls.pop(key, None)
             tool_name = event.get("tool_name") or event.get("name") or "unknown"
-            item = {
-                "id": item_id,
-                "type": "function_call",
-                "status": "in_progress",
-                "call_id": call_id,
-                "name": tool_name,
-                "arguments": "",
-            }
-            yield _response_sse(
-                "response.output_item.added", {"output_index": call_output_index, "item": item}
-            )
+            if opened is None:
+                call_id = str(event.get("run_id") or f"call_{uuid.uuid4().hex[:12]}")
+                call_output_index = _next_output_index()
+                item = {
+                    "id": f"fc_{uuid.uuid4().hex[:12]}", "type": "function_call",
+                    "status": "in_progress", "call_id": call_id, "name": tool_name, "arguments": "",
+                }
+                yield _response_sse(
+                    "response.output_item.added", {"output_index": call_output_index, "item": item}
+                )
+            else:
+                call_output_index, item = opened
+            if event_type == "tool_call_started":
+                open_calls[key] = (call_output_index, item)
+                continue
+            item_id = item["id"]
+            args_json = json.dumps(event.get("args", {}) or {}, ensure_ascii=False)
             yield _response_sse(
                 "response.function_call_arguments.delta",
                 {"item_id": item_id, "output_index": call_output_index, "delta": args_json},

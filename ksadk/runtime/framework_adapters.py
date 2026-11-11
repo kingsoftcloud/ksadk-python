@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime._langgraph_interaction_adapter import NativeLangGraphInteractionMixin
 from ksadk.runtime.adapter import (
     CheckpointCapability,
     ResumePayload,
@@ -145,11 +146,18 @@ class ADKRuntimeAdapter(RunnerRuntimeAdapter):
         )
 
 
-class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
+class LangGraphRuntimeAdapter(NativeLangGraphInteractionMixin, RunnerRuntimeAdapter):
     """LangGraph 框架 adapter(time-travel resume)。"""
 
     def __init__(self, runner: BaseRunner) -> None:
         super().__init__(runner, runtime_type="langgraph")
+
+    async def durable_restore(self, handle: RunHandle) -> RunHandle:
+        # Recovery's adapter factory creates a cold runner, independently of
+        # the deployment capability probe. Bind its saver before checking the
+        # durable capability; native attachment still validates the checkpoint.
+        await self.preflight()
+        return await super().durable_restore(handle)
 
     def requires_recovery_stream(self, handle: RunHandle) -> bool:
         """A shared adapter only restarts the restored managed invocation."""
@@ -164,7 +172,9 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
     @property
     def requires_durable_start_request(self):
         bootstrap = getattr(self._runner, "_managed_a2a_bootstrap", None)
-        return bootstrap is not None and bootstrap.outbound_enabled
+        return self.confirms_native_submissions or (
+            bootstrap is not None and bootstrap.outbound_enabled
+        )
 
     def remember_managed_checkpoint(self, handle, event):
         from ksadk.events.canonical import ContinuationCreated
@@ -189,6 +199,8 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
 
     async def restore_run_record(self, handle: RunHandle, record: "RunRecord") -> None:
         if handle.native_ref.get("managed_a2a_takeover") is not True:
+            if self.confirms_native_submissions:
+                self.restore_native_request(handle, record)
             return
         bootstrap = getattr(self._runner, "_managed_a2a_bootstrap", None)
         if bootstrap is None or not bootstrap.outbound_enabled or not self.is_handle_attached(handle):
@@ -244,6 +256,16 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
         updates = {
             "interaction_mode": "durable_resume" if matrix.resume.supported else "unavailable"
         }
+        checkpoint = self._checkpoint_capability()
+        if self.confirms_native_submissions and matrix.resume.supported:
+            updates["submit_interaction"] = RuntimeCapability(supported=True, mode="native")
+        if (self.confirms_native_submissions and checkpoint.supported and checkpoint.durable
+                and not checkpoint.shared_across_pods):
+            # Across-process restore on the same filesystem is useful locally.
+            # The checkpoint still declares shared_across_pods=False; hosted
+            # admission must independently require its shared storage contract.
+            local = RuntimeCapability(supported=True, mode="native", reason="local_checkpoint_file")
+            updates.update(attach=local, durable_restore=local)
         bootstrap = getattr(self._runner, "_managed_a2a_bootstrap", None)
         if bootstrap is not None and bootstrap.outbound_enabled:
             # Managed waiters are delivered by Kernel, independently of the
@@ -259,6 +281,9 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
         target: ResumeTarget,
         payload: Optional[ResumePayload],
     ) -> Optional[dict]:
+        native = self._native_wait_resume(handle, target, payload)
+        if native is not None:
+            return native
         if target.kind != "checkpoint_id":
             raise ValueError(f"LangGraph resume requires checkpoint_id target, got {target.kind!r}")
         known_checkpoint_ids = {

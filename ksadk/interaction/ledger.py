@@ -9,21 +9,27 @@ first-wins，并在**同一个 store 事务**内追加恰好一个 terminal Sess
 
 公共事件 payload 是 interactionEvent 投影，省略
 ``provider_id`` / ``native_target`` / ``continuation_metadata``。
+结构化输入的公开 ``response`` 是按 Schema 脱敏的展示值；原始答案仍由
+私有提交/恢复路径提供，不从历史展示事件恢复业务参数。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
+from pydantic import JsonValue
+
 from ksadk.interaction.contracts import (
-    InteractionRecord,
-    InteractionReceipt,
-    InteractionSubmission,
     RESOLVE_OUTCOMES,
+    InteractionReceipt,
+    InteractionRecord,
+    InteractionSubmission,
 )
+from ksadk.interaction.display_values import submission_display_value
 from ksadk.kernel.contracts import (
     ActivationWriteGuard,
     SessionEventEnvelope,
@@ -35,6 +41,17 @@ INTERACTION_FAMILY_VERSION = 1
 ALREADY_RESOLVED = "interaction_already_resolved"
 REVISION_MISMATCH = "interaction_revision_mismatch"
 REQUEST_CONFLICT = "interaction_request_conflict"
+_MISSING_RESPONSE = object()
+
+
+@dataclass(frozen=True)
+class ResolvedInteractionResponse:
+    """Private, detached answer; a wrapper distinguishes JSON null from missing.
+
+    This is a recovery value, never an interaction event or public API payload.
+    """
+
+    value: JsonValue = field(repr=False)
 
 
 def request_digest(record: InteractionRecord) -> str:
@@ -69,7 +86,7 @@ def interaction_event(
     timestamp: str,
     request: dict | None = None,
     outcome: str | None = None,
-    response=None,
+    response=_MISSING_RESPONSE,
     actor_ref: str | None = None,
     reason: str | None = None,
 ) -> SessionEventEnvelope:
@@ -95,8 +112,12 @@ def interaction_event(
         payload["request"] = request
     if outcome is not None:
         payload["outcome"] = outcome
-    if response is not None:
-        payload["response"] = response
+    if response is not _MISSING_RESPONSE:
+        payload["response"] = (
+            submission_display_value(record.request_schema, response)
+            if event_type == "interaction.resolved" and record.kind == "structured_input"
+            else response
+        )
     if actor_ref is not None:
         payload["actor_ref"] = actor_ref
     if reason is not None:
@@ -168,6 +189,12 @@ class InteractionLedger(Protocol):
         session_id: str | None = None,
         run_id: str | None = None,
     ) -> InteractionRecord | None: ...
+
+    async def read_resolved_response(
+        self, record: InteractionRecord
+    ) -> ResolvedInteractionResponse | None:
+        """Read the private answer only for this exact resolved identity/revision."""
+        ...
 
     async def list_pending_interactions(
         self, tenant_id: str, session_id: str

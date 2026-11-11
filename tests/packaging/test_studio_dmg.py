@@ -25,7 +25,11 @@ def test_make_exports_web_version_to_desktop_manifest(tmp_path, script_name, ove
         command.append(f"KSADK_WEB_VERSION={override}")
     result = subprocess.run(command, cwd=ROOT, env=environment,
                             capture_output=True, text=True, check=True)
-    assert result.stdout == (override or "0.3.13")
+    expected = subprocess.check_output(
+        ["python3", "scripts/reviewed_web_assets.py", "identity", "--field", "package_version"],
+        cwd=ROOT, text=True).strip()
+    # Metadata describes the actual package even if a caller sets another label.
+    assert result.stdout == expected
 
 
 @pytest.mark.parametrize("image_exit", [0, 17])

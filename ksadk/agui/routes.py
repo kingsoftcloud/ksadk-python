@@ -30,6 +30,7 @@ def add_ksadk_agui_endpoint(
     *,
     event_store_factory=None,
     session_service_factory=None,
+    local_kernel_provider=None,
 ) -> KsadkAGUIAgent:
     require_agui_dependencies()
 
@@ -39,6 +40,7 @@ def add_ksadk_agui_endpoint(
         launch_context=launch_context,
         event_store_factory=event_store_factory,
         session_service_factory=session_service_factory,
+        local_kernel_provider=local_kernel_provider,
     )
     _fastapi_endpoint_helper()(app, cast(Any, agent), path=config.path)
     return agent

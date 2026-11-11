@@ -48,9 +48,8 @@ async def test_empty_non_success_stream_repairs_only_explicit_output_caps(monkey
         }
         assert len(captured) == (2 if repair else 1)
         assert all(body["max_tokens"] == 128 for body in captured)
-        assert chunks[-1].done and chunks[-1].finish_reason == reason
+        assert chunks[-1].done and chunks[-1].finish_reason == ("length" if repair else reason)
         assert not chunks[-1].tool_calls
         assert "".join(chunk.text for chunk in chunks) == ("42" if repair else "")
     finally:
         await gateway.aclose()
-

@@ -133,6 +133,42 @@ def resolved_build(*, agent_id="agent", models=(MODEL,)):
     }
 
 
+@pytest.mark.parametrize("policy", [None, "idle/v1"])
+def test_stream_timeout_policy_is_locked_by_build_and_omitted_on_legacy_profiles(policy):
+    build = resolved_build()
+    build["context"] = {"maxInputTokens": 8192, "reserveOutputTokens": 1024}
+    build["execution"] = {"nativeStreamTimeoutPolicy": policy} if policy else {}
+    profile = native_model_profile_from_build(
+        build, selected_model="fixture", build_id="build", streaming_support=lambda _: True,
+    )
+    assert profile.stream_timeout_policy == policy
+    assert ("stream_timeout_policy" in profile.model_dump(mode="json")) is (policy is not None)
+    buffered = native_model_profile_from_build(
+        build, selected_model="fixture", build_id="build", streaming_support=lambda _: False,
+    )
+    assert buffered.stream_timeout_policy is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_activity_is_content_free_and_does_not_replace_visible_deltas():
+    input_request = request(streaming=True)
+    input_request = input_request.model_copy(update={
+        "profile": input_request.profile.model_copy(update={"stream_timeout_policy": "idle/v1"}),
+    })
+    client = Client(events=(
+        ModelStreamEvent(ModelStreamEventType.TEXT_DELTA, MODEL.model, 1, text="answer"),
+        ModelStreamEvent(
+            ModelStreamEventType.TURN_COMPLETED, MODEL.model, 2,
+            metadata={"finish_reason": "stop"},
+        ),
+    ))
+    events = [event async for event in port(client, input_request).stream(input_request)]
+    assert [event.kind for event in events] == ["activity", "text_delta", "activity", "final"]
+    assert [event.seq for event in events] == [1, 2, 3, 4]
+    assert all(not event.text and event.result is None for event in events if event.kind == "activity")
+    assert events[-1].result.text == "answer"
+
+
 def test_native_profile_uses_only_locked_build_budgets():
     build = resolved_build()
     build["context"] = {"maxInputTokens": 8192, "reserveOutputTokens": 1024}
@@ -184,6 +220,25 @@ def test_native_profile_uses_only_locked_build_budgets():
     slow["execution"] = {"timeoutSeconds": 250}
     with pytest.raises(ValueError, match="request_timeout_invalid"):
         native_model_profile_from_build(slow, selected_model="fixture", build_id="build-123")
+
+
+@pytest.mark.parametrize("timeout,valid", [(0, True), (250, False), (300, True)])
+def test_unbounded_run_keeps_the_independent_model_request_deadline(timeout, valid):
+    build = resolved_build(models=(MODEL.model_copy(update={
+        "metadata": {"request_timeout_seconds": 240},
+    }),))
+    build["context"] = {"maxInputTokens": 8192, "reserveOutputTokens": 1024}
+    build["execution"] = {"timeoutSeconds": timeout}
+    if valid:
+        profile = native_model_profile_from_build(
+            build, selected_model="fixture", build_id="build-timeouts",
+        )
+        assert profile.request_timeout_seconds == 240
+    else:
+        with pytest.raises(ValueError, match="request_timeout_invalid"):
+            native_model_profile_from_build(
+                build, selected_model="fixture", build_id="build-timeouts",
+            )
 
 
 def test_native_profile_pins_explicit_studio_reasoning_effort():

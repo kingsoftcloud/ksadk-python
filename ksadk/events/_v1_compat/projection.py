@@ -45,6 +45,7 @@ from ksadk.events.content import (
     ToolCallContent,
     ToolResultContent,
 )
+from ksadk.events.usage import usage_mode
 
 
 def _phase_for_item(
@@ -746,6 +747,7 @@ def project_to_v1(
             "total_tokens": event.total_tokens,
             "cached_tokens": event.cached_tokens,
             "reasoning_tokens": event.reasoning_tokens,
+            "mode": usage_mode(event),
             **_identity_payload(event),
         }
         return (_v1_event(event, EventTypeV1.USAGE_REPORTED, payload, context=context),)

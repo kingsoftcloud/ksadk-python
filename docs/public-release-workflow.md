@@ -33,6 +33,24 @@
 5. GitHub Release、PyPI 包、Pages 文档必须能追溯到同一个已审核 GitHub `main` 提交。
 6. `.pypirc`、私有 registry 凭证、kubeconfig、真实 API key、临时 token 不得进入仓库。
 
+## 0.8.7 候选对齐与保留规则
+
+当前 0.8.7 只准备公开候选，不创建 tag、Release，不发布 PyPI/npm，也不部署 Pages。
+内部 `master` 持续保留；对齐代码在派生分支完成，通过审核后再决定主干合入。
+
+当公开 `main` 包含内部尚未吸收的修复时，先逐项审计并在内部对齐分支补回有效修复。
+同一功能以内外两边的实际代码和回归结果判断；保留内部更新的协议、鉴权及安全校验，
+同时保留公开的安装、取消、UI 和发布门禁修复，不按提交日期整文件覆盖。
+
+候选复制只新增或更新经过公开审计的内容，不自动删除公开 `main` 已有文件。
+公开历史保留的拆分 helper 可作为兼容路径继续存在，运行时主入口采用对齐后的实现。
+同步前后比较全部 SDK 源码与资源、公开路径清单以及 diff；任何缺失或没有审计依据的
+覆盖都阻止候选交付。分支、现有工作目录和原工作区的未提交内容不在清理范围内。
+
+`docs/maintainer-approval-record.md` 必须记录当前版本；候选阶段各正式 sign-off 保持
+Pending，不能复制上一版本的 Approved 行。此状态应使 `make public-publish-gate` 拒绝发布，
+但不代替或跳过源码、构建、安装及完整预检。
+
 ## 0.8.4 CI 与本地门禁分工
 
 PR 的 Release Check 负责源码清洁检查、前端构建、可追溯的 wheel/sdist、全新环境安装和制品内容审计。它使用 `--skip-tests` 避免在组合门禁里重复执行实时运行时 E2E；报告中的 source E2E 保持 `not_run`，不得把该报告当作完整发布证据。
@@ -109,13 +127,13 @@ uv run pytest tests/test_check_approval_record.py tests/test_public_release_posi
 
 ```bash
 cd agentengine/ksadk-python
-rm -rf /tmp/ksadk-python-export-candidate-<version>
+candidate_parent="$(mktemp -d /tmp/ksadk-python-candidate.XXXXXX)"
 python scripts/prepare_ksadk_python_export.py \
-  --output-dir /tmp/ksadk-python-export-candidate-<version> \
+  --output-dir "$candidate_parent/export" \
   --summary
 python3 scripts/open_source_audit.py \
   --target public-repo \
-  --root /tmp/ksadk-python-export-candidate-<version>
+  --root "$candidate_parent/export"
 ```
 
 同步到长期 public worktree：
@@ -123,8 +141,8 @@ python3 scripts/open_source_audit.py \
 ```bash
 git fetch github main
 git worktree add .worktrees/public-main github/main  # 首次需要
-rsync -a --checksum --delete --exclude .git \
-  /tmp/ksadk-python-export-candidate-<version>/ \
+rsync -a --checksum --exclude .git \
+  "$candidate_parent/export/" \
   .worktrees/public-main/
 ```
 
@@ -145,14 +163,26 @@ make public-preflight
 make public-preflight PUBLIC_PREFLIGHT_MODE=source-sync
 ```
 
-联合验证尚未发布的 Web 修复时，应使用与 CI 固定源码提交一致、已构建并审计的 tarball：
+默认 Web 来源为 npm 已发布的 `@kingsoftcloud/ksadk-web@0.3.18`。版本、源码提交、npm integrity 和两个构建目录的摘要统一记录在 `ksadk/studio/react-ui/vendor/ksadk-web-source.json`；该目录内的 JSON 是来源清单，默认构建不再使用本地 tarball。Studio 通过 `npm ci` 安装同一正式版本；SDK 页面从经摘要校验的官方 npm 归档生成。下载缓存不能替代来源校验，校验失败不会回退到旧包。
+
+默认发布包在冷缓存时需要访问 npm registry。受限网络环境可在联网机器提前下载并验证，
+将项目 `.cache/ksadk-web/` 中对应 SHA256 的归档缓存带入构建机；该路径命中后仍执行摘要校验。
+本地联调也可使用下述显式归档入口。离线 CI 还需预备自身的 npm/uv 依赖缓存，
+Web 归档缓存不等于全部依赖已可离线安装；不需要把临时 tarball 重新提交到 vendor。
+
+联合验证尚未发布的 Web 修复时，可显式传入本地 `npm pack` 生成的 tarball：
 
 ```bash
 make public-preflight PUBLIC_PREFLIGHT_MODE=source-sync \
-  KSADK_WEB_VERSION=0.3.12 KSADK_WEB_TARBALL=/tmp/ksadk-web-reviewed.tgz
+  KSADK_WEB_TARBALL=/tmp/ksadk-web-local.tgz
 ```
 
-验证记录必须同时保留 Web 源码提交和 tarball SHA-256，区分 npm registry 的正式包与源码候选。源码候选通过门禁不表示待审 Web 修复已经发布，也不授予发布权限。
+仅更新本地 `ksadk web` 页面时，执行 `make sync-ksadk-web-static KSADK_WEB_TARBALL=/tmp/ksadk-web-local.tgz` 即可；无需编译 Studio。
+显式本地路径不与默认来源清单比对版本或摘要，也不要求 `SOURCE_CANDIDATE.json`，仍保留包名、完整构建目录和安全解包检查。
+产物记录实际 tarball 和目录摘要，标记为本地来源；后续同步、验证及打包必须继续传入同一路径。
+不传本地路径时，默认来源的版本、源码及摘要校验保持不变。
+
+验证记录必须同时保留构建时的实际 Web 源码提交和 tarball SHA-256，区分 npm registry 的正式包与本地源码候选。包内来源声明不能代替实际构建记录。源码候选通过门禁不表示待审 Web 修复已经发布，也不授予发布权限。
 
 完整公开预检会在临时目录安装官方 DSH 工具链，再启动浏览器测试所需的 Provider 注册。主机需要 Node、pnpm、Chromium 与工具链下载网络；测试使用独立 profile，不修改用户已有插件配置。响应式浏览器检查及 Codex 插件 turn/回滚检查均为阻断项，不能以跳过后的证据声明完整通过。
 
@@ -189,7 +219,7 @@ tag 必须指向 GitHub `main` 上已审核、已合入的公开提交：
 
 ```bash
 git fetch github main
-git checkout .worktrees/public-main
+cd .worktrees/public-main
 git pull --ff-only github main
 make public-release-tag V=<version>
 git push github v<version>
@@ -209,7 +239,7 @@ git push github v<version>
 
 - 触发条件：GitHub Release `published` 或手动 `workflow_dispatch`。
 - 输入：`ksadk_web_version`、`approved_source_commit` 和 `publish_target`。
-- 正常发版使用 `publish_target=full`：公开候选先通过本地完整 `make public-preflight`、PR review 和 CI；发布 workflow 再运行 `make public-preflight-publish`，复核版本、公开审计、公开测试及主包构建。主包与 `agentengine-sdk-python` 兼容发行包必须都完成构建、`twine check` 和制品审计后，才依次上传 PyPI；同一 workflow 随后部署 GitHub Pages。
+- 正常发版使用 `publish_target=full`：公开候选须先通过完整本地 `make public-preflight`；workflow 再运行 `make public-preflight-publish` 和审批门禁，在首次上传前完成主包、`agentengine-sdk-python` 别名包的构建审计，然后发布两个发行包并部署 GitHub Pages。
 - 补发别名包使用 `publish_target=alias-only`：workflow 只跑公开审计、公开测试、别名包构建审计和 approval gate，只发布 `agentengine-sdk-python`，不重发 `ksadk`，也不部署 GitHub Pages。
 - workflow 先同步 npm registry 中的 UI 静态资源。
 - workflow 再按 `publish_target` 运行对应发布前检查。

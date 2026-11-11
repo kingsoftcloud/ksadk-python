@@ -11,7 +11,7 @@ mutation 统一收敛到 ``AgentKernel.submit``：
   authorization_ref 全部由 trusted runtime context 注入，不来自 public payload。
   Responses request id、A2A task id、AG-UI run id 等保存为 correlation/source
   ref，不改变 Session/Run canonical identity。
-- **receipt -> HTTP**：``RECEIPT_HTTP_STATUS`` 是唯一映射表。
+- **receipt -> HTTP**：``receipt_http_status`` 统一映射，保留明确的幂等冲突。
 - **统一 cursor**：kernel 路径的 SSE 一律从
   ``SessionEventSubscription(after_seq)`` 读取，reconnect cursor 源自同一
   Session seq；各协议自己的 event shape 由 surface 内的 public projector
@@ -89,6 +89,8 @@ def kernel_ingress_enabled() -> bool:
     （Operator 平台注入）任一为真。
     """
 
+    if os.getenv("AGENT_RUNTIME_ID"):
+        return os.getenv(ENV_KERNEL_ENABLED_PLATFORM, "").strip().lower() in _TRUTHY
     for name in (ENV_KERNEL_ENABLED, ENV_KERNEL_ENABLED_PLATFORM):
         if os.environ.get(name, "").strip().lower() in _TRUTHY:
             return True
@@ -128,6 +130,20 @@ def kernel_route_active() -> bool:
         and get_agent_kernel() is not None
         and authority_mode() != _AUTHORITY_HOSTED
     )
+
+
+def interaction_route_active(*, launch_context=None) -> bool:
+    """Advertise the canonical local route only when its delivery is available."""
+    from ksadk.kernel.bootstrap import get_agent_kernel_runtime
+
+    runtime = get_agent_kernel_runtime()
+    automatic = bool(runtime is not None and getattr(runtime.config, "local_interactions", False))
+    if automatic and launch_context is not None and runtime.config.launch_context is not launch_context:
+        return False
+    if authority_mode() != _AUTHORITY_LOCAL or not (kernel_route_active() or automatic):
+        return False
+    capabilities = getattr(get_agent_kernel(), "capabilities", None)
+    return callable(capabilities) and capabilities().submit_interaction.supported
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +300,13 @@ RECEIPT_HTTP_STATUS: dict[str, int] = {
 
 
 def receipt_http_status(receipt: AgentControlReceipt) -> int:
+    # A key reused for another request is a conflict, not invalid input.
+    # Keep all other rejected receipts on their existing 400 contract.
+    if (
+        receipt.status == "rejected" and receipt.error is not None
+        and receipt.error.code == "idempotency_conflict"
+    ):
+        return 409
     return RECEIPT_HTTP_STATUS.get(receipt.status, 400)
 
 
@@ -396,15 +419,19 @@ def map_agui_request(
     content: Any,
     run_id: str | None = None,
     trusted: TrustedRuntimeContext,
+    runtime_options: Mapping[str, Any] | None = None,
 ) -> AgentControlCommand:
     """AG-UI run -> enqueue；AG-UI run id 保存在 correlation ref。"""
 
+    payload = {"content": content}
+    if runtime_options:
+        payload["runtime_options"] = dict(runtime_options)
     return _command(
         trusted=trusted,
         command_type="enqueue",
         session_id=session_id,
         idempotency_key=idempotency_key,
-        payload={"content": content},
+        payload=payload,
         correlation_id=run_id,
     )
 
@@ -625,6 +652,10 @@ async def _ensure_shared_log_session(command: Any) -> None:
         agent_id = os.environ.get("AGENT_RUNTIME_ID", "").strip() or str(
             getattr(command, "agent_instance_id", "") or "runtime"
         )
+        # Local Web names sessions after the Agent declared by the launch context.
+        # Use the same trusted name the worker checks when dispatching the command.
+        if getattr(runtime.config, "local_interactions", False):
+            agent_id = runtime.config.start_request_defaults.get("agent_id") or agent_id
         existing = await service.get_session_metadata(session_id)
         if existing is not None and str(existing.agent_id or "").strip():
             agent_id = str(existing.agent_id)
@@ -942,14 +973,26 @@ def _build_kernel_router() -> Any:
             except Exception:  # pragma: no cover - defensive
                 return False
 
+        from ksadk.events.sse_heartbeat import heartbeat_seconds, with_heartbeats
+
+        hosted_stream = _is_hosted()
+        response_headers.update({"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
         async def generator():
-            async for seq, envelope in subscribe_projected(
-                session_id,
-                trusted=trusted,
-                after_seq=after_seq,
-                should_stop=_client_disconnected,
-                timeout=subscribe_timeout,
-            ):
+            source = subscribe_projected(
+                session_id, trusted=trusted, after_seq=after_seq,
+                should_stop=_client_disconnected, timeout=subscribe_timeout,
+            )
+            async for item in with_heartbeats(source, seconds=heartbeat_seconds()):
+                if item is None:
+                    if hosted_stream:
+                        # Heartbeats do not extend a permit's authorization.
+                        await verifier.verify(trusted.permit, subscription,
+                                              "subscribe_events", kernel._clock())
+                    yield ": heartbeat\n\n"
+                    continue
+                seq, envelope = item
+
                 payload = (
                     envelope.payload
                     if isinstance(envelope, dict)
@@ -972,7 +1015,7 @@ def _build_kernel_router() -> Any:
         )
 
     @router.get(KERNEL_INGRESS_HEALTH_PATH)
-    async def kernel_health() -> Any:
+    async def kernel_health(request: Request) -> Any:
         from ksadk.kernel.contract_fingerprints import (
             AGENT_KERNEL_V1_AGGREGATE_DIGEST,
         )
@@ -998,7 +1041,16 @@ def _build_kernel_router() -> Any:
             # 真实 store 查询 / worker 运行态 / activation lease 健康 / digest。
             health = await runtime.readiness.check()
             payload.update(health)
-        return JSONResponse(payload)
+        headers = {}
+        if os.getenv("AGENT_RUNTIME_ID"):
+            app_state = getattr(request.app.state, "runtime", None)
+            features = []
+            if getattr(app_state, "agui_agent", None) is not None:
+                features.append("ag-ui")
+            if runtime and getattr(runtime.worker, "_mcp_authorization", None) is not None:
+                features.append("mcp.authorization/v1")
+            headers["X-KsADK-Hosted-Features"] = ",".join(features)
+        return JSONResponse(payload, headers=headers)
 
     return router
 

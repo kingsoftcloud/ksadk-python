@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 import asyncio
+import copy
 import httpx
-from typing import Any
+import logging
 
 from ksadk.a2a.identity import A2AIngressIdentity
 from ksadk.a2a.inbound_kernel import InboundKernelSubmission, ManagedKernelRequestError, submit_verified_inbound, stream_inbound_kernel_facts
@@ -17,6 +18,8 @@ from ksadk.events.canonical import (
 )
 from ksadk.runtime.adapter import RunHandle, CancelResult, ResumeTarget
 from ksadk.a2a.resume_store import A2AResumeState
+
+logger = logging.getLogger(__name__)
 
 
 class ManagedKernelA2ATaskAdapter(A2ARuntimeTaskAdapter):
@@ -53,17 +56,60 @@ class ManagedKernelA2ATaskAdapter(A2ARuntimeTaskAdapter):
             await self._event_dispatcher.ensure_writable()
         current = getattr(context, "current_task", None)
         remote_context_id = str(getattr(current, "context_id", "") or context.context_id or "")
+        remote_task_id = str(context.task_id or "")
+        verified_identity = self._identity(context)
+        continuation = copy.deepcopy(continuation)
+        from ksadk.a2a.timeouts import seconds
+
+        # Server derives the Kernel command/idempotency identity from this
+        # immutable platform Task and original Message. Repeating admission
+        # can only return that command's receipt; it never sends another A2A
+        # message or allocates another remote Task.
+        pinned = None
+        delay = 0.2
         try:
-            result = await submit_verified_inbound(
-                self._control_plane, self._identity(context),
-                remote_task_id=str(context.task_id or ""), remote_context_id=remote_context_id,
-                continuation=continuation,
-            )
+            async with asyncio.timeout(seconds("KSADK_A2A_INBOUND_ADMISSION_SECONDS", 60.0)):
+                while True:
+                    try:
+                        result = await submit_verified_inbound(
+                            self._control_plane, verified_identity,
+                            remote_task_id=remote_task_id, remote_context_id=remote_context_id,
+                            continuation=continuation,
+                        )
+                    except (httpx.TransportError, TimeoutError):
+                        pass  # A lost receipt is resolved by the same command.
+                    except A2AControlPlaneError as exc:
+                        if (exc.code not in {429, 502, 503, 504}
+                                or exc.error_code == "A2A_CONTROL_PLANE_INVALID_RESPONSE"):
+                            raise
+                    else:
+                        address = (result.session_id, result.agent_id, result.receipt.command_id)
+                        if pinned is not None and address != pinned:
+                            raise PermissionError("Server changed the retried A2A command identity")
+                        pinned = address
+                        receipt = result.receipt
+                        if receipt.status in {"accepted", "duplicate"}:
+                            return result
+                        # Older Servers mark every admission rejection as
+                        # retryable=False. This one typed 503 is known to occur
+                        # before Runtime submission, so it is safe to wait.
+                        not_ready = (
+                            receipt.status == "rejected" and receipt.error is not None
+                            and receipt.error.code == "runtime_not_ready"
+                            and receipt.message_id is None and receipt.run_id is None
+                            and receipt.accepted_seq is None
+                        )
+                        uncertain = (
+                            receipt.status == "persistence_uncertain" and receipt.error is not None
+                            and receipt.error.code == "persistence_uncertain" and receipt.error.retryable
+                        )
+                        if not (not_ready or uncertain):
+                            raise ManagedKernelRequestError("Server did not accept the A2A command")
+                    logger.warning("Retrying original A2A Kernel admission; no new remote send")
+                    await asyncio.sleep(delay)
+                    delay = min(5.0, delay * 2)
         except (A2AControlPlaneError, httpx.TransportError, TimeoutError) as exc:
             raise ManagedKernelRequestError("Server A2A admission did not return a confirmed receipt") from exc
-        if result.receipt.status not in {"accepted", "duplicate"}:
-            raise ManagedKernelRequestError("Server did not accept the A2A command")
-        return result
 
     @staticmethod
     def _remember_submission(handle, result):
@@ -186,6 +232,11 @@ class ManagedKernelA2ATaskAdapter(A2ARuntimeTaskAdapter):
         if (submission.session_id != handle.session_id
                 or submission.agent_id != identity.target_agent_id):
             raise PermissionError("Kernel recovery session binding mismatch")
+        lookup = getattr(self._session_events, "has_run_transition", None)
+        if callable(lookup):
+            if await lookup(handle.session_id, handle.run_id, "interrupted"):
+                return await repair(task, TaskStatus(state=TaskState.TASK_STATE_FAILED), call_context)
+            return task
         cursor = 0
         while True:
             facts = await self._session_events.read(handle.session_id, cursor, 100)

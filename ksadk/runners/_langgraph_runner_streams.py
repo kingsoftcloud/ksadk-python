@@ -8,28 +8,23 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Mapping
+from typing import Any, AsyncIterator, Dict, Mapping
 
-from langgraph.stream import ProtocolEvent, StreamTransformer
 from langgraph.types import Command
 
 from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
-from ksadk.events.runtime_event import RuntimeEvent
+from ksadk.runners._langgraph_canonical_stream import _LangGraphCanonicalStreamMixin
+from ksadk.runners._langgraph_fresh_turn import fresh_memory_input, fresh_user_checkpoint
 from ksadk.runners.usage_accumulator import accumulate_usage
 from ksadk.runtime.skill_eval_result import skill_eval_response_fields
 from ksadk.runtime.timing import extract_timing
 
-from ksadk.runners._langgraph_canonical_streams import _LangGraphCanonicalStreamMixin
-
-from ksadk.runners._langgraph_tools_transformer import _CanonicalToolsTransformer
-
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    pass
 
 
 class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
+    @fresh_user_checkpoint
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 LangGraph 图"""
         await self.prepare_runtime_capabilities()
@@ -91,6 +86,9 @@ class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
         else:
             state = self._to_state(payload, history)
 
+        if not is_resume and not is_checkpoint_resume:
+            state = await fresh_memory_input(self._agent, config, state)
+
         accumulated_text = ""
         accumulated_reasoning = ""
         inline_reasoning_parser = ReasoningMarkupParser()
@@ -100,6 +98,7 @@ class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
         final_result_fields: dict[str, Any] = {}
         final_output_usage: dict[str, Any] = {}
         final_output_last_usage: dict[str, Any] = {}
+        stream_interrupts: Any = None
         model_run_usages: dict[str, dict[str, Any]] = {}
         model_run_order: list[str] = []
         stream_usage_run_keys: set[str] = set()
@@ -149,28 +148,6 @@ class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
                 if usage:
                     return dict(usage)
             return {}
-
-        if is_checkpoint_resume and callable(getattr(self._agent, "astream", None)):
-            try:
-                async for chunk in self._stream_checkpoint_resume_updates(
-                    stream_input=self._checkpoint_resume_input(
-                        state,
-                        payload_provided=resume_payload_provided,
-                        interrupt_id=resume_interrupt_id,
-                    ),
-                    config=config,
-                    context=native_context,
-                ):
-                    yield chunk
-                return
-            except Exception as e:
-                yield {
-                    "type": "error",
-                    "message": str(e) or "LangGraph checkpoint resume failed",
-                    "checkpoint_id": str(checkpoint_ref.get("checkpoint_id") or ""),
-                    "exception_type": type(e).__name__,
-                }
-                return
 
         if not hasattr(self._agent, "astream_events"):
             result = await self.invoke(invoke_payload)
@@ -424,25 +401,11 @@ class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
                         final_result_fields = skill_eval_response_fields(output)
                     if isinstance(output, dict) and "__interrupt__" in output:
                         emitted_non_text_event = True
-                        # __interrupt__ 是 LangGraph 原始 Interrupt 对象列表，
-                        # 直接 yield 会导致下游拿不到 tool_name/description（非 Mapping）。
-                        # 用 _get_interrupt_info 从 state 提取结构化 interrupt_info，
-                        # 与 406-412 的异常路径和 419-436 的 pending_approval 兜底一致。
-                        state, _error = await self._read_graph_state(
-                            config, include_subgraphs=True
-                        )
-                        _interrupt_info = (
-                            self._get_interrupt_info(state) if state is not None else {}
-                        )
-                        if not _interrupt_info:
-                            # state 里读不到结构化信息时，退回原始 __interrupt__。
-                            _interrupt_info = output["__interrupt__"]
-                        yield {
-                            "type": "interrupt",
-                            "interrupt_info": _interrupt_info,
-                            "session_id": session_id,
-                        }
-                        return
+                        # Drain the native stream before reading the parent
+                        # checkpoint; exposing this early can publish a prompt
+                        # whose persisted resume target does not exist yet.
+                        stream_interrupts = output["__interrupt__"]
+                        continue
                     extracted_output = self._extract_output(output)
                     if extracted_output:
                         final_output_text = strip_reasoning_markup(str(extracted_output))
@@ -472,7 +435,8 @@ class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
         #   "读不到"当成"没有待审批"继续走 completed(审批卡会无声消失)。
         # - 没配 checkpointer 的图不可能有 interrupt,读不到属于正常情况。
         pending_approval = None
-        state, error = await self._read_graph_state(config, include_subgraphs=True)
+        latest_config = self._latest_checkpoint_config(config)
+        state, error = await self._read_graph_state(latest_config, include_subgraphs=True)
         if state is None:
             agent = getattr(self, "_agent", None)
             has_checkpointer = (
@@ -487,15 +451,22 @@ class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
             logger.debug("graph has no checkpointer; skipping pending-approval probe")
         else:
             pending_approval = self._get_interrupt_info(state)
+            if not pending_approval and not final_output_text:
+                final_output_text = self._extract_output(getattr(state, "values", None))
+        if stream_interrupts and not pending_approval:
+            raise RuntimeError("Graph interrupted without a readable persisted resume target")
         if pending_approval:
+            metadata = await self._latest_checkpoint_metadata(latest_config)
+            if metadata:
+                yield {"type": "checkpoint", "metadata": metadata}
             yield {
-                "type": "approval",
+                "type": (
+                    "interrupt" if pending_approval.get("kind") == "structured_input"
+                    else "approval"
+                ),
                 "interrupt_info": pending_approval,
                 "session_id": session_id,
             }
-            metadata = await self._latest_checkpoint_metadata(config)
-            if metadata:
-                yield {"type": "checkpoint", "metadata": metadata}
             return
 
         for part in inline_reasoning_parser.flush():
@@ -523,25 +494,9 @@ class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
                     final_chunk["timing"] = final_output_timing
                 yield final_chunk
             elif not emitted_non_text_event:
-                result = await self.invoke({**invoke_payload, "_ksadk_force_graph_invoke": True})
-                fallback_chunk: dict[str, Any] = {
-                    "output": result.get("output", ""),
-                    **skill_eval_response_fields(result),
-                    "type": "final",
-                }
-                usage = self._extract_usage(result)
-                if usage:
-                    fallback_chunk["usage"] = usage
-                last_usage = self._extract_last_usage(result)
-                if last_usage:
-                    fallback_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-                if timing := extract_timing(result):
-                    fallback_chunk["timing"] = timing
-                yield fallback_chunk
-                checkpoint_metadata = result.get("metadata") if isinstance(result, dict) else None
-                if isinstance(checkpoint_metadata, dict) and checkpoint_metadata.get("agentengine"):
-                    yield {"type": "checkpoint", "metadata": checkpoint_metadata}
-                    return
+                # No user-facing answer is a valid result. Invoking again here
+                # re-executes an already completed graph and its side effects.
+                yield {"output": "", "type": "final"}
         else:
             final_chunk = {"output": accumulated_text, "type": "final", **final_result_fields}
             state_usage = await self._latest_state_usage(config)
@@ -565,8 +520,10 @@ class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
                 final_chunk["timing"] = final_output_timing
             yield final_chunk
 
-        metadata = await self._latest_checkpoint_metadata(config)
+        metadata = await self._latest_checkpoint_metadata(latest_config)
         if metadata:
             yield {"type": "checkpoint", "metadata": metadata}
+
+
 
 __all__ = ["_LangGraphStreamMixin"]

@@ -35,6 +35,7 @@ from ksadk.events.content import (
     ToolCallContent,
     ToolResultContent,
 )
+from ksadk.events.usage import usage_mode
 from ksadk.kernel.contracts import SessionEventEnvelope
 
 _INTERACTION_EVENT_TYPES = frozenset(
@@ -284,6 +285,7 @@ def project_conversation_item(
             "totalTokens": event.total_tokens,
             "cachedTokens": event.cached_tokens,
             "reasoningTokens": event.reasoning_tokens,
+            "mode": usage_mode(event),
         }
         operation = "completed"
         lifecycle = "completed"
@@ -324,8 +326,14 @@ def project_conversation_item(
                 "eventType": event.event_type,
                 "summary": "This content requires a newer renderer.",
             }
+    declared_visibility = event.source.metadata.get(
+        "conversation_visibility", event.source.metadata.get("visibility")
+    )
+    if declared_visibility in ("internal", "hidden"):
+        visibility = declared_visibility
     if isinstance(event, (RunCompleted, RunFailed, RunCanceled, RunInterrupted)):
         payload.update(_run_outcome_payload(event.source.metadata))
+    payload.update(public_item_presentation(event, kind))
     if kind == "tool_call" and event.source.metadata.get("engine_kind") == "native":
         # Native public results contain a sealed execution status, not arbitrary
         # business output. An approval receipt is nonterminal even in old logs
@@ -352,6 +360,27 @@ def project_conversation_item(
         capability_ref=capability_ref,
         native_ref=_native_ref(event),
     )
+
+
+def public_item_presentation(event: RuntimeEvent, kind: str) -> dict[str, Any]:
+    """Allowlisted display metadata shared by live and persisted projections.
+
+    These fields select presentation only. Never publish arbitrary source
+    metadata or infer authorized thinking from an unlabelled reasoning item.
+    """
+    metadata = event.source.metadata
+    if kind == "tool_call":
+        from ksadk.harness.tool_display_contract import safe_tool_display
+
+        display = safe_tool_display(metadata.get("tool_display"))
+        return {"toolDisplay": display} if display is not None else {}
+    if kind == "reasoning":
+        return {"presentationSource": (
+            "public_summary" if metadata.get("public_summary") is True
+            else "provider_reasoning" if metadata.get("provider_reasoning") is True
+            else "reasoning"
+        )}
+    return {}
 
 
 def _run_outcome_payload(metadata: Mapping[str, Any]) -> dict[str, Any]:

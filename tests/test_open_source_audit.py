@@ -367,6 +367,25 @@ def test_git_files_excludes_deleted_paths(tmp_path):
     assert audit.git_files(tmp_path) == ["keep.txt", "new.txt"]
 
 
+def test_git_inventory_scans_chinese_named_file_contents(tmp_path):
+    audit = _load_audit_module()
+    relative = "docs/公开参考.md"
+    path = tmp_path / relative
+    path.parent.mkdir()
+    secret = "AKIA" + "A" * 16
+    path.write_text(secret + "\n", encoding="utf-8")
+    audit.subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    audit.subprocess.run(["git", "config", "core.quotePath", "true"], cwd=tmp_path, check=True)
+    audit.subprocess.run(["git", "add", "--", relative], cwd=tmp_path, check=True)
+
+    result = audit.audit_file_contents(tmp_path, audit.git_files(tmp_path))
+
+    assert result.counts["checked"] == 1
+    assert [(item.path, item.rule) for item in result.violations] == [
+        (relative, "aws-access-key-id")
+    ]
+
+
 def test_discover_files_falls_back_to_filesystem_for_non_git_directory(tmp_path):
     audit = _load_audit_module()
     (tmp_path / "README.md").write_text("ok\n", encoding="utf-8")

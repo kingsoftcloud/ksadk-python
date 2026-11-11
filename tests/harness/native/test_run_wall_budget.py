@@ -21,7 +21,10 @@ def make(model, *, tools=None, wall=0.05):
 
 
 def test_optional_wall_budget_keeps_old_configuration_identity_and_pins_a_limit():
-    old = config()
+    # The pre-a52ead0de default had max_model_calls=32, max_tool_calls=64.
+    # After a52ead0de the default is None (unbounded). The old finite identity
+    # must retain its exact digest; the new unbounded default must differ.
+    old = config(max_model_calls=32, max_tool_calls=64)
     payload = old.model_dump(mode="json")
     payload["limits"].pop("max_wall_seconds", None)
     # Apply the same canonical compatibility rules to the old representation.
@@ -31,6 +34,12 @@ def test_optional_wall_budget_keeps_old_configuration_identity_and_pins_a_limit(
     assert config(max_wall_seconds=1).limits.max_wall_seconds == 1
     assert "max_wall_seconds" not in old.model_dump(mode="json")["limits"]
     assert config(max_wall_seconds=1).model_dump(mode="json")["limits"]["max_wall_seconds"] == 1
+    # The new unbounded default (max_model_calls=None, max_tool_calls=None) has a
+    # different digest from the old finite identity — they are distinct configs.
+    new_default = config()
+    assert digest(new_default) != digest(old)
+    assert new_default.limits.max_model_calls is None
+    assert new_default.limits.max_tool_calls is None
 
 
 @pytest.mark.asyncio

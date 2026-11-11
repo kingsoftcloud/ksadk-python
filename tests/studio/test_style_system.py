@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -245,7 +247,25 @@ def test_react_chat_uses_shared_protocol_and_asymmetric_messages() -> None:
     assert "useAgentChat" in source
     # Facade ownership and lifecycle cancellation are exercised by the real
     # StudioChatApiFacade and ChatWorkspace behavior suites, not import text.
-    assert '"@kingsoftcloud/ksadk-web": "0.3.13"' in package
+    reviewed = json.loads((PACKAGE.parent / "vendor/ksadk-web-source.json").read_text())
+    metadata = json.loads(package)
+    dependencies = metadata["dependencies"]
+    if reviewed["registry_release"]:
+        assert dependencies[reviewed["package_name"]] == reviewed["package_version"]
+        lock = json.loads((PACKAGE.parent / "package-lock.json").read_text())
+        installed = lock["packages"][f"node_modules/{reviewed['package_name']}"]
+        assert installed["version"] == reviewed["package_version"]
+        assert installed["resolved"] == reviewed["artifact_url"]
+        assert installed["integrity"] == reviewed["artifact_integrity"]
+    else:
+        assert dependencies[reviewed["package_name"]] == f"file:vendor/{reviewed['artifact']}"
+        artifact = PACKAGE.parent / "vendor" / reviewed["artifact"]
+        assert artifact.is_file()
+        assert hashlib.sha256(artifact.read_bytes()).hexdigest() == reviewed["artifact_sha256"]
+    assert metadata["scripts"]["prebuild"] == "node scripts/verify-reviewed-web.mjs"
+    verifier = (PACKAGE.parent / "scripts/verify-reviewed-web.mjs").read_text()
+    assert 'manifest.registry_release ? "RELEASE_PROVENANCE.json" : "SOURCE_CANDIDATE.json"' in verifier
+    assert "source.source_commit !== manifest.source_commit" in verifier
     assert "@kingsoftcloud/ksadk-web" not in vite_config
     # 没有本地 Agent 时仍可从账号目录选择云端 Agent，不再把会话入口
     # 强制重定向到创建页。

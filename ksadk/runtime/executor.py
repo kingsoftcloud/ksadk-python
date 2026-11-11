@@ -27,6 +27,7 @@ from ksadk.runtime.adapter import (
     StartRequest,
 )
 from ksadk.runtime.launch import RuntimeLaunchContext
+from ksadk.runtime.session_storage import ExecutorSessionStorageMixin, bind_adapter_session_target
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from ksadk.kernel.store import AgentKernelStore, RunRecord
@@ -65,7 +66,7 @@ class RuntimeStartPreparation:
     consumed: bool = False
 
 
-class RuntimeExecutor:
+class RuntimeExecutor(ExecutorSessionStorageMixin):
     """让每个 Handle 始终回到创建或恢复它的 Adapter 实例。"""
 
     def __init__(
@@ -77,6 +78,7 @@ class RuntimeExecutor:
         self._registry = registry
         self._kernel_store = kernel_store
         self._managed_a2a_bootstrap = None
+        self._a2ui_catalog_registry = None
         self._runs: dict[_HandleKey, _OwnedRun] = {}
         self._capability_adapters: dict[int, tuple[RuntimeLaunchContext, RuntimeAdapter]] = {}
 
@@ -88,6 +90,7 @@ class RuntimeExecutor:
         从而让普通执行、worker 与恢复走同一套 runtime-type 注册表。
         """
 
+        storage_target = self._session_storage_target(context)
         if self._managed_a2a_bootstrap is not None:
             declared = context.services.managed_a2a_bootstrap
             if declared is not None and declared is not self._managed_a2a_bootstrap:
@@ -95,8 +98,30 @@ class RuntimeExecutor:
             context = replace(context, services=replace(context.services,
                 managed_a2a_bootstrap=self._managed_a2a_bootstrap))
         adapter = self._registry.create(context)
+        if self._a2ui_catalog_registry is not None:
+            configure = getattr(adapter, "configure_a2ui_catalog_registry", None)
+            if callable(configure):
+                configure(self._a2ui_catalog_registry)
+        bind_adapter_session_target(adapter, storage_target)
         self._configure_managed_adapter(adapter)
         return adapter
+
+    def configure_a2ui_catalog_registry(self, registry) -> None:
+        if self._a2ui_catalog_registry is registry:
+            return
+        if self._runs:
+            raise RuntimeError("cannot configure A2UI catalogs during active execution")
+        if self._a2ui_catalog_registry not in (None, registry):
+            raise ValueError("RuntimeExecutor already belongs to another A2UI catalog registry")
+        for _, adapter in self._capability_adapters.values():
+            validate = getattr(adapter, "validate_a2ui_catalog_registry", None)
+            if callable(validate):
+                validate(registry)
+        for _, adapter in self._capability_adapters.values():
+            configure = getattr(adapter, "configure_a2ui_catalog_registry", None)
+            if callable(configure):
+                configure(registry)
+        self._a2ui_catalog_registry = registry
 
     def configure_managed_a2a(self, bootstrap) -> None:
         if self._runs:
@@ -194,6 +219,13 @@ class RuntimeExecutor:
     async def cancel(self, handle: RunHandle) -> CancelResult:
         owned = self._resolve(handle)
         return await owned.adapter.cancel(owned.handle)
+
+    async def retire_cancelled_wait(self, handle: RunHandle) -> None:
+        """Complete a durable native-wait cancellation on its owning adapter."""
+        owned = self._resolve(handle)
+        retire = getattr(owned.adapter, "retire_cancelled_wait", None)
+        if callable(retire):
+            await retire(owned.handle)
 
     async def pause(self, handle: RunHandle) -> PauseResult:
         owned = self._resolve(handle)
@@ -301,6 +333,7 @@ class RuntimeExecutor:
                     if first_error is None:
                         first_error = exc
             self._capability_adapters.pop(key, None)
+        getattr(self, "_session_storage_bindings", {}).clear()
         if first_error is not None:
             raise first_error
 

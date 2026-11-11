@@ -1,10 +1,11 @@
 import { OutboxStore, type ConversationController, type ConversationId } from "@kingsoftcloud/ksadk-web/conversation";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseRunReceipt, reconcileOutboxEntry, type RunReceipt } from "./runReceiptRecovery";
 import { useRunReceiptRecovery } from "./useRunReceiptRecovery";
 
 const conversationId: ConversationId = "conversation_original";
+beforeEach(() => localStorage.clear());
 const identity = { agentId: "agent", sessionId: "session", invocationId: "client-original" };
 function receipt(Status: RunReceipt["Status"] = "completed"): RunReceipt {
   return { SchemaVersion: 1, AgentId: "agent", SessionId: "session", InvocationId: "client-original",

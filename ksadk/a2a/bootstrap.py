@@ -274,7 +274,8 @@ class AgentEngineA2ABootstrap:
         self, space_id: str, *, event_store, policy, recover_checkpoint_leases=False,
     ):
         """Product-owned caller service; policy and canonical ownership stay explicit."""
-        from ksadk.a2a.invocation_service import A2AInvocationService, A2AInvocationTimeouts
+        from ksadk.a2a.invocation_service import A2AInvocationService
+        from ksadk.a2a.timeouts import managed_invocation_timeouts
 
         return A2AInvocationService.from_space_client(
             self.client_for_space(space_id),
@@ -285,10 +286,7 @@ class AgentEngineA2ABootstrap:
             # A model may be silent between status/tool events. Match the
             # managed data-plane transport ceiling; _timed still caps every
             # wait at the invocation's original absolute deadline.
-            timeouts=A2AInvocationTimeouts(
-                first_event_seconds=MANAGED_MODEL_READ_TIMEOUT_SECONDS,
-                idle_seconds=MANAGED_MODEL_READ_TIMEOUT_SECONDS,
-            ),
+            timeouts=managed_invocation_timeouts(),
         )
 
     def mount(
@@ -428,7 +426,10 @@ class _ManagedKernelEvents:
         if runtime is None:
             raise ManagedKernelRequestError("managed A2A Kernel is not ready")
         try:
-            async for fact in runtime.session_events.subscribe(session_id, after_seq):
+            subscribe = getattr(runtime.session_events, "subscribe_recovering", None)
+            if not callable(subscribe):
+                subscribe = runtime.session_events.subscribe
+            async for fact in subscribe(session_id, after_seq):
                 yield fact
         except (OSError, TimeoutError) as exc:
             raise ManagedKernelRequestError("Kernel event observation was interrupted") from exc

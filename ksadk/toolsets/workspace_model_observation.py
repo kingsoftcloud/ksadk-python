@@ -93,7 +93,12 @@ def source_model_reply(result: object) -> str | None:
         # window. SDK filesystem locators cannot grant Native artifact access.
         hidden = hidden | {"requested_source", "persisted"}
     view = {k: v for k, v in result.items() if k not in hidden}
-    if "requested_source" in result:
+    if "requested_source" in result and not (
+        isinstance(carrier, Mapping)
+        and carrier.get("path") == result["path"]
+        and carrier.get("read_range") == read_range
+        and carrier.get("content") == result["content"]
+    ):
         view["suggested_action"] = (
             "Inspect the complete requested source through the host artifact reference."
         )

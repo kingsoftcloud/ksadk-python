@@ -203,7 +203,27 @@ def _nearby_candidates(text: str, old: str, limit: int = 5) -> list[dict[str, An
     return candidates[:limit]
 
 
+def _changed_middle(before: str, after: str):
+    old, new = before.splitlines(keepends=True), after.splitlines(keepends=True)
+    first = 0
+    while first < min(len(old), len(new)) and old[first] == new[first]:
+        first += 1
+    end_old, end_new = len(old), len(new)
+    while end_old > first and end_new > first and old[end_old - 1] == new[end_new - 1]:
+        end_old -= 1
+        end_new -= 1
+    return old, new, first, end_old, end_new
+
+
 def _build_diff(relative: str, before: str, after: str) -> str:
+    old, new, first, end_old, end_new = _changed_middle(before, after)
+    if (end_old - first) * (end_new - first) > 1_000_000:
+        # A valid whole-middle replacement avoids quadratic matching while
+        # holding the workspace lock. Counts and preview use the same hunk.
+        return (f"--- {relative} before\n+++ {relative} after\n"
+                f"@@ -{first + 1},{end_old - first} +{first + 1},{end_new - first} @@\n"
+                + "".join("-" + line for line in old[first:end_old])
+                + "".join("+" + line for line in new[first:end_new]))
     return "".join(
         difflib.unified_diff(
             before.splitlines(keepends=True),
@@ -212,6 +232,26 @@ def _build_diff(relative: str, before: str, after: str) -> str:
             tofile=f"{relative} after",
         )
     )
+
+
+def _change_counts(before: str, after: str) -> dict[str, int]:
+    """Count the applied revisions, before output-budget clipping.
+
+    Reference: ZCode executor/result-display.ts counts structured patch hunks
+    before limiting their display. Neither model claims nor truncated preview
+    lines can establish these statistics.
+    """
+    old, new, first, end_old, end_new = _changed_middle(before, after)
+    if (end_old - first) * (end_new - first) > 1_000_000:
+        return {"diff_additions": end_new - first, "diff_deletions": end_old - first}
+    additions = deletions = 0
+    for kind, first, last, new_first, new_last in difflib.SequenceMatcher(
+        None, old[first:end_old], new[first:end_new]
+    ).get_opcodes():
+        if kind != "equal":
+            additions += new_last - new_first
+            deletions += last - first
+    return {"diff_additions": additions, "diff_deletions": deletions}
 
 
 def _budget_diff(tool_name: str, diff: str, relative: str) -> dict[str, Any]:

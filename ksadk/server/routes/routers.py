@@ -4,6 +4,8 @@ import importlib
 
 from fastapi import APIRouter
 
+from ..database_access_contract import DatabaseAccessRoute
+
 health_meta_router = APIRouter()
 sessions_router = APIRouter()
 sessions_adk_compat_router = APIRouter()
@@ -17,8 +19,10 @@ ui_bootstrap_router = APIRouter()
 control_router = APIRouter()
 builder_router = APIRouter()
 debug_router = APIRouter()
+database_access_router = APIRouter(route_class=DatabaseAccessRoute)
 
 GROUP_ROUTERS: dict[str, APIRouter] = {
+    "database_access": database_access_router,
     "builder": builder_router,
     "control": control_router,
     "debug": debug_router,
@@ -35,9 +39,11 @@ GROUP_ROUTERS: dict[str, APIRouter] = {
 }
 
 _ROUTE_MODULES = (
+    "database_access",
     "common",
     "sessions",
     "control",
+    "interactions",
     "workspace",
     "run",
     "misc",

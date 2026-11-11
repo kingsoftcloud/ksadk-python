@@ -1,0 +1,54 @@
+---
+title: "升级到 0.8.7 候选"
+description: "0.8.7 候选的安装验证、OAuth、交互恢复与兼容边界"
+---
+
+0.8.7 当前为待审核候选，尚未正式发布。本文描述候选行为；正式安装命令应在
+GitHub Release 与两个 PyPI 发行包完成一致性核对后使用。最低 Python 版本仍为 3.12，
+Web companion 固定为已发布的 `@kingsoftcloud/ksadk-web@0.3.18`。
+
+## 在独立环境验证
+
+从审核过的候选 wheel 安装，不覆盖现有工作环境：
+
+```bash
+uv venv --python 3.12 .venv-087-candidate
+uv pip install --python .venv-087-candidate/bin/python /absolute/path/ksadk-0.8.7-py3-none-any.whl
+.venv-087-candidate/bin/agentengine --version
+```
+
+`agentengine-sdk-python` 与 `ksadk` 提供相同的 `ksadk` 导入，两种发行名二选一。
+兼容发行包的 `[all]` 引用自身 extras，不再额外安装主发行包。前端静态资源随制品分发；
+用户无需现场编译 Studio。模型、浏览器和官方 Provider 工具链仍需按目标环境配置。
+
+## 本版本保留和更新的能力
+
+- MCP OAuth 声明可随构建交付，工具在执行时按连接解析；凭据、授权等待和恢复继续受
+  Agent、workspace、调用及宿主身份约束。本地私有状态不复用托管回调归属。
+- LangGraph 流式输出与回放保留消息/part 身份、reasoning、工具位置和 usage。旧 Runtime
+  沿用兼容读取路径；失败或超时不会伪装成空历史或完成。
+- AG-UI、A2UI 使用固定的官方契约资源；工具、输入与 OAuth 交互保持各自身份和恢复边界。
+- Studio 保留初始草稿、已确认的会话 URL 和工作区归属；DSH 探测在线程执行，取消会清理
+  所属模型和插件进程。未知进程组仍采用保守的原有清理预算。
+- PostgreSQL 启动复用已安装 schema，并覆盖 9.6 与 16 的兼容路径。升级既有数据库前先备份，
+  共享存储、多副本恢复和目标服务鉴权仍需各自环境验收。
+
+当前数据库默认预算包括：整次写入 30 秒、清理 2 秒、原生 checkpoint 读取 45 秒。
+这些是有界数据库阶段预算，不等于模型执行超时；当前完整参数见
+[环境变量参考](/cn/docs/references/environment-variables/)，不要沿用旧版本说明中的历史默认值。
+
+## 兼容与回退
+
+已有云端 Agent 可保留原 SDK 和运行镜像，升级本地 SDK 不会自动重建或重新部署它们。
+普通 Studio 的 Native 默认值和显式 Managed 配置继续生效；见
+[0.8.6 升级说明](./upgrade-0-8-6.mdx)。
+
+更新前备份工作区和数据库；比较旧、新环境的会话读取、工具审批、取消及多轮回复。
+不要让两个版本同时写入同一工作区。回退 wheel 不会自动撤销已经写入的数据、授权或外部副作用。
+结果为 `unknown` 的操作应显式对账，不通过重发业务调用猜测结果。
+
+## 候选与正式发布
+
+候选应通过完整公开预检、源码与制品审计、独立安装和适用的浏览器/数据库验证。
+测试通过不等于正式发布批准；最终 tag、Release、PyPI 与文档部署必须指向审核后的公开
+`main` 提交，并通过受保护的可信发布工作流。

@@ -544,6 +544,7 @@ async def test_real_pg_small_history_transfers_complete_under_command_budget(pg)
 
 @pytest.mark.asyncio
 async def test_boundary_timeout_does_not_switch_clean_history_source(pg, monkeypatch):
+    pg.db_budget = DatabaseBudget(read_sql_seconds=.05)
     async def slow_probe(*args, **kwargs):
         async with pg._connection() as conn:
             return await conn.fetchval('SELECT pg_sleep(5)')

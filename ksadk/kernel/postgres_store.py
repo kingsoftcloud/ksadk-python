@@ -17,7 +17,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import math
 from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,22 +32,6 @@ from ksadk.events.session_event import (
     session_event_storage_id,
     session_event_to_envelope,
     validate_write_guard,
-)
-from ksadk.interaction.contracts import (
-    InteractionReceipt,
-    InteractionRecord,
-    InteractionSubmission,
-    is_terminal,
-)
-from ksadk.interaction.ledger import (
-    ALREADY_RESOLVED,
-    REQUEST_CONFLICT,
-    REVISION_MISMATCH,
-    interaction_event,
-    request_digest,
-    requested_event_payload,
-    resolve_outcome,
-    submission_digest,
 )
 from ksadk.kernel.contracts import (
     ActivationLease,
@@ -75,15 +62,17 @@ from ksadk.kernel.store import (
     now_iso,
 )
 from ksadk.sessions._postgres_tables import (
+    _PG_SCHEMA_ADVISORY_LOCK_KEY,
     KSADK_PG_EVENTS_TABLE,
     KSADK_PG_SESSIONS_TABLE,
 )
 from ksadk.sessions.db_budget import budgeted_pool_connection, session_db_budget
 from ksadk.sessions.history_budget import CURRENT_HISTORY_READ_BUDGET
 
-from ksadk.kernel.postgres_event_log import PostgresKernelEventLog
-
 SCHEMA_PATH = Path(__file__).parent / "sql" / "001_agent_kernel.sql"
+# Stable database-wide migration domain (ASCII KSADKERN). Independent Runtime
+# processes must acquire it before any Kernel DDL.
+_SCHEMA_MIGRATION_LOCK = 0x4B5341444B45524E
 
 NONCE_RETENTION_SECONDS = 24 * 3600.0
 
@@ -92,6 +81,7 @@ ACTIVATION_FOR_SHARE_SQL = (
     " bundle_digest, capability_digest, agent_instance_id, session_id"
     " FROM kernel_activations"
     " WHERE agent_instance_id = $1 AND session_id = $2"
+    " AND (session_namespace=$3 OR session_namespace IS NULL)"
     " FOR SHARE"
 )
 
@@ -100,13 +90,287 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_ts(value: str | None):
-    if value is None:
-        return None
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+
+
+class PostgresKernelEventLog:
+    """把 ``SessionEventEnvelope`` 写进共享 session log（ksadk_events）。
+
+    ``append_on(connection, ...)`` 允许调用方把 event insert 并入一个已经
+    打开的 kernel writer 事务；``append`` 则自开事务。
+    """
+
+    def __init__(
+        self,
+        pool: Any,
+        *,
+        namespace: str = "default",
+        tenant_id: str = "default",
+        workspace_id: str = "default",
+    ) -> None:
+        self._pool = pool
+        self._namespace = namespace.strip() or "default"
+        self._tenant_id = tenant_id.strip() or "default"
+        self._workspace_id = workspace_id.strip() or "default"
+
+    @asynccontextmanager
+    async def _connection(self, *, write: bool = False):
+        async with budgeted_pool_connection(
+            self._pool, session_db_budget(), write=write,
+        ) as connection:
+            yield connection
+
+    async def append_on(
+        self,
+        connection: Any,
+        envelope: SessionEventEnvelope,
+        guard: Any | None = None,
+    ) -> SessionEventEnvelope:
+        if guard is not None:
+            validate_write_guard(envelope, guard)
+        if not envelope.session_id.strip():
+            raise ValueError("session_id must be nonempty")
+        packed = envelope_to_session_event(envelope)
+        storage_id = session_event_storage_id(envelope.session_id, str(envelope.event_id))
+        # 锁 session 行串行化 seq 分配，与 PostgresSessionService.append_event 相同。
+        session_row = await connection.fetchrow(
+            f"SELECT id FROM {KSADK_PG_SESSIONS_TABLE} WHERE namespace=$1 AND id=$2 FOR UPDATE",
+            self._namespace,
+            envelope.session_id,
+        )
+        if session_row is None:
+            raise InvalidCommandError(
+                f"session {envelope.session_id!r} does not exist in the shared event log"
+            )
+        next_seq = await connection.fetchval(
+            f"SELECT COALESCE(MAX(seq_id), 0) + 1 FROM {KSADK_PG_EVENTS_TABLE}"
+            " WHERE namespace=$1 AND session_id=$2",
+            self._namespace,
+            envelope.session_id,
+        )
+        seq = int(next_seq or 1)
+        packed.bind_seq_id(seq)  # 把物理 seq 绑定回 runtime/session envelope 内容
+        inserted = await connection.fetchrow(
+            f"""
+            INSERT INTO {KSADK_PG_EVENTS_TABLE} (
+                namespace, tenant_id, workspace_id, id, session_id, author,
+                event_type, content_json, timestamp, state_delta_json,
+                seq_id, invocation_id, metadata_json
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9,
+                '{{}}'::jsonb, $10, $11, $12::jsonb
+            )
+            ON CONFLICT (namespace, id) DO NOTHING
+            RETURNING seq_id, timestamp
+            """,
+            self._namespace,
+            self._tenant_id,
+            self._workspace_id,
+            storage_id,
+            envelope.session_id,
+            packed.author,
+            packed.event_type,
+            json.dumps(packed.content, ensure_ascii=False),
+            _timestamp_to_float(envelope.timestamp),
+            int(next_seq or 1),
+            packed.invocation_id,
+            json.dumps(packed.metadata, ensure_ascii=False),
+        )
+        if inserted is not None:
+            # The INSERT has the exact payload already. Returning its small
+            # receipt avoids downloading a full graph snapshot again while
+            # holding both the session row and activation fence locks.
+            packed.bind_seq_id(int(inserted["seq_id"]))
+            packed.timestamp = inserted["timestamp"]
+            return session_event_to_envelope(packed)
+        stored = await self._fetch_event(connection, envelope.session_id, storage_id)
+        if stored is not None:
+            return stored
+        raise RuntimeError("kernel event insert did not persist")  # pragma: no cover
+
+    async def _fetch_event(
+        self, connection: Any, session_id: str, storage_id: str
+    ) -> SessionEventEnvelope | None:
+        row = await connection.fetchrow(
+            f"SELECT content_json, metadata_json, seq_id, timestamp FROM {KSADK_PG_EVENTS_TABLE}"
+            " WHERE namespace=$1 AND session_id=$2 AND id=$3",
+            self._namespace,
+            session_id,
+            storage_id,
+        )
+        if row is None:
+            return None
+        from ksadk.sessions.base import SessionEvent
+
+        event = SessionEvent(
+            id=storage_id,
+            session_id=session_id,
+            author="",
+            event_type="",
+            content=json.loads(row["content_json"]),
+            timestamp=row["timestamp"],
+            seq_id=row["seq_id"],
+            metadata=json.loads(row["metadata_json"]),
+        )
+        return session_event_to_envelope(event)
+
+    async def append(
+        self, envelope: SessionEventEnvelope, *, guard: Any | None = None
+    ) -> SessionEventEnvelope:
+        async with self._connection(write=True) as connection:
+            async with connection.transaction():
+                return await self.append_on(connection, envelope, guard)
+
+    async def get_by_id(self, session_id: str, event_id: Any) -> SessionEventEnvelope | None:
+        storage_id = session_event_storage_id(session_id, str(event_id))
+        async with self._connection() as connection:
+            return await self._fetch_event(connection, session_id, storage_id)
+
+    async def get_max_seq_id(self, session_id: str) -> int:
+        """Indexed metadata read; never decode historical event bodies."""
+        async with self._connection() as connection:
+            return int(await connection.fetchval(
+                f"SELECT COALESCE(MAX(seq_id),0) FROM {KSADK_PG_EVENTS_TABLE} "
+                "WHERE namespace=$1 AND session_id=$2", self._namespace, session_id,
+            ) or 0)
+
+    async def read(self, session_id: str, after_seq: int, limit: int) -> list[SessionEventEnvelope]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                f"SELECT id, content_json, metadata_json, seq_id, timestamp, author,"
+                f" event_type, invocation_id FROM {KSADK_PG_EVENTS_TABLE}"
+                " WHERE namespace=$1 AND session_id=$2 AND seq_id > $3"
+                " ORDER BY seq_id LIMIT $4",
+                self._namespace,
+                session_id,
+                int(after_seq),
+                int(limit),
+            )
+        return self._decode_rows(session_id, rows)
+
+    async def read_runtime(
+        self, session_id: str, *, after_seq: int = 0, before_seq: int | None = None,
+        run_id: str | None = None, event_types: list[str] | None = None,
+        item_kinds: list[str] | None = None, scope_id: str | None = None,
+        limit: int = 256, newest_first: bool = False,
+    ) -> list[SessionEventEnvelope]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        args: list[Any] = [self._namespace, session_id, after_seq]
+        where = ["namespace=$1", "session_id=$2", "seq_id > $3",
+                 "metadata_json->>'family' = 'runtime'"]
+        for clause, value in (("seq_id <", before_seq), ("invocation_id =", run_id),
+                              ("event_type = ANY", event_types),
+                              ("content_json->'runtime_event'->>'item_kind' = ANY", item_kinds),
+                              ("content_json->'runtime_event'->>'scope_id' =", scope_id)):
+            if value is not None:
+                args.append(value)
+                placeholder = f"${len(args)}"
+                where.append(f"{clause}({placeholder}::text[])" if clause.endswith("ANY")
+                             else f"{clause} {placeholder}")
+        args.append(limit)
+        order = "DESC" if newest_first else "ASC"
+        async with self._connection() as connection:
+            query = (f"SELECT id, content_json, metadata_json, seq_id, timestamp, author,"
+                f" event_type, invocation_id FROM {KSADK_PG_EVENTS_TABLE} WHERE "
+                + " AND ".join(where) + f" ORDER BY seq_id {order} LIMIT ${len(args)}")
+            if limit > 32 and event_types is None:
+                # Restoring a run still needs every fact. Stream its opaque
+                # state through the existing replay budget instead of one
+                # potentially multi-MiB ordinary read command.
+                from ksadk.sessions.postgres_service import _TimedConnection
+
+                budget = session_db_budget()
+                replay = _TimedConnection(
+                    connection, budget.read_sql_seconds, budget.cleanup_seconds,
+                    budget.replay_operation_seconds, budget.replay_sql_seconds,
+                )
+                rows = await replay.fetch_replay(query, *args, batch_size=1)
+            else:
+                rows = await connection.fetch(query, *args)
+        return self._decode_rows(session_id, rows)
+
+    async def has_run_transition(self, session_id, run_id, state):
+        async with self._connection() as connection:
+            return bool(await connection.fetchval(
+                f"SELECT EXISTS(SELECT 1 FROM {KSADK_PG_EVENTS_TABLE} "
+                "WHERE namespace=$1 AND session_id=$2 AND invocation_id=$3 "
+                "AND event_type='control.run_transition' AND metadata_json->>'family'='control' "
+                "AND content_json->'session_event'->'payload'->>'state'=$4)",
+                self._namespace, session_id, run_id, state))
+
+    async def find_interaction_resolution(self, record):
+        keys = ("interaction_id", "tenant_id", "agent_instance_id", "session_id", "run_id", "kind", "revision")
+        args = [self._namespace, record.session_id, record.run_id]
+        clauses = ["namespace=$1", "session_id=$2", "invocation_id=$3",
+                   "event_type='interaction.resolved'", "metadata_json->>'family'='interaction'",
+                   "metadata_json->>'family_version'='1'"]
+        for key in keys:
+            args.append(str(getattr(record, key)))
+            clauses.append(f"content_json->'session_event'->'payload'->>'{key}'=${len(args)}")
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                "SELECT id,content_json,metadata_json,seq_id,timestamp,author,event_type,invocation_id "
+                f"FROM {KSADK_PG_EVENTS_TABLE} WHERE " + " AND ".join(clauses)
+                + " ORDER BY seq_id LIMIT 1", *args)
+        decoded = self._decode_rows(record.session_id, rows)
+        return decoded[0] if decoded else None
+
+    async def read_subscription_page(
+        self, session_id: str, after_seq: int, *, limit: int = 64,
+        byte_limit: int = 512 * 1024,
+    ) -> list[SessionEventEnvelope]:
+        """Drain every fact using small byte-bounded subscription batches.
+
+        Unlike `read`, this may return a short page with more facts remaining.
+        One indivisible oversized fact always advances the sequence cursor.
+        """
+        if limit < 1 or byte_limit < 1:
+            raise ValueError("subscription limits must be positive")
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                f"""WITH candidates AS (
+                    SELECT id,content_json,metadata_json,seq_id,timestamp,author,
+                           event_type,invocation_id,
+                           COALESCE(octet_length(content_json::text),0) +
+                           COALESCE(octet_length(metadata_json::text),0) + 1024 AS bytes
+                    FROM {KSADK_PG_EVENTS_TABLE}
+                    WHERE namespace=$1 AND session_id=$2 AND seq_id>$3
+                    ORDER BY seq_id LIMIT $4
+                ), measured AS (
+                    SELECT *,ROW_NUMBER() OVER (ORDER BY seq_id) AS position,
+                           SUM(bytes) OVER (ORDER BY seq_id) AS cumulative_bytes
+                    FROM candidates
+                )
+                SELECT id,content_json,metadata_json,seq_id,timestamp,author,
+                       event_type,invocation_id FROM measured
+                WHERE cumulative_bytes <= $5 OR position=1 ORDER BY seq_id""",
+                self._namespace, session_id, int(after_seq), limit, byte_limit,
+            )
+        return self._decode_rows(session_id, rows)
+
+    @staticmethod
+    def _decode_rows(session_id, rows) -> list[SessionEventEnvelope]:
+        from ksadk.sessions.base import SessionEvent
+
+        envelopes: list[SessionEventEnvelope] = []
+        for row in rows:
+            event = SessionEvent(
+                id=row["id"],
+                session_id=session_id,
+                author=row["author"],
+                event_type=row["event_type"],
+                content=json.loads(row["content_json"]),
+                timestamp=row["timestamp"],
+                seq_id=row["seq_id"],
+                invocation_id=row["invocation_id"],
+                metadata=json.loads(row["metadata_json"]),
+            )
+            envelope = session_event_to_envelope(event)
+            if envelope is not None:
+                envelopes.append(envelope)
+        return envelopes
 
 
 class PostgresNonceStore:
@@ -159,7 +423,10 @@ class PostgresNonceStore:
                 )
 
 
-class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
+from ksadk.kernel.interactions_postgres import PostgresInteractionStoreMixin
+
+
+class PostgresAgentKernelStore(PostgresInteractionStoreMixin, PostgresExecutionGrantMixin):
     def __init__(
         self,
         pool: Any,
@@ -183,9 +450,43 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
             yield connection
 
     async def ensure_schema(self) -> None:
-        schema = SCHEMA_PATH.read_text(encoding="utf-8")
+        from ksadk.kernel.legacy_postgres_repair import repair_legacy_sessions
+        from ksadk.sessions._postgres_schema import install_kernel_session_delete_trigger
+
         async with self._connection(write=True) as connection:
-            await connection.execute(schema)
+            async with connection.transaction():
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock($1::bigint)", _SCHEMA_MIGRATION_LOCK
+                )
+                # The last function in 002 was committed atomically with both
+                # schemas, including in databases upgraded by the previous wheel.
+                state = await connection.fetchrow(f"""
+                    SELECT to_regprocedure(format('%I.ksadk_after_kernel_session_delete()',
+                                                  current_schema())) IS NOT NULL AS migrated,
+                           to_regclass(format('%I.kernel_legacy_repair_progress',
+                                              current_schema())) IS NOT NULL AS repairs_installed,
+                           to_regclass('{KSADK_PG_SESSIONS_TABLE}') IS NOT NULL AND NOT EXISTS (
+                               SELECT FROM pg_trigger
+                               WHERE tgrelid=to_regclass('{KSADK_PG_SESSIONS_TABLE}')
+                                 AND tgname='ksadk_retire_deleted_session'
+                           ) AS needs_trigger
+                """)
+                if not state["migrated"] or state["needs_trigger"]:
+                    await connection.execute(
+                        "SELECT pg_advisory_xact_lock($1::bigint)", _PG_SCHEMA_ADVISORY_LOCK_KEY
+                    )
+                    if not state["migrated"]:
+                        await connection.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+                        retirement = SCHEMA_PATH.with_name("002_session_retirement.sql")
+                        await connection.execute(retirement.read_text(encoding="utf-8"))
+                    await install_kernel_session_delete_trigger(connection)
+
+                if not state["repairs_installed"]:
+                    for migration in ("003_legacy_repair_queue.sql", "backfill_session_namespaces.sql"):
+                        await connection.execute(SCHEMA_PATH.with_name(migration).read_text(encoding="utf-8"))
+
+        # Data repair must never hold either database-wide DDL lock.
+        await repair_legacy_sessions(self._connection, self.tenant_id, self._events._namespace)
 
     async def reset_for_tests(self) -> None:
         async with self._connection(write=True) as connection:
@@ -193,6 +494,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                 "DELETE FROM kernel_inbox; DELETE FROM kernel_runs;"
                 " DELETE FROM kernel_activations; DELETE FROM kernel_accepted_seq;"
                 " DELETE FROM kernel_interactions; DELETE FROM kernel_interaction_submissions;"
+                " DELETE FROM kernel_legacy_session_repairs;"
                 " DELETE FROM kernel_execution_grant_operations;"
                 " DELETE FROM kernel_execution_grants;"
                 " DELETE FROM ksadk_events WHERE namespace = 'default';"
@@ -212,7 +514,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         # Lease expiry is authored by PostgreSQL. Never compare it with a Pod's
         # wall clock: skew can reject a live owner or authorize an expired one.
         row = await connection.fetchrow(
-            ACTIVATION_FOR_SHARE_SQL, agent_instance_id, session_id
+            ACTIVATION_FOR_SHARE_SQL, agent_instance_id, session_id, self._events._namespace
         )
         if (
             row is None
@@ -249,10 +551,10 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
 
     async def _append_admission(
         self, connection: Any, command: AgentControlCommand, envelope: SessionEventEnvelope
-    ) -> None:
+    ) -> SessionEventEnvelope:
         # accepted/rejected 事实的 write guard 绑定提交方的 permit 引用
         # （server permit_id 或本地 authority），不落内核自造 ref。
-        await self._events.append_on(
+        return await self._events.append_on(
             connection,
             envelope,
             AdmissionWriteGuard(
@@ -287,8 +589,24 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
             async with connection.transaction():
                 if execution_grant_id(command):
                     await self._postgres_lock_command_grant(connection, command)
+                # Serialize admission before reading idempotency/queue depth.
+                # Locking only during sequence allocation lets concurrent
+                # writers both observe a missing key or the same free slot.
+                # Keep the existing grant -> cursor -> event lock order.
+                await connection.execute(
+                    "INSERT INTO kernel_accepted_seq (tenant_id, session_id, last_seq)"
+                    " VALUES ($1, $2, 0) ON CONFLICT (tenant_id, session_id) DO NOTHING",
+                    self.tenant_id,
+                    command.session_id,
+                )
+                await connection.fetchval(
+                    "SELECT last_seq FROM kernel_accepted_seq"
+                    " WHERE tenant_id=$1 AND session_id=$2 FOR UPDATE",
+                    self.tenant_id,
+                    command.session_id,
+                )
                 existing = await connection.fetchrow(
-                    "SELECT message_id, accepted_seq, request_digest FROM kernel_inbox"
+                    "SELECT message_id, accepted_seq, request_digest, payload FROM kernel_inbox"
                     " WHERE tenant_id=$1 AND session_id=$2 AND idempotency_key=$3",
                     self.tenant_id,
                     command.session_id,
@@ -322,7 +640,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                             ),
                         )
                     return self._receipt(
-                        command,
+                        AgentControlCommand.model_validate_json(existing["payload"]),
                         "duplicate",
                         message_id=str(existing["message_id"]),
                         accepted_seq=int(existing["accepted_seq"]),
@@ -399,8 +717,8 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                 await connection.execute(
                     "INSERT INTO kernel_inbox (message_id, tenant_id, agent_instance_id,"
                     " session_id, idempotency_key, request_digest, accepted_seq, status,"
-                    " claimed_fence, payload) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7,"
-                    " 'accepted', NULL, $8::jsonb)",
+                    " claimed_fence, payload, session_namespace) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7,"
+                    " 'accepted', NULL, $8::jsonb, $9)",
                     message_id,
                     self.tenant_id,
                     command.agent_instance_id,
@@ -409,9 +727,10 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                     command_digest(command),
                     accepted_seq,
                     command.model_dump_json(),
+                    self._events._namespace,
                 )
                 # ControlEvent 与 inbox insert 同一事务（SQLite 版在事务外，此处按计划收进）。
-                await self._append_admission(
+                admitted = await self._append_admission(
                     connection,
                     command,
                     control_event(
@@ -426,6 +745,12 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                         },
                         causation_id=str(command.command_id),
                     ),
+                )
+                accepted_seq = admitted.seq
+                await connection.execute(
+                    "UPDATE kernel_inbox SET accepted_seq=$1"
+                    " WHERE tenant_id=$2 AND message_id=$3::uuid",
+                    accepted_seq, self.tenant_id, message_id,
                 )
         return self._receipt(
             command, "accepted", message_id=message_id, accepted_seq=accepted_seq
@@ -549,6 +874,95 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
             )
         return [m for m in (self._row_to_message(r) for r in rows) if m is not None]
 
+    async def pending_session_ids(self, agent_instance_id: str) -> set[str]:
+        """Scheduler metadata only: no completed command payloads or N+1 reads."""
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                f"""
+                WITH candidates AS (
+                    SELECT session_id, session_namespace, false AS needs_missing FROM kernel_inbox
+                    WHERE agent_instance_id=$1 AND tenant_id=$2 AND status IN ('accepted','claimed')
+                    UNION ALL
+                    SELECT r.session_id, r.session_namespace, r.state='pending' OR NOT EXISTS (
+                        SELECT FROM kernel_inbox i WHERE i.agent_instance_id=$1 AND i.tenant_id=$2
+                          AND i.session_id=r.session_id AND (i.session_namespace=$3 OR i.session_namespace IS NULL)
+                    ) FROM kernel_runs r WHERE r.agent_instance_id=$1 AND r.tenant_id=$2
+                      AND r.state IN ('pending','running','paused','waiting')
+                    UNION ALL
+                    SELECT session_id, session_namespace, true FROM kernel_interactions
+                    WHERE agent_instance_id=$1 AND status IN ('pending','resolving')
+                      AND (session_namespace=$3 OR (session_namespace IS NULL AND tenant_id=$2))
+                )
+                SELECT DISTINCT c.session_id FROM candidates c
+                LEFT JOIN {KSADK_PG_SESSIONS_TABLE} s ON s.namespace=$3 AND s.id=c.session_id
+                WHERE (NOT c.needs_missing OR s.id IS NULL)
+                  AND (c.session_namespace=$3 OR (c.session_namespace IS NULL AND (
+                    s.id IS NOT NULL OR NOT EXISTS (
+                        SELECT FROM {KSADK_PG_SESSIONS_TABLE} other
+                        WHERE other.id=c.session_id AND other.tenant_id=$2 AND other.namespace<>$3
+                    )
+                  )))
+                """,
+                agent_instance_id, self.tenant_id, self._events._namespace,
+            )
+        return {row["session_id"] for row in rows}
+
+    async def is_session_missing(self, session_id: str) -> bool:
+        async with self._connection() as connection:
+            return not await connection.fetchval(
+                f"SELECT 1 FROM {KSADK_PG_SESSIONS_TABLE} WHERE namespace=$1 AND id=$2",
+                self._events._namespace, session_id,
+            )
+
+    async def read_runtime_leases(
+        self, agent_instance_id: str, session_ids: list[str],
+    ) -> dict[str, ActivationLease]:
+        """One real DB round trip for reachability and every retained fence."""
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                "SELECT session_id,activation_id,fencing_token,lease_expires_at,"
+                "bundle_digest,runtime_type,capability_digest FROM kernel_activations "
+                "WHERE agent_instance_id=$1 AND session_id=ANY($2::text[]) "
+                "AND released=FALSE AND lease_expires_at>clock_timestamp()",
+                agent_instance_id, session_ids,
+            )
+        return {row["session_id"]: ActivationLease(
+            agent_instance_id=agent_instance_id, activation_id=row["activation_id"],
+            fencing_token=int(row["fencing_token"]),
+            lease_expires_at=row["lease_expires_at"].isoformat(),
+            bundle_digest=row["bundle_digest"], runtime_type=row["runtime_type"],
+            capability_digest=row["capability_digest"],
+        ) for row in rows}
+
+    async def renew_owned_activations(
+        self, agent_instance_id: str, owned: dict[str, tuple[str, int]], *,
+        lease_ttl_seconds: float,
+    ) -> set[str]:
+        """Renew valid leases in one statement, retaining owner/fence checks.
+
+        Expired, released or foreign leases are never revived by this port;
+        they retain the ordinary acquire/takeover/recovery path.
+        """
+        if not math.isfinite(lease_ttl_seconds) or lease_ttl_seconds <= 0:
+            raise ValueError("lease TTL must be positive finite seconds")
+        if not owned:
+            return set()
+        sessions = list(owned)
+        async with self._connection(write=True) as connection:
+            rows = await connection.fetch(
+                "WITH requested AS (SELECT * FROM UNNEST($2::text[],$3::text[],$4::bigint[]) "
+                "AS r(session_id,activation_id,fencing_token)) "
+                "UPDATE kernel_activations a SET lease_expires_at="
+                "clock_timestamp()+$5::double precision*interval '1 second' "
+                "FROM requested r WHERE a.agent_instance_id=$1 "
+                "AND a.session_id=r.session_id AND a.activation_id=r.activation_id "
+                "AND a.fencing_token=r.fencing_token AND a.released=FALSE "
+                "AND a.lease_expires_at>clock_timestamp() RETURNING a.session_id",
+                agent_instance_id, sessions, [owned[s][0] for s in sessions],
+                [owned[s][1] for s in sessions], lease_ttl_seconds,
+            )
+        return {row["session_id"] for row in rows}
+
     async def list_pending(
         self,
         agent_instance_id: str,
@@ -563,8 +977,9 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         恰好在 claim 后退出，会让 stale claimed 永久挡住 FIFO 头。
         """
         sql = (
-            "SELECT * FROM kernel_inbox WHERE agent_instance_id=$1"
-            + (" AND session_id=$2" if session_id else "")
+            "SELECT * FROM kernel_inbox WHERE agent_instance_id=$1 AND tenant_id=$2"
+            " AND (session_namespace=$3 OR session_namespace IS NULL)"
+            + (" AND session_id=$4" if session_id else "")
             + (
                 " AND status IN ('accepted','claimed')"
                 if fencing_token is not None
@@ -572,7 +987,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
             )
             + " ORDER BY accepted_seq"
         )
-        args: list[Any] = [agent_instance_id]
+        args: list[Any] = [agent_instance_id, self.tenant_id, self._events._namespace]
         if session_id:
             args.append(session_id)
         async with self._connection() as connection:
@@ -586,7 +1001,9 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
             async with connection.transaction():
                 # Lock grant before Inbox, matching the revocation lock order.
                 candidate = await connection.fetchrow(
-                    "SELECT payload FROM kernel_inbox WHERE message_id=$1::uuid", message_id,
+                    "SELECT payload FROM kernel_inbox WHERE message_id=$1::uuid AND tenant_id=$2"
+                    " AND (session_namespace=$3 OR session_namespace IS NULL)",
+                    message_id, self.tenant_id, self._events._namespace,
                 )
                 if candidate is None:
                     raise InvalidCommandError(f"unknown message_id {message_id!r}")
@@ -628,12 +1045,14 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                         "SELECT EXISTS (SELECT 1 FROM kernel_inbox"
                         " WHERE tenant_id=$1 AND agent_instance_id=$2"
                         " AND session_id=$3 AND accepted_seq < $4"
+                        " AND (session_namespace=$5 OR session_namespace IS NULL)"
                         " AND status IN ('accepted','claimed')"
                         " AND payload->>'command_type'='enqueue')",
                         self.tenant_id,
                         row["agent_instance_id"],
                         row["session_id"],
                         int(row["accepted_seq"]),
+                        self._events._namespace,
                     )
                     if earlier:
                         raise InvalidCommandError(
@@ -726,16 +1145,16 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
         self, agent_instance_id: str, session_id: str | None = None
     ) -> RunRecord | None:
         async with self._connection() as connection:
-            rows = await connection.fetch(
-                "SELECT * FROM kernel_runs WHERE agent_instance_id=$1"
-                + (" AND session_id=$2" if session_id else "")
-                + " ORDER BY created_at",
-                agent_instance_id,
+            row = await connection.fetchrow(
+                "SELECT * FROM kernel_runs WHERE agent_instance_id=$1 AND tenant_id=$2"
+                " AND (session_namespace=$3 OR session_namespace IS NULL)"
+                + (" AND session_id=$4" if session_id else "")
+                + " AND state IN ('running','paused','waiting') ORDER BY created_at LIMIT 1",
+                agent_instance_id, self.tenant_id, self._events._namespace,
                 *([session_id] if session_id else []),
             )
-        for row in rows:
-            if is_active_run(RunState(row["state"])):
-                return RunRecord(
+        if row is not None:
+            return RunRecord(
                     run_id=row["run_id"],
                     agent_instance_id=row["agent_instance_id"],
                     session_id=row["session_id"],
@@ -744,7 +1163,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                     created_at=row["created_at"].isoformat(),
                     updated_at=row["updated_at"].isoformat(),
                     metadata=json.loads(row["metadata"]),
-                )
+            )
         return None
 
     async def current_lease(
@@ -782,6 +1201,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                 row = await connection.fetchrow(
                     "SELECT * FROM kernel_inbox"
                     " WHERE agent_instance_id=$1 AND session_id=$2"
+                    " AND tenant_id=$4 AND (session_namespace=$5 OR session_namespace IS NULL)"
                     " AND (status='accepted' OR (status='claimed' AND claimed_fence <> $3))"
                     " ORDER BY accepted_seq"
                     " FOR UPDATE SKIP LOCKED"
@@ -789,6 +1209,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                     agent_instance_id,
                     session_id,
                     int(fencing_token),
+                    self.tenant_id, self._events._namespace,
                 )
                 if row is None:
                     return None
@@ -855,465 +1276,25 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                     expected_fence,
                 )
 
-    # -------------------------------------------------------------- interactions
-
-    async def _assert_interaction_guard(
-        self, connection: Any, agent_instance_id: str, session_id: str, guard: Any
-    ) -> dict[str, Any]:
-        row = await connection.fetchrow(
-            "SELECT activation_id, agent_instance_id, session_id, fencing_token,"
-            " lease_expires_at, released FROM kernel_activations"
-            " WHERE activation_id = $1 AND agent_instance_id = $2"
-            " AND session_id = $3 FOR SHARE",
-            guard.activation_id,
-            agent_instance_id,
-            session_id,
-        )
-        if (
-            row is None
-            or row["released"]
-            or row["lease_expires_at"] <= await connection.fetchval("SELECT clock_timestamp()")
-            or int(row["fencing_token"]) != int(guard.fencing_token)
-            or row["agent_instance_id"] != agent_instance_id
-            or row["session_id"] != session_id
-        ):
-            raise StaleFenceError(
-                "interaction write guard does not match the current lease",
-                details={
-                    "activation_id": guard.activation_id,
-                    "fencing_token": int(guard.fencing_token),
-                    "session_id": session_id,
-                },
-            )
-        return dict(row)
-
-    async def _interaction_row_for_guard(
-        self, connection: Any, interaction_id: str, guard: Any
-    ) -> Any | None:
-        """Resolve a public interaction id within its fenced activation scope.
-
-        Interaction ids are opaque browser-visible handles, not tenant grants.
-        A Runtime mutation already has the Server-admitted activation guard, so
-        select the row by that trusted AgentInstance/session before taking the
-        row lock.  This prevents a same-id record in another tenant from being
-        selected and then rejected only after information has been consulted.
-        """
-
-        activation = await connection.fetchrow(
-            "SELECT activation_id, agent_instance_id, session_id, fencing_token,"
-            " lease_expires_at, released FROM kernel_activations"
-            " WHERE activation_id=$1 FOR SHARE",
-            guard.activation_id,
-        )
-        if (
-            activation is None
-            or activation["released"]
-            or activation["lease_expires_at"] <= await connection.fetchval(
-                "SELECT clock_timestamp()"
-            )
-            or int(activation["fencing_token"]) != int(guard.fencing_token)
-        ):
-            raise StaleFenceError(
-                "interaction write guard does not match the current lease",
-                details={
-                    "activation_id": guard.activation_id,
-                    "fencing_token": int(guard.fencing_token),
-                },
-            )
-        return await connection.fetchrow(
-            "SELECT * FROM kernel_interactions WHERE interaction_id=$1"
-            " AND agent_instance_id=$2 AND session_id=$3 FOR UPDATE",
-            interaction_id,
-            activation["agent_instance_id"],
-            activation["session_id"],
-        )
-
-    @staticmethod
-    def _interaction_row_to_record(row: Any) -> InteractionRecord:
-        from ksadk.interaction.contracts import InteractionPresentation
-
-        presentation = None
-        if row["presentation"] is not None:
-            presentation = InteractionPresentation.model_validate(
-                json.loads(row["presentation"])
-            )
-        return InteractionRecord(
-            interaction_id=row["interaction_id"],
-            tenant_id=row["tenant_id"],
-            agent_instance_id=row["agent_instance_id"],
-            session_id=row["session_id"],
-            run_id=row["run_id"],
-            kind=row["kind"],
-            request_schema=json.loads(row["request_schema"]),
-            revision=int(row["revision"]),
-            status=row["status"],
-            created_at=row["created_at"].isoformat(),
-            expires_at=(
-                row["expires_at"].isoformat() if row["expires_at"] is not None else None
-            ),
-            presentation=presentation,
-            provider_id=row["provider_id"] or "",
-            native_target=(
-                json.loads(row["native_target"])
-                if row["native_target"] is not None
-                else None
-            ),
-            continuation_metadata=(
-                json.loads(row["continuation_metadata"])
-                if row["continuation_metadata"] is not None
-                else None
-            ),
-        )
-
-    async def request(
-        self, record: InteractionRecord, *, guard: Any
-    ) -> InteractionRecord:
-        digest = request_digest(record)
-        async with self._connection(write=True) as connection:
-            async with connection.transaction():
-                await self._assert_interaction_guard(
-                    connection, record.agent_instance_id, record.session_id, guard
-                )
-                existing = await connection.fetchrow(
-                    "SELECT * FROM kernel_interactions"
-                    " WHERE tenant_id=$1 AND interaction_id=$2",
-                    record.tenant_id,
-                    record.interaction_id,
-                )
-                if existing is not None:
-                    if existing["request_digest"] != digest:
-                        raise InvalidCommandError(
-                            "interaction_id reused with a different request digest",
-                            details={
-                                "reason": REQUEST_CONFLICT,
-                                "interaction_id": record.interaction_id,
-                            },
-                        )
-                    return self._interaction_row_to_record(existing)
-                await connection.execute(
-                    """
-                    INSERT INTO kernel_interactions (
-                        interaction_id, tenant_id, agent_instance_id, session_id,
-                        run_id, kind, request_schema, presentation, revision, status,
-                        created_at, expires_at, provider_id, native_target,
-                        continuation_metadata, request_digest, updated_at
-                    ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, 'pending',
-                        $10::timestamptz, $11::timestamptz, $12, $13::jsonb,
-                        $14::jsonb, $15, now()
-                    )
-                    """,
-                    record.interaction_id,
-                    record.tenant_id,
-                    record.agent_instance_id,
-                    record.session_id,
-                    record.run_id,
-                    record.kind,
-                    json.dumps(record.request_schema, ensure_ascii=False),
-                    (
-                        record.presentation.model_dump_json()
-                        if record.presentation is not None
-                        else None
-                    ),
-                    record.revision,
-                    _parse_ts(record.created_at),
-                    _parse_ts(record.expires_at),
-                    record.provider_id,
-                    (
-                        json.dumps(record.native_target, ensure_ascii=False)
-                        if record.native_target is not None
-                        else None
-                    ),
-                    (
-                        json.dumps(record.continuation_metadata, ensure_ascii=False)
-                        if record.continuation_metadata is not None
-                        else None
-                    ),
-                    digest,
-                )
-                # requested 事件与 pending 行同一事务：commit 前被 kill 无半状态。
-                await self._events.append_on(
-                    connection, requested_event_payload(record, now_iso()), guard
-                )
-        return record
-
-    async def resolve(
-        self, submission: InteractionSubmission, *, guard: Any
-    ) -> InteractionReceipt:
-        sub_digest = submission_digest(submission)
-        async with self._connection(write=True) as connection:
-            async with connection.transaction():
-                row = await self._interaction_row_for_guard(
-                    connection, submission.interaction_id, guard
-                )
-                if row is None:
-                    raise InvalidCommandError(
-                        f"unknown interaction_id {submission.interaction_id!r}"
-                    )
-                await self._assert_interaction_guard(
-                    connection, row["agent_instance_id"], row["session_id"], guard
-                )
-                current = self._interaction_row_to_record(row)
-                if is_terminal(current.status):
-                    existing_sub = await connection.fetchrow(
-                        "SELECT submission_digest, receipt FROM"
-                        " kernel_interaction_submissions WHERE tenant_id=$1"
-                        " AND interaction_id=$2 AND idempotency_key=$3",
-                        current.tenant_id,
-                        current.interaction_id,
-                        submission.idempotency_key,
-                    )
-                    if (
-                        existing_sub is not None
-                        and existing_sub["submission_digest"] == sub_digest
-                    ):
-                        return InteractionReceipt.model_validate(
-                            json.loads(existing_sub["receipt"])
-                        )
-                    raise InvalidCommandError(
-                        f"interaction already reached terminal status"
-                        f" {current.status!r}",
-                        details={
-                            "reason": ALREADY_RESOLVED,
-                            "interaction_id": current.interaction_id,
-                        },
-                    )
-                if current.revision != submission.expected_revision:
-                    raise InvalidCommandError(
-                        "interaction revision does not match expected_revision",
-                        details={
-                            "reason": REVISION_MISMATCH,
-                            "interaction_id": current.interaction_id,
-                            "expected_revision": submission.expected_revision,
-                            "current_revision": current.revision,
-                        },
-                    )
-                outcome = resolve_outcome(submission.action)
-                updated = current.model_copy(
-                    update={"status": "resolved", "revision": current.revision + 1}
-                )
-                stored = await self._events.append_on(
-                    connection,
-                    interaction_event(
-                        updated,
-                        event_type="interaction.resolved",
-                        timestamp=now_iso(),
-                        outcome=outcome,
-                        response=submission.response,
-                        actor_ref="user",
-                    ),
-                    guard,
-                )
-                receipt = InteractionReceipt(
-                    interaction_id=updated.interaction_id,
-                    revision=updated.revision,
-                    status="resolved",
-                    outcome=outcome,  # type: ignore[arg-type]
-                    event_id=str(stored.event_id),
-                    accepted_seq=stored.seq,
-                )
-                await connection.execute(
-                    "UPDATE kernel_interactions SET revision=$1, status='resolved',"
-                    " response=$2::jsonb, outcome=$3, actor=$4, event_id=$5::uuid,"
-                    " accepted_seq=$6, fencing_token=$7, updated_at=now()"
-                    " WHERE tenant_id=$8 AND interaction_id=$9",
-                    updated.revision,
-                    json.dumps(submission.response, ensure_ascii=False),
-                    outcome,
-                    "user",
-                    str(stored.event_id),
-                    stored.seq,
-                    int(guard.fencing_token),
-                    updated.tenant_id,
-                    updated.interaction_id,
-                )
-                await connection.execute(
-                    "INSERT INTO kernel_interaction_submissions (tenant_id,"
-                    " interaction_id, idempotency_key, submission_digest, receipt)"
-                    " VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT DO NOTHING",
-                    updated.tenant_id,
-                    updated.interaction_id,
-                    submission.idempotency_key,
-                    sub_digest,
-                    receipt.model_dump_json(),
-                )
-        return receipt
-
-    async def _terminal_command(
-        self,
-        interaction_id: str,
-        expected_revision: int,
-        *,
-        guard: Any,
-        status: str,
-        reason: str,
-    ) -> InteractionReceipt:
-        async with self._connection(write=True) as connection:
-            async with connection.transaction():
-                row = await self._interaction_row_for_guard(
-                    connection, interaction_id, guard
-                )
-                if row is None:
-                    raise InvalidCommandError(
-                        f"unknown interaction_id {interaction_id!r}"
-                    )
-                await self._assert_interaction_guard(
-                    connection, row["agent_instance_id"], row["session_id"], guard
-                )
-                current = self._interaction_row_to_record(row)
-                if is_terminal(current.status):
-                    raise InvalidCommandError(
-                        f"interaction already reached terminal status"
-                        f" {current.status!r}",
-                        details={
-                            "reason": ALREADY_RESOLVED,
-                            "interaction_id": current.interaction_id,
-                        },
-                    )
-                if current.revision != expected_revision:
-                    raise InvalidCommandError(
-                        "interaction revision does not match expected_revision",
-                        details={
-                            "reason": REVISION_MISMATCH,
-                            "interaction_id": current.interaction_id,
-                            "expected_revision": expected_revision,
-                            "current_revision": current.revision,
-                        },
-                    )
-                updated = current.model_copy(
-                    update={"status": status, "revision": current.revision + 1}
-                )
-                event_type = (
-                    "interaction.cancelled"
-                    if status == "cancelled"
-                    else "interaction.expired"
-                )
-                stored = await self._events.append_on(
-                    connection,
-                    interaction_event(
-                        updated,
-                        event_type=event_type,
-                        timestamp=now_iso(),
-                        reason=reason,
-                    ),
-                    guard,
-                )
-                receipt = InteractionReceipt(
-                    interaction_id=updated.interaction_id,
-                    revision=updated.revision,
-                    status=updated.status,  # type: ignore[arg-type]
-                    outcome=updated.status,  # type: ignore[arg-type]
-                    event_id=str(stored.event_id),
-                    accepted_seq=stored.seq,
-                )
-                await connection.execute(
-                    "UPDATE kernel_interactions SET revision=$1, status=$2,"
-                    " outcome=$3, event_id=$4::uuid, accepted_seq=$5,"
-                    " fencing_token=$6, updated_at=now()"
-                    " WHERE tenant_id=$7 AND interaction_id=$8",
-                    updated.revision,
-                    status,
-                    status,
-                    str(stored.event_id),
-                    stored.seq,
-                    int(guard.fencing_token),
-                    updated.tenant_id,
-                    updated.interaction_id,
-                )
-        return receipt
-
-    async def cancel(
-        self, interaction_id: str, expected_revision: int, *, guard: Any
-    ) -> InteractionReceipt:
-        return await self._terminal_command(
-            interaction_id,
-            expected_revision,
-            guard=guard,
-            status="cancelled",
-            reason="cancelled by owner",
-        )
-
-    async def expire(
-        self, interaction_id: str, expected_revision: int, *, guard: Any
-    ) -> InteractionReceipt:
-        return await self._terminal_command(
-            interaction_id,
-            expected_revision,
-            guard=guard,
-            status="expired",
-            reason="interaction expired",
-        )
-
-    async def get(
-        self,
-        interaction_id: str,
-        *,
-        tenant_id: str | None = None,
-        agent_instance_id: str | None = None,
-        session_id: str | None = None,
-        run_id: str | None = None,
-    ) -> InteractionRecord | None:
-        """Read public ids only through a complete trusted execution scope."""
-
-        scope = (tenant_id, agent_instance_id, session_id, run_id)
-        async with self._connection() as connection:
-            if any(value is not None for value in scope):
-                if not all(value is not None for value in scope):
-                    raise InvalidCommandError(
-                        "interaction lookup requires a complete trusted scope",
-                        details={"interaction_id": interaction_id},
-                    )
-                row = await connection.fetchrow(
-                    "SELECT * FROM kernel_interactions WHERE interaction_id=$1"
-                    " AND tenant_id=$2 AND agent_instance_id=$3 AND session_id=$4"
-                    " AND run_id=$5",
-                    interaction_id,
-                    tenant_id,
-                    agent_instance_id,
-                    session_id,
-                    run_id,
-                )
-                return self._interaction_row_to_record(row) if row is not None else None
-            rows = await connection.fetch(
-                "SELECT * FROM kernel_interactions WHERE interaction_id=$1 LIMIT 2",
-                interaction_id,
-            )
-        if len(rows) > 1:
-            raise InvalidCommandError(
-                f"interaction_id {interaction_id!r} is ambiguous without trusted scope",
-                details={"reason": REQUEST_CONFLICT, "interaction_id": interaction_id},
-            )
-        return self._interaction_row_to_record(rows[0]) if rows else None
-
-    async def list_pending_interactions(
-        self, tenant_id: str, session_id: str
-    ) -> list[InteractionRecord]:
-        async with self._connection() as connection:
-            rows = await connection.fetch(
-                "SELECT * FROM kernel_interactions WHERE tenant_id=$1 AND session_id=$2"
-                " AND status='pending' ORDER BY created_at",
-                tenant_id,
-                session_id,
-            )
-        return [self._interaction_row_to_record(row) for row in rows]
-
     # ------------------------------------------------------------- activations
 
     async def acquire_activation(self, request: ActivationLeaseRequest) -> ActivationLease:
         async with self._connection(write=True) as connection:
             async with connection.transaction():
                 row = await connection.fetchrow(
-                    """
+                    f"""
                     INSERT INTO kernel_activations (
                         agent_instance_id, session_id, activation_id, fencing_token,
-                        lease_expires_at, runtime_type, bundle_digest, capability_digest
+                        lease_expires_at, runtime_type, bundle_digest, capability_digest, session_namespace
                     ) VALUES (
-                        $1, $2, $3, 1, clock_timestamp() + make_interval(secs => $4), $5, $6, $7
+                        $1, $2, $3, 1, clock_timestamp() + make_interval(secs => $4), $5, $6, $7, $8
                     )
                     ON CONFLICT (agent_instance_id, session_id) DO UPDATE SET
                         activation_id = excluded.activation_id,
                         fencing_token = CASE
                             WHEN kernel_activations.activation_id = excluded.activation_id
+                                AND NOT kernel_activations.released
+                                AND kernel_activations.lease_expires_at > clock_timestamp()
                                 THEN kernel_activations.fencing_token
                             ELSE kernel_activations.fencing_token + 1
                         END,
@@ -1321,11 +1302,20 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                         released = FALSE,
                         runtime_type = excluded.runtime_type,
                         bundle_digest = excluded.bundle_digest,
-                        capability_digest = excluded.capability_digest
-                    WHERE kernel_activations.released
+                        capability_digest = excluded.capability_digest,
+                        session_namespace = excluded.session_namespace
+                    WHERE (kernel_activations.session_namespace IS NULL
+                       OR kernel_activations.session_namespace=excluded.session_namespace
+                       OR (kernel_activations.released AND NOT EXISTS (
+                           SELECT FROM {KSADK_PG_SESSIONS_TABLE} previous
+                           WHERE previous.namespace=kernel_activations.session_namespace AND previous.id=$2
+                       )))
+                      AND (kernel_activations.released
                        OR kernel_activations.lease_expires_at <= clock_timestamp()
-                       OR kernel_activations.activation_id = excluded.activation_id
-                    RETURNING fencing_token, lease_expires_at
+                       OR kernel_activations.activation_id = excluded.activation_id)
+                    RETURNING fencing_token, lease_expires_at, EXISTS (
+                        SELECT FROM {KSADK_PG_SESSIONS_TABLE} WHERE namespace=$8 AND id=$2 FOR KEY SHARE
+                    ) AS session_present
                     """,
                     request.agent_instance_id,
                     request.session_id,
@@ -1334,6 +1324,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                     request.runtime_type,
                     request.bundle_digest,
                     request.capability_digest,
+                    self._events._namespace,
                 )
                 if row is None:
                     holder = await connection.fetchrow(
@@ -1351,10 +1342,20 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                             ),
                         },
                     )
+                token = row["fencing_token"]
+                if not row["session_present"]:
+                    # Ownership and orphan retirement commit together. The function
+                    # rechecks the parent before touching any work.
+                    advanced = await connection.fetchval(
+                        "SELECT ksadk_retire_kernel_session($1,$2,$3,$4,'session_missing')",
+                        self._events._namespace, self.tenant_id, request.session_id, request.agent_instance_id,
+                    )
+                    if advanced is not None:
+                        token = advanced
         return ActivationLease(
             agent_instance_id=request.agent_instance_id,
             activation_id=request.activation_id,
-            fencing_token=int(row["fencing_token"]),
+            fencing_token=int(token),
             lease_expires_at=row["lease_expires_at"].isoformat(),
             bundle_digest=request.bundle_digest,
             runtime_type=request.runtime_type,
@@ -1594,9 +1595,12 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                 if is_active_run(run.state):
                     clash = await connection.fetchval(
                         "SELECT run_id FROM kernel_runs WHERE session_id=$1 AND run_id <> $2"
+                        " AND (session_namespace=$3 OR (session_namespace IS NULL AND tenant_id=$4))"
                         " AND state IN ('running','paused','waiting')",
                         run.session_id,
                         run.run_id,
+                        self._events._namespace,
+                        self.tenant_id,
                     )
                     if clash is not None:
                         raise InvalidCommandError(
@@ -1616,13 +1620,13 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                 await connection.execute(
                     """
                     INSERT INTO kernel_runs (run_id, tenant_id, agent_instance_id, session_id,
-                        state, activation_fence, created_at, updated_at, metadata)
-                    VALUES ($1, $2, $3, $4, $5, $6, now(), now(), $7::jsonb)
+                        state, activation_fence, created_at, updated_at, metadata, session_namespace)
+                    VALUES ($1, $2, $3, $4, $5, $6, now(), now(), $7::jsonb, $8)
                     ON CONFLICT (run_id) DO UPDATE SET
                         state = excluded.state,
                         activation_fence = excluded.activation_fence,
                         updated_at = now(),
-                        metadata = excluded.metadata
+                        metadata = excluded.metadata, session_namespace=excluded.session_namespace
                     """,
                     stored.run_id,
                     self.tenant_id,
@@ -1631,6 +1635,7 @@ class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
                     stored.state.value,
                     stored.activation_fence,
                     json.dumps(stored.metadata, ensure_ascii=False),
+                    self._events._namespace,
                 )
                 await self._append_activation_fact(
                     connection,
@@ -1682,12 +1687,13 @@ class PostgresFencedSessionEventStore:
 
         validate_write_guard(envelope, guard)
         if isinstance(guard, ActivationWriteGuard):
-            async with self._connection() as connection:
-                async with connection.transaction():
-                    await self._assert_activation_fence(
-                        connection, guard, envelope.session_id
-                    )
-                    return await self._log.append_on(connection, envelope, guard)
+            async with asyncio.timeout(session_db_budget().write_operation_seconds):
+                async with self._connection() as connection:
+                    async with connection.transaction():
+                        await self._assert_activation_fence(
+                            connection, guard, envelope.session_id
+                        )
+                        return await self._log.append_on(connection, envelope, guard)
         return await self._log.append(envelope, guard=guard)
 
     async def _assert_activation_fence(
@@ -1696,9 +1702,10 @@ class PostgresFencedSessionEventStore:
         row = await connection.fetchrow(
             "SELECT activation_id, fencing_token, lease_expires_at, released"
             " FROM kernel_activations WHERE activation_id = $1 AND session_id = $2"
-            " FOR SHARE",
+            " AND (session_namespace=$3 OR session_namespace IS NULL) FOR SHARE",
             guard.activation_id,
             session_id,
+            self._log._namespace,
         )
         if (
             row is None
@@ -1732,6 +1739,18 @@ class PostgresFencedSessionEventStore:
     async def get_by_id(self, session_id: str, event_id: Any) -> SessionEventEnvelope | None:
         return await self._log.get_by_id(session_id, event_id)
 
+    async def get_max_seq_id(self, session_id: str) -> int:
+        return await self._log.get_max_seq_id(session_id)
+
+    async def has_run_transition(self, session_id, run_id, state):
+        return await self._log.has_run_transition(session_id, run_id, state)
+
+    async def find_interaction_resolution(self, record):
+        return await self._log.find_interaction_resolution(record)
+
+    async def read_runtime(self, session_id: str, **query) -> list[SessionEventEnvelope]:
+        return await self._log.read_runtime(session_id, **query)
+
     async def subscribe(
         self, session_id: str, after_seq: int, *, poll_interval: float = 0.25
     ):
@@ -1739,11 +1758,54 @@ class PostgresFencedSessionEventStore:
 
         cursor = int(after_seq or 0)
         while True:
-            envelopes = await self._log.read(session_id, cursor, 1000)
+            envelopes = await self._log.read_subscription_page(session_id, cursor)
             for envelope in envelopes:
                 cursor = max(cursor, int(envelope.seq))
                 yield envelope
-            await asyncio.sleep(poll_interval)
+            if not envelopes:
+                await asyncio.sleep(poll_interval)
+
+    async def subscribe_recovering(
+        self, session_id: str, after_seq: int, *, poll_interval: float = 0.25,
+    ):
+        """Internal A2A observation: resume reads, never submit another command.
+
+        Public SSE keeps its existing transport recovery/permit boundary. This
+        capability is for the direct, already-admitted A2A observer which has
+        no HTTP reconnect layer. Each successful SQL page, including an empty
+        page, establishes backend health before another outage budget starts.
+        """
+        from ksadk.sessions.resilience import is_transient_session_backend_failure
+
+        cursor = int(after_seq or 0)
+        loop = asyncio.get_running_loop()
+        while True:
+            deadline = loop.time() + session_db_budget().event_observe_recovery_seconds
+            delay = 0.2
+            while True:
+                try:
+                    async with asyncio.timeout(max(0.001, deadline - loop.time())):
+                        envelopes = await self._log.read_subscription_page(session_id, cursor)
+                    break
+                except Exception as exc:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0 or not is_transient_session_backend_failure(exc):
+                        raise
+                    logging.getLogger(__name__).warning(
+                        "Retrying admitted A2A event read after %s at cursor=%d",
+                        type(exc).__name__, cursor,
+                    )
+                    await asyncio.sleep(min(delay, remaining))
+                    delay = min(5.0, delay * 2)
+            for envelope in envelopes:
+                if envelope.session_id != session_id:
+                    raise PermissionError("Kernel event store returned another session")
+                if envelope.seq <= cursor:
+                    continue
+                cursor = envelope.seq
+                yield envelope
+            if not envelopes:
+                await asyncio.sleep(poll_interval)
 
 
 __all__ = [

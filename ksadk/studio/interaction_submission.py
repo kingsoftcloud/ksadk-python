@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from jsonschema import Draft202012Validator
 
+from ksadk.interaction.display_values import submission_display_value
 from ksadk.runtime import ResumePayload
 from ksadk.studio.contracts import RunStatus
 from ksadk.studio.errors import StudioError
@@ -224,6 +225,10 @@ async def submit_interaction_locked(
     else:
         outcome = "submitted"
         response_summary = "已提交"
+    display_data = (
+        submission_display_value(interaction.data.get("inputSchema") or {}, data)
+        if kind != "approval" else data
+    )
     resolved_data = {
         "runId": run_id,
         "interactionId": interaction_id,
@@ -233,7 +238,7 @@ async def submit_interaction_locked(
         "outcome": outcome,
         "actor": "user",
         "responseSummary": response_summary,
-        "data": data,
+        "data": display_data,
         "revision": next_revision,
         "expectedRevision": expected_revision,
         "idempotencyKey": idempotency_key,
@@ -247,7 +252,7 @@ async def submit_interaction_locked(
         "callId": provider_call_id,
         "actionId": f"action-{interaction_id}",
         "name": name,
-        "data": data,
+        "data": display_data,
         "revision": next_revision,
         "expectedRevision": expected_revision,
         "idempotencyKey": idempotency_key,

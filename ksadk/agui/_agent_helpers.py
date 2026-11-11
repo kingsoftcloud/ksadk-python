@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -17,6 +18,7 @@ from ksadk.events.canonical import (
     ItemCompleted,
     ItemStarted,
     ItemUpdated,
+    StructuredInputRequest,
 )
 from ksadk.events.content import DataContent, TextContent
 from ksadk.runtime.adapter import RunHandle
@@ -81,6 +83,11 @@ def interrupt_from_payload(payload: Mapping[str, Any]) -> Interrupt:
 
 
 def interrupt_from_interaction(event: InteractionRequested) -> Interrupt:
+    if isinstance(event.request, StructuredInputRequest):
+        return Interrupt(
+            id=event.interaction_id, reason="structured_input",
+            message=event.request.prompt, response_schema=event.request.schema_,
+        )
     detail = event.request.detail if isinstance(event.request.detail, dict) else {}
     payload = {
         "approval_id": event.interaction_id,
@@ -225,7 +232,15 @@ def approval_message(detail: Mapping[str, Any], payload: Mapping[str, Any]) -> s
 
 
 def resume_fingerprint(status: str, payload: Any) -> Any:
-    return json.dumps([status, payload], sort_keys=True, ensure_ascii=False, default=str)
+    encoded = json.dumps([status, payload], sort_keys=True, ensure_ascii=False, default=str)
+    return "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def persisted_resume_fingerprint(value: str) -> str:
+    """Read old candidate logs without copying their plaintext into new events."""
+    if not value or value.startswith("sha256:"):
+        return value
+    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
 
 
 __all__ = [

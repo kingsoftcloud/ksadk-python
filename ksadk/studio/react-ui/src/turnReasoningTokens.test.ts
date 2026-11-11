@@ -31,6 +31,14 @@ describe("turn reasoning tokens", () => {
     expect(reasoningTokensFromEvents([{ type: "usage.reported", reasoningTokens: 0 }])).toBe(0);
   });
 
+  it.each(["cumulative", "snapshot"])("applies a %s report including a reset to zero", mode => {
+    expect(reasoningTokensFromEvents([
+      { type: "usage.reported", reasoningTokens: 25 },
+      { type: "usage.reported", reasoningTokens: 0, mode },
+      { type: "usage.reported", reasoningTokens: 7, mode: "delta" },
+    ])).toBe(7);
+  });
+
   it("falls back to the run record's reported reasoning tokens", () => {
     expect(recordReasoningTokens({ id: "run-2", usage: { reported: true, reasoningOutputTokens: 34 } })).toBe(34);
     expect(recordReasoningTokens({ id: "run-2", usage: { reported: false, reasoningOutputTokens: 34 } })).toBeNull();

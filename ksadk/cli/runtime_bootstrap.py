@@ -87,6 +87,7 @@ def create_runtime_web_app(detection: Any, agent_path: Path) -> FastAPI:
             agui=agui_config_for_detection(detection),
             a2a=managed_a2a,
             a2a_runtime_adapter=adapter,
+            local_mcp_oauth=not managed_runtime,
         ),
         configure_runtime_app,
     )
