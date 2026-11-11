@@ -100,6 +100,10 @@ def _exercise_reconnect(page: Page, base_url: str) -> None:
     initial_posts = 0
     stream_cut = False
     replay_requests: list[str] = []
+    pending_bootstrap: list[Route] = []
+
+    def hold_bootstrap(route: Route) -> None:
+        pending_bootstrap.append(route)
 
     def cut_first_stream(route: Route) -> None:
         nonlocal initial_posts, stream_cut
@@ -115,6 +119,7 @@ def _exercise_reconnect(page: Page, base_url: str) -> None:
         route.fulfill(response=response, body=partial)
 
     page.route("**/agentengine/api/v1/RunAgent", cut_first_stream)
+    page.route("**/agentengine/api/v1/GetAgentUiBootstrap", hold_bootstrap)
     page.on(
         "request",
         lambda request: replay_requests.append(request.url)
@@ -124,13 +129,23 @@ def _exercise_reconnect(page: Page, base_url: str) -> None:
 
     # Studio can keep background plugin/session requests open; readiness is the
     # rendered conversation surface, not a process-wide network-idle window.
-    page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
+    with page.expect_request("**/agentengine/api/v1/GetAgentUiBootstrap"):
+        page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
     # 会话页头部已是 StudioSelect 组合框（combobox "切换会话目标"），不再是
     # 旧的 ChatAgentSelector 按钮；断言目标 Agent 已被选中。
     expect(
         page.get_by_role("combobox", name="切换会话目标")
     ).to_contain_text(AGENT_NAME)
     composer = page.get_by_role("textbox", name="发送消息…", exact=True)
+    expect(page.get_by_role("status", name="正在连接 Agent", exact=True)).to_be_visible()
+    # The shell target is already visible while the real SDK bootstrap is
+    # held. Input must wait for its final draft owner, rather than being
+    # accepted here and erased by initialization before the first submit.
+    expect(composer).to_have_count(0)
+    assert pending_bootstrap
+    for route in pending_bootstrap:
+        route.continue_()
+    page.unroute("**/agentengine/api/v1/GetAgentUiBootstrap", hold_bootstrap)
     expect(composer).to_be_enabled()
 
     send = page.get_by_role("button", name="发送消息", exact=True)

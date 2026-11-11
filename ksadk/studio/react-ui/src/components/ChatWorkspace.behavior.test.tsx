@@ -359,6 +359,30 @@ describe("ChatWorkspace shared conversation composition", () => {
     unmount(); historyHost.remove(); headerHost.remove();
   });
 
+  it("reopens a pending explicit session after its workspace was hidden", async () => {
+    let resolveRefresh!: () => void;
+    mocks.chat.refresh.mockReturnValueOnce(new Promise<void>(resolve => { resolveRefresh = resolve; }));
+    const props = { agentId: "local-1", agentName: "Agent", requestedSessionId: "requested-session" };
+    const { rerender } = render(<ChatWorkspace {...props} />);
+    rerender(<ChatWorkspace {...props} active={false} />);
+    await act(async () => { resolveRefresh(); });
+    expect(mocks.chat.selectSession).not.toHaveBeenCalled();
+    rerender(<ChatWorkspace {...props} />);
+    await waitFor(() => expect(mocks.chat.selectSession).toHaveBeenCalledExactlyOnceWith("requested-session"));
+  });
+
+  it("opens an explicit session for the new scope and discards the old scope's reply", async () => {
+    let resolveOldScope!: () => void;
+    mocks.chat.refresh.mockReturnValueOnce(new Promise<void>(resolve => { resolveOldScope = resolve; }));
+    const props = { agentId: "local-1", agentName: "Agent", requestedSessionId: "requested-session" };
+    const { rerender } = render(<ChatWorkspace {...props} credentialScope="old-scope" />);
+    rerender(<ChatWorkspace {...props} credentialScope="new-scope" />);
+    await waitFor(() => expect(mocks.chat.selectSession).toHaveBeenCalledExactlyOnceWith("requested-session"));
+    await act(async () => { resolveOldScope(); });
+    expect(mocks.chat.selectSession).toHaveBeenCalledTimes(1);
+    expect(mocks.chat.refresh).toHaveBeenCalledTimes(2);
+  });
+
   it("creates a local draft immediately without waiting for bootstrap or session loading", async () => {
     mocks.chat.bootstrapStatus = "loading";
     const onNewChatStarted = vi.fn();
@@ -377,8 +401,17 @@ describe("ChatWorkspace shared conversation composition", () => {
     expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
   });
 
-  it("keeps a user-started turn when bootstrap becomes ready after Session creation", async () => {
-    mocks.chat.bootstrapStatus = "loading";
+  it("keeps an explicit history selection made before a hidden workspace activates", () => {
+    const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="Agent" active={false} />);
+    expect(mocks.chat.startNewConversation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "已有会话" }));
+    expect(mocks.chat.selectSession).toHaveBeenCalledWith("session-1");
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(mocks.chat.startNewConversation).not.toHaveBeenCalled();
+    expect(screen.getByTestId("shared-composer")).toBeInTheDocument();
+  });
+
+  it("keeps a submitted turn when bootstrap refreshes after Session creation", async () => {
     const props = { agentId: "local-1", agentName: "Agent" };
     const { rerender } = render(<ChatWorkspace {...props}/>);
     await act(async () => {
@@ -388,6 +421,7 @@ describe("ChatWorkspace shared conversation composition", () => {
     });
     mocks.chat.currentSessionId = "new-session";
     mocks.chat.isStreaming = true;
+    mocks.chat.bootstrapStatus = "loading";
     rerender(<ChatWorkspace {...props}/>);
     mocks.chat.bootstrapStatus = "ready";
     rerender(<ChatWorkspace {...props}/>);
@@ -424,6 +458,8 @@ describe("ChatWorkspace shared conversation composition", () => {
     mocks.chat.agentId = "previous-agent";
     const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
     expect(mocks.chat.startNewConversation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "已有会话" }));
+    expect(mocks.chat.selectSession).not.toHaveBeenCalled();
     mocks.chat.agentId = "local-1";
     rerender(<ChatWorkspace agentId="local-1" agentName="Agent"/>);
     expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
@@ -485,6 +521,7 @@ describe("ChatWorkspace shared conversation composition", () => {
   });
 
   it("binds the shared controller to the selected agent and Studio fetch", () => {
+    mocks.chat.agentId = "ar-cloud-1";
     render(<ChatWorkspace agentId="ar-cloud-1" agentName="云端 Agent" cloudTarget />);
 
     expect(mocks.facadeOptions).toEqual([{ fetch: apiFetch, agentId: "ar-cloud-1" }]);
