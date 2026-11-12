@@ -101,7 +101,7 @@ jobs:
           fetch-depth: 1
 
       - name: Set up Node and pnpm
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
       - uses: pnpm/action-setup@v4
@@ -407,7 +407,7 @@ jobs:
           name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-mac-arm64
           path: candidate
       - name: Set up Node and pnpm
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
       - uses: pnpm/action-setup@v4
@@ -461,7 +461,7 @@ jobs:
           BASELINE_DMG_URL: ${{ inputs.installed_dmg_url }}
         run: curl --fail --location --proto '=https' --proto-redir '=https' --output "$RUNNER_TEMP/baseline.dmg" "$BASELINE_DMG_URL"
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Verify real installed update and retained data
