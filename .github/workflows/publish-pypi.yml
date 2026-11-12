@@ -24,7 +24,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
   id-token: write
 
 concurrency:
@@ -70,7 +69,7 @@ jobs:
         if: env.PUBLISH_TARGET == 'full'
         # Mirror the 0.8.2 publish preflight shape: version + audit + ksadk-web
         # sync + test + build/twine check. docs-site-build runs in the
-        # deploy-pages job; the heavy Release native/browser E2E gates are
+        # independent pages.yml workflow; the heavy Release native/browser E2E gates are
         # already enforced by the pull-request release-check workflow, so
         # re-running them here only doubles work and stalls on the shared CI
         # runner.
@@ -95,47 +94,3 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist-alias
-
-  # 发版时同步部署 Fumadocs 文档站到 GitHub Pages, 文档与 PyPI 版本一致。
-  # 用 if: always() 让文档部署不被 publish 阻塞(workflow_dispatch 重新部署文档时,
-  # publish 会因版本门禁失败(版本未变),但 deploy-pages 仍应运行)。
-  deploy-pages:
-    needs: publish
-    if: always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.publish_target != 'alias-only')
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    defaults:
-      run:
-        working-directory: docs-site
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-
-      - name: Enable pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@10.33.2 --activate
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build static site (Fumadocs)
-        run: pnpm build:static
-        env:
-          # GitHub Pages project site serves from /<repo>, 需设 base path
-          NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
-          NEXT_STATIC_EXPORT: "1"
-
-      - name: Upload artifact for GitHub Pages
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs-site/out
-
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4

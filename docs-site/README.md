@@ -62,7 +62,8 @@ mark candidate-only features explicitly until release. DeepWiki is a supplementa
 not the authoritative configuration or release documentation. Avoid maintaining a second independent
 Wiki or documentation copy that can drift from the repository.
 
-The current Pages deployment is part of `publish-pypi.yml`. Do not dispatch that workflow merely to
-preview documentation: it also contains package publishing jobs. Validate and review candidate docs
-locally and in PR CI; deploy Pages only through the approved trusted publishing flow. A source PR
-update does not mean the live Pages site has changed.
+Pages deployment lives in the independent `pages.yml` workflow. It keeps the same `docs-site/`
+static build and public URL. Push documentation changes to `main` or the existing Pages-authorized
+`gh-pages` branch, or dispatch this workflow once available on the default branch. A candidate docs
+update does not publish Python/npm packages or merge candidate SDK code into `main`. Never dispatch
+`publish-pypi.yml` merely to update documentation.

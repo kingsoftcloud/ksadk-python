@@ -30,12 +30,12 @@
 2. 公开同步必须走 clean export candidate 或等价的公开候选分支。
 3. 公开候选必须先通过 `make public-preflight`。
 4. npm、PyPI、GitHub Pages 都必须由可信 GitHub workflow 发布；不使用本地 `npm publish`、本地 `twine upload` 或手工上传 Pages。
-5. GitHub Release、PyPI 包、Pages 文档必须能追溯到同一个已审核 GitHub `main` 提交。
+5. GitHub Release 与 PyPI 包必须能追溯到同一个已审核 GitHub `main` 提交；Pages 文档独立部署。
 6. `.pypirc`、私有 registry 凭证、kubeconfig、真实 API key、临时 token 不得进入仓库。
 
 ## 0.8.7 候选对齐与保留规则
 
-当前 0.8.7 只准备公开候选，不创建 tag、Release，不发布 PyPI/npm，也不部署 Pages。
+当前 0.8.7 只准备公开候选，不创建 tag、Release，不发布 PyPI/npm。维护者已单独授权更新候选文档站，不将候选代码合入 `main`。
 内部 `master` 持续保留；对齐代码在派生分支完成，通过审核后再决定主干合入。
 
 当公开 `main` 包含内部尚未吸收的修复时，先逐项审计并在内部对齐分支补回有效修复。
@@ -247,7 +247,7 @@ git push github v<version>
 - tag。
 - `ksadk-web` npm version。
 - `make public-preflight` 结果。
-- PyPI/Pages workflow run。
+- PyPI workflow run；文档另记 Pages workflow run。
 
 ## PyPI 与 GitHub Pages
 
@@ -255,13 +255,15 @@ git push github v<version>
 
 - 触发条件：GitHub Release `published` 或手动 `workflow_dispatch`。
 - 输入：`ksadk_web_version`、`approved_source_commit` 和 `publish_target`。
-- 正常发版使用 `publish_target=full`：公开候选须先通过完整本地 `make public-preflight`；workflow 再运行 `make public-preflight-publish` 和审批门禁，在首次上传前完成主包、`agentengine-sdk-python` 别名包的构建审计，然后发布两个发行包并部署 GitHub Pages。
+- 正常发版使用 `publish_target=full`：公开候选须先通过完整本地 `make public-preflight`；workflow 再运行 `make public-preflight-publish` 和审批门禁，在首次上传前完成主包、`agentengine-sdk-python` 别名包的构建审计，然后发布两个发行包；文档独立部署。
 - 补发别名包使用 `publish_target=alias-only`：workflow 只跑公开审计、公开测试、别名包构建审计和 approval gate，只发布 `agentengine-sdk-python`，不重发 `ksadk`，也不部署 GitHub Pages。
 - workflow 先同步 npm registry 中的 UI 静态资源。
 - workflow 再按 `publish_target` 运行对应发布前检查。
 - workflow 再运行 `make public-publish-gate`，校验 approval record。
 - PyPI 上传使用 OIDC Trusted Publishing。
-- GitHub Pages 由同一个 workflow 构建 `docs-site` 并部署。
+- GitHub Pages 独立使用 `.github/workflows/pages.yml`，保留原来的 `docs-site` 构建步骤、目录和线上地址，不调用包发布任务。
+- 文档变更推送到 `main` 或已有部署权限的 `gh-pages` 分支时部署；候选文档通过专用 `gh-pages` 文档源分支更新，不修改 `main`，不改变现有 environment 规则。
+- `gh-pages` 只放跟踪的 `docs-site/`、`pages.yml` 和许可证，不复制 SDK、包发布工作流或本地构建依赖。
 
 发布后核对：
 
@@ -288,7 +290,7 @@ PY
 5. public candidate 通过 GitHub PR 合入公开 `main`。
 6. 在公开 `main` commit 上打 `v<version>` tag。
 7. 创建 GitHub Release 或手动触发 `publish-pypi.yml`。
-8. workflow 发布 PyPI 并部署 GitHub Pages。
+8. workflow 发布 PyPI；需要更新文档时，单独运行 `pages.yml`。
 9. 运行 post-publish publication check。
 
 这不是“提交 PR 到 main 后手工打 tag 和 release 文件”就结束。PR 到 `main` 只是公开源码同步；真正的 npm、PyPI、Pages 发布必须由 GitHub workflow 完成并通过发布后核对。

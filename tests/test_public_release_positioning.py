@@ -547,7 +547,16 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
         "- name: Build and audit compatibility distribution\n"
         "        run: make public-build-alias-check" in release_check_workflow
     )
-    assert "github.event.inputs.publish_target != 'alias-only'" in workflow
+    assert "actions/deploy-pages" not in workflow
+    assert "pages: write" not in workflow
+    pages_workflow = _read(".github/workflows/pages.yml")
+    assert "pypa/gh-action-pypi-publish" not in pages_workflow
+    assert "npm publish" not in pages_workflow
+    assert "working-directory: docs-site" in pages_workflow
+    assert "pnpm install --frozen-lockfile" in pages_workflow
+    assert "pnpm build:static" in pages_workflow
+    assert "path: docs-site/out" in pages_workflow
+    assert "actions/deploy-pages@v4" in pages_workflow
     assert "make open-source-audit-dist" in ci_workflow
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow

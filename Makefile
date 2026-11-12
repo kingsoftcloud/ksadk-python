@@ -580,8 +580,8 @@ public-preflight: public-version-gate public-audit sync-ksadk-web-static public-
 	@echo "✅ public preflight passed"
 
 # Lightweight preflight for the PyPI publish workflow.  The publish job runs
-# alongside the deploy-pages job (which already builds/deploys the docs site),
-# and the heavy Release native/browser E2E gates are already enforced by the
+# independently of documentation deployment in pages.yml. The heavy
+# Release native/browser E2E gates are already enforced by the
 # pull-request release-check workflow before merge.  Re-running the release gate here
 # doubles the work and stalls on the shared CI runner.  So the publish
 # preflight mirrors the 0.8.2 shape: version + audit + ksadk-web sync + test

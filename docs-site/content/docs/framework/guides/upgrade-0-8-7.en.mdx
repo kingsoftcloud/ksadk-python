@@ -63,8 +63,9 @@ reconcile `unknown` outcomes rather than retrying business operations to infer t
 ## Candidate and release
 
 The candidate must pass public preflight, source/artifact audits, clean installation, and applicable
-browser/database checks. Passing tests does not authorize publication. Tags, Releases, PyPI packages,
-and documentation must trace to the reviewed public `main` commit through protected workflows.
+browser/database checks. Passing tests does not authorize publication. Tags, Releases, and PyPI packages
+must trace to the reviewed public `main` commit through protected workflows. Candidate documentation
+can be updated independently; this does not mean its packages are published.
 
 
 See [0.8.7 Integration and Configuration](/en/docs/framework/guides/integration-0-8-7/) for configuration and integration steps.
