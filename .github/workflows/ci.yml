@@ -230,7 +230,6 @@ jobs:
       postgres:
         image: postgres:16
         env:
-      KSADK_TEST_EXPECTED_ADK_VERSION: ${{ matrix.google-adk }}
           POSTGRES_USER: ksadk_ci
           POSTGRES_PASSWORD: ksadk_ci_password
           POSTGRES_DB: ksadk_ci
@@ -242,6 +241,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      KSADK_TEST_EXPECTED_ADK_VERSION: ${{ matrix.google-adk }}
       KSADK_WEB_VERSION: "0.3.18"
       KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
