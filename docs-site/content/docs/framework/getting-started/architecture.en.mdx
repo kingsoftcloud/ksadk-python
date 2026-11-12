@@ -1,0 +1,52 @@
+---
+title: Architecture
+---
+
+KsADK provides runtime capabilities for Agents. Agent Kernel centralizes concurrency, recovery, and state consistency. Harness owns unified control and lifecycle, while pluggable Providers connect different execution kernels. Native framework semantics remain inside each Provider, and APIs, Studio, and hosted surfaces share one event fact chain.
+
+![KsADK technical architecture](/assets/ksadk-runtime-architecture.en.svg)
+
+## Architecture Flow
+
+| Layer | Core responsibility |
+| --- | --- |
+| Access | SDK, CLI, Studio, standard APIs, A2A, and automated tasks |
+| Trusted kernel | admission, leases and fencing, concurrency and backpressure, cancel and resume, and state consistency |
+| Harness and plugins | load a composition, select one Provider, and own the Activation lifecycle |
+| Shared capabilities | inject context, tools, safety, MCP, Skill, sandbox, memory, and observability through a capability bus |
+| Events and presentation | adapt native Provider events to RuntimeEvent v2, persist them, and project them to each surface |
+
+<Callout type="info" title="Core boundary">
+  Agent Kernel decides whether a run can execute safely. Harness decides how the run is assembled and hosted. The Provider decides how its framework executes. Keeping these responsibilities separate prevents one Agent framework from becoming platform control logic.
+</Callout>
+
+## Harness and Plugins
+
+A plugin composition describes what an activation loads. PluginHost discovers, validates, stages, health-checks, switches, and disposes the selected graph. Each Activation selects exactly one Agent Provider and receives an isolated execution context.
+
+| Component | Ownership |
+| --- | --- |
+| PluginHost | plugin graph, permission admission, health checks, atomic switching, and lifecycle |
+| Harness | control entry, tool access, session continuity, context, and event output |
+| Provider | native framework execution, private thread or checkpoint state, and native event semantics |
+| Capability plugins | composable Session, Memory, Context, Renderer, MCP, and Skill capabilities |
+
+This boundary lets Codex, KsADK Harness, DSH / Cordis, and SubagentProvider share one host contract while preserving their execution models.
+
+## Event Fact Chain
+
+Framework adapters preserve source, scope, and item identity before converting Provider events to `RuntimeEvent v2`. Events are written to the SessionEvent log, then projected into streaming responses, aggregate results, and resumable views.
+
+<Callout type="info">
+  APIs, Studio, and hosted surfaces consume the same projections instead of parsing framework-private streams independently. Live output, persisted replay, and final results therefore stay consistent.
+</Callout>
+
+## SDK and Platform Boundary
+
+| Inside the KsADK runtime | Connected through external contracts |
+| --- | --- |
+| SDK, CLI, Server, Agent Kernel, Harness, plugin host, Providers, events, and sessions | AgentEngine control plane, model and A2A services, Skill and Sandbox services, and OTLP backends |
+
+KsADK does not rebuild a complete control platform inside the SDK. Registration, remote lifecycle, gateway governance, and external service resources remain platform responsibilities exposed through explicit contracts.
+
+For implementation details, see [Runtime Architecture](../guides/runtime-architecture.mdx). For plugin, Provider, and scheduled-task configuration, see [Plugins and Automations](../guides/plugins-and-automations.mdx).

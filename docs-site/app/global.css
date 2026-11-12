@@ -1,0 +1,142 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
+/* === KsADK 冷青品牌色 (参考 motion-gradient.css 色板) ===
+ * 主色: 冷青蓝紫渐变 #5368db → #7d89dc → #91c5e2 → #afe4e4 → #dfd2f3
+ * 替代默认 Fumadocs neutral 主题色,用于 hero/CTA/链接/卡片
+ */
+:root {
+  --ksadk-blue: #5368db;
+  --ksadk-blue-light: #7d89dc;
+  --ksadk-cyan: #59d3d9;
+  --ksadk-cyan-soft: #afe4e4;
+  --ksadk-purple: #b29cec;
+  --ksadk-purple-soft: #dfd2f3;
+  --ksadk-gradient: linear-gradient(135deg, #5368db 0%, #6f7fda 30%, #3fb8c5 68%, #247f9d 100%);
+  --ksadk-gradient-soft: linear-gradient(135deg, #dfd2f3 0%, #afe4e4 50%, #91c5e2 100%);
+  --motion-duration: 10s;
+}
+
+/* === Hero 背景动效 (冷青流动, 参考用户 motion-gradient.css) === */
+.ksadk-hero-bg {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  isolation: isolate;
+  opacity: 0.6;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 54% 50% at 4% 38%, #cfdef3 0 9%, #9fbee8 34%, #98aee8 53%, transparent 68%),
+    radial-gradient(ellipse 54% 52% at 98% 22%, #8fdfe2 0 9%, #8bc8e5 29%, #9b9fe3 50%, transparent 71%),
+    radial-gradient(ellipse 78% 72% at 42% 108%, #5368db 0 19%, #7384dc 37%, #9d99df 56%, transparent 78%),
+    radial-gradient(ellipse 80% 72% at 68% 25%, #dfd2f3 0 12%, #b8ace4 31%, #929edc 54%, transparent 80%),
+    radial-gradient(ellipse 46% 43% at 34% 18%, #afe4e4 0 10%, #9fc8e1 35%, transparent 67%),
+    linear-gradient(135deg, #bad9ee 0%, #86a9e3 25%, #7d89dc 50%, #ad9de3 74%, #91c5e2 100%);
+  background-size: 195% 195%, 205% 205%, 175% 175%, 185% 185%, 210% 210%, 100% 100%;
+  background-repeat: no-repeat;
+  animation: ksadk-canvas-flow var(--motion-duration) cubic-bezier(.45,.05,.55,.95) infinite alternate;
+}
+.ksadk-hero-bg::before,
+.ksadk-hero-bg::after {
+  content: "";
+  position: absolute;
+  inset: -60%;
+  pointer-events: none;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+.ksadk-hero-bg::before {
+  background:
+    radial-gradient(ellipse 22% 30% at 20% 42%, rgba(213,224,247,.68) 0 24%, transparent 70%),
+    radial-gradient(ellipse 27% 33% at 62% 34%, rgba(89,211,217,.68) 0 22%, transparent 70%),
+    radial-gradient(ellipse 38% 36% at 82% 70%, rgba(178,156,236,.86) 0 25%, transparent 72%),
+    radial-gradient(ellipse 30% 34% at 46% 80%, rgba(104,141,224,.72) 0 23%, transparent 72%),
+    linear-gradient(118deg, transparent 27%, rgba(205,216,244,.3) 42%, rgba(144,183,224,.22) 52%, transparent 68%);
+  background-size: auto, auto, auto, auto, 130% 130%;
+  filter: blur(12px) saturate(1.22) contrast(1.04);
+  animation: ksadk-drift-a var(--motion-duration) cubic-bezier(.45,.05,.55,.95) infinite;
+}
+.ksadk-hero-bg::after {
+  background:
+    radial-gradient(ellipse 34% 35% at 28% 75%, rgba(50,75,236,.88) 0 23%, transparent 70%),
+    radial-gradient(ellipse 28% 35% at 74% 22%, rgba(206,190,238,.76) 0 25%, transparent 72%),
+    radial-gradient(ellipse 29% 33% at 90% 76%, rgba(77,199,214,.62) 0 22%, transparent 71%),
+    radial-gradient(ellipse 28% 31% at 52% 52%, rgba(105,134,231,.68) 0 22%, transparent 70%),
+    linear-gradient(52deg, transparent 31%, rgba(98,109,238,.4) 45%, rgba(222,205,250,.38) 56%, transparent 70%);
+  background-size: auto, auto, auto, auto, 145% 145%;
+  filter: blur(14px) saturate(1.24) contrast(1.05);
+  mix-blend-mode: screen;
+  opacity: .68;
+  animation: ksadk-drift-b var(--motion-duration) cubic-bezier(.45,.05,.55,.95) infinite;
+}
+@keyframes ksadk-canvas-flow {
+  0%, 100% { background-position: 10% 12%, 90% 10%, 15% 90%, 82% 18%, 30% 12%, 0 0; filter: saturate(1.08) contrast(1.03); }
+  20% { background-position: 68% 22%, 34% 86%, 82% 42%, 28% 64%, 76% 32%, 0 0; filter: saturate(1.15) contrast(1.06); }
+  40% { background-position: 76% 70%, 12% 76%, 78% 18%, 18% 78%, 38% 82%, 0 0; filter: saturate(1.2) contrast(1.07); }
+  60% { background-position: 38% 82%, 76% 36%, 24% 28%, 70% 82%, 18% 46%, 0 0; filter: saturate(1.16) contrast(1.06); }
+  80% { background-position: 20% 48%, 62% 16%, 46% 76%, 88% 44%, 54% 24%, 0 0; filter: saturate(1.12) contrast(1.05); }
+}
+@keyframes ksadk-drift-a {
+  0%, 100% { transform: translate3d(-22%,-14%,0) scale(1.06,1.18) rotate(-9deg); opacity: .92; }
+  20% { transform: translate3d(8%,-22%,0) scale(1.2,1.02) rotate(4deg); opacity: 1; }
+  40% { transform: translate3d(22%,4%,0) scale(1.14,1.2) rotate(10deg); opacity: .92; }
+  60% { transform: translate3d(10%,20%,0) scale(1.22,1.08) rotate(6deg); opacity: .98; }
+  80% { transform: translate3d(-16%,14%,0) scale(1.12,1.22) rotate(-6deg); opacity: .94; }
+}
+@keyframes ksadk-drift-b {
+  0%, 100% { transform: translate3d(22%,16%,0) scale(1.18,1.05) rotate(7deg); opacity: .72; }
+  20% { transform: translate3d(2%,22%,0) scale(1.06,1.2) rotate(-2deg); opacity: .64; }
+  40% { transform: translate3d(-22%,7%,0) scale(1.02,1.18) rotate(-10deg); opacity: .74; }
+  60% { transform: translate3d(-16%,-18%,0) scale(1.15,1.06) rotate(-7deg); opacity: .68; }
+  80% { transform: translate3d(12%,-20%,0) scale(1.22,1.03) rotate(5deg); opacity: .72; }
+}
+[data-theme="dark"] .ksadk-hero-bg { opacity: 0.3; }
+
+/* Fumadocs primary 用品牌蓝紫 */
+:root {
+  --fd-primary: #5368db;
+  --fd-primary-foreground: #ffffff;
+}
+[data-theme='dark'] {
+  --fd-primary: #7d89dc;
+  --fd-primary-foreground: #ffffff;
+}
+
+/* hero 渐变文字 */
+.ksadk-hero-gradient {
+  background: var(--ksadk-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* 链接品牌色 */
+.fd-content a {
+  color: var(--ksadk-blue);
+  text-decoration-color: color-mix(in srgb, var(--ksadk-blue) 30%, transparent);
+}
+.fd-content a:hover {
+  text-decoration-color: var(--ksadk-blue);
+}
+
+[data-theme='dark'] .fd-content a {
+  color: #91c5e2;
+}
+
+/* 卡片 hover 冷青边框 */
+.fd-card:hover {
+  border-color: var(--ksadk-cyan);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ksadk-cyan) 20%, transparent);
+}

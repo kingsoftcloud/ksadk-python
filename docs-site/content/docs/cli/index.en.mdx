@@ -1,0 +1,379 @@
+---
+title: CLI Reference
+---
+
+`agentengine` is the public command-line entry point for KsADK.
+
+```bash title="bash"
+agentengine [OPTIONS] COMMAND [ARGS]...
+```
+
+Global options:
+
+| Option | Meaning |
+| --- | --- |
+| `--output pretty/json` | choose human-readable or JSON output where supported. |
+| `--no-color` | disable colored terminal output. |
+| `--dry-run` | print planned requests without executing supported operations. |
+| `--version` | show the package version. |
+| `-h, --help` | show help. |
+
+## Core Commands
+
+```bash title="bash"
+agentengine --help
+agentengine init --help
+agentengine run --help
+agentengine web --help
+agentengine studio --help
+```
+
+## Command Groups
+
+| Group | Public role | Local-first? |
+| --- | --- | --- |
+| `init` | create or wrap a project | yes |
+| `config` | manage model and project settings | yes |
+| `run` | run terminal loop or local API server | yes |
+| `web` | start local browser UI | yes |
+| `studio` | start the local Agent authoring and debugging workspace | yes |
+| `a2a` | expose A2A surfaces where configured | yes |
+| `replay` | read and project RuntimeEvent history | yes |
+| `mcp` | build or manage MCP resources | depends on target |
+| `build` | prepare deployment artifacts | depends on target |
+| `deploy` | deploy to configured cloud runtime | no |
+| `launch` | build and deploy in one command | no |
+| `agent` | manage hosted Agent resources | no |
+| `dashboard` | open hosted dashboard links | no |
+| `files` | manage hosted workspace files | no |
+| `version` | manage hosted Agent versions | no |
+| `hermes` | manage Hermes resources | no |
+| `openclaw` | manage OpenClaw resources | no |
+
+Public quickstarts should focus on local-first commands. Hosted command docs
+must state their credential and infrastructure prerequisites.
+
+## Local Development
+
+### `agentengine init`
+
+Create a new project.
+
+```bash title="bash"
+agentengine init my-agent -f langgraph
+agentengine init my-agent -f adk
+agentengine init my-codex-agent -f codex
+agentengine init my-agent --from-agent ./existing_agent.py
+```
+
+Supported framework flags include `adk`, `langchain`, `langgraph`,
+`deepagents`, `openclaw`, `hermes`, and `codex`. Public examples should prefer the
+frameworks that can run locally without internal infrastructure.
+
+<Callout type="info" title="New in 0.8: declarative Codex project">
+`agentengine init --framework codex` creates only `agentengine.yaml`, `.env`,
+`requirements.txt`, and a README; it does not create `agent.py`. Its
+`artifact_type` is `ManagedRuntime`: native Codex runs locally and the server
+selects the cloud Runtime image. See [Codex Managed Runtime](../framework/guides/managed-runtime.mdx).
+</Callout>
+
+<Callout type="info">
+  After importing existing code, inspect `agentengine.yaml` before running.
+</Callout>
+
+### `agentengine config`
+
+Manage project and model settings.
+
+```bash title="bash"
+agentengine config
+agentengine config show
+agentengine config set OPENAI_MODEL_NAME=my-model
+agentengine config model
+```
+
+### `agentengine run`
+
+Run an agent project.
+
+```bash title="bash"
+agentengine run .
+agentengine run . -i
+agentengine run . --port 8080
+agentengine run . --model my-model
+```
+
+Common options:
+
+| Option | Meaning |
+| --- | --- |
+| `--port` | local server port, default `8080`. |
+| `--interactive` / `-i` | terminal interactive mode. |
+| `--model` | one-run model override. |
+| `--show-thinking` | display provider reasoning output when available. |
+| `--no-stream` | disable streaming rendering. |
+| `--no-trace` | disable tracing. |
+
+Use interactive mode for manual testing and server mode for API clients:
+
+```bash title="bash"
+agentengine run . -i
+agentengine run . --port 8080
+```
+
+### `agentengine web`
+
+Start the local invoke/debug UI.
+
+```bash title="bash"
+agentengine web .
+agentengine web . --port 7860
+agentengine web . --model my-model
+agentengine web . --no-open
+```
+
+Codex ManagedRuntime uses the same `agentengine web . --no-open` command. It
+validates the native Codex binary for the current operating system and reports
+when an offline Runtime version is not explicitly locked.
+
+### `agentengine studio`
+
+Start the loopback-only local Agent authoring workspace:
+
+```bash title="bash"
+agentengine studio .
+agentengine studio . --port 8081 --no-open
+agentengine studio . --env-file ./model.env --codex-proxy auto
+```
+
+Studio uses one React shell for Agents, conversations, builds, resources,
+traces, and orchestration. The root URL opens the workspace directly; there is
+no separately maintained `/chat` frontend. Model settings can come from the
+current process, global configuration, or an explicit `--env-file`. Browser
+writes are protected by the local session and CSRF tokens.
+
+`studio/static` contains the packaged React production build. The public
+repository, sdist, and wheel do not include editable Studio React / TypeScript
+source. `make build-wheel` and `make public-build-check` validate and package
+the reviewed static payload.
+
+For the full workflow from starting a workspace through creating, building, and
+testing an Agent, see [AgentKit Local Studio](/en/docs/framework/guides/agentkit-local-studio).
+
+### `ksadk replay` / `agentengine replay`
+
+Project a session's persisted RuntimeEvent log into a readable transcript or JSON. Use it to investigate disconnected streams, restored approval state, A2UI activities, and event ordering across runners. It **never** calls a model, tool, or approval action again.
+
+```bash title="bash"
+ksadk replay session_123
+ksadk replay session_123 --after-seq-id 120 --format json
+agentengine replay session_123 --before-seq-id 260
+```
+
+The command only reads sessions persisted through the canonical RuntimeEvent v2 store; it does not silently convert legacy SessionEvent rows into new canonical facts. `--after-seq-id` is exclusive and `--before-seq-id` is an exclusive upper bound, so use both to narrow an investigation window.
+
+## Protocol And Integration
+
+### `agentengine a2a`
+
+Expose A2A protocol surfaces and Agent Card metadata.
+
+```bash title="bash"
+agentengine a2a card --help
+agentengine a2a serve --help
+```
+
+### `agentengine mcp`
+
+Manage MCP-related resources and runtime flows where configured.
+
+```bash title="bash"
+agentengine mcp --help
+```
+
+## Build And Hosted Operations
+
+These commands are part of the SDK surface, but may require Kingsoft Cloud
+credentials or approved hosted infrastructure.
+
+```bash title="bash"
+agentengine build --help
+agentengine deploy --help
+agentengine launch --help
+agentengine agent --help
+agentengine dashboard --help
+agentengine files --help
+agentengine hermes --help
+agentengine openclaw --help
+```
+
+<Callout type="info">
+  Use `--dry-run` where supported when documenting or reviewing deployment-shaped commands.
+</Callout>
+
+### Codex ManagedRuntime (New in 0.8)
+
+`artifact_type: ManagedRuntime` makes `agentengine build .` create a local audit
+zip containing only YAML and a lock. It is not a deployment upload; direct
+deployment sends an inline manifest for the server to resolve through its Runtime
+catalog:
+
+```bash title="bash"
+agentengine build .
+agentengine deploy . --target serverless --dry-run
+agentengine deploy . --target serverless
+```
+
+ManagedRuntime does not use a KS3 code package, so `--push`, `--ks3-bucket`, and
+`--ks3-path` are rejected. Forcing `--mode code` also fails so a developer-machine
+binary cannot enter a Linux deployment path. Use explicit `--mode container` when
+you maintain the image yourself.
+
+### Runtime env pass-through
+
+`agentengine deploy` and `agentengine launch` support passing custom
+environment variables to the hosted runtime (0.6.5):
+
+```bash title="bash"
+agentengine deploy . \
+  --env OPENAI_API_KEY=sk-test \
+  --env LOG_LEVEL=debug \
+  --env-file ./runtime.env
+agentengine launch . --env KEY=VALUE --env-file ./runtime.env
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--env KEY=VALUE` | extra runtime environment variable, repeatable; explicit env goes into the deploy payload `env_vars`. |
+| `--env-file PATH` | extra runtime environment variable file, accepts `.env` or a JSON object. |
+
+Sensitive credentials, including secrets passed with `--env`, are redacted from `--dry-run` output.
+
+<Callout type="info" title="env file boundary">
+  The `--env-file` you pass is for explicit runtime env injection. Real `.env`
+  / `.env.local` files are excluded from Code, Container, and MCP build
+  contexts; only `.env.example` / `.env.sample` / `.env.template` templates are
+  kept. See [Environment Variables Reference](../references/environment-variables.mdx).
+</Callout>
+
+### Default observability and explicit opt-out
+
+Managed Agent `deploy`, `launch`, and `hermes deploy` commands send `enable_observability=true` by default. The CLI and console use the same control-plane switch. When enabled, the platform injects the standard Langfuse OTLP primary route and CloudMonitor OTLP secondary route, preserving the same `trace_id` and `span_id` for each span.
+
+```bash title="bash"
+# Enabled by default
+agentengine deploy . --target serverless
+agentengine launch . --target serverless
+agentengine hermes deploy --name my-hermes
+
+# Explicit user opt-out
+agentengine deploy . --target serverless --no-observability
+agentengine launch . --target serverless --no-observability
+agentengine hermes deploy --name my-hermes --no-observability
+```
+
+Disabling observability clears the managed OTLP endpoints, headers, and protocols. Do not use `--env` to override platform-managed observability variables. See the [Environment Variables Reference](../references/environment-variables.mdx) for the protocol contract.
+
+### `agentengine hermes`
+
+Hermes deploy accepts explicit runtime environment variables and, when
+`--env-file` is omitted, automatically reads `.env` from the current directory:
+
+```bash title="bash"
+agentengine hermes deploy --name my-hermes \
+  --env LOG_LEVEL=debug \
+  --env FEATURE_FLAG=on
+agentengine hermes deploy --name my-hermes --env-file ./hermes.env
+```
+
+`--env` is repeatable and `--env-file` accepts dotenv or a JSON object. The
+precedence is `--env` > `--env-file` > process environment > auto-discovered
+`.env`. Explicit environment options update `env_vars` on an existing Hermes;
+an image-only update does not overwrite the environment already stored by the
+service.
+
+Hermes exec passes argv directly and never parses it through a shell. The supported target forms are:
+
+```bash title="bash"
+agentengine hermes exec --agent my-hermes -- status
+agentengine hermes exec ar-123 -- status
+agentengine hermes exec -- sessions list
+```
+
+Use `--agent` to explicitly target an Agent by name; a positional target is retained only for `ar-*` Agent IDs. Without a target, the command uses the project default Agent, and ordinary argv tokens are never guessed to be Agent names. A business session ID passed with `--session` is sent in the terminal start frame (while retaining the compatibility header) so the runtime can resume the session.
+
+### `agentengine openclaw`
+
+Deploy a prebuilt OpenClaw image to the cloud runtime; model configuration is
+reused from `OPENAI_*` environment variables.
+
+```bash title="bash"
+agentengine openclaw deploy my-openclaw --region cn-beijing-6
+agentengine openclaw deploy my-openclaw --memory-system mem0 \
+  --mem0-instance-id inst-xxxx \
+  --mem0-region cn-beijing-6
+agentengine openclaw list
+agentengine openclaw status
+agentengine openclaw --help
+```
+
+Memory backend options (0.6.7):
+
+| Option | Meaning |
+| --- | --- |
+| `--memory-system {openclaw_default\|mem0}` | memory backend type; `openclaw_default` uses the built-in default, `mem0` switches to the mem0 backend. |
+| `--mem0-instance-id ID` | mem0 instance ID, required when `--memory-system mem0`. |
+| `--mem0-instance-name NAME` | mem0 instance name (optional). |
+| `--mem0-region REGION` | mem0 instance region (optional). |
+
+<Callout type="warning" title="lancedb is not exposed on the CLI">
+  The `--memory-system` CLI option only exposes `openclaw_default` and `mem0`.
+  The `lancedb` backend must be declared via a `MEMORY_BACKEND_MANIFEST` on the
+  runtime side, not through CLI flags; see
+  [Environment Variables Reference](../references/environment-variables.mdx).
+</Callout>
+
+<Callout type="info" title="mem0 argument constraints">
+  When `--memory-system openclaw_default` is set, no mem0 arguments may be
+  passed; when `mem0` is selected, `--mem0-instance-id` is required, while
+  `--mem0-instance-name` and `--mem0-region` are optional metadata.
+</Callout>
+
+<Callout type="info">
+  OpenClaw deploy also supports repeatable `--env KEY=VALUE`, `--env-file`, and
+  automatic discovery of `.env` in the current directory, with the same
+  precedence as Hermes. Generic `deploy` / `launch` only use explicit `--env`
+  or `--env-file` options and do not automatically load the project `.env`.
+</Callout>
+
+## JSON Output
+
+Some commands support structured output:
+
+```bash title="bash"
+agentengine --output json agent status
+agentengine --output json build --help
+```
+
+Interactive commands and browser UI commands may reject JSON output when a
+structured response would be misleading.
+
+## Public Release Gate
+
+Before publishing CLI docs, regenerate help output from the release candidate and
+check it for internal URLs, credentials, private registry names, kubeconfig
+paths, and deployment assumptions.
+
+<Callout type="warning">
+  Recommended check items: internal URLs, credentials, private registry names, kubeconfig paths, and deployment assumptions must not appear in public help output.
+</Callout>
+
+Recommended checks:
+
+```bash title="bash"
+agentengine --help
+agentengine init --help
+agentengine run --help
+agentengine web --help
+agentengine config --help
+```

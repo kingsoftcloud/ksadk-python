@@ -1,0 +1,52 @@
+---
+title: 架构
+---
+
+KsADK 提供 Agent 的运行时能力。它以 Agent Kernel 收口并发、恢复和状态一致性，以 Harness 承载统一控制与生命周期，再通过可插拔 Provider 接入不同执行内核。框架原生语义保留在 Provider 内，API、Studio 与托管界面共享同一条事件事实链。
+
+![KsADK 总体技术架构](/assets/ksadk-runtime-architecture.svg)
+
+## 架构主线
+
+| 层 | 核心责任 |
+| --- | --- |
+| 使用入口 | 汇聚 SDK、CLI、Studio、标准 API、A2A 与自动任务 |
+| 可信内核 | 执行准入、租约与防旧写、并发背压、取消恢复和状态一致性 |
+| Harness 与插件 | 装载插件组合，选择一个 Provider，管理本次 Activation 的生命周期 |
+| 共用能力 | 通过能力总线注入上下文、工具、安全、MCP、Skill、沙箱、记忆与可观测性 |
+| 事件与呈现 | 将 Provider 原生事件适配为 RuntimeEvent v2，持久化后投影到不同界面 |
+
+<Callout type="info" title="核心边界">
+  Agent Kernel 决定一次运行是否可以安全执行；Harness 决定如何装配和托管；Provider 决定具体框架如何运行。三者职责分离，避免把某个 Agent 框架的特性固化到平台控制层。
+</Callout>
+
+## Harness 与插件化
+
+插件组合描述“本次运行装入什么”，PluginHost 负责发现、校验、装载、健康检查、切换和回收。每次 Activation 只选择一个 Agent Provider，并创建隔离的执行上下文。
+
+| 组件 | 所有权 |
+| --- | --- |
+| PluginHost | 插件图、权限准入、健康检查、原子切换和生命周期 |
+| Harness | 控制入口、工具接入、会话连续性、上下文与事件出口 |
+| Provider | 框架原生执行、线程或 checkpoint 等私有状态、原生事件语义 |
+| 能力插件 | Session、Memory、Context、Renderer、MCP、Skill 等可组合能力 |
+
+这种边界允许 Codex、KsADK Harness、DSH / Cordis 与 SubagentProvider 共用一套宿主契约，同时保留各自的执行模型。
+
+## 事件事实链
+
+Provider 事件先由框架适配器保留来源、作用域和 item 身份，再转换为 `RuntimeEvent v2`。事件写入 SessionEvent 日志后，由投影层生成流式响应、聚合结果与断点续传视图。
+
+<Callout type="info">
+  API、Studio 和托管界面消费统一投影，不分别解析各框架的私有事件流。这使实时输出、持久化回放和最终结果保持一致。
+</Callout>
+
+## SDK 与平台边界
+
+| KsADK 运行时内 | 通过外部契约连接 |
+| --- | --- |
+| SDK、CLI、Server、Agent Kernel、Harness、插件宿主、Provider、事件与会话 | AgentEngine 控制面、模型与 A2A 服务、Skill 与 Sandbox 服务、OTLP 后端 |
+
+KsADK 不在 SDK 内重复建设完整控制平台。注册、远端生命周期、网关治理和外部服务资源由平台负责，运行时通过明确契约调用。
+
+实现细节见 [运行时架构](../guides/runtime-architecture.mdx)；插件、Provider 与自动任务的配置方式见 [插件与自动任务](../guides/plugins-and-automations.mdx)。

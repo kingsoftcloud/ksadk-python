@@ -1,0 +1,159 @@
+---
+title: "Runtime Architecture"
+---
+
+KsADK separates runtime control, execution, and presentation into three stable boundaries. Agent Kernel owns trusted control. Harness and PluginHost own composition and lifecycle. Each Provider owns native framework execution. Results enter one event fact chain and are then projected to APIs, Studio, and hosted surfaces.
+
+![KsADK technical architecture](/assets/ksadk-runtime-architecture.en.svg)
+
+## Layers and Main Flow
+
+```text
+Access
+  -> Agent Kernel
+  -> PluginHost loads the plugin composition
+  -> Harness selects one Provider for the Activation
+  -> Provider executes natively
+  -> RuntimeEvent v2
+  -> SessionEvent log
+  -> API / Studio / hosted-surface projections
+```
+
+Shared capabilities do not become another step in the main execution chain. Context, tools, safety, MCP, Skill, sandbox, memory, and observability are injected into Harness through a capability bus. The Provider keeps framework-specific thread, checkpoint, and event semantics.
+
+## Core Packages
+
+| Package | Responsibility |
+| --- | --- |
+| `ksadk.kernel` | control permits, admission, Inbox, leases, fencing, state, and recovery |
+| `ksadk.harness` | Harness configuration, tools, sandbox, reasoner, and native RuntimeAdapter |
+| `ksadk.plugins` | plugin contracts, composition compiler, resolver, PluginHost, Providers, and subagent bridges |
+| `ksadk.events` | RuntimeEvent v2, identity, storage, reducers, replay, and protocol projections |
+| `ksadk.scheduler` | local Scheduler Lite, calendar calculation, task storage, and control-command dispatch |
+| `ksadk.runtime` | cross-Runner, Harness, Codex, and A2A runtime-control interface |
+| `ksadk.server` | FastAPI application, standard APIs, local Studio, and protocol entrypoints |
+| `ksadk.conversations` | turn orchestration, normalized input, session writes, and protocol payloads |
+| `ksadk.sessions` | local and pluggable session storage |
+| `ksadk.runners` | Runner adapters for existing framework projects |
+
+## Startup and Entry
+
+`agentengine run`, `agentengine web`, and standard APIs converge on the same runtime boundary.
+
+<Steps>
+  1. The CLI or Server resolves the project directory, environment, and `agentengine.yaml`.
+  2. Explicit configuration or detection selects a Runner, Harness, or plugin Provider path.
+  3. Application assembly wires FastAPI routes, lifecycle, authentication, and session entrypoints.
+  4. Agent Kernel applies admission and state protection to requests that require trusted control.
+  5. Harness creates an Activation, binds shared capabilities, and selects a Provider.
+  6. The Provider executes its native framework logic and sends events into the fact chain.
+</Steps>
+
+<Callout type="info">
+  `agentengine.yaml` should declare the framework and entrypoint explicitly. Detection failures are project-loading errors and should not surface only after user code is imported.
+</Callout>
+
+## Agent Kernel: Trusted Control Boundary
+
+Agent Kernel does not execute Agent business logic. It centralizes control semantics that affect safety and consistency in one verifiable boundary.
+
+| Capability | Constraint |
+| --- | --- |
+| permits and admission | control commands without a valid permit do not enter execution |
+| Inbox and ordering | commands are persisted before a Worker claims them in order |
+| leases and fencing | an expired owner cannot continue writing newer state |
+| concurrency and backpressure | queue capacity, duplicate commands, and parallel work use stable error semantics |
+| cancel and resume | cancel, resume, interaction replies, and checkpoint targets remain explicit |
+| state consistency | run state, control receipts, and event writes share write guards |
+
+The storage backend defines durability. Memory suits local or single-process ephemeral runs. SQLite provides local persistence. PostgreSQL supports hosted runtimes that need cross-process takeover and transactional fencing. A durable configuration without its required backend fails at startup instead of silently degrading.
+
+## Harness and Provider: Execution Boundary
+
+Harness is a stable host, not another Agent framework. It unifies control entry, tool access, session continuity, context, and event output without rewriting a Provider's native execution model.
+
+| Harness / Host owns | Provider owns |
+| --- | --- |
+| Activation creation and close | native framework execution |
+| plugin graph and capability bindings | private thread, checkpoint, or session state |
+| permission admission and health checks | native tool calls and event semantics |
+| profile fencing and atomic switching | declared cancel, resume, and checkpoint behavior |
+| canonical event exit | Provider events that can be adapted without losing identity |
+
+Each Activation selects exactly one Agent Provider. The current plugin package contains a Codex native Provider, KsADK Harness Provider, DSH / Cordis Provider, and SubagentProvider. They share one host contract without pretending to expose identical capabilities.
+
+## Plugin Composition and Lifecycle
+
+The composition compiler converts an editable Studio Agent revision into an immutable plugin graph. Plugin references use exact versions, capabilities bind to explicit Definitions and slots, and sensitive configuration accepts secret references instead of clear values.
+
+<Steps>
+  1. The compiler normalizes runtime, Session, Memory, Context, Renderer, MCP, and Skill bindings.
+  2. The resolver produces locked versions and digests.
+  3. PluginHost resolves, admits permissions, stages, and health-checks the candidate graph.
+  4. A healthy graph switches atomically. Failure preserves the old graph and disposes candidate effects.
+  5. Existing sessions retain their original Provider-private state until they close, after which the retired graph is reclaimed.
+</Steps>
+
+This lifecycle allows configuration switching without tearing an active run.
+
+## Shared Capability Bus
+
+| Capability | Injected content |
+| --- | --- |
+| context and prompts | history compaction, prompt assembly, snapshots, and contributor output |
+| tools and safety | tool catalog, policy, approvals, permissions, and secret references |
+| MCP and Skill | resource discovery, materialized plugin capabilities, and invocation entrypoints |
+| sandbox and workspace | isolated execution, file access, and command boundaries |
+| memory and knowledge | Memory and KnowledgeBase context |
+| tracing and evaluation | Trace, metrics, event correlation, and Eval data |
+
+Capability plugins reach the Provider through a read-only execution context. An MCP or Skill binding without a materialized plugin owner is rejected during the build, preventing a resource from appearing enabled while remaining unavailable at runtime.
+
+## Automated Tasks
+
+Scheduler Lite provides deterministic calendar calculations, local task storage, and due-task dispatch. A triggered task enters the same Agent Kernel and Harness chain instead of creating a second runtime.
+
+| Component | Responsibility |
+| --- | --- |
+| `SchedulerEngine` | calculate due tasks and maintain occurrence and retry semantics |
+| `SchedulerSQLiteStore` | persist local tasks and scheduling state |
+| `AgentControlSchedulerDispatcher` | convert a schedule trigger into an AgentControl command |
+
+## Event Fact Chain
+
+ADK, LangGraph, Codex, A2A, and Harness events are converted by their adapters into `RuntimeEvent(schema_version=2)`. The adapters preserve source, scope, item, and event identity instead of deduplicating broadly by author or text.
+
+| Stage | Responsibility |
+| --- | --- |
+| framework event adapters | preserve Provider source and native item identity |
+| RuntimeEvent v2 | represent run, item, content, tool, interaction, and error facts |
+| SessionEvent log | persist ordering, run state, and facts required for recovery |
+| reducer and replay | apply identity-aware append, replace, completed, and final-output selection |
+| protocol projections | generate Responses, Chat, Studio, A2A, and hosted-surface views |
+
+<Callout type="info">
+  `RuntimeEvent v2` is the write path. v1 remains a read-only compatibility projection; new runtime events are not written as v1.
+</Callout>
+
+## Sessions and Protocols
+
+Each turn receives a stable invocation context with Agent, user, Session, input, attachments, model options, and enabled memory and knowledge. Providers read the public context and capability bindings instead of Server-private global state.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /v1/responses` | preferred standard invocation protocol |
+| `POST /v1/chat/completions` | Chat Completions compatibility |
+| `POST /agentengine/api/v1/RunAgent` | Studio action-style invocation |
+| `POST /run_sse` | ADK Web-compatible execution path |
+| `POST /agentengine/api/v1/CancelRun` | cooperative cancellation |
+| `POST /agentengine/api/v1/ResumeRun` | capability-gated run recovery |
+
+External clients should prefer `/v1/responses`. Studio and hosted surfaces use SessionEvent projections and subscriptions to receive consistent views.
+
+## Platform Boundary
+
+The KsADK runtime contains the SDK, CLI, Server, Kernel, Harness, plugin host, Providers, events, and local stores. Agent registration, remote deployment lifecycle, gateway governance, hosted Skill and Sandbox services, and OTLP backends remain external platform responsibilities connected through explicit contracts.
+
+<Callout type="warning">
+  Public documentation excludes private gateway behavior, internal cluster paths, private registries, and customer-specific operations.
+</Callout>

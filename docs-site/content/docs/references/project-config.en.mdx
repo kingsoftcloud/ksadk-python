@@ -1,0 +1,129 @@
+---
+title: Project Configuration
+---
+
+KsADK project configuration is normally stored in `agentengine.yaml`.
+`ksadk.yaml` and `ksadk.yml` are accepted for compatibility, but new public
+examples should use `agentengine.yaml`.
+
+## Minimal Config
+
+```yaml
+name: my-agent
+framework: langgraph
+entry_point: agent.py
+agent_variable: root_agent
+```
+
+## Fields
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | recommended | display name and default agent name |
+| `framework` | recommended | code adapter family: `adk`, `langgraph`, `langchain`, `deepagents`; declarative Runtime: `codex` |
+| `entry_point` | recommended for code projects | Python file loaded by the local runtime; Codex does not need one |
+| `agent_variable` | optional for code projects | exported object name, default `root_agent`; Codex does not need one |
+| `package` | optional | package directory when different from project name |
+| `region` | optional | cloud region for deployment-shaped commands |
+| `artifact_type` | optional | packaging mode for specialized runtimes; Codex ManagedRuntime requires `ManagedRuntime` |
+| `runtime` | required for ManagedRuntime | Runtime name and locked version, for example `name: codex`, `version: "0.144.4"` |
+| `model` / `prompt` | required for declarative Runtime | model and developer instruction |
+| `ui_profile` | optional | UI profile selector, e.g. `custom`; defaults to `auto` (new in 0.6.7) |
+| `ui_bundle_path` | optional | project-relative path to a custom UI static bundle, e.g. `research-ui/dist` (new in 0.6.7) |
+| `ui_path` | optional | custom UI mount path, e.g. `/` or `/research`; under the `custom` profile, `/chat` is auto-corrected to `/` (new in 0.6.7) |
+| `ui_url` | optional | external custom UI URL (new in 0.6.7) |
+
+## Framework Values
+
+| Value | Typical exported object |
+| --- | --- |
+| `adk` | `root_agent = Agent(...)` |
+| `langgraph` | `root_agent = graph.compile()` |
+| `langchain` | runnable chain or agent |
+| `deepagents` | `root_agent = create_deep_agent(...)` |
+| `codex` | declarative `model` and `prompt`; no exported Python object |
+
+## Codex ManagedRuntime (new in 0.8)
+
+```yaml title="agentengine.yaml"
+name: my-codex-agent
+version: "1.0.0"
+framework: codex
+artifact_type: ManagedRuntime
+runtime:
+  name: codex
+  version: "0.144.4"
+model: gpt-5.1-codex
+prompt: |
+  You are a coding assistant.
+```
+
+A Codex manifest has no `entry_point`, `agent_variable`, or `agent.py`. Its
+`model` and `prompt` define agent behavior. See
+[YAML Is the Agent: Codex](../framework/tutorials/best-practices/codex-yaml-agent.mdx)
+for native local debugging and direct deployment.
+
+## Environment Variables
+
+Model settings usually live in `.env`:
+
+```bash
+OPENAI_API_KEY=sk-test
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL_NAME=my-model
+```
+
+Local UI session storage can be controlled with:
+
+```bash
+KSADK_STM_BACKEND=sqlite
+KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
+```
+
+Only commit `.env.example` files with placeholders. Do not commit `.env`.
+
+## Cloud Deployment Configuration
+
+`agentengine.yaml` can keep non-secret network defaults. Explicit CLI arguments
+override file values:
+
+```yaml title="agentengine.yaml"
+network:
+  enable_public_access: false
+  enable_vpc_access: true
+  vpc_id: vpc-xxxx
+  subnet_id: subnet-xxxx
+  security_group_id: sg-xxxx
+  availability_zone: cn-beijing-6a
+```
+
+VPC access requires all of `vpc_id`, `subnet_id`, and `security_group_id`.
+Keep model keys, cloud AK/SK credentials, and registry passwords in an
+uncommitted `.env` or local global configuration, not in YAML. See
+[Deploy to Kingsoft Cloud](../framework/guides/cloud-deployment.mdx) for the
+complete prerequisites, commands, and verification steps.
+
+## Detection Fallback
+
+If no config file exists, KsADK tries to infer a code-project shape from:
+
+- `langgraph.json`
+- a package matching the project name.
+- a package containing `__init__.py`.
+- root-level `agent.py`, `main.py`, or `app.py`.
+- common agent variables in source.
+
+Inference is convenient for local experiments, but explicit config is better for
+docs, samples, tests, and release candidates. Codex requires an explicit
+manifest.
+
+## Validation Checklist
+
+Before publishing a project:
+
+- for a code framework, `entry_point` exists and `agent_variable` is exported.
+- for Codex ManagedRuntime, `runtime.name` and a reproducible `runtime.version` are declared; there is no entry point to validate.
+- `.env` is ignored by Git.
+- placeholder provider values are used in docs.
+- cloud fields are optional or documented with public prerequisites.
+- the matching local command works from a clean checkout: `agentengine run . -i` for a code project or `agentengine web . --no-open` for Codex.

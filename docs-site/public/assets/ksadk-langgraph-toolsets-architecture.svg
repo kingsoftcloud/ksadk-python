@@ -1,0 +1,301 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1520 900" font-family="ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <style>
+    /* Dark theme: invert the light-bg / white-panel design so it blends into a dark page. */
+    @media (prefers-color-scheme: dark) {
+      .bg-light { fill: #0f172a; }
+      /* white / near-white panels → dark slate panels */
+      rect[fill="#ffffff"] { fill: #1e293b; }
+      rect[fill="#fbfbf9"] { fill: #0f172a; }
+      rect[fill="#f8fafc"] { fill: #0f172a; }
+      rect[fill="#f1f5f9"] { fill: #1e293b; }
+      /* headings / body text → light */
+      text[fill="#0f172a"] { fill: #f1f5f9; }
+      text[fill="#1e293b"] { fill: #e2e8f0; }
+      text[fill="#334155"] { fill: #cbd5e1; }
+      text[fill="#475569"] { fill: #94a3b8; }
+      text[fill="#64748b"] { fill: #94a3b8; }
+      text[fill="#94a3b8"] { fill: #64748b; }
+      /* keep semantic accent text readable on dark */
+      text[fill="#9a3412"] { fill: #fdba74; }
+      text[fill="#7c2d12"] { fill: #fed7aa; }
+      text[fill="#92400e"] { fill: #fbbf24; }
+      text[fill="#b45309"] { fill: #fbbf24; }
+      text[fill="#5b21b6"] { fill: #c4b5fd; }
+      text[fill="#7c3aed"] { fill: #a78bfa; }
+      text[fill="#047857"] { fill: #34d399; }
+      text[fill="#059669"] { fill: #34d399; }
+      text[fill="#065f46"] { fill: #6ee7b7; }
+      /* neutral borders a touch brighter for contrast on dark */
+      rect[stroke="#cbd5e1"] { stroke: #475569; }
+      rect[stroke="#94a3b8"] { stroke: #64748b; }
+    }
+  </style>
+  <defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+    <marker id="adisp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
+    <marker id="aorange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+  </defs>
+
+  <rect class="bg-light" width="1520" height="900" fill="#fbfbf9"/>
+
+  <!-- ===== 标题 ===== -->
+  <text x="40" y="28" font-size="16" font-weight="700" fill="#0f172a">AgentEngine Toolsets 架构图 · LangGraph 路由 + ReAct 自主调工具</text>
+  <text x="40" y="46" font-size="11" fill="#64748b">外层 graph 只做路由和上下文注入；工具选择 / 调用 / 总结由 create_react_agent 中的大模型完成（紫色=直调，橙色=dispatcher 间接调用，绿色=自定义）</text>
+
+  <!-- ===== Layer 1：接入层 ===== -->
+  <rect x="40" y="62" width="1090" height="84" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="54" y="80" font-size="11.5" font-weight="700" fill="#334155">接入层 · AgentEngine 运行时</text>
+
+  <rect x="56" y="92" width="480" height="46" rx="7" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+  <text x="68" y="111" font-size="11" font-weight="700" fill="#1e293b">Web UI / API（agentengine run / web）</text>
+  <text x="68" y="129" font-size="10" fill="#475569">用户提问 → ksadk_prepare_state 注入会话历史 → 流式响应</text>
+
+  <rect x="550" y="92" width="565" height="46" rx="7" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+  <text x="564" y="111" font-size="11" font-weight="700" fill="#1e293b">ksadk runtime · session_context</text>
+  <text x="564" y="129" font-size="10" fill="#475569">history / platform_context（agent_id·user_id·session_id）→ 作为初始 state 传入主图</text>
+
+  <line x1="540" y1="138" x2="540" y2="160" stroke="#475569" stroke-width="1.6" marker-end="url(#ag)"/>
+  <text x="548" y="154" font-size="9.5" fill="#64748b">传入 StateGraph</text>
+
+  <!-- ===== Layer 2：外层主图 ===== -->
+  <rect x="40" y="160" width="1090" height="150" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="54" y="178" font-size="11.5" font-weight="700" fill="#334155">外层 LangGraph 主图 · StateGraph(AgentState).compile() —— route_turn → prepare_custom_context → run_specialist → finalize_answer</text>
+  <text x="950" y="178" font-size="9.5" fill="#64748b" font-style="italic">外层只路由+注入，不替工具做决定</text>
+
+  <ellipse cx="90" cy="240" rx="26" ry="13" fill="#e2e8f0" stroke="#64748b" stroke-width="1"/>
+  <text x="90" y="244" text-anchor="middle" font-size="9.5" font-weight="700" fill="#334155">START</text>
+  <line x1="90" y1="253" x2="90" y2="276" stroke="#475569" stroke-width="1.4" marker-end="url(#ag)"/>
+
+  <g font-size="12" font-weight="700" fill="#1e293b">
+    <rect x="60" y="208" width="150" height="72" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="135" y="232" text-anchor="middle">route_turn</text>
+    <text x="135" y="252" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">识别场景 + 路由建议</text>
+    <text x="135" y="268" text-anchor="middle" font-size="8.5" fill="#94a3b8">_route_for_text</text>
+
+    <rect x="250" y="208" width="186" height="72" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="343" y="232" text-anchor="middle">prepare_custom_context</text>
+    <text x="343" y="252" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">注入 suggested_tools</text>
+    <text x="343" y="268" text-anchor="middle" font-size="8.5" fill="#94a3b8">+ Skill Space 配置 + 扩展上下文</text>
+
+    <rect x="476" y="208" width="180" height="72" rx="8" fill="#fef9e7" stroke="#b45309" stroke-width="1.6"/>
+    <text x="566" y="232" text-anchor="middle">run_specialist</text>
+    <text x="566" y="252" text-anchor="middle" font-size="9" font-weight="400" fill="#92400e">create_react_agent</text>
+    <text x="566" y="268" text-anchor="middle" font-size="8.5" fill="#b45309">LLM 自主选工具/调用/总结</text>
+
+    <rect x="696" y="208" width="150" height="72" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="771" y="232" text-anchor="middle">finalize_answer</text>
+    <text x="771" y="252" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">整理输出</text>
+    <text x="771" y="268" text-anchor="middle" font-size="8.5" fill="#94a3b8">返回 AgentEngine</text>
+
+    <ellipse cx="918" cy="244" rx="24" ry="13" fill="#e2e8f0" stroke="#64748b" stroke-width="1"/>
+    <text x="918" y="248" text-anchor="middle" font-size="9.5" font-weight="700" fill="#334155">END</text>
+  </g>
+
+  <g stroke="#475569" stroke-width="1.4" fill="none">
+    <line x1="210" y1="244" x2="246" y2="244" marker-end="url(#ag)"/>
+    <line x1="436" y1="244" x2="472" y2="244" marker-end="url(#ag)"/>
+    <line x1="656" y1="244" x2="692" y2="244" marker-end="url(#ag)"/>
+    <line x1="846" y1="244" x2="892" y2="244" marker-end="url(#ag)"/>
+  </g>
+
+  <line x1="566" y1="280" x2="566" y2="332" stroke="#b45309" stroke-width="1.8" marker-end="url(#ag)"/>
+  <text x="574" y="310" font-size="9.5" fill="#b45309" font-weight="600">绑定工具</text>
+
+  <!-- ===== Layer 3：ReAct 子图 + 工具生态（三联画上下对称） ===== -->
+  <rect x="40" y="332" width="1090" height="356" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="54" y="350" font-size="11.5" font-weight="700" fill="#334155">ReAct 子图 · create_react_agent —— 大模型循环：思考 → 选工具 → 调用 → 观察 → 继续或总结</text>
+
+  <!-- ===== 上半部 三联画（等宽340 / gap19 / 严格左右镜像，中心 x=585） ===== -->
+  <!-- 左·工具绑定 -->
+  <rect x="56" y="362" width="340" height="92" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+  <text x="226" y="384" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1e293b">工具绑定 _build_tools()</text>
+  <text x="226" y="404" text-anchor="middle" font-size="9.5" fill="#475569">get_agentengine_tools(</text>
+  <text x="226" y="418" text-anchor="middle" font-size="9.5" fill="#475569">include=['focused','agentengine_tool_dispatcher'])</text>
+  <text x="226" y="436" text-anchor="middle" font-size="9.5" fill="#475569">+ 自定义 @tool（选调权交 ReAct）</text>
+  <text x="226" y="450" text-anchor="middle" font-size="8.5" fill="#94a3b8">外层只绑定，不替工具做决定</text>
+
+  <!-- 中·ReAct 循环（核心，琥珀） -->
+  <rect x="415" y="362" width="340" height="92" rx="8" fill="#fef9e7" stroke="#b45309" stroke-width="1.6"/>
+  <text x="585" y="384" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">ReAct 循环（create_react_agent）</text>
+  <text x="585" y="403" text-anchor="middle" font-size="9.5" fill="#7c2d12">① 思考：依据 suggested_tools 与路由建议</text>
+  <text x="585" y="419" text-anchor="middle" font-size="9.5" fill="#7c2d12">② 选工具：直调 或 经 dispatcher 间接调</text>
+  <text x="585" y="435" text-anchor="middle" font-size="9.5" fill="#7c2d12">③ 调用 → 观察 → 继续或总结</text>
+  <text x="585" y="449" text-anchor="middle" font-size="8.5" fill="#b45309">工具决定权在 ReAct 大模型</text>
+
+  <!-- 右·dispatcher 主框（从右下提升，填补右上留白） -->
+  <rect x="774" y="362" width="340" height="92" rx="8" fill="#fff7ed" stroke="#d97706" stroke-width="1.6"/>
+  <text x="944" y="384" text-anchor="middle" font-size="10.5" font-weight="700" fill="#9a3412">agentengine_tool_dispatcher</text>
+  <text x="944" y="403" text-anchor="middle" font-size="9.5" fill="#7c2d12">按需 list / describe / call</text>
+  <text x="944" y="419" text-anchor="middle" font-size="9.5" fill="#7c2d12">低频或高风险工具的统一入口</text>
+  <text x="944" y="435" text-anchor="middle" font-size="9.5" fill="#7c2d12">include=workspace / sandbox / platform</text>
+  <text x="944" y="449" text-anchor="middle" font-size="8.5" fill="#b45309">不可填 file，读写文件用 workspace 组</text>
+
+  <!-- ===== 下半部 三列（各列三块、等高58、与上半列对齐） ===== -->
+  <!-- 列标题 -->
+  <text x="226" y="471" text-anchor="middle" font-size="10" font-weight="700" fill="#7c3aed">Skill Space 直调（focused）</text>
+  <text x="585" y="471" text-anchor="middle" font-size="10" font-weight="700" fill="#059669">业务自定义工具（@tool）</text>
+  <text x="944" y="471" text-anchor="middle" font-size="10" font-weight="700" fill="#d97706">dispatcher 间接调用</text>
+
+  <!-- 左列·紫直调 三块 -->
+  <g>
+    <rect x="56" y="478" width="340" height="58" rx="7" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.3"/>
+    <text x="226" y="503" text-anchor="middle" font-size="10.5" font-weight="700" fill="#5b21b6">list_skills</text>
+    <text x="226" y="521" text-anchor="middle" font-size="8.5" fill="#7c3aed">列出 Space 下 Skill</text>
+
+    <rect x="56" y="546" width="340" height="58" rx="7" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.3"/>
+    <text x="226" y="571" text-anchor="middle" font-size="10.5" font-weight="700" fill="#5b21b6">search_skills</text>
+    <text x="226" y="589" text-anchor="middle" font-size="8.5" fill="#7c3aed">按 query 搜索 Skill</text>
+
+    <rect x="56" y="614" width="340" height="58" rx="7" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.3"/>
+    <text x="226" y="639" text-anchor="middle" font-size="10.5" font-weight="700" fill="#5b21b6">load_skill</text>
+    <text x="226" y="657" text-anchor="middle" font-size="8.5" fill="#7c3aed">加载指定 Skill 指令</text>
+  </g>
+
+  <!-- 中列·绿自定义 三块 -->
+  <g>
+    <rect x="415" y="478" width="340" height="58" rx="7" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="585" y="503" text-anchor="middle" font-size="10.5" font-weight="700" fill="#047857">graph_status</text>
+    <text x="585" y="521" text-anchor="middle" font-size="8.5" fill="#059669">说明图节点与边</text>
+
+    <rect x="415" y="546" width="340" height="58" rx="7" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="585" y="571" text-anchor="middle" font-size="10.5" font-weight="700" fill="#047857">component_status</text>
+    <text x="585" y="589" text-anchor="middle" font-size="8.5" fill="#059669">能力矩阵 + 配置缺口</text>
+
+    <rect x="415" y="614" width="340" height="58" rx="7" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="585" y="639" text-anchor="middle" font-size="10.5" font-weight="700" fill="#047857">release_risk_matrix</text>
+    <text x="585" y="657" text-anchor="middle" font-size="8.5" fill="#059669">发布风险 → 检查清单</text>
+  </g>
+
+  <!-- 右列·橙子组 三块 -->
+  <g>
+    <rect x="774" y="478" width="340" height="58" rx="7" fill="#fffbeb" stroke="#d97706" stroke-width="1.2"/>
+    <text x="944" y="503" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">sandbox（include=sandbox）</text>
+    <text x="944" y="521" text-anchor="middle" font-size="8.5" fill="#92400e">run_command · run_code（即用即弃）</text>
+
+    <rect x="774" y="546" width="340" height="58" rx="7" fill="#fffbeb" stroke="#d97706" stroke-width="1.2"/>
+    <text x="944" y="571" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">workspace</text>
+    <text x="944" y="589" text-anchor="middle" font-size="8.5" fill="#92400e">读 / 搜 / 编会话文件</text>
+
+    <rect x="774" y="614" width="340" height="58" rx="7" fill="#fffbeb" stroke="#d97706" stroke-width="1.2"/>
+    <text x="944" y="639" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">platform（include=platform）</text>
+    <text x="944" y="657" text-anchor="middle" font-size="8.5" fill="#92400e">search_knowledge_base · load/save_memory</text>
+  </g>
+
+  <!-- ===== 调用箭头（全部不交叉） ===== -->
+  <!-- ReAct -> dispatcher（水平，中→右） -->
+  <line x1="755" y1="408" x2="772" y2="408" stroke="#d97706" stroke-width="1.6" marker-end="url(#adisp)"/>
+  <text x="763" y="402" text-anchor="middle" font-size="8" fill="#d97706">间接</text>
+  <!-- ReAct -> 紫直调（左下斜） -->
+  <path d="M415,440 C360,460 290,470 230,476" stroke="#7c3aed" stroke-width="1.3" stroke-dasharray="5 3" fill="none" marker-end="url(#askill)"/>
+  <text x="300" y="462" font-size="8.5" fill="#7c3aed">直调</text>
+  <!-- ReAct -> 绿自定义（垂直直下） -->
+  <line x1="585" y1="454" x2="585" y2="476" stroke="#059669" stroke-width="1.3" stroke-dasharray="5 3" marker-end="url(#agn)"/>
+  <!-- dispatcher -> 橙子组（垂直直下） -->
+  <line x1="944" y1="454" x2="944" y2="476" stroke="#d97706" stroke-width="1.3" stroke-dasharray="5 3" marker-end="url(#aorange)"/>
+
+  <!-- ===== Layer 4：能力配置矩阵 ===== -->
+  <rect x="40" y="704" width="1090" height="162" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="54" y="722" font-size="11.5" font-weight="700" fill="#334155">能力配置矩阵（component_status 返回）—— 哪些能力开箱即用，哪些需要额外 env</text>
+
+  <g font-size="9.5">
+    <rect x="56" y="734" width="160" height="52" rx="6" fill="#ecfdf5" stroke="#059669"/>
+    <text x="136" y="754" text-anchor="middle" font-weight="700" fill="#047857">workspace</text>
+    <text x="136" y="770" text-anchor="middle" font-size="8.5" fill="#059669">已配置（会话自带）</text>
+
+    <rect x="224" y="734" width="160" height="52" rx="6" fill="#ecfdf5" stroke="#059669"/>
+    <text x="304" y="754" text-anchor="middle" font-weight="700" fill="#047857">toolsets</text>
+    <text x="304" y="770" text-anchor="middle" font-size="8.5" fill="#059669">dispatcher 已配置</text>
+
+    <rect x="392" y="734" width="160" height="52" rx="6" fill="#fef3c7" stroke="#d97706"/>
+    <text x="472" y="754" text-anchor="middle" font-weight="700" fill="#92400e">skill_space</text>
+    <text x="472" y="770" text-anchor="middle" font-size="8.5" fill="#92400e">需 SKILL_SPACE_IDS</text>
+
+    <rect x="560" y="734" width="160" height="52" rx="6" fill="#fef3c7" stroke="#d97706"/>
+    <text x="640" y="754" text-anchor="middle" font-weight="700" fill="#92400e">sandbox</text>
+    <text x="640" y="770" text-anchor="middle" font-size="8.5" fill="#92400e">需 E2B_API_KEY+TEMPLATE</text>
+
+    <rect x="728" y="734" width="160" height="52" rx="6" fill="#fef3c7" stroke="#d97706"/>
+    <text x="808" y="754" text-anchor="middle" font-weight="700" fill="#92400e">knowledge_base</text>
+    <text x="808" y="770" text-anchor="middle" font-size="8.5" fill="#92400e">需 KB_DATASET_ID</text>
+
+    <rect x="896" y="734" width="160" height="52" rx="6" fill="#fef3c7" stroke="#d97706"/>
+    <text x="976" y="754" text-anchor="middle" font-weight="700" fill="#92400e">long_term_memory</text>
+    <text x="976" y="770" text-anchor="middle" font-size="8.5" fill="#92400e">需 LTM_BACKEND</text>
+
+    <text x="56" y="810" font-size="9.5" fill="#475569">绿=开箱可用（workspace/toolsets/session_continuity）　橙=需额外 env 配置（skill_space/sandbox/kb/ltm）</text>
+    <text x="56" y="826" font-size="9.5" fill="#64748b">Skill Space 未配置时 list_skills 返回真实"未配置"，不编造 Skill 列表。</text>
+    <text x="56" y="844" font-size="9.5" fill="#64748b">会话历史经 ksadk_prepare_state 注入，支持追问上下文延续。</text>
+  </g>
+
+  <!-- ===== 右栏：路由场景 ===== -->
+  <rect x="1150" y="62" width="340" height="804" rx="10" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2"/>
+  <text x="1166" y="84" font-size="12" font-weight="700" fill="#1e293b">route_turn 场景路由</text>
+  <text x="1166" y="100" font-size="9.5" fill="#64748b">_route_for_text 按用户文本判定，注入 suggested_tools</text>
+
+  <g font-size="9.5">
+    <rect x="1166" y="114" width="308" height="22" rx="4" fill="#ede9fe"/>
+    <text x="1176" y="129" fill="#5b21b6" font-weight="600">skill_space_list → list_skills</text>
+    <rect x="1166" y="140" width="308" height="22" rx="4" fill="#ede9fe"/>
+    <text x="1176" y="155" fill="#5b21b6" font-weight="600">skill_space_search → search_skills</text>
+    <rect x="1166" y="166" width="308" height="22" rx="4" fill="#ede9fe"/>
+    <text x="1176" y="181" fill="#5b21b6" font-weight="600">skill_load → load_skill</text>
+    <rect x="1166" y="192" width="308" height="22" rx="4" fill="#fff7ed"/>
+    <text x="1176" y="207" fill="#92400e" font-weight="600">knowledge_base → search_knowledge_base</text>
+    <rect x="1166" y="218" width="308" height="22" rx="4" fill="#fff7ed"/>
+    <text x="1176" y="233" fill="#92400e" font-weight="600">long_term_memory → load/save_memory</text>
+    <rect x="1166" y="244" width="308" height="22" rx="4" fill="#fff7ed"/>
+    <text x="1176" y="259" fill="#92400e" font-weight="600">sandbox → run_command / run_code</text>
+    <rect x="1166" y="270" width="308" height="22" rx="4" fill="#fff7ed"/>
+    <text x="1176" y="285" fill="#92400e" font-weight="600">workspace → 读写会话文件</text>
+    <rect x="1166" y="296" width="308" height="22" rx="4" fill="#ecfdf5"/>
+    <text x="1176" y="311" fill="#047857" font-weight="600">runtime_status → component_status</text>
+    <rect x="1166" y="322" width="308" height="22" rx="4" fill="#ecfdf5"/>
+    <text x="1176" y="337" fill="#047857" font-weight="600">graph_structure → graph_status</text>
+    <rect x="1166" y="348" width="308" height="22" rx="4" fill="#ecfdf5"/>
+    <text x="1176" y="363" fill="#047857" font-weight="600">release_review → release_risk_matrix</text>
+    <rect x="1166" y="374" width="308" height="22" rx="4" fill="#f1f5f9"/>
+    <text x="1176" y="389" fill="#475569" font-weight="600">general → 普通问答（无工具）</text>
+  </g>
+
+  <line x1="1166" y1="412" x2="1474" y2="412" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="1166" y="432" font-size="10.5" font-weight="700" fill="#9a3412">沙箱语义（关键约束）</text>
+  <text x="1166" y="450" font-size="9.5" fill="#7c2d12">每次 run_command/run_code 在全新隔离</text>
+  <text x="1166" y="464" font-size="9.5" fill="#7c2d12">沙箱执行，命令结束即销毁，</text>
+  <text x="1166" y="478" font-size="9.5" fill="#7c2d12">文件不跨调用保留。</text>
+  <text x="1166" y="496" font-size="9.5" font-weight="700" fill="#9a3412">生成+读取必须同一次调用：</text>
+  <text x="1166" y="510" font-size="9.5" fill="#7c2d12">简单：run_command 用 &amp;&amp; 串联</text>
+  <text x="1166" y="524" font-size="9.5" fill="#7c2d12">多步：run_code(language=bash)</text>
+  <text x="1166" y="538" font-size="9.5" fill="#7c2d12">　　写成脚本一次执行</text>
+  <text x="1166" y="556" font-size="9" fill="#94a3b8">跨调用读沙箱文件 → No such file</text>
+
+  <line x1="1166" y1="578" x2="1474" y2="578" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="1166" y="598" font-size="10.5" font-weight="700" fill="#1e293b">设计要点</text>
+  <text x="1166" y="616" font-size="9.5" fill="#475569">· 外层 graph 只路由+注入，不调工具</text>
+  <text x="1166" y="632" font-size="9.5" fill="#475569">· 工具选择交给 ReAct 大模型自主</text>
+  <text x="1166" y="648" font-size="9.5" fill="#475569">· include 不能填 file，读写文件用</text>
+  <text x="1166" y="662" font-size="9.5" fill="#475569">　workspace 组工具</text>
+  <text x="1166" y="678" font-size="9.5" fill="#475569">· dispatcher 只 list/describe/call</text>
+  <text x="1166" y="694" font-size="9.5" fill="#475569">　focused 之外的低频/高风险工具</text>
+  <text x="1166" y="710" font-size="9.5" fill="#475569">· Skill Space 未配置时返回真实</text>
+  <text x="1166" y="724" font-size="9.5" fill="#475569">　"未配置"，不编造 Skill 列表</text>
+  <text x="1166" y="740" font-size="9.5" fill="#475569">· 会话历史经 ksadk_prepare_state</text>
+  <text x="1166" y="754" font-size="9.5" fill="#475569">　注入，支持追问上下文延续</text>
+
+  <line x1="1166" y1="774" x2="1474" y2="774" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="1166" y="794" font-size="10.5" font-weight="700" fill="#334155">图例</text>
+  <rect x="1166" y="804" width="18" height="12" rx="2" fill="#eef2fb" stroke="#3b5a86"/>
+  <text x="1190" y="814" font-size="9.5" fill="#475569">外层主图节点</text>
+  <rect x="1166" y="822" width="18" height="12" rx="2" fill="#fef9e7" stroke="#b45309"/>
+  <text x="1190" y="832" font-size="9.5" fill="#475569">ReAct 入口（create_react_agent）</text>
+  <rect x="1166" y="840" width="18" height="12" rx="2" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="1190" y="850" font-size="9.5" fill="#475569">Skill Space 直调工具</text>
+  <rect x="1300" y="804" width="18" height="12" rx="2" fill="#fff7ed" stroke="#d97706"/>
+  <text x="1324" y="814" font-size="9.5" fill="#475569">dispatcher 间接调用</text>
+  <rect x="1300" y="822" width="18" height="12" rx="2" fill="#ecfdf5" stroke="#059669"/>
+  <text x="1324" y="832" font-size="9.5" fill="#475569">业务自定义工具</text>
+  <rect x="1300" y="840" width="18" height="12" rx="2" fill="#fef3c7" stroke="#d97706"/>
+  <text x="1324" y="850" font-size="9.5" fill="#475569">需额外 env 配置</text>
+
+</svg>

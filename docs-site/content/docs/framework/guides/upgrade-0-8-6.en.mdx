@@ -1,0 +1,139 @@
+---
+title: "Upgrade to 0.8.6"
+description: Python 3.12, Native Studio defaults, bounded history reads, and companion Web compatibility.
+---
+
+This release includes the Native Harness, A2A/Kernel recovery, tool receipts,
+bounded history reads, and Studio/Web fixes merged since 0.8.5. See the
+[CHANGELOG](https://github.com/kingsoftcloud/ksadk-python/blob/main/CHANGELOG.md)
+for the complete release list.
+
+## Install and roll back
+
+**Python 3.12 or newer is required.** Install into a separate environment and
+keep the previous environment and runtime image until application validation
+passes. Upgrading the SDK does not rebuild existing Agents or update deployments.
+
+```bash
+uv venv --python 3.12 .venv-086
+uv pip install --python .venv-086/bin/python "ksadk==0.8.6"
+.venv-086/bin/agentengine --help
+```
+
+On Windows, use `.venv-086\Scripts\python.exe` and
+`.venv-086\Scripts\agentengine.exe`. Select extras for additional capabilities
+such as Codex, DeepAgents, or Skill Sandbox. Use `ksadk[all]` when the full set,
+including development dependencies, is needed. The alias package
+`agentengine-sdk-python==0.8.6` independently ships the same SDK implementation
+and keeps the `ksadk` import name. Install one distribution name per environment
+to avoid overwriting shared files.
+
+For local wheel validation, replace the installation target:
+
+```bash
+uv pip install --python .venv-086/bin/python ./ksadk-0.8.6-py3-none-any.whl
+```
+
+The wheel contains Python sources and compiled Web/Studio pages. It excludes the
+test tree, frontend source tree, `node_modules`, and Python dependency packages.
+Embedded pages do not provide a fully offline dependency environment: prepare a
+wheelhouse for offline installation, and provision model access, cloud resources,
+Node/Codex/DSH toolchains, and plugins separately.
+
+To roll back, stop the new process and switch to the retained environment/image.
+Validate important Studio workspaces on a copy and back up session data first.
+Never run old and new writers against the same workspace. Installing an older
+wheel does not undo persisted sessions, plugin configuration, or external effects.
+
+## Native Studio defaults
+
+Ordinary local Studio selects Native Harness and a durable SQLite execution
+ledger. Native owns the model/tool loop, context planning, task verification,
+child Agents, and recovery. Providers retain their framework execution semantics.
+Explicit Agent selection and injected hosts retain their compatibility settings.
+
+| Startup configuration | Behavior |
+| --- | --- |
+| Ordinary Studio without Native configuration | Native with a durable ledger |
+| `KSADK_STUDIO_NATIVE_DEFAULT=0` | Disable the Native default; use Managed unless specific Native Agents remain selected |
+| `KSADK_STUDIO_NATIVE_AGENT_IDS` | Select exact local Agents; disables the ordinary default when DEFAULT is unset |
+| `KSADK_STUDIO_NATIVE_DURABLE=0` | In-memory Native ledger; no cross-process recovery guarantee |
+
+These are startup host policies, not model-controlled parameters. Native cloud
+activation, shared storage, model takeover, browser reobservation, Hooks, and
+child recovery require explicit host declarations, authorization, and validation
+in the target environment. Package installation does not switch existing cloud
+Agents or grant plugins additional execution permissions.
+
+To use the compatibility path for all local Agents, also clear
+`KSADK_STUDIO_NATIVE_AGENT_IDS`; `DEFAULT=0` does not revoke an exact Native selection.
+
+### Entrypoints that still use Managed Harness
+
+The Studio default does not switch every entrypoint named `harness`:
+
+| Entrypoint | Current default engine |
+| --- | --- |
+| Harness Agents in ordinary local Studio | Native Harness |
+| Studio compatibility mode without selected Native Agents | Managed Harness |
+| SDK `create_harness_session()` / `HarnessSession` | Managed Harness |
+| Default non-Studio Runtime Registry with `runtime_type=harness` | Managed Harness unless the host explicitly injects a different factory |
+| Agents created in the cloud console | Determined by the resulting Framework, deployed image, and host composition; conversational authoring alone does not select an engine |
+
+The server accepts `Framework=harness` with ManagedRuntime deployment. Images
+using the default SDK Registry still execute through Managed Harness. Codex,
+ADK, and LangGraph Agents use their respective Providers. The adapter name
+`ManagedHarnessRuntimeAdapter` and the deployment type `ManagedRuntime` describe
+different layers. Base SDK dependencies retain LangGraph and SQLite checkpoint
+for compatibility entrypoints; Native independence means it does not import
+those frameworks while executing, not that the base package never installs them.
+
+Tool hard denies remain effective. An `unknown` receipt requires inspection and
+explicit reconciliation before another business action is attempted. Durable
+claims prevent concurrent duplicate execution; they do not guarantee exactly-once
+coordination between an external effect and a database commit.
+
+## History and database budgets
+
+Web 0.3.13 retains live turns, drafts, and original input order during pagination.
+New runtimes can advertise history source, epoch, and snapshot boundaries; older
+runtimes retain their cursor behavior. Failed reads preserve visible history.
+Timeouts are not treated as empty sessions or successful run completion.
+
+Database budgets are read at process startup and use seconds:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `KSADK_DB_CONNECT_SECONDS` | 0.5 | Connect |
+| `KSADK_DB_READ_ACQUIRE_SECONDS` | 0.3 | Acquire for ordinary reads |
+| `KSADK_DB_READ_SQL_SECONDS` | 1 | Each ordinary read SQL command |
+| `KSADK_DB_WRITE_ACQUIRE_SECONDS` | 0.5 | Acquire for writes |
+| `KSADK_DB_WRITE_SQL_SECONDS` | 3 | Each write SQL command |
+| `KSADK_DB_WRITE_OPERATION_SECONDS` | 5 | Complete write and commit verification |
+| `KSADK_DB_REPLAY_SQL_SECONDS` | 3 | Each complete-replay read |
+| `KSADK_DB_REPLAY_OPERATION_SECONDS` | 30 | Complete replay |
+| `KSADK_DB_LOCK_SECONDS` | 0.5 | Lock wait |
+| `KSADK_DB_CLEANUP_SECONDS` | 1 | Shared cancellation, rollback, and release budget |
+
+`KSADK_HISTORY_INITIAL_EVENTS` defaults to 256 (range 32–256).
+`KSADK_HISTORY_READ_CONCURRENCY` defaults to 4 per process (range 1–32).
+Tune for actual remote database latency. These budgets do not limit the Agent's
+whole turn, and a longer replay budget does not extend an ordinary history HTTP
+request. Unknown commits fence unsafe cache fallbacks until durable facts are
+verified, preventing incorrect replay or duplicate side effects.
+
+LangGraph uses an explicit graph `recursion_limit`, then
+`KSADK_LANGGRAPH_RECURSION_LIMIT`, then the default 50. Recursion and stream errors
+produce sanitized terminal failures with invocation identity preserved.
+
+## Companion Web and deployment
+
+The companion is `@kingsoftcloud/ksadk-web@0.3.13`. Python artifacts pin and embed
+compiled pages at build time; React hosts should pin the same reviewed version.
+Production Hosted UI still requires its host's separate build and deployment.
+Publishing Python/npm does not update existing runtime images or desktop apps.
+
+Local Native tests, browser fixtures, and installation smoke tests establish their
+specific local scenarios. Real models, MCP/Skill/Sandbox services, cloud auth,
+multi-replica recovery, and historical Agent interoperability require evidence
+from the target environment.

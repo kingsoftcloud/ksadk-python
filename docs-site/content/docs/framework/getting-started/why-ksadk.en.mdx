@@ -1,0 +1,75 @@
+---
+title: Why KsADK
+---
+
+KsADK is not another agent framework. It is a unified runtime layer for agents
+built with existing frameworks.
+
+Most frameworks answer "How do I build an agent?". KsADK focuses on "How do I run,
+debug, expose, deploy, and observe agents consistently?"
+
+<Callout type="info" title="One-line positioning">
+  Kingsoft Cloud Agent Development Kit: a cloud-native framework to build, deploy,
+  debug, and observe enterprise AI agents.
+</Callout>
+
+Keep building business logic with Google ADK, LangGraph, LangChain, or
+DeepAgents. Use KsADK for one CLI, local Web UI, OpenAI-Compatible API, Skill
+Runtime, Workspace, Sandbox, OpenClaw / Hermes runtime launch paths, and
+OpenTelemetry observability.
+
+## Relation To Other Frameworks
+
+<Tabs>
+  <Tab value="ADK" value="ADK">
+    Google ADK focuses on agent modeling, tools, multi-agent collaboration,
+    Session/Memory, local runs, and Web debugging. ADK solves agent development;
+    KsADK solves agent runtime.
+
+    KsADK does not replace ADK. It lets ADK agents share the same local runtime,
+    browser debugging UI, OpenAI-Compatible API, and deployment entrypoint as
+    LangGraph, LangChain, and DeepAgents projects. Useful when: your team has both
+    ADK and LangGraph projects, you want one Web UI to debug agents from different
+    frameworks, you need to expose local agents through OpenAI-Compatible APIs, or
+    you need Kingsoft Cloud AgentEngine/Skill/Workspace/Sandbox/deployment integration.
+  </Tab>
+  <Tab value="LangGraph" value="LangGraph">
+    LangGraph is strong at graph-state orchestration, checkpointing, streaming,
+    human-in-the-loop workflows, and the LangChain ecosystem.
+
+    KsADK does not rewrite LangGraph execution. It adds a runtime platform layer
+    around LangGraph projects: `agentengine run` for local terminal interaction,
+    `agentengine web` for browser debugging, `/v1/responses` and
+    `/v1/chat/completions` local protocols, Skill Runtime/Workspace/Sandbox
+    toolsets, and AgentEngine/Hermes/OpenClaw/Serverless deployment entrypoints.
+  </Tab>
+  <Tab value="OpenAI Agents SDK" value="OpenAI Agents SDK">
+    OpenAI Agents SDK is native to the OpenAI Responses API and provides agent
+    orchestration, tool calling, handoffs, guardrails, and tracing.
+
+    KsADK is multi-framework and multi-runtime. It does not require your business
+    agent to be written with the OpenAI Agents SDK. It wraps ADK, LangGraph,
+    LangChain, and DeepAgents projects into one local runtime, debugging,
+    OpenAI-Compatible API, and deployment workflow.
+  </Tab>
+</Tabs>
+
+## What KsADK Solves
+
+<Cards>
+  <Card title="Start fast" description="`agentengine init` / `agentengine config` / `agentengine run` to launch new agent projects." />
+  <Card title="Browser debugging" description="`agentengine web` and the ksadk-web UI to debug streaming, attachments, and tool calls." />
+  <Card title="Unified protocol" description="`/v1/responses`, `/v1/chat/completions` consistent across frameworks." />
+  <Card title="Tools and isolation" description="Skill Runtime, Workspace tools, Sandbox tools." />
+  <Card title="Deploy remotely" description="`agentengine build`, `agentengine launch`, Hermes/OpenClaw." />
+  <Card title="Unified observability" description="OpenTelemetry / OTLP tracing." />
+</Cards>
+
+## When You May Not Need KsADK
+
+<Callout type="info">
+  If you only have a single-file script that directly calls a model API and you do
+  not need browser debugging, isolated tools, unified protocols, deployment, or
+  observability, the framework itself may be enough. KsADK becomes useful when you
+  need one way to manage multiple agent projects.
+</Callout>

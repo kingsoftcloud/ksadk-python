@@ -1,0 +1,100 @@
+---
+title: Project Structure
+---
+
+A KsADK project explicitly configured via `agentengine.yaml` typically looks like:
+
+<Files>
+  <Folder name="my-agent" defaultOpen>
+    <File name="agentengine.yaml" />
+    <File name=".env" />
+    <File name="requirements.txt" />
+    <Folder name="my_agent" defaultOpen>
+      <File name="__init__.py" />
+      <File name="agent.py" />
+    </Folder>
+  </Folder>
+</Files>
+
+KsADK also detects `ksadk.yaml` and `ksadk.yml` for compatibility.
+
+## File Roles
+
+| File | Purpose |
+| --- | --- |
+| `agentengine.yaml` | framework, entry point and exported variable |
+| `.env` | local model credentials and optional platform settings, never commit real values |
+| `requirements.txt` | business dependencies |
+| `agent.py` | exports `root_agent` or the variable configured in `agentengine.yaml` |
+
+## `agent.py`
+
+The agent entry module should export the object configured as `agent_variable`. The default variable is `root_agent`.
+
+```python title="agent.py"
+root_agent = graph.compile()
+```
+
+For ADK projects this is usually a `google.adk.agents.Agent`. For LangGraph it is commonly a compiled graph. For LangChain it may be a runnable chain. For DeepAgents it is the object returned by `create_deep_agent`.
+
+## `agentengine.yaml`
+
+The project YAML makes framework detection explicit.
+
+```yaml title="agentengine.yaml"
+name: my-agent
+framework: langgraph
+entry_point: agent.py
+agent_variable: root_agent
+```
+
+Supported public framework values include:
+
+- `adk`
+- `langchain`
+- `langgraph`
+- `deepagents`
+
+## `.env`
+
+The `.env` file is for local secrets and provider settings. Keep it out of Git.
+
+```bash title=".env"
+OPENAI_API_KEY=sk-test
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL_NAME=my-model
+```
+
+For public docs and examples, use placeholders only. Do not publish real tokens,
+internal endpoints, private registry names, cookies, kubeconfig paths, or
+customer data.
+
+## Generated Files
+
+Local runs may create caches, virtual environments, build output, or runtime
+state. These are not source files:
+
+- `.venv/`
+- `__pycache__/`
+- `.pytest_cache/`
+- `dist/`
+- `build/`
+- `site/`
+- `.agentengine/`
+- `.agentengine.state`
+
+<Callout type="warning">
+  Do not commit real `.env`, `.agentengine/ui/sessions.sqlite`, build artifacts, caches, logs, tokens, kubeconfig files, or private registry credentials. Public samples may ship a `.env.example` containing only placeholder values.
+</Callout>
+
+## Importing An Existing Agent
+
+Use `--from-agent` when you already have a Python file or directory:
+
+```bash
+agentengine init my-agent --from-agent ./existing_agent.py
+agentengine init my-agent --from-agent ./existing_agent_dir
+```
+
+After import, inspect `agentengine.yaml` and confirm the detected framework,
+entry point, and exported variable before running the project.

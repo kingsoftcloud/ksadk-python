@@ -1,0 +1,220 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 880" role="img" aria-labelledby="title desc">
+  <title id="title">KsADK ToolResultBudget 与运行时熔断</title>
+  <desc id="desc">工具结果预算:超阈值落盘返回预览,否则内联截断;runtime 五道熔断闸门。</desc>
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .bg-light { fill: #0f172a; }
+      rect[fill="#ffffff"] { fill: #1e293b; }
+      rect[fill="#fbfbf9"] { fill: #0f172a; }
+      rect[fill="#fff7ed"] { fill: #1e1b14; }
+      rect[fill="#ecfdf5"] { fill: #0f1f1a; }
+      rect[fill="#eef2ff"] { fill: #1a1f2e; }
+      rect[fill="#fef2f2"] { fill: #1f1414; }
+      text[fill="#0f172a"] { fill: #f1f5f9; }
+      text[fill="#1e293b"] { fill: #e2e8f0; }
+      text[fill="#334155"] { fill: #cbd5e1; }
+      text[fill="#475569"] { fill: #94a3b8; }
+      text[fill="#64748b"] { fill: #94a3b8; }
+      text[fill="#92400e"] { fill: #fbbf24; }
+      text[fill="#5b21b6"] { fill: #c4b5fd; }
+      text[fill="#7c3aed"] { fill: #a78bfa; }
+      text[fill="#047857"] { fill: #34d399; }
+      text[fill="#059669"] { fill: #34d399; }
+      text[fill="#b91c1c"] { fill: #fca5a5; }
+      rect[stroke="#cbd5e1"] { stroke: #475569; }
+      rect[stroke="#94a3b8"] { stroke: #64748b; }
+    }
+  </style>
+  <defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
+    <marker id="adisp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+    <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+    <marker id="aalert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b91c1c"/></marker>
+  </defs>
+
+  <rect class="bg-light" width="1280" height="880" fill="#fbfbf9"/>
+
+  <!-- 标题 -->
+  <text x="40" y="38" font-size="18" font-weight="700" fill="#1e293b">KsADK · ToolResultBudget 与运行时熔断</text>
+  <text x="40" y="58" font-size="11" fill="#64748b">超阈值落盘返回预览 · 否则内联截断 · runtime 五道熔断闸门</text>
+
+  <!-- ===== 左区:工具结果预算 ===== -->
+  <rect x="40" y="80" width="720" height="560" rx="12" fill="none" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,4"/>
+  <text x="56" y="102" font-size="12" font-weight="700" fill="#92400e">工具结果预算 · ksadk/tools/result_budget.py</text>
+  <text x="360" y="102" font-size="9.5" fill="#64748b">budget_tool_output / budget_text_fields</text>
+
+  <!-- 工具执行 -->
+  <g>
+    <rect x="120" y="124" width="560" height="58" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="400" y="148" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">工具执行 → 原始输出</text>
+    <text x="400" y="166" font-size="9.5" fill="#475569" text-anchor="middle">run_command / run_code · stdout · stderr　web_fetch · text</text>
+  </g>
+
+  <!-- _stringify_value -->
+  <g>
+    <rect x="120" y="202" width="560" height="50" rx="6" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <text x="400" y="223" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">_stringify_value → text + mime_type + extension</text>
+    <text x="400" y="240" font-size="9" fill="#64748b" text-anchor="middle">str → text/plain(.txt)　·　obj → application/json(.json)</text>
+  </g>
+
+  <!-- 判定菱形 -->
+  <g>
+    <path d="M 400,272 L 560,320 L 400,368 L 240,320 Z" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="400" y="312" font-size="11" font-weight="700" fill="#b91c1c" text-anchor="middle">len(text) &gt; persist_threshold</text>
+    <text x="400" y="328" font-size="11" font-weight="700" fill="#b91c1c" text-anchor="middle">或 &gt; max_chars ?</text>
+    <text x="400" y="346" font-size="8.5" fill="#92400e" text-anchor="middle">should_persist</text>
+  </g>
+
+  <!-- 否:内联 -->
+  <g>
+    <rect x="70" y="396" width="240" height="118" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="190" y="420" font-size="11.5" font-weight="600" fill="#047857" text-anchor="middle">否 · 内联返回</text>
+    <line x1="90" y1="430" x2="290" y2="430" stroke="#059669" stroke-width="0.5" stroke-opacity="0.3"/>
+    <text x="190" y="448" font-size="9.5" fill="#475569" text-anchor="middle">preview = text[:max_chars]</text>
+    <text x="190" y="466" font-size="9.5" fill="#475569" text-anchor="middle">截断到 KSADK_TOOL_RESULT_MAX_CHARS</text>
+    <text x="190" y="486" font-size="9" fill="#64748b" text-anchor="middle">不写盘 · 无 persisted 字段</text>
+    <text x="190" y="504" font-size="8.5" fill="#64748b" text-anchor="middle">默认 50000 chars</text>
+  </g>
+
+  <!-- 是:持久化 -->
+  <g>
+    <rect x="490" y="396" width="240" height="118" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="610" y="420" font-size="11.5" font-weight="600" fill="#7c3aed" text-anchor="middle">是 · 落盘持久化</text>
+    <line x1="510" y1="430" x2="710" y2="430" stroke="#7c3aed" stroke-width="0.5" stroke-opacity="0.3"/>
+    <text x="610" y="448" font-size="9.5" fill="#475569" text-anchor="middle">写 persist_dir / {stem}.{ext}</text>
+    <text x="610" y="466" font-size="9.5" fill="#475569" text-anchor="middle">preview = text[:min(preview, max)]</text>
+    <text x="610" y="486" font-size="9" fill="#64748b" text-anchor="middle">越界抛 ValueError</text>
+    <text x="610" y="504" font-size="8.5" fill="#64748b" text-anchor="middle">dir 默认 &lt;session&gt;/tool-results</text>
+  </g>
+
+  <!-- 判定到两分支 -->
+  <path d="M 320,338 L 190,396" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+  <text x="232" y="362" font-size="9.5" fill="#047857">否</text>
+  <path d="M 480,338 L 610,396" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.9"/>
+  <text x="540" y="362" font-size="9.5" fill="#7c3aed">是</text>
+
+  <!-- 返回 envelope -->
+  <g>
+    <rect x="120" y="540" width="560" height="86" rx="6" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+    <text x="400" y="562" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">返回结果 envelope</text>
+    <line x1="140" y1="572" x2="660" y2="572" stroke="#475569" stroke-width="0.5" stroke-opacity="0.3"/>
+    <text x="140" y="590" font-size="9.5" fill="#475569">· field = preview</text>
+    <text x="140" y="606" font-size="9.5" fill="#475569">· {field}_truncated / _original_chars / _preview_chars</text>
+    <text x="140" y="622" font-size="9.5" fill="#475569">· 落盘时:persisted_outputs[field] = {"path", "mime_type"}</text>
+  </g>
+
+  <!-- 两分支汇入 envelope -->
+  <path d="M 190,514 L 190,540" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+  <path d="M 610,514 L 610,540" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.9"/>
+
+  <!-- 流向:工具执行 → stringify → 判定 -->
+  <path d="M 400,182 L 400,202" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+  <path d="M 400,252 L 400,272" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+
+  <!-- 配置面板(预算) -->
+  <g>
+    <rect x="40" y="660" width="720" height="50" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+    <text x="56" y="680" font-size="10" font-weight="700" fill="#334155">预算配置(默认值)</text>
+    <text x="56" y="697" font-size="9" fill="#475569">MAX_CHARS=50000　·　PREVIEW_CHARS=8000　·　PERSIST_THRESHOLD=max_chars　·　KSADK_TOOL_RESULT_DIR</text>
+  </g>
+
+  <!-- ===== 右区:运行时熔断 ===== -->
+  <rect x="780" y="80" width="460" height="630" rx="12" fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,4"/>
+  <text x="796" y="102" font-size="12" font-weight="700" fill="#b91c1c">Runtime 熔断闸门 · conversations/runtime.py</text>
+  <text x="1060" y="102" font-size="9.5" fill="#64748b">超限抛 RuntimeCircuitOpen</text>
+
+  <!-- 熔断触发说明 -->
+  <g>
+    <rect x="800" y="124" width="420" height="40" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="1010" y="142" font-size="10" font-weight="600" fill="#b91c1c" text-anchor="middle">每轮 turn / 每次 tool_call 前校验</text>
+    <text x="1010" y="156" font-size="9" fill="#92400e" text-anchor="middle">默认 0 = 不启用 · 由 env 显式打开</text>
+  </g>
+
+  <!-- 闸门 1: max_turns -->
+  <g>
+    <rect x="800" y="180" width="420" height="56" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="816" y="200" font-size="10.5" font-weight="700" fill="#1e293b">KSADK_MAX_TURNS</text>
+    <text x="816" y="216" font-size="9" fill="#475569">turn_count += 1　·　_record_turn_start</text>
+    <text x="816" y="230" font-size="9" fill="#64748b">超 max_turns → reason: max_turns_exceeded</text>
+  </g>
+
+  <!-- 闸门 2: max_tool_calls -->
+  <g>
+    <rect x="800" y="246" width="420" height="56" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="816" y="266" font-size="10.5" font-weight="700" fill="#1e293b">KSADK_MAX_TOOL_CALLS</text>
+    <text x="816" y="282" font-size="9" fill="#475569">tool_calls += 1　·　_record_tool_call</text>
+    <text x="816" y="296" font-size="9" fill="#64748b">超 max_tool_calls → reason: max_tool_calls_exceeded</text>
+  </g>
+
+  <!-- 闸门 3: consecutive_tool_failures -->
+  <g>
+    <rect x="800" y="312" width="420" height="56" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="816" y="332" font-size="10.5" font-weight="700" fill="#1e293b">KSADK_MAX_CONSECUTIVE_TOOL_FAILURES</text>
+    <text x="816" y="348" font-size="9" fill="#475569">output.ok is False → 计数 +1,成功归零</text>
+    <text x="816" y="362" font-size="9" fill="#64748b">≥ 上限 → reason: consecutive_tool_failures</text>
+  </g>
+
+  <!-- 闸门 4: consecutive_approval_denials -->
+  <g>
+    <rect x="800" y="378" width="420" height="56" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="816" y="398" font-size="10.5" font-weight="700" fill="#1e293b">KSADK_MAX_CONSECUTIVE_APPROVAL_DENIALS</text>
+    <text x="816" y="414" font-size="9" fill="#475569">审批 deny → 计数 +1,approved → 归零</text>
+    <text x="816" y="428" font-size="9" fill="#64748b">≥ 上限 → reason: consecutive_approval_denials</text>
+  </g>
+
+  <!-- 闸门 5: consecutive_compact_failures -->
+  <g>
+    <rect x="800" y="444" width="420" height="56" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="816" y="464" font-size="10.5" font-weight="700" fill="#1e293b">KSADK_MAX_CONSECUTIVE_COMPACT_FAILURES</text>
+    <text x="816" y="480" font-size="9" fill="#475569">compact 异常 → +1,checkpoint 成功归零</text>
+    <text x="816" y="494" font-size="9" fill="#64748b">≥ 上限 → reason: consecutive_compact_failures</text>
+  </g>
+
+  <!-- RuntimeCircuitOpen -->
+  <g>
+    <rect x="800" y="520" width="420" height="70" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.5"/>
+    <text x="1010" y="544" font-size="11.5" font-weight="700" fill="#b91c1c" text-anchor="middle">RuntimeCircuitOpen(reason, message)</text>
+    <text x="1010" y="562" font-size="9.5" fill="#92400e" text-anchor="middle">metadata: 各上限 + 当前计数</text>
+    <text x="1010" y="578" font-size="9" fill="#64748b" text-anchor="middle">turn_count / tool_calls / consecutive_*</text>
+  </g>
+
+  <!-- 五道闸门 → 熔断 -->
+  <path d="M 1010,236 L 1010,246" fill="none" stroke="#b91c1c" stroke-width="1" stroke-opacity="0.35"/>
+  <path d="M 1010,302 L 1010,312" fill="none" stroke="#b91c1c" stroke-width="1" stroke-opacity="0.35"/>
+  <path d="M 1010,368 L 1010,378" fill="none" stroke="#b91c1c" stroke-width="1" stroke-opacity="0.35"/>
+  <path d="M 1010,434 L 1010,444" fill="none" stroke="#b91c1c" stroke-width="1" stroke-opacity="0.35"/>
+  <path d="M 1010,500 L 1010,520" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)"/>
+
+  <!-- 熔断 → 终止运行 -->
+  <g>
+    <rect x="800" y="610" width="420" height="44" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="3,3"/>
+    <text x="1010" y="630" font-size="10.5" font-weight="600" fill="#b91c1c" text-anchor="middle">中断本轮 runtime · 事件上抛</text>
+    <text x="1010" y="645" font-size="8.5" fill="#64748b" text-anchor="middle">SubscribeRunEvents · transcript 落 reason</text>
+  </g>
+  <path d="M 1010,590 L 1010,610" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)"/>
+
+  <!-- ===== 跨区:预算结果喂回 runtime ===== -->
+  <path d="M 680,610 L 760,610 L 760,210 L 800,210" fill="none" stroke="#475569" stroke-width="1.2" marker-end="url(#ag)" stroke-dasharray="4,3" stroke-opacity="0.55"/>
+  <text x="766" y="408" font-size="9" fill="#475569" transform="rotate(-90 766 408)">预算后的 tool_result 计入熔断计数</text>
+
+  <!-- 图例 -->
+  <g transform="translate(40, 740)">
+    <text x="0" y="0" font-size="11" font-weight="700" fill="#1e293b">图例</text>
+    <rect x="0" y="12" width="14" height="14" rx="2" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="20" y="23" font-size="9.5" fill="#475569">工具 / dispatcher</text>
+    <rect x="130" y="12" width="14" height="14" rx="2" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="150" y="23" font-size="9.5" fill="#475569">内联 / Runner</text>
+    <rect x="250" y="12" width="14" height="14" rx="2" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="270" y="23" font-size="9.5" fill="#475569">落盘 / 存储</text>
+    <rect x="360" y="12" width="14" height="14" rx="2" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="380" y="23" font-size="9.5" fill="#475569">熔断 / 判定</text>
+    <line x1="470" y1="19" x2="500" y2="19" stroke="#475569" stroke-width="1.2" marker-end="url(#ag)"/>
+    <text x="508" y="23" font-size="9.5" fill="#475569">数据流</text>
+    <line x1="570" y1="19" x2="600" y2="19" stroke="#475569" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ag)"/>
+    <text x="608" y="23" font-size="9.5" fill="#475569">计入熔断</text>
+    <text x="0" y="50" font-size="9.5" fill="#64748b">预算原则:超 persist_threshold 或 max_chars → 落盘 + 返回 preview;否则内联截断到 max_chars。两者共用同一 envelope 字段。</text>
+    <text x="0" y="66" font-size="9.5" fill="#64748b">熔断原则:所有上限默认 0(关闭),由 env 显式配置;触发即抛 RuntimeCircuitOpen 并带 metadata,中断本轮运行。</text>
+  </g>
+</svg>

@@ -1,0 +1,423 @@
+---
+title: 环境变量参考
+---
+
+<Callout type="info">
+  本页列出本地运行和发布流水线中最常用的 KsADK 环境变量。提交到仓库的文件只放占位值，真实值放本地 `.env` 或 CI secrets。
+</Callout>
+
+## 模型 Provider
+
+<Callout type="info">
+  OpenAI 兼容 provider 与托管运行时模型策略相关变量。
+</Callout>
+
+| 变量 | 用途 |
+| --- | --- |
+| `OPENAI_API_KEY` | OpenAI 兼容模型 provider 的 API Key |
+| `OPENAI_BASE_URL` | provider base URL，通常以 `/v1` 结尾 |
+| `OPENAI_API_BASE` | `OPENAI_BASE_URL` 的兼容别名 |
+| `OPENAI_MODEL_NAME` | 本地 runner 和 UI 使用的默认模型 |
+| `AGENTENGINE_MODEL_POLICY_JSON` | 托管运行时注入的模型策略 JSON，可统一声明 primary / multimodal / fallback 默认值 |
+| `OPENAI_FALLBACK_MODEL_NAME` | 通用 fallback 模型兼容变量，Hermes 等运行时可读取 |
+| `HERMES_DEFAULT_MODEL` | Hermes 显式默认模型覆盖 |
+| `HERMES_FALLBACK_MODEL` | Hermes 显式 fallback 模型覆盖 |
+| `HERMES_MODEL_CATALOG_JSON` | Hermes 模型 catalog JSON，覆盖策略默认 catalog |
+| `OPENCLAW_DEFAULT_MODEL` | OpenClaw 显式默认模型覆盖 |
+| `OPENCLAW_FALLBACK_MODEL` | OpenClaw 显式 fallback 模型覆盖 |
+| `OPENCLAW_IMAGE_MODEL` | OpenClaw 显式多模态 / 图像模型覆盖 |
+| `OPENCLAW_MODEL_CATALOG_JSON` | OpenClaw 模型 catalog JSON，覆盖策略默认 catalog |
+| `MODEL_NAME` | 一些项目使用的兼容别名 |
+
+示例：
+
+```bash title="bash"
+OPENAI_API_KEY=sk-test
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL_NAME=my-model
+```
+
+## Codex 与模型代理
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_CODEX_APPROVAL` | Codex 审批策略；Studio 可按下一轮对话传入审批等级 |
+| `KSADK_CODEX_HOME` | 原生 Codex HOME 显式覆盖；通常由运行时自动隔离 |
+| `KSADK_CODEX_ISOLATE_HOME` | 默认 `1`；设为 `0` 仅用于调试复用进程 HOME |
+| `KSADK_CODEX_SANDBOX` | Codex 沙箱模式：`read_only`、`workspace_write` 或 `full_access` |
+| `KSADK_CODEX_USE_PROXY` | `1` 强制启用 Codex 本地协议代理，`0` 强制直连；未设置时只对自定义上游做保守探测 |
+| `KSADK_PROXY_UPSTREAM_BASE` | Codex proxy 上游 URL 覆盖，默认读取 OpenAI 兼容 base URL |
+| `KSADK_PROXY_UPSTREAM_KEY` | Codex proxy 上游凭据覆盖（敏感） |
+| `KSADK_PROXY_TOKEN` | 本地回环 proxy 与 Codex 子进程之间的 bearer token（敏感，通常由 SDK 生成） |
+| `KSADK_MODEL_PROXY_ENABLED` | 启用实验性模型协议转换层，默认 `0` |
+| `KSADK_MODEL_PROXY_AGENTS` | 逗号分隔的 agent allowlist |
+| `KSADK_MODEL_PROXY_MODELS` | 逗号分隔的 model allowlist |
+| `KSADK_MODEL_PROXY_DENY` | 逗号分隔的 denylist，用于紧急关闭代理 |
+| `KSADK_STUDIO_NO_SECURITY` | 仅受控自动化测试使用；设为 `1` 会关闭本地 session/CSRF 校验 |
+| `KSADK_STUDIO_SESSION_TOKEN` | Studio 本地浏览器 session token（敏感；未设置时随机生成） |
+| `KSADK_STUDIO_TRACE_CONTENT` | 是否保存 Trace 事件正文，默认 `1`；设为 `0` 只保留元数据 |
+
+## 0.8 Runtime、A2A 与 A2UI
+
+以下变量由 0.8 的托管 Runtime 和 A2A 数据面使用。标记为“平台注入”的变量是部署契约，
+用户不应写进 `.env` 或提交到仓库。
+
+### Codex ManagedRuntime
+
+| 变量 | 所有者 | 用途 |
+| --- | --- | --- |
+| `AGENTENGINE_BASE_INSTRUCTIONS` | 控制台 / Server | 声明式创建 Codex Agent 时写入 manifest `prompt` 的服务端输入；本机 `web` 直接读取 YAML。 |
+| `AGENTENGINE_MANAGED_RUNTIME_NAME` | 平台注入 | catalog 解析后的 Runtime 名称；镜像启动时必须匹配 manifest `runtime.name`。 |
+| `AGENTENGINE_MANAGED_RUNTIME_VERSION` | 平台注入 | catalog 解析后的 Runtime 版本；镜像同时校验已安装的 `openai-codex`。 |
+| `AGENTENGINE_MANIFEST_PROTOCOL` | 平台注入 | 内联 manifest 协议；当前为 `runtime-manifest/v1`。 |
+| `AGENTENGINE_MANIFEST_SHA256` | 平台注入 | 规范化 `agentengine.yaml` 的 SHA-256；启动时用于防止静默漂移。 |
+
+### A2A Runtime
+
+| 变量 | 所有者 | 用途 |
+| --- | --- | --- |
+| `KSADK_A2A_SPACE_IDS` | 平台注入 | Runtime 已配置 A2A Space 的 JSON 数组；一个以上 Space 时调用方必须显式选择 `space_id`。 |
+| `KSADK_A2A_CONTROL_PLANE_URL` | 平台注入 | A2A control plane 基地址；不会回退到通用 AgentEngine server URL。 |
+| `KSADK_A2A_ENABLE_PUBLIC_EGRESS` | 部署层注入 | 是否允许 `external_public`；未注入时按 `false` fail-closed。 |
+| `KSADK_A2A_EVENT_OUTBOX_PATH` | 平台 / 开发者 | durable A2A task-event outbox 路径；生产环境应在 Runtime 可写持久卷中。 |
+| `KSADK_A2A_TOKEN_DIR` | token sidecar | audience workload JWT 的投影目录；不要手动创建或提交这些 token。 |
+
+### Hosted UI
+
+| 变量 | 所有者 | 用途 |
+| --- | --- | --- |
+| `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | 平台 / 开发者 | A2UI 结构化生成超时秒数；有效范围 `1` 到 `120`，默认 `20`。 |
+
+这些变量的协议与运行边界见 [A2A Runtime](../framework/guides/a2a-runtime.mdx)、
+[Codex Managed Runtime](../framework/guides/managed-runtime.mdx) 和
+[Hosted UI 与事件回放](../framework/guides/hosted-ui-events.mdx)。
+
+## 统一模型策略与 fallback（0.6.6+）
+
+托管部署中，平台可以通过 `AGENTENGINE_MODEL_POLICY_JSON` 注入统一模型策略，Hermes、OpenClaw 和通用 Agent 共用同一套默认语义。0.6.6 默认策略 v1 使用 `glm-5.2` 作为主模型、`kimi-k2.7-code` 作为多模态模型、`deepseek-v4-pro` 作为 fallback；显式请求参数或显式环境变量（如 `HERMES_DEFAULT_MODEL` / `OPENCLAW_FALLBACK_MODEL`）仍优先于策略默认值。
+
+- **fallback 重试语义**：conversation runtime 对超时、限流、5xx、模型不可用、权限/配额等可恢复错误自动 fallback 重试一次；400 参数错误、业务错误和 tool 错误不会被吞掉。
+- **reasoning 声明（0.6.7）**：`DEFAULT_MODEL_POLICY` 每个模型新增 `reasoning: true` 声明，catalog 输出暴露 `reasoning` 字段，供控制台判断模型是否支持思考能力。
+- **thinking disable 注入（0.6.7）**：当 `model_options.thinking` 为 disabled（`reasoning.effort=none` 或 `thinking.type=disabled` 或 `max_reasoning_tokens<=0`）时，runtime 自动向 `extra_body` 注入 `enable_thinking=false` 和 `chat_template_kwargs.enable_thinking=false`（DeepSeek 等模型兼容），并在流式输出中过滤 reasoning 类 output item。
+
+## 项目与本地 UI
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_PROJECT_DIR` | `agentengine web` 解析出的项目目录 |
+| `AGENTENGINE_UI_DIR` | 本地 UI 状态目录，默认在 `.agentengine/ui` 下 |
+| `KSADK_UI_PROFILE` | Agent UI profile 选择器，`custom` 时 runtime 暴露自定义 UI bootstrap（0.6.7） |
+| `KSADK_UI_PATH` | 自定义 UI 挂载路径，例如 `/` 或 `/research`；custom profile 的 `/chat` 自动修正为 `/`（0.6.7） |
+| `KSADK_UI_URL` | 外部自定义 UI URL（0.6.7） |
+| `KSADK_UI_BUNDLE_PATH` | 自定义 UI 静态 bundle 相对项目路径；本地默认自动探测 `research-ui/dist`（0.6.7） |
+| `KSYUN_REGION` | 云端 action 和部分 SDK client 使用的区域 |
+
+## 云账号身份解析
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSYUN_IAM_ENDPOINT` | 可选：覆盖 IAM 公网 endpoint；未配置时使用 `iam.api.ksyun.com` |
+| `KSYUN_IAM_INTRANET_URL` | 可选：覆盖由平台提供的 IAM 内网 endpoint；公开环境通常留空 |
+| `IAM_INTRANET_URL` | `KSYUN_IAM_INTRANET_URL` 的兼容别名 |
+
+<Callout type="info">
+  仅当平台运维方提供了已批准的内网 endpoint 时，才设置
+  `KSYUN_IAM_INTRANET_URL` 或 `IAM_INTRANET_URL`。不要把该地址写入项目文件、
+  文档示例或 Agent manifest。
+</Callout>
+
+## 会话存储
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_SESSION_BACKEND` | session backend，例如 `local` 或 `postgres` |
+| `AGENTENGINE_SESSION_BACKEND` | session backend 兼容别名 |
+| `KSADK_SESSION_DSN` | PostgreSQL 或共享后端 DSN |
+| `KSADK_SESSION_PATH` | 本地 session 数据库路径 |
+| `KSADK_SESSION_NAMESPACE` | 共享 session 后端命名空间 |
+| `KSADK_SESSION_CONNECT_TIMEOUT` | PostgreSQL session backend 连接超时秒数，默认 `5`；连接失败抛 `SessionBackendUnavailable`，server 返回 503 而非 500（0.6.7） |
+| `KSADK_STM_BACKEND` | 短期记忆/session backend 兼容变量 |
+| `KSADK_STM_PATH` | 本地 SQLite UI/session 状态路径 |
+| `KSADK_STM_DB_PATH` | 本地 SQLite 路径兼容别名 |
+| `KSADK_STM_URL` | 数据库型 session 状态 DSN 兼容变量 |
+| `KSADK_STM_DB_URL` | 数据库型 session 状态 DSN 兼容变量 |
+| `KSADK_ADK_SESSION_BACKEND` | ADK 原生 session backend 选择器 |
+| `KSADK_ADK_SESSION_PATH` | ADK 原生 SQLite session 路径 |
+| `KSADK_ADK_SESSION_URL` | ADK 原生数据库 session URL |
+| `KSADK_TENANT_ID` | session 命名空间租户 id |
+| `KSADK_WORKSPACE_ID` | session 命名空间 workspace id |
+| `AGENTENGINE_TENANT_ID` | 租户 id 兼容变量 |
+| `AGENTENGINE_WORKSPACE_ID` | workspace id 兼容变量 |
+
+本地 UI 通常设置：
+
+```bash title="bash"
+KSADK_STM_BACKEND=sqlite
+KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
+```
+
+## Agent Kernel
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_ENABLE_KERNEL` | Code/Container 的每 Agent 托管 Kernel 请求开关，默认 `false`；交互/OAuth 接入示例设为 `1`，仍需服务端准入。不同于平台注入的 `AGENT_KERNEL_ENABLED`，不能据此伪造身份或 permit。 |
+| `KSADK_AGENT_KERNEL` | 本地显式启用 Kernel ingress；默认关闭 |
+| `AGENT_KERNEL_ENABLED` | 托管部署由平台投射的启用开关；旧 Agent 未投射时继续走历史路径 |
+| `AGENT_KERNEL_STORE_DRIVER` | `memory`、本地 `sqlite` 或 `postgres`；托管生产组合支持 ephemeral memory 或 durable PostgreSQL |
+| `AGENT_KERNEL_STORE_DSN` | `postgres` 时必填；本地 `sqlite` 时可填写数据库文件路径；memory 不需要 |
+| `AGENT_KERNEL_DURABILITY_TIER` | `ephemeral` 或 `durable`；托管 memory 必须显式选择 `ephemeral` |
+| `AGENT_KERNEL_AUTHORITY_MODE` | `local` 或 `hosted`；托管模式只信任 Server permit |
+| `AGENT_CONTROL_JWKS_URL` | 托管 Runtime 验证 Server 签名 permit 的 JWKS 地址，由平台注入 |
+| `AGENT_CONTROL_PERMIT_ISSUER` | 受信 permit issuer，由平台注入 |
+| `AGENT_KERNEL_CONTRACT_DIGEST` | 控制面与 Runtime 的冻结合同 digest；托管不匹配时拒绝启动 |
+| `AGENT_KERNEL_CAPABILITY_DIGEST` | 实际 Runtime capability matrix digest；与适配器声明不匹配时拒绝准入 |
+| `AGENT_BUNDLE_DIGEST` | 当前不可变 Agent Bundle 标识，用于 owner 与恢复证据 |
+
+<Callout type="warning" title="PostgreSQL 不是默认依赖">
+  单副本、无需跨 Pod 恢复的托管 Agent 可使用 `memory` 并显式声明
+  `AGENT_KERNEL_DURABILITY_TIER=ephemeral`。需要 durable Inbox、跨 Pod takeover
+  或高可用时再选择 `postgres`；此时缺少 `AGENT_KERNEL_STORE_DSN` 会启动失败。
+</Callout>
+
+## Checkpoint 存储
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_CHECKPOINT_BACKEND` | 开启自动绑定且无 PG 配置时的 backend 选择：`local` / `sqlite` / `memory` / `postgres`，默认 `local`；有效 PG 配置优先，显式 `postgres` 却没有 DSN 时报告配置缺失。 |
+| `KSADK_CHECKPOINT_PATH` | 本地 SQLite checkpoint 路径，默认 `.agentengine/ui/checkpoints.sqlite`（0.6.7） |
+| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | 框架专用 PG 地址，优先于 `KSADK_CHECKPOINT_DSN`，其次回退有效的 PostgreSQL session 地址。 |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | 唯一的自动 checkpoint 开关，默认 `false`。保留已有 saver 和 `checkpointer=False`；开启且图未配置 saver 时，有 PG 配置用 PG，没有 PG 配置用 SQLite 并记录日志。PG 路径仍要求 `ksadk_graph_factory(*, checkpointer)` 和 `ksadk_prepare_state(payload, session_context)`；PG 失败不回退 SQLite。 |
+
+本地 session 默认配置与图的自动 checkpoint 分开。需要 SDK 自动绑定时设置 `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1`；没有 PG 配置时使用 `.agentengine/ui/checkpoints.sqlite`。未设置或关闭时不为未配置 saver 的图自动绑定。这取代此前本地无需统一开关就绑定 SQLite 的行为。
+
+PG 选择顺序：框架专用 checkpoint DSN → 通用 checkpoint DSN → 有效的 PostgreSQL session DSN。显式本地 backend/path 不覆盖已配置 PG。选择日志只记录后端、原因、本地文件路径和本地能力，不记录 DSN 或凭证。SQLite 不是共享存储，不代表支持跨 Pod 恢复。
+
+## Ambient 运行时上下文
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_KB_AMBIENT_ENABLED` | 启用运行时注入知识库上下文，默认启用 |
+| `KSADK_KB_AMBIENT_POLICY` | `on_demand`、`always` 或 `disabled` |
+| `KSADK_LTM_AMBIENT_ENABLED` | 启用运行时注入记忆上下文，默认启用 |
+| `KSADK_LTM_AMBIENT_POLICY` | `on_demand`、`always` 或 `disabled` |
+| `KSADK_LTM_AUTO_SAVE` | 支持时把完整对话轮次保存到长期记忆 |
+| `KSADK_LTM_AGENT_ID` | 记忆条目关联的 agent id |
+
+## Workspace 文件
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_WORKSPACE_FILES_ENABLED` | 启用 workspace 文件路由 |
+| `KSADK_WORKSPACE_ROOT_LABEL` | workspace 根目录显示名称 |
+| `KSADK_WORKSPACE_MAX_UPLOAD_BYTES` | 单文件上传大小上限 |
+
+## 长期记忆
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_LTM_BACKEND` | 记忆 backend：`local`、`http` 或 `sdk` |
+| `KSADK_LTM_TOP_K` | 默认检索记忆条数 |
+| `KSADK_LTM_INDEX` | 本地或通用记忆索引名 |
+| `KSADK_LTM_APP_NAME` | 记忆服务应用名 |
+| `KSADK_LTM_HTTP_URL` | HTTP 记忆 backend 地址 |
+| `KSADK_LTM_HTTP_TOKEN` | HTTP 记忆 backend token |
+| `KSADK_LTM_ACCESS_KEY` | SDK 记忆 AK，可回退到云账号 AK 环境变量 |
+| `KSADK_LTM_SECRET_KEY` | SDK 记忆 SK，可回退到云账号 SK 环境变量 |
+| `KSADK_LTM_REGION` | SDK 记忆区域 |
+| `KSADK_LTM_ENDPOINT` | SDK 记忆 endpoint |
+| `KSADK_LTM_SCHEME` | SDK 记忆协议，通常为 `https` |
+| `KSADK_LTM_NAMESPACE` | SDK 记忆 namespace |
+| `KSADK_LTM_AGENT_ID` | 记忆条目关联的 agent id |
+| `KSADK_LTM_SCENE_ID` | 场景 id，默认 `_sys_general` |
+| `KSADK_LTM_AUTO_SAVE` | 支持时启用自动记忆保存 |
+| `KSADK_MEMORY_BACKEND` | 旧版通用 memory backend 选择器 |
+| `KSADK_MEMORY_URL` | 旧版通用 memory backend URL |
+| `KSADK_MEMORY_PREFIX` | 旧版通用 memory key 前缀 |
+| `KSADK_MEMORY_TTL` | 旧版通用 memory TTL，单位秒 |
+
+## 知识库
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_KB_DATASET_ID` | 启用知识库数据集集成 |
+| `KSADK_KB_TOP_K` | 检索片段数量 |
+| `KSADK_KB_ACCESS_KEY` | 可选知识库 SDK AK |
+| `KSADK_KB_SECRET_KEY` | 可选知识库 SDK SK |
+| `KSADK_KB_REGION` | 知识库服务区域 |
+| `KSADK_KB_ENDPOINT` | 知识库服务 endpoint |
+| `KSADK_KB_SEARCH_METHOD` | 检索方式，默认 `intelligence_search` |
+| `KSADK_KB_SCORE_THRESHOLD` | 可选分数阈值 |
+| `KSADK_KB_RERANKING_ENABLE` | 支持时启用 reranking |
+
+## Skill Runtime
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_SKILL_SPACE_IDS` | 逗号分隔的 Skill Space id |
+| `SKILL_SPACE_ID` | 单个 Skill Space id 的兼容别名 |
+| `KSADK_PUBLIC_SKILL_SPACE_IDS` | 追加的公共 Skill Space id |
+| `KSADK_PUBLIC_SKILL_ALLOWLIST` | 允许暴露的公共 Skill 名称 |
+| `KSADK_LOCAL_SKILLS_DIR` | 包含 `SKILL.md` 包的本地目录 |
+| `KSADK_SELECTED_SKILL_NAMES` | 外层 Agent 选择的 Skill 名称 |
+| `KSADK_SKILLS_MODE` | Skill 加载模式：`auto`、`local` 或 `sandbox` |
+| `KSADK_SKILL_SERVICE_URL` | Skill Service endpoint |
+| `KSADK_SKILL_SERVICE_TOKEN` | token 鉴权时的 Skill Service token |
+| `KSADK_SKILL_SERVICE_ACCESS_KEY` | 签名请求使用的 Skill Service AK |
+| `KSADK_SKILL_SERVICE_SECRET_KEY` | 签名请求使用的 Skill Service SK |
+| `KSADK_SKILL_SERVICE_ACCOUNT_ID` | 签名请求账号 id |
+| `KSADK_SKILL_SERVICE_REGION` | Skill Service 区域 |
+| `KSADK_SKILL_SERVICE_API_VERSION` | Skill Service API 版本 |
+| `KSADK_SKILL_SERVICE_SIGN_SERVICE` | 签名 service 名称 |
+| `KSADK_SKILL_CACHE_DIR` | 已下载 skill 包本地缓存目录 |
+| `KSADK_SKILL_ALLOW_HASH_MISMATCH` | 允许预览 hash 不匹配的 skill 包 |
+| `KSADK_SKILL_MANIFEST_TIMEOUT` | 远程 Skill manifest 列表超时时间，单位秒 |
+| `KSADK_SKILL_MANIFEST_LIMIT` | 注入到 Agent 指令中的 manifest 数量上限 |
+| `KSADK_SKILL_RUNTIME_BACKEND` | 隔离执行 backend，例如 `local_process` 或 `e2b` |
+| `KSADK_SKILL_RUNTIME_TEMPLATE_ID` | runtime template id |
+| `KSADK_SANDBOX_BACKEND` | sandbox backend 选择器兼容变量 |
+| `KSADK_SANDBOX_TEMPLATE_ID` | sandbox template id，也会启用 E2B 风格 backend |
+| `KSADK_SKILL_RUNTIME_TIMEOUT` | 隔离执行超时时间，单位秒 |
+| `KSADK_SANDBOX_TIMEOUT` | sandbox timeout 兼容变量 |
+| `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | sandbox 执行是否允许访问互联网 |
+| `KSADK_SKILL_RUNTIME_AGENT_PATH` | local process runtime 使用的 agent 路径 |
+| `KSADK_SKILL_WORKDIR` | 暴露给 skill 执行的工作目录 |
+| `KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES` | 返回给 Agent 的文本产物总字节上限，默认 `65536`，最大 `1048576` |
+| `KSADK_SKILL_ARTIFACT_PROJECT` | 产物项目名称 |
+
+## Tool Gateway
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_TOOL_APPROVAL_MODE` | 工具审批模式；设置为 `strict` 时 medium / high / critical 风险工具先返回 `approval_required` |
+
+## MCP
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_ENABLE_MCP_TOOLS` | 启用或禁用 MCP tools |
+| `KSADK_MCP_SERVERS` | MCP server 定义 JSON 数组 |
+| `KSADK_BUILD_ENABLE_MCP` | code build 时包含 MCP runtime 依赖 |
+
+示例：
+
+```bash title="bash"
+KSADK_ENABLE_MCP_TOOLS=1
+KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
+```
+
+## 构建与打包
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` | build 流程中 pip install 超时时间 |
+| `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | 包含 OCR 附件依赖 |
+| `KSADK_BUILD_ENABLE_POSTGRES_SESSION` | 包含 PostgreSQL session 依赖 |
+
+## 对象存储凭证（KS3）
+
+| 变量 | 用途 |
+| --- | --- |
+| `KS3_BUCKET` | KS3 bucket 名；未设置时由 `account_id` + `region` 派生 |
+| `KS3_REGION` | KS3 区域，回退 `KSYUN_REGION`，默认 `cn-beijing-6` |
+| `KS3_ACCESS_KEY` | KS3 AK，可回退到云账号 AK 环境变量（敏感） |
+| `KS3_SECRET_KEY` | KS3 SK，可回退到云账号 SK 环境变量（敏感） |
+
+## 镜像仓库凭证
+
+| 变量 | 用途 |
+| --- | --- |
+| `KCR_REGISTRY` | 镜像仓库地址 |
+| `KCR_ENDPOINT` | 镜像仓库 endpoint |
+| `KCR_USERNAME` | 镜像仓库用户名；企业版 KCR 和第三方 registry 必传（敏感） |
+| `KCR_PASSWORD` | 镜像仓库密码；企业版 KCR 和第三方 registry 必传（敏感） |
+
+<Callout type="warning">
+  个人版 KCR（`*.kce.ksyun.com`）允许 `KSYUN_ACCOUNT_ID` 兜底用户名；企业版 KCR（`*.ksyunkcr.com`）和第三方 registry 必须显式设置 `KCR_USERNAME` / `KCR_PASSWORD`，避免错误把云账号 ID 当企业镜像用户名（0.6.5）。
+</Callout>
+
+## 镜像构建上下文 .env 边界
+
+`agentengine deploy` 和 `agentengine launch` 支持 `--env KEY=VALUE`（可重复）和 `--env-file` 传入运行时环境变量，显式传入的 env 进入部署 payload `env_vars`。真实 `.env` / `.env.local` 不进入 Code、Container 或 MCP 构建上下文，只保留 `.env.example` / `.env.sample` / `.env.template` 模板文件（0.6.5）。
+
+## Web UI 静态资源同步
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，当前来源清单固定 `0.3.18`；wheel 构建前必须先发布并验证新版本 |
+| `KSADK_WEB_TARBALL` | 显式本地 npm 归档路径；与正式来源分开记录，保留包名、完整目录及安全解包检查 |
+| `KSADK_WEB_PACKAGE` | 本地 UI static 同步使用的 npm 包名，默认 `@kingsoftcloud/ksadk-web` |
+| `KSADK_WEB_TARBALL_NAME` | 历史参数，当前来源清单构建不读取；本地归档使用 `KSADK_WEB_TARBALL`，下载缓存固定为 `.cache/ksadk-web`。 |
+| `KSADK_WEB_RELEASE_URL` | 历史参数，当前来源清单构建不读取；本地归档使用 `KSADK_WEB_TARBALL`，下载缓存固定为 `.cache/ksadk-web`。 |
+| `KSADK_WEB_CACHE_DIR` | 历史参数，当前来源清单构建不读取；本地归档使用 `KSADK_WEB_TARBALL`，下载缓存固定为 `.cache/ksadk-web`。 |
+
+<Callout type="info">
+  `make build` / `make build-wheel` 会自动执行 `sync-ksadk-web-static`，无需手动同步。
+</Callout>
+
+## DSH 插件桥接
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_DSH_HOME` | 受管理 DSH Profile 的隔离目录；默认是工作区中的 `.agentkit/dsh-homes/<dsh-version>`，当前版本为 `0.1.7-rc.1`。显式设置后 Studio 不会改写该目录。 |
+| `KSADK_DSH_PROFILE` | 要使用的 DSH Profile 名称，默认 Studio `web` profile。 |
+| `KSADK_DSH_BIN` | 可选的 DSH 命令绝对路径，仅用于固定版本工具链的核心开发或 CI 验证；不匹配时拒绝执行。 |
+
+## 消息渠道
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_STUDIO_CHANNEL_DEFAULT` | Studio 是否在后台默认激活官方 Channel UI bundle；默认 `1`，设为 `0`、`false`、`no` 或 `off` 可关闭 |
+| `AGENTENGINE_CHANNEL_URL` | Channel 服务 HTTPS 地址的启动默认值 |
+| `KSYUN_ACCOUNT_ID` | Channel 账号标识的启动默认值 |
+| `KSADK_CHANNEL_WORKSPACE_ID` | Connector workspace 的启动默认值；不设置时由 Studio 工作区稳定生成 |
+| `KSADK_CHANNEL_API_TOKEN` | Channel API 管理 token；敏感值，只应通过受保护配置注入 |
+
+## 可观测
+
+| 变量 | 用途 |
+| --- | --- |
+| `OTEL_SERVICE_NAME` | OpenTelemetry service name，也可作为 agent name fallback |
+| `OTEL_RESOURCE_ATTRIBUTES` | OpenTelemetry resource attributes，逗号分隔的 `key=value` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 通用 OTLP HTTP endpoint；未设置 traces endpoint 时会派生 `/v1/traces` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | 通用 OTLP protocol；KsADK 自动 HTTP exporter 支持 `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | 通用 OTLP HTTP headers，逗号分隔且 value URL encoded，可能包含鉴权信息 |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | traces 专用 OTLP HTTP endpoint，优先于通用 endpoint |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | traces 专用 OTLP protocol，优先于通用 protocol |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | traces 专用 OTLP HTTP headers，优先于通用 headers，可能包含鉴权信息 |
+| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | OTLP 单次 export 最大 span 数，默认 `64`，用于避免 collector 请求过大 |
+| `SESSION_TITLE_MODEL` | 本地会话标题生成模型覆盖 |
+| `COMPACTION_DISABLE_SEMANTIC` | 禁用语义摘要压缩 |
+| `COMPACTION_SUMMARY_TIMEOUT_MS` | 摘要生成超时时间 |
+| `COMPACTION_SUMMARY_MAX_GROUPS` | 摘要消息分组上限 |
+| `COMPACTION_SUMMARY_MODEL` | 语义摘要模型覆盖 |
+
+### 云监控 OTLP 双写（CLOUD_MONITOR_OTLP_*）
+
+`setup_tracing()` 自动探测 `CLOUD_MONITOR_OTLP_*` 环境变量，构建 CloudMonitor OTLP exporter，与主路 Langfuse OTLP（标准 `OTEL_EXPORTER_OTLP_*`）并行写入。单条 span 同时进入两个后端，共享同一 `trace_id` / `span_id`。托管 Agent 通过 CLI 或控制台创建时默认由平台注入双路配置；只有显式 `--no-observability` 或在控制台关闭才禁用。Langfuse CallbackHandler 路径已删除。
+
+| 变量 | 用途 |
+| --- | --- |
+| `CLOUD_MONITOR_APP_KEY` | 已废弃，过渡兼容。仅当 `CLOUD_MONITOR_OTLP_TRACES_HEADERS` 和 `CLOUD_MONITOR_OTLP_HEADERS` 都整体缺失时翻译为 `Ksc-Appkey` header（敏感） |
+| `CLOUD_MONITOR_OTLP_ENDPOINT` | CloudMonitor 通用 OTLP HTTP endpoint；未设 traces endpoint 时派生 `/v1/traces` |
+| `CLOUD_MONITOR_OTLP_PROTOCOL` | CloudMonitor 通用 OTLP 协议，当前支持 `http/protobuf` |
+| `CLOUD_MONITOR_OTLP_HEADERS` | CloudMonitor OTLP 附加 headers，逗号分隔且 RFC 3986 encoded(敏感) |
+| `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` | CloudMonitor traces 专用 endpoint，优先于通用 endpoint |
+| `CLOUD_MONITOR_OTLP_TRACES_HEADERS` | CloudMonitor traces 专用 headers，优先于通用 headers；已提供但缺 `Ksc-Appkey` 时 fail closed（敏感） |
+| `CLOUD_MONITOR_OTLP_TRACES_PROTOCOL` | CloudMonitor traces 专用协议，优先于通用 protocol |
+
+<Callout type="info">
+单后端故障时另一路仍可用:主路故障次路仍写,次路故障主路仍写,Agent 业务不阻断。
+</Callout>
+
+## 安全规则
+
+<Callout type="warning">
+  - 不提交真实 key、token、DSN、私有 endpoint、客户数据集 id 或 kubeconfig。
+  - 开发环境用本地 `.env`，自动化用 CI secrets。
+  - 公开文档只使用 `sk-test`、`my-model`、`https://api.example.com/v1` 这类占位值。
+</Callout>
+
+当前 Hosted UI 静态资源版本：`0.3.12`。
+
+
+按用途区分部署凭据、应用变量和平台注入值的完整示例见[0.8.7 接入手册](/cn/docs/framework/guides/integration-0-8-7/)。

@@ -1,0 +1,955 @@
+---
+title: 会话与文件
+---
+
+KsADK 的本地运行时把对话历史、上传文件和 workspace 产物统一放在 session
+边界内。业务 Agent 不应直接依赖某个宿主机绝对路径，而应通过 session id、
+workspace 路由和运行时 payload 获取上下文。
+
+## Session 标识
+
+| 字段 | 含义 |
+| --- | --- |
+| `session_id` | 本地 UI、OpenAI 兼容 API 和运行时内部共享的会话标识 |
+| `user_id` | 用户维度标识，用于隔离记忆、历史和审计 |
+| `account_id` | 云账号维度标识，hosted 场景下随请求透传，用于跨账号边界隔离 |
+| `conversation` | Responses API 中的会话连续性对象 |
+| `previous_response_id` | 客户端续聊时可使用的上一轮响应 id |
+
+`account_id` 在 hosted 链路里由 gateway 注入，业务 Agent 不应自行伪造；
+本地运行时按 owner 隔离，不会跨 `account_id` 共享 session、附件或 workspace。
+
+不要在业务代码里每轮生成新的 session id；这会导致 UI 历史、附件引用和运行时状态断裂。
+
+## 本地存储
+
+`agentengine web .` 默认使用项目目录下的 `.agentengine/ui/sessions.sqlite`。
+相关变量见 [环境变量](./environment-variables.mdx)。
+
+```bash
+KSADK_STM_BACKEND=sqlite
+KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
+```
+
+共享环境可改用 PostgreSQL：
+
+```bash
+KSADK_SESSION_BACKEND=postgres
+KSADK_SESSION_DSN=postgresql://user:pass@example.invalid:5432/ksadk
+```
+
+公开文档只使用占位 DSN，不提交真实连接串。
+
+PostgreSQL 是会话的持久化副本，不是 Agent 执行的可用性前置条件。连接或写入失败时，
+运行时继续使用当前进程内的 live session，并在进入降级态时记录结构化错误日志
+`session_backend_state=degraded`。运行时会定期探测 PostgreSQL；恢复后新会话和后续事件
+继续写入 PostgreSQL，并记录 `session_backend_state=recovered`。降级期间尚未持久化的旧事件
+不会自动补写，因此 Pod 重启或迁移后不保证恢复这些事件。PG 不可用期间，只能使用当前
+进程已经加载的历史；请求切换到其他 Pod 时可能缺少会话上下文，但 Agent 当前请求仍继续执行。
+
+### PostgreSQL 可读视图
+
+KsADK 初始化 PostgreSQL schema 时会同时创建 `ksadk_session_events_readable` 视图。
+原始的 `ksadk_events.content_json`、`metadata_json` 仍保留完整机器事件；可读视图把常用字段
+拍平成 `message_role`、`message_text`、`tool_name`、`lifecycle_status` 和 `created_at`，便于
+用户和 SRE 直接排查会话：
+
+```sql
+SELECT
+  session_id,
+  seq_id,
+  message_role,
+  event_type,
+  message_text,
+  tool_name,
+  lifecycle_status,
+  created_at
+FROM ksadk_session_events_readable
+WHERE namespace = 'default' AND session_id = '<session-id>'
+ORDER BY seq_id;
+```
+
+流式 reasoning 仍实时返回给客户端，但持久化时按一轮聚合成单条 `reasoning` 事件，避免
+每个 delta 产生一行。`run_status` 等生命周期事件不会伪装成聊天消息，可通过
+`lifecycle_status` 单独查看。
+
+## 文件上传
+
+本地 UI 上传文件后，运行时会把文件引用归一化到当前 turn 的输入中。业务 Agent
+应读取标准化消息、附件 metadata 或框架 runner payload，而不是猜测浏览器上传目录。
+
+常见输入类型：
+
+- 文本消息。
+- 图片输入，例如 `input_image`。
+- 文件输入，例如 `input_file`。
+- 历史 turn 中仍有效的附件引用。
+
+### 上传 URI scheme
+
+<Callout type="info" title="新增：0.6.7">
+  本地与 hosted 上传统一为 attachment URI scheme，由同一读取入口解析。
+</Callout>
+
+上传文件后，运行时把文件引用归一化为 attachment URI：
+
+| Scheme | 来源 | 含义 |
+| --- | --- | --- |
+| `ksadk-upload://{file_id}` | 本地 `agentengine web` 上传 | 由本地 `AttachmentStorageService` 写入，绑定当前 server |
+| `ae-upload://{file_id}` | hosted 链路上传 | 托管平台返回的 attachment 引用，需要服务端解析 |
+
+两者都通过同一入口读取：
+
+```bash
+curl -sS "https://<public-endpoint>/agentengine/api/v1/AttachmentContent?FileUri=ksadk-upload://<file_id>" \
+  -H "Authorization: Bearer <api_key>"
+```
+
+读取 `ae-upload://` 时，服务端会按 `{file_id}` 定位托管上传内容并返回字节流，
+同时把内容回写到本地 cache（`local_path`），后续读取命中本地缓存。
+非 `ae-upload://` 前缀的路径按 workspace 相对路径处理。
+
+`AttachmentContent` 返回的 attachment 在运行时内部表示为 `AttachmentBytes`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `data` | bytes | 附件原始字节流 |
+| `display_name` | str | 展示用文件名，已做 sanitize |
+| `mime_type` | str | MIME 类型，缺失时按文件名推断 |
+| `local_path` | Path 或 `None` | 本地 cache 绝对路径；hosted attachment 首次读取后回写，命中后为非空 |
+
+公开示例不要把 `ksadk-upload://` 或 `ae-upload://` URI 当作持久外部 URL 写进源码或文档。
+
+## Workspace
+
+Workspace 是 Agent 生成产物的推荐位置，例如 HTML、Markdown、JSON、CSV 或代码文件。
+本地 UI 和 hosted UI 可以围绕同一逻辑 workspace 展示、预览和下载。
+
+```python
+from ksadk.sessions.local_service import resolve_local_session_dir
+
+workspace = resolve_local_session_dir() / "workspace"
+workspace.mkdir(parents=True, exist_ok=True)
+(workspace / "report.md").write_text("# Report\n", encoding="utf-8")
+```
+
+路径必须留在 workspace 根目录内，避免写入任意宿主机文件系统。
+
+## Checkpoint 与 Resume
+
+<Callout type="info" title="新增：0.6.7">
+  KsADK 引入框架级 checkpoint/resume 能力,覆盖 list、preview、resume、cancel 四个动作,
+  并新增 `ResumeInstruction`、`CheckpointStatus` 等字段。底层基于持久化 `run_checkpoint` /
+  `run_resume` / `tool_result` 事件,支持跨实例恢复。
+</Callout>
+
+运行时通过以下 hosted UI action 管理 run 级 checkpoint、恢复、取消与工具回执。所有
+action 走 `POST /agentengine/api/v1/<Action>`,请求体为 JSON,响应统一为
+`{ Code, Message, RequestId, Action, Data }` envelope。
+
+| Action | 路径 | 用途 |
+| --- | --- | --- |
+| `ListSessionCheckpoints` | `POST /agentengine/api/v1/ListSessionCheckpoints` | 按可选 session 范围列出 checkpoint，供 resume 选择 |
+| `GetCheckpointResumePreview` | `POST /agentengine/api/v1/GetCheckpointResumePreview` | 预览从某 checkpoint resume 的内容与影响面 |
+| `ResumeRun` | `POST /agentengine/api/v1/ResumeRun` | 从 checkpoint 恢复 run 执行 |
+| `CancelRun` | `POST /agentengine/api/v1/CancelRun` | 取消正在进行的 run(以 `InvocationId` 为主键) |
+| `ListToolReceipts` | `POST /agentengine/api/v1/ListToolReceipts` | 列出某 run / checkpoint 下的工具调用回执 |
+| `GetToolReceiptClaim` | `POST /agentengine/api/v1/GetToolReceiptClaim` | 查询内置工具执行占位及不确定状态 |
+| `ReconcileToolReceiptClaim` | `POST /agentengine/api/v1/ReconcileToolReceiptClaim` | 人工关闭已核对的未知占位，保留失败回执 |
+
+<Callout type="warning" title="鉴权与边界">
+  本地 `agentengine web` 默认 owner 隔离;hosted 链路需在请求头携带
+  `Authorization: Bearer <api_key>`,且 `account_id` 由 gateway 注入,业务 Agent 不可伪造。
+  跨 `account_id` 的 session / checkpoint / tool receipt 互不可见。
+</Callout>
+
+### Checkpoint 状态机
+
+`ListSessionCheckpoints` 与 `GetCheckpointResumePreview` 返回的每个 checkpoint 携带
+`CheckpointStatus`,由 `is_terminal`、`is_resumable`、`resume_count`、`expires_at` 与
+`replay_allowed` 联合推导。运行时不持久化该字段,读取时实时计算:
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> active
+  active --> resumed : ResumeRun<br/>(resume_count + 1)
+  active --> terminal : is_terminal=true 且未恢复
+  active --> expired : now > expires_at
+  active --> disabled : is_resumable=false<br/>或 replay_allowed=false
+  resumed --> [*]
+  terminal --> [*]
+  expired --> [*]
+  disabled --> [*]
+```
+
+| 状态 | 触发条件 |
+| --- | --- |
+| `active` | 默认;checkpoint 仍可被 resume |
+| `resumed` | 已被 `ResumeRun` 恢复过(`resume_count >= 1`,且未到终态) |
+| `terminal` | `is_terminal=true` 且 `resume_count=0`,run 已到终态 |
+| `expired` | `expires_at` 已过期,`IsResumable` 被强制置 false |
+| `disabled` | `is_resumable=false`,或 `replay_allowed=false` 且已恢复过 |
+
+<Callout type="info">
+  `CheckpointStatus` 由运行时在读取时实时推导,不写入持久化事件;`resume_count` 与
+  `last_resumed_at` 来自 `run_resume` 事件审计。`GetCheckpointResumePreview` 仅当
+  `ResumeStatus=unknown` 时才要求先 preview 再 resume。
+</Callout>
+
+### Checkpoint descriptor 字段表
+
+每个 checkpoint 是一个 `run_checkpoint` 事件投影后的对象。除通用事件字段外,还包含
+以下 resume 描述字段(0.6.7 全量新增/补齐):
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `EventId` | str | checkpoint 事件 id |
+| `SessionId` | str | 所属 session id |
+| `InvocationId` | str | 触发该 checkpoint 的 invocation id |
+| `RunId` | str | 所属 run id |
+| `CheckpointId` | str | checkpoint id(resume 时引用) |
+| `Framework` | str | 产生 checkpoint 的框架,如 `langgraph`、`adk` |
+| `FrameworkRef` | dict | 框架特定引用,如 LangGraph 的 `next_node` |
+| `Phase` | str | checkpoint 阶段标签 |
+| `NextNode` | str | resume 后续跑的下一节点 |
+| `IsResumable` | bool 或 null | 是否可 resume;`false` 时被强制禁用 |
+| `ResumeStatus` | str | `resumable` / `disabled` / `unknown` |
+| `IsTerminal` | bool | 是否终态 checkpoint |
+| `ResumeDisabledReason` | str | 不可恢复时的原因文案 |
+| `Backend` | str | checkpoint 存储后端,如 `memory`、`langgraph_store` |
+| `Scope` | str | checkpoint 作用域,如 `process_local` |
+| `Durable` | bool | 是否持久化(可跨实例恢复) |
+| `ArtifactPreview` | dict | checkpoint artifact 预览 |
+| `StageKey` / `StageName` / `StageIndex` / `TotalStages` | 各种 | 多阶段 run 的阶段信息 |
+| `CreatedAt` | str | checkpoint 事件时间戳 |
+| `LastResumedAt` | str 或 null | 最近一次 resume 时间戳,来自 `run_resume` 审计 |
+| `ResumeCount` | int | 已 resume 次数,来自 `run_resume` 审计;`0` 表示从未恢复 |
+| `ReplayAllowed` | bool | 策略是否允许重复 resume 同一 checkpoint;默认 `true` |
+| `ExpiresAt` | str 或 null | checkpoint 过期时间;过期后 `IsResumable` 强制 `false` |
+| `CheckpointStatus` | str | 实时推导的状态:`active` / `resumed` / `terminal` / `expired` / `disabled` |
+| `Metadata` | dict | 原始 checkpoint 事件 metadata,含上述字段原始值 |
+
+<Callout type="warning" title="进程内 checkpoint 不可恢复">
+  当 `Backend == "memory"` 或 `Scope == "process_local"` 时,`IsResumable` 会被强制置
+  `false`,原因文案为"进程内 checkpoint 不能跨实例恢复"。本地开发时这类 checkpoint 仅供
+  当次进程内 preview,不要把它们当作可恢复点。
+</Callout>
+
+### ListSessionCheckpoints
+
+列出 checkpoint，支持按 session、checkpoint ID、`RunId`、`Framework`、最终恢复状态和 Scope 过滤。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `AgentId` | — | 必填 | 目标 Agent id,必须与 session 的 `agent_id` 一致 |
+| `SessionId` | `[]` | string 或 string[]，最多 1000 项 | 目标 session；缺省或空数组不过滤 |
+| `CheckpointId` | `[]` | string 或 string[]，最多 1000 项 | checkpoint ID；缺省或空数组不过滤 |
+| `RunId` | — | 可选 | 仅返回该 run 的 checkpoint |
+| `Framework` | — | 可选 | 仅返回该框架的 checkpoint,如 `langgraph` |
+| `OnlyResumable` | `false` | 可选 | 仅返回 `IsResumable=true` 的 checkpoint |
+| `ResumeStatus` | `[]` | string[] | 按最终 `ResumeStatus` 过滤；值域开放 |
+| `ResumeTypes` | `[]` | string[] | 按最终 `Scope` 过滤：`invocation`、`shared`、`pod_local`、`process_local`、`unknown` |
+| `Offset` | `0` | `>=0` | 分页偏移 |
+| `Limit` | `100` | `1..1000` | 每页上限 1000 |
+
+```bash title="list_checkpoints.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckpoints" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "ResumeStatus": ["resumable"],
+    "ResumeTypes": ["shared", "pod_local"],
+    "OnlyResumable": true,
+    "Limit": 50
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="list_checkpoints_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req-abc123",
+  "Action": "ListSessionCheckpoints",
+  "Data": {
+    "Checkpoints": [
+      {
+        "EventId": "evt_001",
+        "SessionId": "<sid>",
+        "InvocationId": "inv_xyz",
+        "RunId": "run_001",
+        "CheckpointId": "ckpt_002",
+        "Framework": "langgraph",
+        "IsResumable": true,
+        "ResumeStatus": "resumable",
+        "IsTerminal": false,
+        "ResumeDisabledReason": "",
+        "NextNode": "research_summarize",
+        "Backend": "langgraph_store",
+        "Scope": "shared",
+        "Durable": true,
+        "LastResumedAt": null,
+        "ResumeCount": 0,
+        "ReplayAllowed": true,
+        "ExpiresAt": "2026-07-04T12:00:00Z",
+        "CheckpointStatus": "active"
+      }
+    ],
+    "ResumeStatus": ["resumable"],
+    "ResumeTypes": ["shared", "pod_local"],
+    "ResumableTotal": 1,
+    "HasResumableCheckpoint": true,
+    "Total": 1,
+    "Offset": 0,
+    "Limit": 50
+  }
+}
+```
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail.code | 触发条件 |
+| --- | --- | --- |
+| `404` | — | session 不存在,或 `AgentId` 与 session 的 `agent_id` 不一致 |
+
+</Tab>
+</Tabs>
+
+两个新增过滤数组会 trim、转小写并去重。runtime 先完成 payload 转换、resume audit、过期和
+latest-only 修正，再应用 `ResumeStatus` / `ResumeTypes`；随后计算 `ResumableTotal`，再应用
+`OnlyResumable`、计算 `Total` 和分页。
+
+### GetCheckpointResumePreview
+
+预览从某 checkpoint resume 的影响面:包括工具回执、副作用风险等级、是否需要先 preview。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 约束 | 含义 |
+| --- | --- | --- |
+| `AgentId` | 必填 | 目标 Agent id |
+| `SessionId` | 必填 | 目标 session id |
+| `RunId` | 必填 | 目标 run id |
+| `CheckpointId` | 必填 | 要预览的 checkpoint id |
+
+```bash title="get_resume_preview.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/GetCheckpointResumePreview" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001",
+    "CheckpointId": "ckpt_002"
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="resume_preview_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_def456",
+  "Action": "GetCheckpointResumePreview",
+  "Data": {
+    "Preview": {
+      "Checkpoint": { "CheckpointId": "ckpt_002", "IsResumable": true },
+      "Capabilities": {
+        "Checkpoints": true,
+        "CheckpointResume": true,
+        "ToolReceipts": true,
+        "IdempotentToolReplay": true
+      },
+      "CanResume": true,
+      "Reason": "",
+      "NextNode": "research_summarize",
+      "ExpectedAction": "resume_from_checkpoint",
+      "ToolReceipts": [
+        {
+          "ReceiptId": "rcpt_001",
+          "ToolName": "write_workspace_file",
+          "ToolCallId": "call_01",
+          "RunId": "run_001",
+          "CheckpointId": "ckpt_001",
+          "Status": "succeeded",
+          "Replayed": false
+        }
+      ],
+      "Risk": {
+        "Level": "medium",
+        "DuplicateSideEffectRisk": true,
+        "SideEffectReceiptCount": 1,
+        "FailedReceiptCount": 0
+      },
+      "Summary": {
+        "RunId": "run_001",
+        "CheckpointId": "ckpt_002",
+        "Phase": "after_research",
+        "ToolReceiptCount": 1
+      }
+    }
+  }
+}
+```
+
+`ExpectedAction` 取值:`resume_from_checkpoint`(可直接 resume)、
+`preview_required`(`ResumeStatus=unknown`,必须先 preview)、`disabled`(不可恢复)。
+
+`Risk.Level` 取值:
+
+| Level | 触发条件 |
+| --- | --- |
+| `low` | 无副作用工具回执,且无失败回执 |
+| `medium` | 存在副作用工具回执(`write_workspace_file` 等) |
+| `high` | 存在 `Status=failed` 的回执 |
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail | 触发条件 |
+| --- | --- | --- |
+| `404` | `"Session not found"` | session 不存在或 `AgentId` 不匹配 |
+| `404` | `"Checkpoint not found"` | 指定 `RunId` + `CheckpointId` 组合不存在 |
+
+</Tab>
+</Tabs>
+
+### ResumeRun
+
+从 checkpoint 恢复 run 执行。0.6.7 新增 `ResumeInstructionEnabled` / `ResumeInstruction`
+字段,允许在 resume 时注入额外指令;并补充 `409` 错误码区分不可恢复与重复 resume。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `AgentId` | — | 必填 | 目标 Agent id,须与 session `agent_id` 一致 |
+| `SessionId` | — | 必填 | 目标 session id |
+| `RunId` | — | 必填 | 要恢复的 run id |
+| `CheckpointId` | — | 必填 | 恢复起点 checkpoint id |
+| `ResumeAttemptId` | — | 可选 | resume 尝试 id;缺省由运行时生成 `resume_<hex>` |
+| `InvocationId` | — | 可选 | 新 invocation id;缺省用 `ResumeAttemptId` |
+| `Stream` | `false` | 可选 | `true` 返回 SSE 流(同 RunAgent stream) |
+| `Model` | — | 可选 | 本次 resume 的模型覆盖 |
+| `ModelMetadata` | — | 可选 | 模型能力提示(0.6.7) |
+| `ModelOptions` | — | 可选 | provider 特定选项 |
+| `ResumeInstructionEnabled` | `false` | 可选 | 0.6.7;是否启用 resume 指令注入 |
+| `ResumeInstruction` | — | 可选 | 0.6.7;resume 注入的额外指令文本 |
+
+```bash title="resume_run.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ResumeRun" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001",
+    "CheckpointId": "ckpt_002",
+    "ResumeInstructionEnabled": true,
+    "ResumeInstruction": "用更简洁的语气重做总结",
+    "Stream": false
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+非 stream 模式返回 Responses 风格 payload:
+
+```json title="resume_run_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_ghi789",
+  "Action": "ResumeRun",
+  "Data": {
+    "id": "resp_<hex>",
+    "object": "response",
+    "model": "my-agent",
+    "output": [
+      { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "..." }] }
+    ]
+  }
+}
+```
+
+终态 checkpoint 的 resume 会被视为 noop,直接返回 `status=noop` 并写一条
+`run_resume` + `run_status=completed` 事件,不再实际执行:
+
+```json title="resume_run_noop.json"
+{
+  "Code": 0,
+  "Action": "ResumeRun",
+  "Data": {
+    "status": "noop",
+    "Reason": "该 checkpoint 已是终态;可选择更早恢复点重跑",
+    "CheckpointId": "ckpt_002",
+    "RunId": "run_001",
+    "ResumeAttemptId": "resume_<hex>"
+  }
+}
+```
+
+</Tab>
+<Tab value="Stream">
+
+`Stream=true` 时返回 `text/event-stream`,语义同 RunAgent stream。每个事件为
+`data: { ... }\n\n`,事件体见 [_event_to_action_payload](#) 形态。终态
+`run_status` 后服务端发送 `data: [DONE]`。
+
+```bash title="resume_run_stream.sh"
+curl -sS -N -X POST "https://<public-endpoint>/agentengine/api/v1/ResumeRun" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001",
+    "CheckpointId": "ckpt_002",
+    "Stream": true
+  }'
+```
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail.code | 触发条件 |
+| --- | --- | --- |
+| `404` | — | session 不存在或 `AgentId` 不匹配 |
+| `404` | — | `RunId` + `CheckpointId` 不存在 |
+| `409` | `checkpoint_not_resumable` | checkpoint 不可恢复(`IsResumable=false`),含原因 |
+| `409` | `resume_already_running` | 同一 session+run 已有 resume 在执行 |
+
+`checkpoint_not_resumable` 响应体:
+
+```json title="409_checkpoint_not_resumable.json"
+{
+  "detail": {
+    "code": "checkpoint_not_resumable",
+    "reason": "该 checkpoint 已恢复过,当前策略不允许重复恢复",
+    "checkpoint_id": "ckpt_002",
+    "run_id": "run_001",
+    "resume_status": "disabled",
+    "is_terminal": false
+  }
+}
+```
+
+`resume_already_running` 响应体:
+
+```json title="409_resume_already_running.json"
+{
+  "detail": {
+    "code": "resume_already_running",
+    "message": "A checkpoint resume is already running for this session and run.",
+    "InvocationId": "inv_existing",
+    "SessionId": "<sid>",
+    "RunId": "run_001"
+  }
+}
+```
+
+<Callout type="warning" title="并发 resume 防抖">
+  同一 `(session_id, run_id)` 上若已有 resume 在执行,新请求会被 `409
+  resume_already_running` 拒绝。客户端应等待既有 resume 终态或取消后再重试,
+  不要并发对同一 run 发起多个 resume。
+</Callout>
+
+</Tab>
+</Tabs>
+
+### CancelRun
+
+取消正在进行的 run。0.6.7 起 `InvocationId` 成为主键,`AgentId` 改为可选(仅用于
+runner 端 cancel 上下文,不再做 session 归属校验)。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `InvocationId` | — | 必填 | 要取消的 invocation id;0.6.7 起为主键 |
+| `AgentId` | — | 可选 | 0.6.7 改为可选;用于 runner cancel 上下文 |
+
+```bash title="cancel_run.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/CancelRun" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "InvocationId": "inv_xyz"
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="cancel_run_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_jkl012",
+  "Action": "CancelRun",
+  "Data": {
+    "Cancelled": true,
+    "Found": true,
+    "Status": "cancelling",
+    "RunnerCancelStatus": "accepted"
+  }
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `Cancelled` | 是否已请求取消(detached stream 或 runner 接受) |
+| `Found` | 是否找到该 invocation 的 detached stream |
+| `Status` | `cancelling` / `not_found` / `unsupported` / `error` |
+| `RunnerCancelStatus` | runner 端 cancel 结果:`accepted` / `cancelling` / `cancelled` / `not_found` / `unsupported` / `error` |
+
+</Tab>
+<Tab value="Error">
+
+`CancelRun` 不返回 4xx,即便 invocation 不存在也返回
+`{ Cancelled: false, Found: false, Status: "not_found" }`,客户端据此判断。
+
+</Tab>
+</Tabs>
+
+### ListToolReceipts
+
+列出某 run / checkpoint 下的工具调用回执,用于 resume 前评估副作用或事后审计。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `AgentId` | — | 必填 | 目标 Agent id,须与 session `agent_id` 一致 |
+| `SessionId` | — | 必填 | 目标 session id |
+| `RunId` | — | 可选 | 仅返回该 run 的回执 |
+| `CheckpointId` | — | 可选 | 仅返回该 checkpoint 的回执 |
+
+```bash title="list_tool_receipts.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListToolReceipts" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001"
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="list_tool_receipts_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_mno345",
+  "Action": "ListToolReceipts",
+  "Data": {
+    "ToolReceipts": [
+      {
+        "EventId": "evt_010",
+        "SessionId": "<sid>",
+        "InvocationId": "inv_xyz",
+        "SeqId": 10,
+        "Timestamp": "2026-07-03T10:00:00Z",
+        "ReceiptId": "rcpt_001",
+        "IdempotencyKey": "idem_abc",
+        "ToolName": "write_workspace_file",
+        "ToolCallId": "call_01",
+        "RunId": "run_001",
+        "CheckpointId": "ckpt_001",
+        "Status": "succeeded",
+        "Replayed": false,
+        "Metadata": { "tool_name": "write_workspace_file" }
+      }
+    ]
+  }
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `ReceiptId` | 回执 id,幂等键对应 |
+| `IdempotencyKey` | 幂等键,重复 replay 时用于去重 |
+| `ToolName` | 工具名;副作用工具(`write_workspace_file` 等)会标记 `DuplicateSideEffectRisk` |
+| `ToolCallId` | 对应的 tool call id |
+| `RunId` / `CheckpointId` | 归属 run / checkpoint |
+| `Status` | `succeeded` / `failed` |
+| `Replayed` | 是否为 replay 产生的回执 |
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail | 触发条件 |
+| --- | --- | --- |
+| `404` | `"Session not found"` | session 不存在或 `AgentId` 不匹配 |
+
+</Tab>
+</Tabs>
+
+### 工具执行占位与对账
+
+审批恢复执行内置工具前，SDK 先原子写入 `(session_id, idempotency_key)` 占位。键包含 run、checkpoint、工具名与参数；跨实例竞争只有一个调用获得执行权。拒绝、取消或不存在的审批不能新建占位；没有待审批请求时只允许回放匹配的既有 claim 或合法工具回执。
+
+| State | 含义 | 同键重试 |
+| --- | --- | --- |
+| `unknown` | 已占位但尚无持久化终态；既可能正在执行，也可能执行后、结果落库前崩溃 | 阻断，不再次执行工具 |
+| `completed` | 成功结果已落库 | 回放结果，不执行工具 |
+| `failed` | 失败结果已落库，或人工关闭了未知占位 | 回放失败结果，不执行工具 |
+
+这提供有界的重复执行防护，不保证 exactly-once。外部副作用已经发生、结果尚未落库时，SDK 无法自动判断外部系统是否成功。内存后端只在当前进程内保留占位；跨进程保障需使用共享 PostgreSQL，或共享同一持久化 SQLite 数据库。自定义后端必须实现 claim 能力，否则执行会明确失败，不回退到进程内锁。
+
+两个 action 都沿用现有会话鉴权：`AgentId`、会话 owner 与可信调用身份必须匹配；本地模式检查既有 owner，hosted 模式使用网关验证并注入的身份。`UserId` 可选，不能通过请求体伪造 owner。接口没有新增独立管理员角色，运维访问策略仍由宿主的权限配置决定。SDK 负责占位存储，网关/控制面负责可信身份与外部访问策略。
+
+#### GetToolReceiptClaim
+
+`POST /agentengine/api/v1/GetToolReceiptClaim`
+
+请求字段：`AgentId`、`SessionId`、`IdempotencyKey` 必填，`UserId` 可选。幂等键从 SDK 不确定执行错误或已知工具回执取得，不要自行拼接或更换 checkpoint 来绕过阻断。
+
+```json
+{
+  "AgentId": "my-agent",
+  "SessionId": "<session-id>",
+  "IdempotencyKey": "<tool-receipt-key>"
+}
+```
+
+成功 envelope 的 `Data`：
+
+```json
+{
+  "Found": true,
+  "ToolReceiptClaim": {
+    "SessionId": "<session-id>",
+    "IdempotencyKey": "<tool-receipt-key>",
+    "ToolName": "write_workspace_file",
+    "ArgumentsDigest": "<arguments-digest>",
+    "State": "unknown",
+    "ClaimId": "<claim-id>",
+    "Output": null,
+    "ReconciliationRequired": true
+  }
+}
+```
+
+没有该键时正常返回 `Found: false`、`ToolReceiptClaim: null`。`Output` 可以是 JSON 对象、数组、标量或 null；`ClaimId` 是具体占位的身份，人工对账时必须原样提供。查询不产生审批应答，也不会执行或取消工具。
+
+#### ReconcileToolReceiptClaim
+
+`POST /agentengine/api/v1/ReconcileToolReceiptClaim`
+
+在查询字段之外，还必须提供 `ClaimId` 与 `Reason`（1–1000 个字符的说明）。只允许当前 `unknown` 且 ClaimId 匹配的占位。不要在 Reason 中填写凭证、下载 token 或客户数据。
+
+```json
+{
+  "AgentId": "my-agent",
+  "SessionId": "<session-id>",
+  "IdempotencyKey": "<tool-receipt-key>",
+  "ClaimId": "<claim-id>",
+  "Reason": "执行者已停止；外部系统核对完成；人工关闭本次不确定执行"
+}
+```
+
+成功 envelope 的 `Data`：
+
+```json
+{
+  "ToolReceiptClaim": {
+    "SessionId": "<session-id>",
+    "IdempotencyKey": "<tool-receipt-key>",
+    "State": "failed",
+    "ClaimId": "<claim-id>",
+    "Output": {
+      "ok": false,
+      "error_type": "ToolReceiptReconciled",
+      "error_message": "<reason>"
+    },
+    "ReconciliationRequired": false
+  }
+}
+```
+
+当前操作固定关闭为 `failed`，不补记成功，也不授权同键重新执行。`failed` 不能证明外部副作用未发生；同键重试只回放这份失败结果。该 action 不主动停止正在执行的工具，没有执行租约或自动恢复机制。
+
+对账步骤：
+
+1. 保存查询结果与 ClaimId，确认会话、checkpoint、工具和参数身份。
+2. 停止或隔离原执行者，并确认它不会继续执行或写回；`unknown` 也包含正在执行的占位，不能仅凭查询结果判定进程已崩溃。
+3. 在外部系统核对写入、命令或其他副作用，记录结果与处理说明。
+4. 使用查询返回的同一 ClaimId 调用对账，再查询确认 `State=failed`。如需新的业务操作，重新走正常审批流程；不要删除/重建会话或更换键绕过旧占位。
+
+| HTTP / SDK 错误 | 语义 |
+| --- | --- |
+| `400` | 缺少 AgentId 等现有会话 action 前置条件 |
+| `404` | 会话不可见、不存在；或对账目标 claim 不存在 |
+| `409` | 既有 owner 冲突；claim 已终态、ClaimId 不匹配，或结果并发变更 |
+| `422` | 请求模型校验失败，例如 Reason 为空或超过长度限制 |
+| `ToolReceiptUncertainError` | SDK 恢复发现 unknown，不执行工具，不追加重复审批应答；携带幂等键供查询 |
+| `ValueError` | 缺少有效待审批请求，或工具/参数身份冲突；本次恢复被阻断 |
+
+存在 `unknown` claim 时会话删除被拒绝；SQLite/PostgreSQL 删除与新 claim 插入使用数据库锁协调。仅在占位均已终态后允许正常删除，删除会话会同时清理其回执。删除不是对账的替代操作。
+
+### ResumeMode
+
+`GetAgentUiBootstrap` 返回的 `RuntimeCapabilities.ResumeRun.ResumeMode` 描述框架级
+resume 能力,取值与框架适配相关:
+
+| ResumeMode | 含义 |
+| --- | --- |
+| `time_travel` | 可回档到历史 checkpoint(LangGraph runner) |
+| `forward_only` | 只能沿 invocation 连续性向前续跑,不能回档(ADK runner) |
+| `none` | 该框架无框架级 resume 能力 |
+
+### RunLifecycle 能力门控
+
+前端 resume 入口不能只看 `ResumeMode`,必须同时满足 `GetAgentUiBootstrap` 返回的
+`RunLifecycle` 两个标志:
+
+- `RunLifecycle.Checkpoints = true`:session 存在可用 checkpoint。
+- `RunLifecycle.CheckpointResume = true`:运行时支持从 checkpoint resume。
+
+任一为 `false` 时,应视为不支持 resume,前端不应展示 `ResumeRun` 入口。
+`CheckpointResumePreview` 标注是否提供 preview 能力。
+
+### SubscribeRunEvents 续订
+
+`SubscribeRunEvents` 是 hosted UI 的重连入口,基于持久化事件而非原 TCP 流:
+
+```bash
+curl -sS -N "https://<public-endpoint>/agentengine/api/v1/SubscribeRunEvents?SessionId=<sid>&InvocationId=<iid>&AfterSeqId=42" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Accept: text/event-stream"
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `SessionId` | 目标 session id |
+| `InvocationId` | 目标 invocation id |
+| `AfterSeqId` | 续订起点 seq_id,返回 `seq_id > AfterSeqId` 的事件;默认 `0` 表示从头订阅 |
+
+<Callout type="warning" title="5 分钟服务端保护超时">
+  `SubscribeRunEvents` 服务端保护超时为 **5 分钟**(`5 * 60` 秒)。超时后服务端主动关闭
+  SSE 流,客户端必须用最后消费的 `seq_id` 作为新的 `AfterSeqId` 重新发起续订,直到
+  观察到终态 `run_status`(`completed`、`failed`、`cancelled` 或 `interrupted`)。
+</Callout>
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as 客户端
+  participant S as 服务端 SSE
+  participant Store as Session Store
+
+  C->>S: GET SubscribeRunEvents<br/>(SessionId, InvocationId, AfterSeqId=last)
+  S->>Store: get_events(session_id)
+  Store-->>S: events[seq_id > AfterSeqId]
+  loop 0.25s 轮询窗口
+    S->>C: data: {event} (seq_id 推进)
+    C->>C: 记录 last_seq_id
+  end
+  alt 观察到终态 run_status
+    S->>C: data: [DONE]
+    S-->>C: 关闭流
+  else 5min deadline 到
+    S-->>C: 关闭流(无 [DONE])
+    C->>C: 用 last_seq_id 重发
+    C->>S: GET SubscribeRunEvents<br/>(AfterSeqId=last_seq_id)
+  end
+```
+
+终态 `run_status`(`completed`、`failed`、`cancelled`、`interrupted`)出现后服务端
+发送 `data: [DONE]` 并结束流;否则客户端在 5 分钟超时后必须用最新 `seq_id` 重连续订。
+
+## 会话列表与事件分页
+
+Hosted UI 提供会话与事件列表 action，支持分页。公开 API 客户端通常不直接对接，
+优先使用 OpenAI 兼容的 `/v1/*`。
+
+### ListSessions
+
+请求字段：
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `AgentId` | — | 必填 | 目标 Agent id |
+| `UserId` | `user` | 可选 | 用户维度隔离 |
+| `Page` | `1` | `>=1` | 页码，从 1 开始 |
+| `PageSize` | `20` | `1..200` | 每页条数，上限 200 |
+
+响应 `Data` 字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `Sessions` | 当前页 session 列表 |
+| `Total` | 命中条件 session 总数 |
+| `Page` | 当前页码 |
+| `PageSize` | 当前每页条数 |
+
+```bash
+curl -sS -X POST https://<public-endpoint>/agentengine/api/v1/ListSessions \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"AgentId":"my-agent","UserId":"user","Page":1,"PageSize":20}'
+```
+
+### ListSessionEvents
+
+请求字段：
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `SessionId` | — | 必填、单个非空字符串 | 目标 session id；数组、缺省和 trim 后空字符串均失败 |
+| `CheckpointIds` | `[]` | string[]，最多 1000 项 | 按 `Metadata.checkpoint_id` 精确过滤，大小写敏感 |
+| `EventTypes` | `[]` | string[]，最多 1000 项 | 按 `EventType` 精确过滤，大小写敏感 |
+| `Offset` | `0` | `>=0` | 事件偏移量 |
+| `Limit` | `10` | `1..1000` | 返回条数上限 |
+| `AfterSeqId` | — | `>=0` | 只保留 `SeqId` 大于该值的事件 |
+| `BeforeSeqId` | — | `>=1` | 只保留 `SeqId` 小于该值的事件 |
+
+响应 `Data` 字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `Events` | 当前页事件列表 |
+| `SessionId` | 规范化后的标量 session id |
+| `CheckpointIds` / `EventTypes` | 规范化后的过滤数组 |
+| `Total` | 全部过滤与游标条件生效后、分页前的事件总数 |
+| `Offset` | 当前偏移量 |
+| `Limit` | 实际生效的 limit |
+
+两个数组均会 trim、去空并稳定去重；数组内部为 OR，字段之间以及与游标条件之间为 AND，
+空数组表示不启用该过滤。过滤和 `Total` 计算先于 `Offset` / `Limit`；接口选择最新窗口后，
+仍按时间正序返回当前页。
+
+```bash
+curl -sS -X POST https://<public-endpoint>/agentengine/api/v1/ListSessionEvents \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"SessionId":"<sid>","Offset":0,"Limit":50}'
+```
+
+## 设计原则
+
+- 会话连续性交给 KsADK runtime，不放进全局变量。
+- 业务状态放在框架 state，例如 LangGraph state。
+- 大文件和二进制产物通过 workspace 或 UI 文件面板处理。
+- 共享后端要配置 namespace，避免不同 Agent 或环境互相污染。

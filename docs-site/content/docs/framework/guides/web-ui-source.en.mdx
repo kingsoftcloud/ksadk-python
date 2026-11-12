@@ -1,0 +1,83 @@
+---
+title: "Web UI Repository"
+---
+
+The KsADK Web UI source lives in the independent `kingsoftcloud/ksadk-web`
+repository and is published as the npm package `@kingsoftcloud/ksadk-web`.
+`ksadk-python` synchronizes the `dist-ksadk` output from the npm package into
+`ksadk/server/static` for the local `agentengine web` server. The Studio
+production payload lives in `ksadk/studio/static`. Public Git exports contain Studio React / TypeScript sources and the dependency lockfile, not generated assets. Package builds consume the pinned Web npm package and compile Studio; sdists and wheels contain the audited static payload.
+
+## Repository Roles
+
+| Repository / Package | Role |
+| --- | --- |
+| `kingsoftcloud/ksadk-web` | Editable React/Vite source, tests, Pages demo, npm publishing |
+| `@kingsoftcloud/ksadk-web` (npm) | Distribution channel for `dist-ksadk` / `dist-hosted` build outputs |
+| public `ksadk-python` repository | Python SDK, CLI, runner, local server, Studio sources and dependency lockfile |
+| Python artifacts | SDK and compiled `server/static` and `studio/static`, without frontend development dependencies |
+| hosted UI | Production deployment shell, gateway, image and environment injection; also consumes the npm package |
+
+The `ksadk-python` public clean export does not contain `ksadk/server/web-ui`
+source, nor `node_modules`, `dist/`, or `dist-hosted/` intermediate UI artifacts.
+The hosted editable UI source is maintained in `kingsoftcloud/ksadk-web`.
+Studio source is included in the public export. Static assets are generated at build time and included only in Python artifacts.
+
+## Sync Rules
+
+`make sync-ksadk-web-static` synchronizes the `dist-ksadk` directory of the
+`@kingsoftcloud/ksadk-web` npm package into `ksadk/server/static`:
+
+```bash
+# Default: pull the verified npm version
+make sync-ksadk-web-static
+
+# Assert the version pinned in the current source manifest
+make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.18
+```
+
+<Callout type="warning" title="Do not pull GitHub latest release at wheel build time">
+`latest` is not reproducible, introduces network and supply-chain risk, and
+cannot guarantee wheel contents match the release record. Release candidates
+use a reviewed manifest that pins the version, source commit and hashes.
+Changing `KSADK_WEB_VERSION` alone does not select another reviewed release.
+For local development, explicitly set `KSADK_WEB_TARBALL=/absolute/path/package.tgz`; package identity, complete distributions and safe extraction are still checked.
+</Callout>
+
+
+### Controlled package build
+
+`make build` and `make build-wheel` consume pinned `ksadk-web` assets, build React Studio from its dependency lock, and then build the wheel. Internal and public Git trees use the same path:
+
+```bash
+make build-wheel KSADK_WEB_VERSION=0.3.18
+```
+
+Wheel users do not need to compile the frontend. The universal wheel does not include framework dependencies or native toolchains; fully disconnected installation also needs an appropriate dependency wheelhouse.
+
+### Sync Variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `KSADK_WEB_VERSION` | manifest-pinned `0.3.18` | Version assertion; a release update also updates the source manifest, Studio dependency and lock |
+| `KSADK_WEB_TARBALL` | empty | Explicit local npm archive; bypasses the release pin while retaining safety checks and recording actual hashes |
+| `KSADK_WEB_REGISTRY` | `https://registry.npmjs.org` | Registry for Studio npm commands; the SDK archive URL is pinned by the manifest |
+
+Default builds verify the official npm archive's SHA-256, integrity, provenance and both distribution hashes. Downloads are cached in `.cache/ksadk-web`; verification failures never fall back to an older package.
+Legacy `KSADK_WEB_RELEASE_URL`, `KSADK_WEB_TARBALL_NAME` and `KSADK_WEB_CACHE_DIR` settings do not select assets in the current manifest-based build. Use `KSADK_WEB_TARBALL` for a local archive.
+
+## Release Record
+
+Each `ksadk-python` release note should record:
+
+- The `ksadk-python` version (e.g. `0.8.5`).
+- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.5` maps to `@kingsoftcloud/ksadk-web@0.3.12`).
+- The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.12`).
+- The wheel / sdist audit result (`make public-build-check` / `twine check dist/*`).
+
+<Callout type="info" title="Historical 0.8.5 release record format example">
+- `ksadk-python`: `0.8.5`
+- npm package: `@kingsoftcloud/ksadk-web@0.3.12`
+- frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.12`
+- audit: `make public-build-check` passed, `twine check dist/*` passed
+</Callout>

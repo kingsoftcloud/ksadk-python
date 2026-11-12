@@ -1,0 +1,188 @@
+---
+title: "Observability And Tracing"
+---
+
+KsADK includes local spans and a standard OTLP HTTP traces exporter. Tracing is optional diagnostics and should not be required for the quickstart path. Managed Agents created from either the CLI or console request observability by default and receive the Langfuse primary and CloudMonitor secondary routes from the platform. Use `--no-observability`, or turn observability off in the console, to disable it explicitly.
+
+Starting in `0.6.2`, the recommended model is **OTel-first**: application code creates OpenTelemetry spans, span events, and attributes, while `OTEL_EXPORTER_OTLP_*` environment variables route data to Langfuse, an OTel Collector, or another compatible backend.
+
+<Callout type="info">
+The local in-memory exporter is the safest public default. Local runs should continue if an external exporter is missing or fails to initialize — tracing must never block the quickstart.
+</Callout>
+
+## Export Paths
+
+| Path | Default behavior | Purpose |
+| --- | --- | --- |
+| In-memory spans | enabled for local runner paths | local debug APIs and Web UI trace views |
+| Langfuse OTLP HTTP (primary) | local: enabled when `OTEL_EXPORTER_OTLP_*` is set; managed: injected by default | send to Langfuse or any OTLP HTTP backend |
+| CloudMonitor OTLP HTTP (secondary) | local: enabled when `CLOUD_MONITOR_OTLP_*` is set; managed: injected by default | platform extension, dual-write to the Cloud Monitor trace platform |
+| OTLP gRPC | explicit `enable_otlp=True` | compatibility with older code paths |
+| OpenInference instrumentation | best effort | framework spans for ADK, LangChain, and similar runtimes |
+
+<Callout type="warning">
+Remote exporters should be enabled through environment variables, never hardcoded in business code.
+</Callout>
+
+## Generic OTLP HTTP
+
+When only the generic endpoint is set, KsADK derives `/v1/traces`:
+
+```bash title="env.sh"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel-collector.example.com/otel"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20demo-token"
+
+agentengine run .
+```
+
+You can also configure traces-specific endpoint, protocol, and headers. `TRACES_*` values take precedence over generic values:
+
+```bash title="env.sh"
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://otel-collector.example.com/otel/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20trace-token"
+```
+
+<Callout type="info">
+Headers follow the OTLP comma-separated format. URL-encode header values; KsADK decodes `Bearer%20trace-token` to `Bearer trace-token`.
+</Callout>
+
+To use Langfuse as an OTLP backend, configure standard OTLP variables:
+
+```bash title="env.sh"
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://langfuse.example.com/api/public/otel/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Basic%20<base64-public-secret>,x-langfuse-ingestion-version=4"
+```
+
+<Callout type="warning">
+Public examples must use placeholder keys and user-owned endpoints. Do not publish real trace screenshots, tenant ids, or private URLs.
+</Callout>
+
+## OTLP Dual-Write
+
+KsADK converges to one TracerProvider + two OTLP/HTTP BatchSpanProcessors per Python Agent process: Langfuse primary (standard `OTEL_EXPORTER_OTLP_*`) + CloudMonitor secondary (platform extension `CLOUD_MONITOR_OTLP_*`). The Langfuse CallbackHandler path has been removed; traces are no longer reported via the Langfuse SDK.
+
+Both exporters run in the Agent process and connect directly to their OTLP endpoints. This does not deploy an OpenTelemetry Collector, sidecar, extra container, or extra Pod.
+
+```bash title="env.sh"
+# Primary (Langfuse OTLP)
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://langfuse.example.com/api/public/otel/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Basic%20<base64-public-secret>,x-langfuse-ingestion-version=4"
+
+# Secondary (CloudMonitor OTLP, injected by platform)
+export CLOUD_MONITOR_OTLP_TRACES_ENDPOINT="https://cloudmonitor.example.com/v1/traces"
+export CLOUD_MONITOR_OTLP_HEADERS="Ksc-Appkey=<app-key>"
+
+agentengine run .
+```
+
+<Callout type="info">
+Header values use RFC 3986 percent-encoding (space `%20` not `+`). KsADK decodes them to real header values before passing to the OTLP exporter.
+</Callout>
+
+## Cloud Monitor OTLP
+
+`setup_tracing()` auto-detects `CLOUD_MONITOR_OTLP_*` variables and builds a CloudMonitor OTLP exporter writing in parallel with the primary Langfuse OTLP. A single span enters both backends with the same `trace_id` and `span_id`. Traces-specific endpoint, protocol, and headers each take precedence over their generic values. The Langfuse CallbackHandler path has been removed.
+
+| Path | Auth | Protocol | Trigger |
+| --- | --- | --- | --- |
+| CloudMonitor OTLP exporter | `Ksc-Appkey` header | `http/protobuf` | endpoint configured and traces-specific or generic headers provide `Ksc-Appkey` |
+
+Related environment variables (see `../reference/environment-variables.en.md` Observability section):
+
+| Variable | Sensitive | Description |
+| --- | --- | --- |
+| `CLOUD_MONITOR_APP_KEY` | yes | **Deprecated** transition fallback; used as `Ksc-Appkey` only when both `CLOUD_MONITOR_OTLP_TRACES_HEADERS` and `CLOUD_MONITOR_OTLP_HEADERS` are entirely absent. |
+| `CLOUD_MONITOR_OTLP_ENDPOINT` | no | CloudMonitor generic OTLP HTTP endpoint; derives `/v1/traces` when no traces-specific endpoint is set. |
+| `CLOUD_MONITOR_OTLP_PROTOCOL` | no | CloudMonitor generic OTLP protocol; currently supports `http/protobuf`. |
+| `CLOUD_MONITOR_OTLP_HEADERS` | yes | CloudMonitor OTLP extra headers, comma-separated and RFC 3986 encoded. |
+| `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` | no | CloudMonitor traces-specific endpoint; takes precedence over the generic endpoint. |
+| `CLOUD_MONITOR_OTLP_TRACES_HEADERS` | yes | CloudMonitor traces-specific headers; take precedence over generic headers and fail closed when present without `Ksc-Appkey`. |
+| `CLOUD_MONITOR_OTLP_TRACES_PROTOCOL` | no | CloudMonitor traces-specific protocol; takes precedence over the generic protocol. |
+
+<Callout type="warning" title="Sensitive variables">
+Variables marked "yes" are platform secrets or may carry auth material. Do not commit them to a public `.env` or image environment. Use placeholder values or distribute them through a platform secret service.
+</Callout>
+
+Minimal configuration example (placeholder values; replace with your own endpoint and AppKey):
+
+```bash title="env.sh"
+export CLOUD_MONITOR_OTLP_ENDPOINT="https://cloudmonitor.example.com"
+export CLOUD_MONITOR_OTLP_HEADERS="Ksc-Appkey=cm-appkey-placeholder"
+
+agentengine run .
+```
+
+## Span Events And Child Spans
+
+Span events are timestamped records attached to a span. They work well for:
+
+- `checkpoint.saved`
+- `agent.run.started`
+- `analysis.milestone`
+- error hints and resume hints
+
+Child spans are independent steps in the trace tree. They work well for:
+
+- tool calls.
+- checkpoint persistence.
+- external I/O.
+- report generation.
+- score calculation.
+
+<Callout type="info">
+In Langfuse and similar backends, child spans are usually easier to see in the trace tree or observation list and are better for duration, status, tool name, and error aggregation. Span events usually appear inside the parent span details and may not become independent tree nodes.
+</Callout>
+
+## Metadata And Scores
+
+Long-running, multi-user, multi-instance systems should attach stable, non-sensitive attributes to important spans:
+
+- `ksadk.agent_id`
+- `ksadk.session_id`
+- `ksadk.user_id`
+- `ksadk.invocation_id`
+- `ksadk.account_id`
+- `ksadk.runtime.service`
+- `ksadk.runtime.instance_id`
+
+<Callout type="info" title="invocation_id and account_id">
+`ksadk.invocation_id` is both a runner payload field and the source of `ToolExecutionContext.run_id`, so it ties the runner layer and the tool layer of a single invocation together in the trace tree. `ksadk.account_id` can be reported as a span attribute to aggregate traces by account in multi-tenant scenarios, but do not include the keys, tokens, or customer names tied to that account_id.
+</Callout>
+
+Represent evaluation scores with backend-neutral attributes first:
+
+```python title="scoring.py"
+span.set_attribute("score.name", "answer_quality")
+span.set_attribute("score.value", 0.88)
+span.set_attribute("score.source", "auto_evaluator")
+span.set_attribute("score.comment", "Report covers evidence and next steps.")
+```
+
+If the backend is Langfuse, a platform service or OTel Collector can map `score.*` attributes to native Langfuse scores. Application code does not need to import the Langfuse SDK, which keeps backend replacement cheaper.
+
+<Callout type="warning">
+Do not put raw prompts, credentials, private URLs, customer names, or uploaded file contents into span attributes.
+</Callout>
+
+## Troubleshooting
+
+| Symptom | Likely cause | Check |
+| --- | --- | --- |
+| Local trace view is empty | no run has produced spans, or tracing was disabled | run one request and confirm local tracing is enabled |
+| Generic OTLP receives no data | endpoint, TLS, auth, or Collector policy mismatch | check `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and headers |
+| Langfuse receives no spans | missing auth or wrong OTLP endpoint | check `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` |
+| Cloud Monitor receives no spans | the selected traces/generic headers lack `Ksc-Appkey`, the endpoint is missing, or the protocol is unsupported | check traces-specific headers first, then generic headers and endpoint; the legacy AppKey fallback applies only when both header variables are unset |
+| Score is not shown as a native score | the backend does not map `score.*` attributes | add conversion in the Collector or platform service |
+| Framework spans are sparse | optional instrumentation is missing or inactive | install tracing extras and check framework instrumentation |
+
+## Public Documentation Rules
+
+<Callout type="warning">
+- Use placeholder keys and user-owned endpoints.
+- Never commit `.env` files containing tracing credentials.
+- Never publish private trace ids, tenant ids, customer names, or real screenshots.
+- Keep private Collector URLs and tenant routing in internal runbooks, not in the public SDK repository.
+</Callout>

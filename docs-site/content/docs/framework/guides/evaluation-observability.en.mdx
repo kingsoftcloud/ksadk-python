@@ -1,0 +1,388 @@
+---
+title: "Evaluation and Observability"
+description: "Use EvalSet, agentengine eval, Studio, OTLP, and RuntimeEvent to measure Agent quality and diagnose runs."
+---
+
+Evaluation answers “did the result meet the expectation?” Observability answers
+“what ran, where did time go, and why did it fail?” KsADK provides local and
+cloud EvalSets, one evaluation report format, Studio evaluation and Trace
+Explorer, standard OTLP export, and RuntimeEvent replay. These features work
+independently and can also be correlated through `TraceRef`, run, and session
+identifiers.
+
+## Capability overview
+
+| Capability | Entry point | Purpose |
+| --- | --- | --- |
+| EvalSet templates and validation | `agentengine evalset init`, `agentengine eval --validate-only` | Generate a template, validate cases, and inspect the evaluator plan |
+| Local/cloud EvalSet sync | `agentengine evalset preview/push/pull` | Preview the fixed payload, publish, or retrieve an immutable Dataset version |
+| Local-source evaluation | `agentengine eval --agent-dir ...` | Run a local Agent from an isolated source snapshot and retain RuntimeEvent evidence |
+| A2A Agent evaluation | `agentengine eval --a2a-url ...` | Invoke a remote A2A Agent Card for single-turn or multi-turn cases |
+| Studio evaluation | Studio -> **Evaluations** | Evaluate local source, an A2A Agent, or a successful Studio Build |
+| Evaluators | `--evaluator ...` | Check responses, references, latency, tokens, tool trajectories, or use an LLM judge |
+| Local traces | Studio -> **Observability** | Inspect traces, span trees, waterfalls, attributes, events, and raw OTLP |
+| OTLP export | `OTEL_EXPORTER_OTLP_*` | Send spans to Langfuse, an OTel Collector, or another compatible backend |
+| CloudMonitor dual export | `CLOUD_MONITOR_OTLP_*` | Send the same spans to a second OTLP backend from the same process |
+| Runtime event replay | `agentengine replay` | Reconstruct text, reasoning, tools, artifacts, and run status without re-execution |
+
+<Callout type="warning" title="Current target boundary">
+  The CLI executes local `--agent-dir` and remote `--a2a-url` targets.
+  `--codex-worktree` currently supports `--validate-only`; execution returns an
+  explicit not-implemented error. Studio also supports successful Studio Builds
+  that have an immutable digest.
+</Callout>
+
+## Install and start
+
+The complete installation includes evaluation, A2A, and OTLP support:
+
+```bash
+pip install -U "ksadk[all]"
+```
+
+Create a template, then inspect validation output and the evaluator plan:
+
+```bash
+agentengine evalset init \
+  --template tool-routing \
+  --output-file ./evals/tool-routing.yaml
+
+agentengine eval \
+  --evalset-file ./evals/tool-routing.yaml \
+  --agent-dir ./my-agent \
+  --validate-only \
+  --format json
+```
+
+`--validate-only` does not invoke the Agent. The `evaluationPlan` in JSON output
+lists the evaluators that the EvalSet would use, making the result suitable for
+CI review before execution.
+
+## Write an EvalSet
+
+Prefer the native `ksadk.eval/v1` YAML format. A case can contain one `input` or
+an ordered `turns` list. Its final turn can set `expectedOutput` or
+`reference_output`.
+
+```yaml title="smoke.evalset.yaml"
+schemaVersion: ksadk.eval/v1
+name: agent-smoke
+cases:
+  - id: ping
+    input: "Reply with PONG only"
+    expectedOutput: "PONG"
+    assertions:
+      - type: response.equals
+        value: "PONG"
+      - type: runtime.maxLatencyMs
+        value: 10000
+
+  - id: weather
+    input: "Check tomorrow's weather in Beijing and recommend what to do"
+    reference_output: "Use the weather result to summarize tomorrow's conditions and give travel advice."
+    assertions:
+      - type: tool.succeeded
+        value: weather_lookup
+      - type: tool.sequence
+        value: [weather_lookup]
+```
+
+KsADK also recognizes existing Studio `EvaluationSuite` and ADK `eval_cases`
+formats. It converts them to `ksadk.eval/v1` and calculates a `contentDigest`.
+Case IDs must be unique.
+
+### Built-in templates
+
+| Template | Scenario |
+| --- | --- |
+| `knowledge-qa` | Knowledge questions with reference answers |
+| `structured-output` | JSON output and schema validation |
+| `tool-routing` | Successful tool calls and call order |
+| `service-sla` | Latency and total-token budgets |
+
+```bash
+agentengine evalset init \
+  --template structured-output \
+  --output-file ./evals/structured-output.yaml
+```
+
+### Supported assertions
+
+| Type | `value` | Meaning |
+| --- | --- | --- |
+| `response.equals` | string | Response must match exactly |
+| `response.contains` / `response.notContains` | string | Response must contain or omit the value |
+| `response.jsonSchema` | JSON Schema object | Response must parse as JSON and satisfy the schema |
+| `runtime.maxLatencyMs` | non-negative number | Maximum execution latency |
+| `runtime.maxInputTokens` / `runtime.maxOutputTokens` / `runtime.maxTotalTokens` | non-negative number | Maximum input, output, or total tokens |
+| `tool.called` / `tool.notCalled` | tool name | Require or forbid a tool call |
+| `tool.succeeded` | tool name | Require a successful tool call |
+| `tool.sequence` | non-empty list of tool names | Require a call order |
+
+When evidence is missing, the assertion is `UNAVAILABLE`; an unknown value is
+never treated as zero or as a pass. Tool assertions are usually `UNAVAILABLE`
+for an A2A target that does not expose a standardized tool trajectory. Local
+source and Studio Build targets project tool calls from RuntimeEvent evidence.
+
+## Publish and reuse a cloud EvalSet
+
+`preview` is offline and prints the fixed-schema payload that would be
+published. `push` publishes the current workspace EvalSet. `pull` retrieves one
+fixed Dataset ID and version into a local file.
+
+```bash
+# Inspect the payload before publishing; cloud publishing requires full_trace
+agentengine evalset preview \
+  --evalset-file ./evals/tool-routing.yaml \
+  --data-policy full_trace \
+  --format json
+
+# Publish a new immutable Dataset version
+agentengine evalset push \
+  --file ./evals/tool-routing.yaml \
+  --dataset-id <dataset-id>
+
+# Retrieve a fixed version for a reproducible run
+agentengine evalset pull \
+  --dataset-id <dataset-id> \
+  --dataset-version 3 \
+  --project-id <project-id> \
+  --output-file ./evals/imported-v3.yaml
+```
+
+`push` and `pull` require access to the Agent Eval service. Never place a
+temporary download URL, account credential, or token in an EvalSet or commit it
+to the repository.
+
+## Run an evaluation
+
+Each run must use either a local `--evalset-file` or an immutable cloud Dataset
+selected by `--dataset-id --dataset-version`. It must also select exactly one
+target.
+
+### Local source
+
+The local target copies the project into an isolated snapshot, records its
+revision and Git state, and loads a supported ADK, LangGraph, LangChain, or
+DeepAgents entry point. Use `--entrypoint` to override detection.
+
+```bash
+agentengine eval \
+  --evalset-file ./evals/tool-routing.yaml \
+  --agent-dir ./my-agent \
+  --timeout-seconds 120 \
+  --report-dir ./.agentkit/evaluations \
+  --format json
+```
+
+### A2A Agent
+
+Cases run sequentially in file order. A multi-turn case reuses one A2A
+`context_id`. Authentication accepts only an `env://` credential reference, so
+the secret value is not written to the command line or report.
+
+```bash
+export A2A_EVAL_TOKEN="<your-token>"
+
+agentengine eval \
+  --evalset-file ./evals/tool-routing.yaml \
+  --a2a-url https://agent.example.test/.well-known/agent-card.json \
+  --credential-ref env://A2A_EVAL_TOKEN \
+  --fail-fast
+```
+
+### Cloud Dataset version
+
+Use a fixed version instead of a moving active Dataset so later runs remain
+reproducible:
+
+```bash
+agentengine eval \
+  --dataset-id <dataset-id> \
+  --dataset-version 3 \
+  --dataset-project-id <project-id> \
+  --agent-dir ./my-agent
+```
+
+### Common execution options
+
+| Option | Effect |
+| --- | --- |
+| `--timeout-seconds 120` | Per-case timeout from 1 to 3600 seconds |
+| `--fail-fast` | Stop after the first failed case |
+| `--report-dir <dir>` | Set the local report root |
+| `--format pretty\|json` | Select terminal output; JSON is suitable for CI |
+| `--data-policy <policy>` | Control retained evidence and permitted data disclosure |
+| `--evaluator <id>` | Select an evaluator; repeat the option for more than one |
+
+`DataPolicy` can be `local_only`, `metadata_only`, `redacted_trace`, or
+`full_trace`. `metadata_only` omits text and attributes, while `redacted_trace`
+retains redacted content. Selecting a policy does not upload a report or trace;
+remote trace export is controlled separately by OTLP environment variables.
+
+## Evaluators and automatic planning
+
+Without `--evaluator`, KsADK derives a plan from the EvalSet. A reference answer
+uses a fully configured `llm_judge@v1` when available and otherwise uses
+`reference_match@v1`. Response, runtime-budget, and tool assertions add their
+deterministic evaluators. A case with neither a reference nor a response
+assertion receives `business_standard@v1` and an unavailable quality result, so
+“the Agent ran” is not mistaken for business success.
+
+| Evaluator | Purpose |
+| --- | --- |
+| `business_standard@v1` | Mark a case that has no business-quality standard |
+| `response_contract@v1` | Execute `response.*` assertions |
+| `runtime_budget@v1` | Execute `runtime.*` assertions |
+| `tool_trajectory@v1` | Execute `tool.*` assertions |
+| `reference_match@v1` | Calculate token overlap with the reference answer |
+| `llm_judge@v1` | Evaluate quality with an explicitly configured OpenAI-compatible model |
+
+Explicit `--evaluator` options replace the automatic plan:
+
+```bash
+agentengine eval \
+  --evalset-file ./evals/structured-output.yaml \
+  --agent-dir ./my-agent \
+  --evaluator response_contract@v1 \
+  --evaluator runtime_budget@v1
+```
+
+The LLM judge requires `ksadk[judge]`, a reference answer, `full_trace`, a
+model, an API base, and an environment variable that contains the key:
+
+```bash
+export KSADK_EVAL_JUDGE_API_KEY="<your-api-key>"
+
+agentengine eval \
+  --evalset-file ./evals/knowledge-qa.yaml \
+  --agent-dir ./my-agent \
+  --evaluator llm_judge@v1 \
+  --judge-model <judge-model> \
+  --judge-api-base https://judge.example.test/v1 \
+  --data-policy full_trace
+```
+
+## Read evaluation results
+
+The default report path is:
+
+```text
+.agentkit/evaluations/<eval-run-id>/report.json
+```
+
+The `ksadk.eval.report/v1` report stores snapshots of the EvalSet, target,
+optional cloud Dataset, and evaluation configuration. Each case includes target
+status, latency, usage, metrics, `TraceRef`, and summary status. RuntimeEvent
+evidence for a local target is stored in `evidence/` beside the report.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Evaluation passed |
+| `1` | The Agent ran, but a case or required metric failed |
+| `2` | Invalid input, executor/runtime error, or cancellation |
+| `3` | The target or a required metric has unavailable evidence |
+
+A successful target invocation is not an evaluation pass. Check both
+`EvalRunReport.status` and every required metric.
+
+## Use Studio
+
+Start Studio and open **Evaluations** in the sidebar:
+
+```bash
+agentengine studio ./my-agent-workspace
+```
+
+Upload a YAML or JSON EvalSet, select an A2A Agent, local source, or Studio
+Build, configure timeout, fail-fast behavior, and evaluators, then start the
+background operation. The list shows status and summary; details show cases,
+metrics, target usage, and `TraceRef`. A running evaluation can be cancelled.
+
+A Studio Build target must already be successful and carry an immutable digest.
+Studio does not treat an unfrozen Codex source tree as a reproducible build.
+
+Open **Observability** for local traces, span parent/child trees, waterfalls,
+attributes, events, resources, instrumentation scope, raw OTLP JSON, and
+`traceparent`. Local OTLP files live in `.agentkit/traces/` inside the workspace
+and are intended only for local diagnosis.
+
+## Export to an OTLP backend
+
+Standard OTLP/HTTP settings work with Langfuse, an OTel Collector, and other
+compatible backends:
+
+```bash
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel.example.test/otel"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20<your-token>"
+
+agentengine run .
+```
+
+Traces-specific variables take precedence:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://otel.example.test/otel/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20<your-token>"
+```
+
+When only the general endpoint is set, KsADK derives `/v1/traces`. Header values
+use RFC 3986 encoding and multiple headers are comma-separated. To export to a
+second CloudMonitor backend, set `CLOUD_MONITOR_OTLP_ENDPOINT` or
+`CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` and the corresponding headers. Both
+exporters receive the same spans with identical `trace_id` and `span_id` values.
+See [Observability and tracing](./observability-tracing.mdx) for the complete
+variable list.
+
+## Replay RuntimeEvent
+
+OTel spans describe topology, timing, and diagnostics. Canonical RuntimeEvent
+schema v2 describes the semantic order of Agent execution and evaluation
+evidence. The two can be correlated, but one RuntimeEvent does not equal one
+span.
+
+```bash
+# Human-readable transcript
+agentengine replay <session-id>
+
+# Read a cursor window as JSON
+agentengine replay <session-id> \
+  --after-seq-id 120 \
+  --before-seq-id 260 \
+  --format json
+```
+
+Replay projects text, reasoning, tools, artifacts, and run status. It does not
+call the model, rerun tools, or repeat approvals. Only sessions persisted through
+the canonical RuntimeEvent v2 store are read; legacy SessionEvent rows are not
+silently converted into new canonical facts.
+
+## Choose the right tool
+
+| Question | Start with |
+| --- | --- |
+| Build an evaluation set quickly | `agentengine evalset init` |
+| Reproduce a fixed test-data version | `evalset pull` or `eval --dataset-id --dataset-version` |
+| Check a deterministic response rule | `response_contract@v1` |
+| Compare with a reference answer | `reference_match@v1` |
+| Ask a model to judge business quality | `llm_judge@v1`, after confirming the disclosure policy |
+| Verify tool calls | Local source or Studio Build with `tool_trajectory@v1` |
+| Find a slow or failed span | Studio Trace Explorer or a remote OTLP backend |
+| Reconstruct tools, approvals, and responses | `agentengine replay` |
+| Trace an evaluation result back to execution | Follow `TraceRef` to a trace or RuntimeEvent evidence |
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Codex worktree execution is not implemented | Use `--validate-only`, or execute a local-source or A2A target |
+| Tool assertion is `UNAVAILABLE` | Confirm that the target provides RuntimeEvent tool evidence; A2A often lacks a standardized trajectory |
+| Token budget is `UNAVAILABLE` | The target did not report usage; KsADK does not replace unknown usage with zero |
+| Quality result is unavailable | Add a reference, response assertion, or explicit business evaluator |
+| LLM judge is `UNAVAILABLE` | Check `ksadk[judge]`, `full_trace`, reference answer, model, API base, and key environment variable |
+| Studio Build cannot be selected | Complete a successful build and verify its immutable digest |
+| Studio has no traces | Run an Agent in this workspace and make sure tracing is enabled |
+| Remote backend has no spans | Check endpoint, protocol, headers, TLS, and authentication; never put credentials in source |
+| Replay has no history | Confirm that the session uses canonical RuntimeEvent v2 persistence and check the cursor window |

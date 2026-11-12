@@ -1,0 +1,146 @@
+---
+title: "0.8.7 Integration and Configuration"
+description: "Install and configure AG-UI, A2UI, MCP OAuth, and A2A with explicit runtime boundaries"
+---
+
+0.8.7 is a review candidate, not a release announcement. Python 3.12 or later is required;
+the candidate bundles `@kingsoftcloud/ksadk-web@0.3.18`. Upgrading the local SDK does not update deployed Agents.
+
+## Choose an integration by capability
+
+| Capability | Application integration | Dependencies |
+| --- | --- | --- |
+| Chat and streaming | Existing ADK / LangGraph / LangChain / DeepAgents entry point | Model settings and framework dependencies; native framework semantics are retained. |
+| AG-UI | Install `ksadk[langgraph,agui]`; negotiate transport through bootstrap | Compatible UI/runtime; hosted LangGraph also requires Kernel admission. |
+| A2UI / form resume | `request_input`, optional A2UI presentation, native checkpointer | Business JSON Schema, registered catalog, and persistent state. |
+| API Key MCP | Keep `MultiServerMCPClient` or the existing MCP client | Service URL, service-issued API Key, and explicit tool selection. |
+| OAuth MCP | Add `McpOAuthTools` to the model and tool nodes of your LangGraph | Local project Web or a compatible hosted Broker, durable checkpoint, actual user consent. |
+| A2A | Use `get_a2a_tools()` or a controlled Space client | Platform Space, registered callee, available Card, Gateway, and workload identity. |
+
+The SDK owns framework adaptation, runtime, and protocol consumption. The companion platform owns
+Space/Agent registration, routing, Broker, and hosted resource lifecycle. Installing Python packages
+does not create a complete control plane locally.
+
+## Install the candidate and framework dependencies
+
+Install a reviewed local wheel in an isolated environment. Do not describe an unpublished candidate
+as already downloadable from PyPI:
+
+```bash
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python \
+  '/absolute/path/ksadk-0.8.7-py3-none-any.whl[langgraph,agui]'
+source .venv/bin/activate
+agentengine --version
+```
+
+For a published version use `uv pip install "ksadk[langgraph,agui]"`; select other extras for the actual framework.
+Declare application dependencies in `requirements.txt`. Verify model, framework, and optional UI imports
+in a clean environment rather than relying on packages already installed on a development machine.
+
+## Separate three configuration owners
+
+| Variable | Location | When needed |
+| --- | --- | --- |
+| `KSYUN_ACCESS_KEY`, `KSYUN_SECRET_KEY` | Deployment machine or CI secret | Authenticate deployment API calls; never place them in application source or `runtime.env`. |
+| `KSYUN_REGION` | Deployment machine, passed explicitly to commands | Use the same target environment for deployment, status, and invocation. |
+| `KSYUN_ACCOUNT_ID` | Deployment machine, optional | Resolved from AK/SK when available; local account configuration is not application runtime configuration. |
+| `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL_NAME` | Agent runtime | Required by examples using OpenAI-compatible models; other providers use their own settings. |
+| `KSADK_ENABLE_KERNEL=1` | Code/Container deployment environment | Request per-Agent hosted Kernel admission for the hosted interaction/OAuth scenarios here. |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1` | LangGraph runtime | Allow SDK binding when the graph has no saver; disabled by default, preserves existing savers and explicit `False`. |
+| `KSADK_SESSION_BACKEND=postgres`, `KSADK_SESSION_DSN` | Runtime or platform resource binding | Configure Agent session persistence. |
+| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph runtime or platform resource binding | Explicit framework checkpoint target; it may share a test database with Session. |
+| `AGENT_KERNEL_ENABLED`, permit/JWKS, workload tokens, A2A identity | Platform-projected | Applications must not construct these or forge admission through ordinary user environment values. |
+
+See [Environment Variables](/en/docs/references/environment-variables/) for complete settings and precedence.
+`KSADK_ENABLE_KERNEL` declares deployment intent; it cannot replace trusted `AGENT_KERNEL_ENABLED`.
+
+## Configure both hosted LangGraph persistence layers
+
+Session stores conversation events; framework checkpoints store graph execution position, state, and interrupts.
+A configured Session database alone does not make the graph resumable. Configure both explicitly using
+the same PostgreSQL address in this example:
+
+```dotenv title="runtime.env.example"
+OPENAI_API_KEY=your-model-api-key
+OPENAI_BASE_URL=https://model.example.com/v1
+OPENAI_MODEL_NAME=your-model-name
+KSADK_ENABLE_KERNEL=1
+KSADK_LANGGRAPH_AUTO_CHECKPOINT=1
+KSADK_SESSION_BACKEND=postgres
+KSADK_SESSION_DSN=postgresql://example_user:example_password@db.example.com:5432/example_db
+KSADK_LANGGRAPH_CHECKPOINT_DSN=postgresql://example_user:example_password@db.example.com:5432/example_db
+```
+
+Copy to an untracked `runtime.env` and replace placeholders. It contains model and database secrets;
+exclude it from Git, Code ZIPs, screenshots, and public logs. The example addresses are not real services.
+For separate databases, set each DSN and validate the platform storage binding rules; do not run two SDK
+versions against the same workspace concurrently.
+
+Export both `ksadk_graph_factory(*, checkpointer)` and
+`ksadk_prepare_state(payload, session_context)` from the entry module. The latter prepares only the
+current input, leaving history restoration to the checkpointer and preventing duplicate appends.
+See the complete [AG-UI and A2UI Integration](/en/docs/framework/guides/agui-a2ui/) example.
+
+For local Web, use `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1 agentengine web .`; without PostgreSQL settings,
+the SDK can bind project-local SQLite. SQLite/memory is not shared persistence across Pods. Hosted OAuth
+also requires a compatible platform Broker, trusted identity, and completion permits, not just a DSN.
+
+## Build, deploy, and update
+
+Validate local execution and dependencies first. Confirm `KSYUN_REGION`, the platform-supplied target
+endpoint, and credentials refer to the intended environment. Pass runtime settings explicitly through
+`--env-file`; code artifacts must not include local `.env` files or authorization vaults:
+
+```bash
+agentengine build . --mode code
+agentengine deploy . --target serverless --region "$KSYUN_REGION" \
+  --artifact-type Code --env-file ./runtime.env
+
+# Update an existing test Agent after confirming its ID and target environment.
+agentengine deploy . --agent-id "$AGENT_ID" --region "$KSYUN_REGION" \
+  --artifact-type Code --env-file ./runtime.env
+```
+
+Hot updates patch environment variables: omitting a key preserves its old value. When removing an
+integration, explicitly remove or clear its settings and inspect the actual runtime and tool set.
+A key disappearing from control-plane display does not prove its credential is absent from an old Pod.
+On update failure, busy status, or rollout unavailability, inspect the original operation instead of
+creating duplicate Agents or replaying business tasks.
+
+An existing Kernel Agent cannot freely change its persistence target. When the server cannot prove
+old and new Session storage are identical it rejects online migration. Preserve data, review a migration
+plan, and then decide whether to update or create an isolated instance.
+
+## Integrate MCP and A2A separately
+
+The [OAuth MCP guide](/en/docs/framework/guides/mcp-oauth/) provides model/tool nodes and the input hook.
+API Key MCP keeps service headers/clients; it does not become OAuth. `SEARCH_MCP_URL` and
+`SEARCH_MCP_API_KEY` in application examples are custom names, not SDK-wide configuration variables.
+Scopes, client registration, callback URLs, and authorization lifetime depend on the service and platform.
+
+The [A2A guide](/en/docs/framework/guides/a2a-runtime/) covers Cards, Spaces, and outbound boundaries. `--a2a-space-id`
+binds a runtime; it does not guarantee the callee is registered and discoverable. Register and verify
+the callee before enabling the caller; never copy Agent IDs from another environment.
+
+Use separate tool sets and fresh sessions for OAuth and A2A validation. When reusing compute instances,
+finish current tasks, switch artifacts/configuration, clear the previous mode's credentials, and inspect
+the actual Pod before testing the next protocol.
+
+## UI companions and acceptance boundaries
+
+The Web bundled in a wheel and the platform's shared Hosted UI are separate deliverables. SDK upgrades
+do not deploy the shared frontend. Inspect loaded assets, versions, and bootstrap capabilities rather
+than inferring a frontend upgrade from the Python package version.
+
+AG-UI transport, A2UI presentation, OAuth consent, and execution approval negotiate and validate separately;
+a plain “approve” chat message cannot substitute for them. Custom event clients must handle
+`HasMore`/`NextCursor`, history epochs, and snapshot boundaries rather than treating the first page as a complete result.
+
+Minimum acceptance covers chat, actual tool results, OAuth consent/resume/reuse, form submission/reload
+recovery, and remote A2A task state/results. Mark untested multi-replica takeover, credential refresh, or
+provider-specific scenarios separately. Passing tests is not release approval.
+
+Model-generated A2UI can violate the registered catalog; complex style requests can fail validation.
+Show an explicit error or a business-approved structured-input fallback. Do not relax Schema validation,
+fabricate success, or automatically replay business side effects.

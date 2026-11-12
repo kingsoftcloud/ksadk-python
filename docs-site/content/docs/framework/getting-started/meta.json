@@ -1,0 +1,13 @@
+{
+  "title": "入门",
+  "pages": [
+    "index",
+    "quickstart",
+    "configuration",
+    "project-structure",
+    "why-ksadk",
+    "concepts",
+    "architecture",
+    "comparison"
+  ]
+}

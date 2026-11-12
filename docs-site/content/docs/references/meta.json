@@ -1,0 +1,20 @@
+{
+  "title": "参考",
+  "icon": "BookMarked",
+  "root": true,
+  "pages": [
+    "index",
+    "---[Settings]配置与接口---",
+    "project-config",
+    "environment-variables",
+    "openai-compatible-api",
+    "---[Activity]运行时合同---",
+    "remote-runtime-api",
+    "runtime-sessions-files",
+    "---[ShieldCheck]运维与安全---",
+    "security-boundaries",
+    "troubleshooting",
+    "---[GitPullRequest]参与项目---",
+    "contributing"
+  ]
+}

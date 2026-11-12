@@ -1,0 +1,159 @@
+---
+title: "运行时架构"
+---
+
+KsADK 运行时把控制、执行与呈现拆成三个稳定边界：Agent Kernel 负责可信控制，Harness 与 PluginHost 负责装配和生命周期，Provider 负责框架原生执行。执行结果进入统一事件事实链，再投影到 API、Studio 与托管界面。
+
+![KsADK 总体技术架构](/assets/ksadk-runtime-architecture.svg)
+
+## 分层与主线
+
+```text
+使用入口
+  → Agent Kernel
+  → PluginHost 装载插件组合
+  → Harness 为 Activation 选择一个 Provider
+  → Provider 原生执行
+  → RuntimeEvent v2
+  → SessionEvent 日志
+  → API / Studio / 托管界面投影
+```
+
+共用能力不占据主执行链。上下文、工具、安全、MCP、Skill、沙箱、记忆和观测通过能力总线注入 Harness；Provider 仍然保留框架特定的线程、checkpoint 和事件语义。
+
+## 核心包
+
+| Package | 责任 |
+| --- | --- |
+| `ksadk.kernel` | 控制许可、准入、Inbox、lease、fencing、状态与恢复 |
+| `ksadk.harness` | Harness 配置、工具、沙箱、reasoner 与原生 RuntimeAdapter |
+| `ksadk.plugins` | 插件契约、组合编译、解析、PluginHost、Provider 与子代理桥接 |
+| `ksadk.events` | RuntimeEvent v2、身份、存储、reducer、回放与协议投影 |
+| `ksadk.scheduler` | 本地 Scheduler Lite、日历计算、任务存储与控制命令分发 |
+| `ksadk.runtime` | 跨 Runner、Harness、Codex 与 A2A 的运行控制接口 |
+| `ksadk.server` | FastAPI 应用、标准 API、本地 Studio 和协议入口 |
+| `ksadk.conversations` | turn 编排、输入规范化、会话写入和协议 payload |
+| `ksadk.sessions` | 本地及可插拔的会话存储 |
+| `ksadk.runners` | 历史框架项目的 Runner 适配层 |
+
+## 启动与入口
+
+`agentengine run`、`agentengine web` 和标准 API 最终进入同一运行时边界。
+
+<Steps>
+  1. CLI 或 Server 解析项目目录、环境变量与 `agentengine.yaml`。
+  2. 显式配置或检测逻辑确定 Runner、Harness 或插件化 Provider 路径。
+  3. 应用装配 FastAPI 路由、生命周期、认证和会话入口。
+  4. Agent Kernel 对需要可信控制的请求执行准入与状态保护。
+  5. Harness 创建 Activation，绑定共用能力并选择 Provider。
+  6. Provider 执行原生框架逻辑，事件进入统一事实链。
+</Steps>
+
+<Callout type="info">
+  `agentengine.yaml` 应明确声明框架与入口点。检测失败属于项目装载问题，不应在导入用户代码后才表现为运行错误。
+</Callout>
+
+## Agent Kernel：可信控制边界
+
+Agent Kernel 不执行具体 Agent 逻辑。它把影响安全与一致性的控制语义集中到一个可验证边界。
+
+| 能力 | 约束 |
+| --- | --- |
+| 许可与准入 | 未通过许可校验的控制命令不会进入执行路径 |
+| Inbox 与顺序 | 控制命令先持久化，再由 Worker 有序领取 |
+| Lease 与 fencing | 过期持有者不能继续写入新的状态 |
+| 并发与背压 | 队列容量、重复命令和并行处理使用稳定错误语义 |
+| 取消与恢复 | 取消、恢复、交互回包与 checkpoint 目标显式分离 |
+| 状态一致性 | 运行状态、控制回执与事件写入共享写入保护 |
+
+存储后端决定耐久等级：内存适合本地或单进程临时运行，SQLite 适合本地持久化，PostgreSQL 用于需要跨进程接管与事务 fencing 的托管运行时。配置为持久模式却缺少后端时应启动失败，不做静默降级。
+
+## Harness 与 Provider：执行边界
+
+Harness 是稳定宿主，不是新的 Agent 框架。它统一控制入口、工具接入、会话连续性、上下文和事件出口，但不重写 Provider 的原生执行模型。
+
+| Harness / Host 负责 | Provider 负责 |
+| --- | --- |
+| Activation 创建与关闭 | 框架原生执行 |
+| 插件图和能力绑定 | 私有线程、checkpoint 或会话状态 |
+| 权限准入与健康检查 | 原生工具调用和事件语义 |
+| profile fencing 与原子切换 | 能力矩阵中声明的 cancel、resume、checkpoint 行为 |
+| 统一事件出口 | 将执行结果映射为可适配的 Provider 事件 |
+
+每个 Activation 只选择一个 Agent Provider。当前插件目录包含 Codex 原生 Provider、KsADK Harness Provider、DSH / Cordis Provider 与 SubagentProvider；它们通过同一宿主契约接入，但不假装拥有相同能力。
+
+## 插件组合与生命周期
+
+Studio 中可编辑的 Agent revision 先由组合编译器转换为不可变插件图。插件引用使用精确版本，能力声明绑定到明确的 Definition 和 slot，敏感配置只接受 secret reference。
+
+<Steps>
+  1. 组合编译器把 runtime、Session、Memory、Context、Renderer、MCP 与 Skill 绑定规范化。
+  2. Resolver 生成锁定版本和摘要。
+  3. PluginHost 执行解析、权限准入、stage 与健康检查。
+  4. 候选图健康后原子切换；失败时保留旧图并清理候选副作用。
+  5. 已建立的会话继续持有原 Provider 私有状态，关闭后再回收旧图。
+</Steps>
+
+这条生命周期保证“配置可切换”和“运行不被撕裂”同时成立。
+
+## 共用能力总线
+
+| 能力 | 注入内容 |
+| --- | --- |
+| 上下文与提示 | 历史压缩、提示拼装、快照和 contributor 输出 |
+| 工具与安全 | 工具目录、策略、审批、权限和 secret reference |
+| MCP 与 Skill | 资源发现、物化后的插件能力和调用入口 |
+| 沙箱与工作区 | 隔离执行、文件访问和命令边界 |
+| 记忆与知识 | Memory 与 KnowledgeBase 上下文 |
+| 追踪与评测 | Trace、指标、事件关联和 Eval 数据 |
+
+能力插件通过只读执行上下文交给 Provider。没有物化插件所有者的 MCP 或 Skill 绑定会在构建阶段拒绝，避免界面显示“已启用”但运行时实际不可用。
+
+## 自动任务
+
+Scheduler Lite 负责确定性日历计算、本地任务存储和到期分发。任务触发后仍通过 Agent Kernel 与 Harness 进入同一执行链，不创建第二套运行时。
+
+| 组件 | 责任 |
+| --- | --- |
+| `SchedulerEngine` | 计算到期任务、维护 occurrence 与重试语义 |
+| `SchedulerSQLiteStore` | 持久化本地任务和调度状态 |
+| `AgentControlSchedulerDispatcher` | 把调度触发转换为 AgentControl 命令 |
+
+## 事件事实链
+
+ADK、LangGraph、Codex、A2A 与 Harness 事件由各自适配器转换为 `RuntimeEvent(schema_version=2)`。适配过程保留 source、scope、item 与 event 身份，避免按作者或文本做模糊去重。
+
+| 阶段 | 责任 |
+| --- | --- |
+| 框架事件适配 | 保留 Provider 来源与原生 item 身份 |
+| RuntimeEvent v2 | 表达 run、item、content、tool、interaction 与 error 事实 |
+| SessionEvent 日志 | 持久化顺序、运行状态与恢复所需事实 |
+| Reducer 与回放 | 按身份执行 append、replace、completed 和最终结果选择 |
+| 协议投影 | 生成 Responses、Chat、Studio、A2A 或托管界面所需视图 |
+
+<Callout type="info">
+  `RuntimeEvent v2` 是写入主路径。v1 只保留只读兼容投影；新的运行事件不再写入 v1。
+</Callout>
+
+## 会话与协议
+
+每个 turn 在执行前构造稳定的调用上下文，包括 Agent、用户、Session、输入、附件、模型选项以及启用的记忆和知识。Provider 只读取公开上下文和能力绑定，不依赖 Server 私有全局状态。
+
+| Endpoint | 用途 |
+| --- | --- |
+| `POST /v1/responses` | 首选标准调用协议 |
+| `POST /v1/chat/completions` | Chat Completions 兼容入口 |
+| `POST /agentengine/api/v1/RunAgent` | Studio action 风格调用 |
+| `POST /run_sse` | ADK Web 兼容执行路径 |
+| `POST /agentengine/api/v1/CancelRun` | 协作式取消 |
+| `POST /agentengine/api/v1/ResumeRun` | 按声明能力恢复运行 |
+
+外部客户端优先使用 `/v1/responses`。Studio 和托管界面通过 SessionEvent 投影与续订接口获得一致视图。
+
+## 平台边界
+
+KsADK 运行时包含 SDK、CLI、Server、Kernel、Harness、插件宿主、Provider、事件与本地存储。Agent 注册、远端部署生命周期、网关治理、托管 Skill / Sandbox 服务和 OTLP 后端属于外部平台，通过明确契约连接。
+
+<Callout type="warning">
+  公开文档不包含私有网关行为、内部集群路径、私有镜像仓库或客户特定运维流程。
+</Callout>
