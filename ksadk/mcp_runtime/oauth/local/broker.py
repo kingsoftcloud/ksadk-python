@@ -135,6 +135,8 @@ class LocalBroker:
             declaration = self.declarations.get(name) or declaration
             if declaration is None:
                 raise BrokerError("MCP_CONFIGURATION_NOT_FOUND")
+            if declaration["oauth"].get("client_ref"):
+                raise BrokerError("LOCAL_OAUTH_PLATFORM_CLIENT_REF_UNSUPPORTED")
             version = digest(declaration)
             config_id = digest([name, version, self.base_url])
             if config_id not in self.data["configs"]:

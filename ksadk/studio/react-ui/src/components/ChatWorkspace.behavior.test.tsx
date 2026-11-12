@@ -383,12 +383,12 @@ describe("ChatWorkspace shared conversation composition", () => {
     expect(mocks.chat.refresh).toHaveBeenCalledTimes(2);
   });
 
-  it("creates a local draft immediately without waiting for bootstrap or session loading", async () => {
+  it("creates a local draft after bootstrap without waiting for session loading", async () => {
     mocks.chat.bootstrapStatus = "loading";
     const onNewChatStarted = vi.fn();
     const props = { agentId: "local-1", agentName: "Agent", newChatRequest: 1, onNewChatStarted };
     const { rerender } = render(<ChatWorkspace {...props}/>);
-    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).not.toHaveBeenCalled();
     mocks.chat.bootstrapStatus = "ready";
     mocks.chat.isLoadingSessions = true;
     rerender(<ChatWorkspace {...props}/>);

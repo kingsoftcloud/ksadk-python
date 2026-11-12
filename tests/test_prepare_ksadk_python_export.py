@@ -216,3 +216,26 @@ def test_export_manifest_attests_policy_without_exposing_internal_inventory(
     assert "excludedPathCount" not in manifest
     assert "includePolicy" not in manifest
     assert "private-plan" not in json.dumps(manifest)
+
+
+def test_public_export_keeps_new_protocol_regressions_and_local_fixtures():
+    module = _load_module()
+    root = SCRIPT_PATH.parents[1]
+    required = {
+        "tests/a2ui/test_official_wire.py",
+        "tests/agui/test_protocol_contract.py",
+        "tests/agui/test_native_cold_resume.py",
+        "tests/test_mcp_oauth_local.py",
+        "tests/test_mcp_oauth_declarations.py",
+        "tests/test_mcp_oauth_documented_graph.py",
+        "tests/fixtures/local_oauth_provider.py",
+        "tests/a2a/test_control_plane.py",
+        "tests/a2a/test_workload_token_public_compat.py",
+        "tests/a2a/test_a2a_protocol_e2e.py",
+        "tests/a2a/test_context_store.py",
+        "tests/a2a/test_native_process_recovery.py",
+        "tests/server/test_app_factory_agui.py",
+    }
+    exported = set(module.build_export_plan(root).export_paths)
+    assert required <= exported, f"protocol regressions excluded: {sorted(required - exported)}"
+    assert "tests/a2a/fixtures/restored-assets-manifest.json" not in exported

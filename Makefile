@@ -392,6 +392,14 @@ PUBLIC_TEST_TARGETS += tests/a2a/test_public_imports.py tests/studio/test_shared
 PUBLIC_TEST_TARGETS += tests/test_cloud_headers.py
 PUBLIC_TEST_TARGETS += tests/test_prepare_ksadk_python_export.py
 PUBLIC_TEST_TARGETS += tests/packaging/test_alias_distribution.py
+# Public protocol contracts must remain in the local release gate as well as CI.
+PUBLIC_TEST_TARGETS += tests/a2ui/test_official_wire.py
+PUBLIC_TEST_TARGETS += tests/agui/test_protocol_contract.py
+PUBLIC_TEST_TARGETS += tests/agui/test_native_cold_resume.py
+PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_declarations.py
+PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_local.py
+PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_documented_graph.py
+PUBLIC_TEST_TARGETS += tests/a2a/test_workload_token_public_compat.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -500,7 +508,7 @@ public-test: sync-ksadk-web-static build-studio-static
 	@echo "==> test"
 	@# The SDK compatibility tests explicitly exercise the optional Managed engine.
 	@# Native cold-install tests separately reject all agent-framework imports.
-	@uv sync --extra dev --extra langgraph --extra skills
+	@uv sync --extra dev --extra langgraph --extra skills --extra agui --extra a2a
 	@uv run --no-sync pytest $(PUBLIC_TEST_TARGETS)
 
 public-sync-ksadk-web-static: sync-ksadk-web-static

@@ -17,7 +17,7 @@ from pydantic import (
 
 
 class OAuthOptions(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     scopes: list[str] = Field(min_length=1, max_length=32)
     client_id: str = Field(default="", max_length=256)
     token_endpoint_auth_method: Literal["none", "client_secret_basic", "client_secret_post"] = (
@@ -45,7 +45,7 @@ class OAuthOptions(BaseModel):
 
 
 class McpServerDeclaration(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
     url: str = Field(max_length=2048)
     auth_mode: Literal["oauth"]

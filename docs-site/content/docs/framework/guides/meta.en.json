@@ -16,6 +16,7 @@
     "attachments-multimodal",
     "workspace-files",
     "---[Network]Events and Interoperability---",
+    "mcp-oauth",
     "hosted-ui-events",
     "channel-connector",
     "a2a-runtime",

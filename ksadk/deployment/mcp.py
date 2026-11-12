@@ -48,7 +48,13 @@ def project_mcp_declarations(config, *, project_dir=None, environment=None):
         declaration["oauth"] = oauth
         declarations.append(declaration)
     # Preserve SecretStr until the private request serializer needs its value.
-    return normalize_mcp_servers(declarations)
+    try:
+        return normalize_mcp_servers(declarations)
+    except ValueError:
+        # Resolved secrets must not appear in deployment or local CLI errors.
+        raise ValueError(
+            "Invalid OAuth MCP connection declaration; check url, scopes and client options"
+        ) from None
 
 
 def component_mcp_payload(declarations):

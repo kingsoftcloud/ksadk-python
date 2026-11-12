@@ -34,6 +34,8 @@ jobs:
       KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       R86_TEST_CHECKPOINT_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       KSADK_TEST_A2UI_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      KSADK_A2A_TEST_DATABASE_URL: postgresql+asyncpg://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      A2A_TEST_POSTGRES_DSN: postgresql+asyncpg://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
     steps:
       - uses: actions/checkout@v7
 
@@ -46,7 +48,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: uv sync --extra dev --extra langgraph --extra a2a
+        run: uv sync --extra dev --extra langgraph --extra a2a --extra agui
 
       - name: Run live PostgreSQL persistence tests
         run: |
@@ -68,6 +70,21 @@ jobs:
             tests/test_subscription_reads_postgres.py \
             tests/test_mcp_oauth_extension.py \
             tests/test_mcp_oauth_recovery.py \
+            tests/a2a/test_a2a_protocol_e2e.py \
+            tests/a2a/test_invocation_checkpoint.py \
+            tests/a2a/test_invocation_service_recovery.py \
+            tests/a2a/test_pg_managed_stores.py \
+            tests/a2a/test_pg_owned_outbox.py \
+            tests/a2a/test_pg_process_recovery.py \
+            tests/a2a/test_managed_checkpoint_ready_postgres.py \
+            tests/a2a/test_terminal_protocol_errors.py \
+            tests/a2a/test_inbound_admission_recovery_postgres.py \
+            tests/a2a/test_session_followup_history_regression.py \
+            tests/a2a/test_kernel_native_process_recovery.py \
+            tests/a2a/test_langgraph_kernel_process_recovery.py \
+            tests/a2a/test_langgraph_process_recovery.py \
+            tests/a2a/test_native_process_recovery.py \
+            'tests/server/test_app_factory_agui.py::test_factory_agui_resilient_cold_miss_race_skips_full_hydration[postgres]' \
             -q --junitxml="$RUNNER_TEMP/postgres-junit.xml"
           test_code=$?
           set -e
@@ -391,6 +408,13 @@ jobs:
 
       - name: a2a command is registered (no silent ImportError swallow)
         run: uv run --no-sync python -c "from ksadk.cli import _register_commands, cli; _register_commands(); assert 'a2a' in cli.commands, 'a2a command was silently swallowed'; print('a2a registered OK')"
+
+      - name: Native Windows OAuth vault permissions and process ownership
+        run: >-
+          uv run --no-sync pytest -q
+          tests/test_mcp_oauth_local_storage.py::test_existing_windows_vault_protects_key_and_files
+          tests/test_mcp_oauth_vault_lock.py::test_native_cross_process_owner_and_reopen
+          tests/test_mcp_oauth_vault_lock.py::test_native_process_exit_releases_lock
 
   test-codex-native-runtime:
     name: Codex native ManagedRuntime (${{ matrix.os }})

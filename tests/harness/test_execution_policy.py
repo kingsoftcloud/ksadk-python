@@ -340,7 +340,11 @@ async def test_builtin_relative_paths_match_each_policy_workspace(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.local_process_heavy
 async def test_builtin_command_and_file_tools_share_policy_workspace(tmp_path, monkeypatch):
+    # The real command forks an owner watcher and a shell under a per-UID
+    # process limit. Run in the existing serial job with the other local
+    # process tests, rather than against the full suite's shared process table.
     from ksadk.harness.execution_policy import execution_policy_scope
     from ksadk.plugins.providers.harness_tools import assemble_python_tools
 
@@ -371,7 +375,7 @@ async def test_builtin_command_and_file_tools_share_policy_workspace(tmp_path, m
 
     assert written["ok"] is True
     assert command["ok"] is True
-    assert command["exit_code"] == 0
+    assert command["exit_code"] == 0, command
     assert str(policy_root) in command["stdout"]
     assert "shared-root" in command["stdout"]
     assert status["backend"] == "local_process"

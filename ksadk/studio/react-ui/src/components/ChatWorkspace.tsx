@@ -184,10 +184,13 @@ export function ChatWorkspace({
   }, [chat.startNewConversation, chat.createNewSession]);
   useLayoutEffect(() => {
     if (!newChatRequest) { startedNewChatRequest.current = 0; return; }
-    if (!active || chat.agentId !== agentId || startedNewChatRequest.current === newChatRequest) return;
+    // Bootstrap resets the shared session owner. Consume a cold request only
+    // after that reset, so an existing session cannot replace this new draft.
+    if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId
+      || startedNewChatRequest.current === newChatRequest) return;
     startedNewChatRequest.current = newChatRequest;
     void guardedCreateNewSession().finally(() => onNewChatStarted?.());
-  }, [active, agentId, newChatRequest, onNewChatStarted, chat.agentId, guardedCreateNewSession]);
+  }, [active, agentId, newChatRequest, onNewChatStarted, chat.agentId, chat.bootstrapStatus, guardedCreateNewSession]);
   currentRequest.current = active && requestedSessionId ? requestedSelection : null;
   useEffect(() => {
     if (!requestedSessionId) { openedRequest.current = null; return; }

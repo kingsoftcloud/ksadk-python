@@ -106,6 +106,32 @@ describe("ChatWorkspace initial draft ownership", () => {
     expect(screen.queryByPlaceholderText("发送消息…")).not.toBeInTheDocument();
   });
 
+  it("waits for cold bootstrap before consuming an explicit new-chat request", () => {
+    bootstrap.status = "loading";
+    const onNewChatStarted = vi.fn();
+    const props = { agentId: "initial-draft-agent", agentName: "Agent", newChatRequest: 1, onNewChatStarted };
+    const { rerender } = render(<ChatWorkspace {...props} />);
+    expect(bootstrap.starts).toBe(0);
+    expect(onNewChatStarted).not.toHaveBeenCalled();
+    expect(screen.queryByPlaceholderText("发送消息…")).not.toBeInTheDocument();
+
+    // The package can finish bootstrap with a previously existing session.
+    // The queued user action must establish a fresh draft after that reset.
+    bootstrap.sessionId = "existing-before-new-chat";
+    bootstrap.status = "ready";
+    rerender(<ChatWorkspace {...props} />);
+    expect(bootstrap.starts).toBe(1);
+    expect(bootstrap.sessionId).toBeNull();
+    const composer = screen.getByPlaceholderText("发送消息…");
+    fireEvent.change(composer, { target: { value: "new conversation draft" } });
+    act(() => {
+      passiveEffects.paused = false;
+      passiveEffects.pending.splice(0).forEach(effect => effect.run());
+    });
+    expect(composer).toHaveValue("new conversation draft");
+    expect(bootstrap.starts).toBe(1);
+  });
+
   it("waits for the selected Agent instead of editing the previous Agent's draft", () => {
     const { rerender } = render(<ChatWorkspace agentId="agent-a" agentName="Agent A" />);
     fireEvent.change(screen.getByPlaceholderText("发送消息…"), { target: { value: "Agent A draft" } });
