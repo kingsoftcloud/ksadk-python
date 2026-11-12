@@ -193,6 +193,15 @@ class ADKEventAdapter:
         path = str(getattr(getattr(event, "node_info", None), "path", "") or "")
         branch = str(getattr(event, "branch", "") or "")
         path_key = path or branch or "$root"
+        metadata = getattr(event, "custom_metadata", None) or {}
+        response_event_id = native_event_id
+        frame_id = metadata.get("ksadk_a2a_stream_frame_id")
+        if metadata.get("ksadk_a2a_stream") and isinstance(frame_id, str) and frame_id:
+            # Native response IDs may be shared by distinct remote deliveries.
+            # The converter's persisted frame marker identifies this occurrence
+            # for both deduplication and canonical event/source identities;
+            # task/artifact item identities below remain unchanged.
+            native_event_id = stable_item_id("adk", response_event_id, "a2a-frame", frame_id)
         # ADK >= 2.6 reuses one response ID for every transient partial and
         # its aggregate. These partials are not persisted by native sessions;
         # their ordered deliveries, including equal text, must remain distinct.
@@ -208,6 +217,8 @@ class ADKEventAdapter:
             return ()
         scope_id = stable_scope_id("adk", native_run_id, path_key)
         source_metadata: dict[str, JsonValue] = {"path": path, "path_key": path_key}
+        if native_event_id != response_event_id:
+            source_metadata["adk_response_event_id"] = response_event_id
         author = str(getattr(event, "author", "") or "")
         if author:
             source_metadata["author"] = author

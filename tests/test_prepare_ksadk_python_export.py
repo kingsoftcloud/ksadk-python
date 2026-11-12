@@ -229,6 +229,8 @@ def test_public_export_keeps_new_protocol_regressions_and_local_fixtures():
         "tests/test_mcp_oauth_declarations.py",
         "tests/test_mcp_oauth_documented_graph.py",
         "tests/fixtures/local_oauth_provider.py",
+        "tests/codex/fake_app_server.py",
+        "tests/events/adapters/test_adk.py",
         "tests/a2a/test_control_plane.py",
         "tests/a2a/test_workload_token_public_compat.py",
         "tests/a2a/test_a2a_protocol_e2e.py",

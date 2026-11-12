@@ -402,6 +402,10 @@ PUBLIC_TEST_FILES = {
 
 # Reviewed public protocol regressions and their complete local dependency closure.
 PUBLIC_PROTOCOL_TEST_FILES = {
+    'tests/events/adapters/test_adk.py',
+    'tests/events/test_stream_reducer.py',
+    'tests/events/test_runtime_identity.py',
+    'tests/codex/fake_app_server.py',
     'tests/a2a/compose.yaml',
     'tests/a2a/fixtures/README.md',
     'tests/a2a/fixtures/a2a-langgraph-a/a2a_langgraph_a/agent.py',

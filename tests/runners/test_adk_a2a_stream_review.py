@@ -1,15 +1,84 @@
 """Use the installed ADK converter, never a plain LLM snapshot substitute."""
 
+from importlib.metadata import version
 from types import SimpleNamespace
 
 import pytest
 from a2a.types import Artifact, Part, Task, TaskArtifactUpdateEvent, TaskState, TaskStatus
+from packaging.version import Version
+
+if Version(version("google-adk")) < Version("2.5.0"):
+    pytest.skip(
+        "Upstream RemoteA2aAgent wire 1.0 converters require google-adk >=2.5.0",
+        allow_module_level=True,
+    )
+
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 
-from ksadk.events.canonical import ItemCompleted, ItemStarted
+from ksadk.events.canonical import ItemCompleted, ItemStarted, ItemUpdated
+from ksadk.events.identity import stable_item_id, stable_scope_id
 from ksadk.events.reducer import StreamReducer
 from ksadk.runners._adk_a2a_stream import preserve_a2a_stream_identity
 from tests.runners.test_adk_multi_llm_runtime_events import runner_for
+
+
+@pytest.mark.asyncio
+async def test_same_native_id_remote_frames_keep_equal_chunks_and_deduplicate_replay():
+    from google.adk.events import Event
+
+    agent = RemoteA2aAgent(name="remote", agent_card="https://example.com/card")
+    preserve_a2a_stream_identity(agent)
+    ctx = SimpleNamespace(invocation_id="native-run", branch="remote")
+    native = []
+    for index in range(3):
+        event = agent._config.a2a_artifact_update_converter(
+            TaskArtifactUpdateEvent(
+                task_id="t",
+                artifact=Artifact(artifact_id="a", parts=[Part(text="same")]),
+                append=index > 0,
+                last_chunk=index == 2,
+            ),
+            "remote",
+            ctx,
+        )
+        # New ADK converters reuse the artifact response ID across deliveries.
+        # Exercise that behavior under both supported upstream converters.
+        event.id = "shared-response"
+        native.extend((event, Event.model_validate(event.model_dump(mode="json"))))
+
+    events = [
+        event async for event in runner_for(native).stream_canonical_events(
+            {"input": "test", "run_id": "run"}
+        )
+    ]
+    started = [event for event in events if isinstance(event, ItemStarted)]
+    completed = [event for event in events if isinstance(event, ItemCompleted)]
+    updates = [event for event in events if isinstance(event, ItemUpdated)]
+    assert len(started) == len(completed) == 1
+    assert len(updates) == 3
+    assert len({event.source.native_event_id for event in updates}) == 3
+    assert all(
+        event.source.metadata["adk_response_event_id"] == "shared-response" for event in updates
+    )
+    mutations = [*started, *updates, *completed]
+    assert len({event.event_id for event in mutations}) == len(mutations)
+    assert completed[0].snapshot.parts[0].text == "samesamesame"
+    assert completed[0].item_id == started[0].item_id
+    assert completed[0].scope_id == started[0].scope_id
+    assert completed[0].scope_id == stable_scope_id("adk", "native-run", "remote")
+    assert completed[0].item_id == stable_item_id(
+        "adk", "native-run", "remote", stable_item_id("a2a", "t", "a"), "message"
+    )
+    replayed = [
+        event async for event in runner_for(
+            [Event.model_validate(event.model_dump(mode="json")) for event in native]
+        ).stream_canonical_events({"input": "test", "run_id": "run"})
+        if isinstance(event, (ItemStarted, ItemUpdated, ItemCompleted))
+    ]
+    assert [event.model_dump() for event in replayed] == [
+        event.model_dump() for event in events
+        if isinstance(event, (ItemStarted, ItemUpdated, ItemCompleted))
+    ]
 
 
 def remote_events(*, terminal=True, replacement=None, artifact_id="a", task_id="t"):

@@ -1,6 +1,6 @@
 # Google ADK 多版本兼容矩阵
 
-> 更新日期：2026-11-11。保留 2026-07-21 对 **1.34.3** 与 **2.5.0** 的历史探测，
+> 更新日期：2026-11-12。保留 2026-07-21 对 **1.34.3** 与 **2.5.0** 的历史探测，
 > 0.8.7 候选另验证当前默认解析的 **2.14.0** 及其实际依赖组合。
 > 唯一收口点:`ksadk/compat/adk_compat.py`。业务代码不直接 `import google.adk`。
 
@@ -23,6 +23,15 @@ LangChain Core 1.7.7、OpenAI 3.49.0、SQLAlchemy 2.1.8 与 asyncpg 0.32.0。
 候选验证覆盖实际默认组合的 CLI、ADKRunner、会话导入、常规测试，以及 PostgreSQL 9.6/16
 的真实持久化分组。`Event.node_info` 和 `NodeInfo.path` 等事件字段由同一兼容层处理，
 不通过删去原生事件、恢复或工具调用身份来适配版本。
+
+## Google 上游 RemoteA2aAgent 的单独下限
+
+SDK 自有 `ksadk.a2a.adk.A2ARemoteAgent` 和工具适配不导入 Google 上游 RemoteAgent，
+继续按上述 SDK 窗口验证。若应用直接导入
+`google.adk.agents.remote_a2a_agent.RemoteA2aAgent`，与 `a2a-sdk==1.1.0` 的 wire 1.0
+互操作要求 ADK >=2.5；1.34 上游引用旧 `ClientEvent` API，会在导入时报错。
+不可变 remote-agent/v1 fixture 仍保留最初 2.5.0 的契约证据。测试在低于该特例下限时
+只跳过上游构造/converter，SDK 自有适配、protobuf、事件回放与旧功能回归继续执行。
 
 ## 历史符号探测：1.34.3 与 2.5.0
 

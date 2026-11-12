@@ -40,12 +40,18 @@ def test_bundled_content_fingerprint_is_deterministic(tmp_path):
     assert _bundled_content_fingerprint(files) != first
 
 
-def test_build_bundled_source_manifest_shape(tmp_path):
+def test_build_bundled_source_manifest_shape(tmp_path, monkeypatch):
     pkg = tmp_path / "ksadk"
     files = [
         ("__init__.py", _touch(pkg / "__init__.py", b"")),
         ("a2a/routes.py", _touch(pkg / "a2a" / "routes.py", b"x")),
     ]
+    def no_distribution(name):
+        raise importlib_metadata.PackageNotFoundError(name)
+
+    # This is a synthetic package; the host SDK's installation provenance is
+    # unrelated to its manifest shape.
+    monkeypatch.setattr(importlib_metadata, "distribution", no_distribution)
     manifest = build_bundled_source_manifest({"ksadk": pkg}, [("ksadk", r, p) for r, p in files])
 
     assert manifest["schema"] == BUILD_INFO_SCHEMA
@@ -54,8 +60,7 @@ def test_build_bundled_source_manifest_shape(tmp_path):
     assert info["file_count"] == 2
     assert info["source_dir"] == str(pkg)
     assert len(info["content_fingerprint_sha256"]) == 64
-    # 非 git / 无 dist 时 source_type 兜底为 unknown(或 installed-dist,取决于环境)
-    assert info["source_type"] in {"unknown", "installed-dist", "editable-install", "local-path"}
+    assert info["source_type"] == "unknown"
 
 
 def test_package_provenance_reads_dist_info(monkeypatch, tmp_path):
@@ -193,3 +198,25 @@ def test_deployment_digest_comes_from_bundled_source(tmp_path):
     assert _bundled_kernel_contract_digest(files) is None
     source.write_text("AGENT_KERNEL_V1_AGGREGATE_DIGEST = ('b" + "b" * 63 + "')\n")
     assert _bundled_kernel_contract_digest(files) == "b" * 64
+
+
+@pytest.mark.parametrize("url, archive, expected, release_like", [
+    ("file:///fixture/ksadk.whl", {"hash": "sha256=" + "a" * 64}, "local-wheel", False),
+    ("https://packages.example/ksadk.whl", {"hash": "sha256=" + "a" * 64}, "remote-dist", True),
+    ("file:///fixture/source", {}, "local-path", False),
+])
+def test_package_provenance_direct_sources(monkeypatch, tmp_path, url, archive, expected, release_like):
+    class Distribution:
+        version = "0.8.7"
+
+        def read_text(self, name):
+            if name == "direct_url.json":
+                return json.dumps({"url": url, "archive_info": archive})
+            if name == "INSTALLER":
+                return "pip"
+            return None
+
+    monkeypatch.setattr(importlib_metadata, "distribution", lambda name: Distribution())
+    info = _package_provenance("ksadk", tmp_path)
+    assert info["source_type"] == expected
+    assert _is_release_like_source(info) is release_like

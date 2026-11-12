@@ -18,7 +18,6 @@ from a2a.types import (
     TaskArtifactUpdateEvent,
     TaskStatusUpdateEvent,
 )
-from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.protobuf.json_format import MessageToDict, ParseDict
 from pydantic import ValidationError
 
@@ -100,15 +99,31 @@ def test_manifest_pins_support_matrix_contracts_and_every_file_digest() -> None:
         assert hashlib.sha256((FIXTURE / filename).read_bytes()).hexdigest() == expected
 
 
-def test_frozen_adk_minimum_is_executable_in_the_locked_environment() -> None:
+def test_frozen_adk_contract_is_executable_in_the_requested_environment() -> None:
     manifest = json.loads((FIXTURE / "manifest.json").read_text())
     support = manifest["support_matrix"]["google_adk"]
     assert support["remote_agent_minimum"] == "2.5.0"
     assert support["contract_tested"] == ["2.5.0"]
-    expected = os.environ.get("KSADK_TEST_EXPECTED_ADK_VERSION", "2.5.0")
-    assert expected in {"2.5.0", "2.8.0"}
-    assert version("google-adk") == expected
-    assert RemoteA2aAgent.__name__ == "RemoteA2aAgent"
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
+    installed = version("google-adk")
+    expected = os.environ.get("KSADK_TEST_EXPECTED_ADK_VERSION")
+    if expected is not None:
+        assert installed == expected
+    # The manifest freezes the original 2.5 contract evidence, not every CI
+    # interpreter. Execute the same protobuf/API seam in the SDK ADK matrix.
+    assert installed in SpecifierSet(">=1.34.0,<3.0.0")
+    if Version(installed) < Version(support["remote_agent_minimum"]):
+        pytest.skip("upstream RemoteA2aAgent requires ADK >= 2.5 with A2A 1.1; SDK adapters have separate coverage")
+    from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+
+    records = _lines(FIXTURE / "a2a_stream_tool_terminal.jsonl")
+    card_payload = next(item["payload"] for item in records if item["kind"] == "agent_card")
+    remote = RemoteA2aAgent(
+        name="fixture_remote_agent", agent_card=ParseDict(card_payload, AgentCard()),
+    )
+    assert remote.name == "fixture_remote_agent"
 
 
 def test_fixture_records_cover_matrix_and_round_trip_pinned_a2a_protobufs() -> None:

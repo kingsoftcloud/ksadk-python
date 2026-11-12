@@ -65,7 +65,7 @@ root_agent = ksadk_graph_factory(checkpointer=None)
 SQLite interrupt checkpoint；已有 saver、显式 checkpoint 配置和显式关闭设置继续生效。
 OAuth 等待要求持久化 checkpoint，内存 saver 无法提供该保证。托管 PostgreSQL 模式还必须导出
 `ksadk_prepare_state(payload, session_context)`，只整理本轮输入，避免把历史重复注入；
-见 [Agent Context](./agent-context.mdx)。
+见 [Agent Context](/cn/docs/framework/guides/agent-context/)。
 
 ## 客户端与秘密引用
 

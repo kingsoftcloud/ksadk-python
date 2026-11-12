@@ -100,6 +100,13 @@ interfaces declared by that Card and binds only to `127.0.0.1` locally. A
 managed Runtime's public discovery Card is published by the Gateway; do not use
 a development-machine Card as a production discovery record.
 
+KsADK's own managed ADK A2A adapter follows the SDK's ADK compatibility window
+(`>=1.34.0,<3.0.0`). Projects directly using Google's upstream
+`google.adk.agents.remote_a2a_agent.RemoteA2aAgent` need **ADK 2.5 or later** for
+A2A 1.0 / `a2a-sdk==1.1.0` interoperability: older upstream versions reference an
+incompatible `ClientEvent` API. Public regressions verify the SDK-owned adapter
+and the upstream example separately.
+
 ## Product ownership
 
 AgentEngine creates `AgentEngineA2ABootstrap` when it deploys a managed Runtime.

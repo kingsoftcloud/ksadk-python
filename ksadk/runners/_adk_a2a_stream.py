@@ -5,8 +5,10 @@ from __future__ import annotations
 from copy import deepcopy
 from functools import partial, wraps
 from typing import Any
+from uuid import uuid4
 
 A2A_STREAM_METADATA = "ksadk_a2a_stream"
+A2A_STREAM_FRAME_ID_METADATA = "ksadk_a2a_stream_frame_id"
 
 
 def _wrap_converter(converter: Any, *, artifact_update: bool) -> Any:
@@ -51,6 +53,11 @@ def _wrap_converter(converter: Any, *, artifact_update: bool) -> Any:
         if observations:
             event.custom_metadata = dict(event.custom_metadata or {})
             event.custom_metadata[A2A_STREAM_METADATA] = observations
+            # ADK may reuse an artifact response ID for every wire delivery.
+            # Keep a separate occurrence identity on the converted Event so
+            # its persisted/replayed copies deduplicate without losing equal
+            # text in distinct append frames. A2A has no wire delivery ID here.
+            event.custom_metadata[A2A_STREAM_FRAME_ID_METADATA] = uuid4().hex
         return event
 
     convert._ksadk_stream_identity = True
@@ -78,6 +85,9 @@ async def _reconcile_terminal_status(
             event.custom_metadata = dict(event.custom_metadata or {})
             event.custom_metadata[A2A_STREAM_METADATA] = converted.custom_metadata[
                 A2A_STREAM_METADATA
+            ]
+            event.custom_metadata[A2A_STREAM_FRAME_ID_METADATA] = converted.custom_metadata[
+                A2A_STREAM_FRAME_ID_METADATA
             ]
     return event
 

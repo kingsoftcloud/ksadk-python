@@ -191,6 +191,7 @@ async def test_parent_effect_owns_slow_host_assembly(tmp_path, monkeypatch, dura
 
 
 @pytest.mark.asyncio
+@pytest.mark.local_process_heavy
 @pytest.mark.parametrize("durable", [False, True])
 @pytest.mark.parametrize("background", [False, True])
 async def test_approval_wait_does_not_consume_child_execution_budget(

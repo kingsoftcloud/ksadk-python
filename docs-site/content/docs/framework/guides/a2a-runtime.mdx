@@ -91,6 +91,11 @@ PY
 路由；本机开发只监听 `127.0.0.1`。托管 Runtime 的公开发现 Card 由 Gateway 发布，
 不要把开发机 Card 当作生产 discovery 记录。
 
+KsADK 自有托管 ADK A2A 适配使用 SDK 的 ADK 兼容窗口（`>=1.34.0,<3.0.0`）。
+若项目直接使用 Google ADK 上游 `google.adk.agents.remote_a2a_agent.RemoteA2aAgent`，
+与 A2A 1.0 / `a2a-sdk==1.1.0` 互操作需要 ADK **2.5 或以上**；旧上游版本引用的
+`ClientEvent` API 与该 wire SDK 不兼容。公开回归分别验证 SDK 自有适配和该上游样例。
+
 ## 产品装配边界
 
 AgentEngine 在部署托管 Runtime 时创建 `AgentEngineA2ABootstrap`。它负责 durable task、context、resume state，Gateway 验证的入站身份，event outbox 生命周期，以及出站 transport。应用代码应使用 Runtime 提供的 Space-scoped client，或在平台注入配置后调用 `A2ASpaceClient.from_env()`。

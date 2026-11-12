@@ -230,6 +230,7 @@ jobs:
       postgres:
         image: postgres:16
         env:
+      KSADK_TEST_EXPECTED_ADK_VERSION: ${{ matrix.google-adk }}
           POSTGRES_USER: ksadk_ci
           POSTGRES_PASSWORD: ksadk_ci_password
           POSTGRES_DB: ksadk_ci
@@ -315,6 +316,7 @@ jobs:
     name: local-process heavy tests (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
+      KSADK_TEST_EXPECTED_ADK_VERSION: ${{ matrix.google-adk }}
       KSADK_WEB_VERSION: "0.3.18"
     strategy:
       fail-fast: false

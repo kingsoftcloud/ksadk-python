@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-12T02:13:11.596824+00:00",
-  "sourceCommit": "53faabac90ca28baa990ff890624f06a1aedfc39",
+  "generatedAt": "2026-11-12T02:54:07.236423+00:00",
+  "sourceCommit": "52318753442144c05e99859617f50a4eb3f67948",
   "sourceTree": "clean",
   "targetRepository": "https://github.com/kingsoftcloud/ksadk-python",
   "documentation": "https://kingsoftcloud.github.io/ksadk-python/",
-  "exportPathCount": 2631,
+  "exportPathCount": 2635,
   "exportPolicy": {
     "mode": "allowlist",
     "schemaVersion": 1,
-    "sha256": "1baa5603b47a4f64857ae9d320197c0eb4b15679955ee2b8b440de9f041aa541"
+    "sha256": "980262ef15e40f2bf344a073e2a67c68d3c2aa48f2c529a3483104b78f2ef90f"
   }
 }

@@ -15,6 +15,16 @@ async def test_foreground_attachment_options_and_original_turn_survive_native_re
     tmp_path, monkeypatch,
 ):
     before, tools, requests = [], [], []
+    ocr_calls = []
+
+    def fixture_ocr(raw, mime_type, display_name):
+        ocr_calls.append((raw, mime_type, display_name))
+        return {"text": "fixture image text", "engine": "fixture-ocr"}
+
+    # This case verifies attachment preparation and native resume, not OCR.
+    # Keep the real image normalization path without loading optional models
+    # for the synthetic five-byte image, especially on cold parallel workers.
+    monkeypatch.setattr("ksadk.conversations.attachments.perform_ocr", fixture_ocr)
     original = LangGraphRuntimeAdapter.start
 
     async def capture(self, request):
@@ -54,6 +64,8 @@ async def test_foreground_attachment_options_and_original_turn_survive_native_re
         assert prepared["model_options"]["reasoning"]["enabled"] is False
         assert prepared["has_current_files"]
         assert prepared["current_attachments"][0]["mime_type"] == "image/png"
+        assert prepared["current_attachment_results"][0]["text_excerpt"] == "fixture image text"
+        assert ocr_calls == [(b"hello", "image/png", "uploaded_image")]
         runtime = s.app.state.runtime.local_interactions.runtime
         record = (await runtime.kernel_store.list_pending_interactions("local", "thread-1"))[0]
         assert before == [1] and not tools
@@ -67,6 +79,7 @@ async def test_foreground_attachment_options_and_original_turn_survive_native_re
 
         await until(completed)
         assert before == [1] and tools == [0] and len(requests) == 1
+        assert len(ocr_calls) == 1
         user_echoes = [event for event in await s.service.get_events("thread-1")
                        if event.event_type == "user_message"]
         assert len(user_echoes) == 1
