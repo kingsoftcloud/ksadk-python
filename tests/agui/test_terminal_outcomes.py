@@ -120,6 +120,38 @@ async def test_terminal_kernel_resume_replays_without_admission_or_metadata_writ
             }
 
         await until(terminal_record)
+        resume_message, = (
+            message
+            for message in await s.runtime.kernel_store.list_messages("local-agent")
+            if message.command is not None
+            and message.command.source.ref == "first-answer"
+            and message.command.command_type == "submit_interaction"
+            and message.command.payload.get("interaction_id") == record.interaction_id
+        )
+        final_state = {
+            "success": "completed", "cancelled": "cancelled", "failure": "failed",
+        }[outcome]
+
+        async def original_processing_finished():
+            events = await s.runtime.session_events.read("thread-1", 0, 1000)
+            return any(
+                event.event_type == "control.run_transition"
+                and event.run_id == record.run_id
+                and event.payload.get("state") == final_state
+                for event in events
+            ) and any(
+                event.event_type == "control.message_completed"
+                and event.payload.get("message_id") == resume_message.message_id
+                for event in events
+            )
+
+        # Terminal wire output precedes the original worker's final control facts.
+        # Freeze the replay baseline only after that exact run and answer settled.
+        await until(original_processing_finished)
+        execution = s.runtime.worker.execution_for(record.run_id)
+        if execution is not None and execution.stream_task is not None:
+            async with asyncio.timeout(8):
+                await execution.stream_task
         messages = await s.runtime.kernel_store.list_messages("local-agent")
         facts = await s.runtime.session_events.read("thread-1", 0, 1000)
         metadata_write = AsyncMock(side_effect=AssertionError("Replay must be read only"))
