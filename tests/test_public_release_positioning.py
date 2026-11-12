@@ -22,6 +22,10 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/channel-connector/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/plugins-and-automations/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/runtime-architecture/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/integration-0-8-7/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/agui-a2ui/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/mcp-oauth/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/a2a-runtime/",
     f"{DOCS_ROOT_URL}cn/docs/references/environment-variables/",
 }
 EN_DOC_URLS = {
@@ -36,6 +40,10 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/channel-connector/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/plugins-and-automations/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/runtime-architecture/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/integration-0-8-7/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/agui-a2ui/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/mcp-oauth/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/a2a-runtime/",
     f"{DOCS_ROOT_URL}en/docs/references/environment-variables/",
 }
 

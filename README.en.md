@@ -37,6 +37,26 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
+## 0.8.7 Candidate: Capabilities and Integration
+
+0.8.7 is not formally released. It requires Python 3.12+ and bundles Web companion `0.3.18`.
+This table describes candidate capabilities. The live documentation reflects its deployed version;
+candidate guides are reviewed with the repository PR.
+
+| Capability | Integration |
+| --- | --- |
+| AG-UI / A2UI | Install the `agui` extra and add structured input, business Schema, and durable checkpoints to your graph. |
+| OAuth MCP / API Key MCP | OAuth uses `McpOAuthTools` and local Web/hosted Broker; existing API Key clients stay supported. |
+| A2A | Bind a Space, register a callee, then discover and invoke it; registration and Gateway belong to the companion platform. |
+| Session and resume | Configure Session and framework checkpoints independently; request hosted Kernel admission explicitly. |
+
+See [Integration and Configuration](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/integration-0-8-7/),
+[AG-UI/A2UI examples](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agui-a2ui/),
+[OAuth MCP](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/mcp-oauth/), and
+[A2A](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/a2a-runtime/).
+Model-generated A2UI must pass registered-catalog validation; complex styles can fail. Never present
+a generation failure as business success.
+
 ## Runtime Architecture
 
 KsADK converges framework adaptation into stable runtime layers while preserving each framework's native execution semantics:

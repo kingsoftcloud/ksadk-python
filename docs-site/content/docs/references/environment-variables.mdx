@@ -160,6 +160,7 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 
 | 变量 | 用途 |
 | --- | --- |
+| `KSADK_ENABLE_KERNEL` | Code/Container 的每 Agent 托管 Kernel 请求开关，默认 `false`；交互/OAuth 接入示例设为 `1`，仍需服务端准入。不同于平台注入的 `AGENT_KERNEL_ENABLED`，不能据此伪造身份或 permit。 |
 | `KSADK_AGENT_KERNEL` | 本地显式启用 Kernel ingress；默认关闭 |
 | `AGENT_KERNEL_ENABLED` | 托管部署由平台投射的启用开关；旧 Agent 未投射时继续走历史路径 |
 | `AGENT_KERNEL_STORE_DRIVER` | `memory`、本地 `sqlite` 或 `postgres`；托管生产组合支持 ephemeral memory 或 durable PostgreSQL |
@@ -417,3 +418,6 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 </Callout>
 
 当前 Hosted UI 静态资源版本：`0.3.12`。
+
+
+按用途区分部署凭据、应用变量和平台注入值的完整示例见[0.8.7 接入手册](/cn/docs/framework/guides/integration-0-8-7/)。

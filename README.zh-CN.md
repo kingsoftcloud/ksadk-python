@@ -36,6 +36,24 @@ agentengine run -i
 agentengine web . --no-open
 ```
 
+## 0.8.7 候选：能力与接入
+
+0.8.7 尚未正式发布，要求 Python 3.12+，内置 Web companion 为 `0.3.18`。
+下表介绍候选能力；线上文档站以已部署版本为准，候选手册随本仓库 PR 一同审核。
+
+| 能力 | 如何接入 |
+| --- | --- |
+| AG-UI / A2UI | 安装 `agui` extra，在自有图中接入结构化输入、业务 Schema 与持久化 checkpoint。 |
+| OAuth MCP / API Key MCP | OAuth 使用 `McpOAuthTools` 与本地 Web/托管 Broker；原 API Key 客户端继续使用。 |
+| A2A | 绑定 Space、注册 callee，再通过发现工具调用；注册与 Gateway 属于配套平台。 |
+| 会话与恢复 | 分别配置 Session 和框架 checkpoint；托管模式显式请求 Kernel 准入。 |
+
+详见[功能接入与配置](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/integration-0-8-7/)、
+[AG-UI/A2UI 示例](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agui-a2ui/)、
+[OAuth MCP](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/mcp-oauth/) 和
+[A2A](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/a2a-runtime/)。
+模型生成的 A2UI 仍需通过注册目录校验，复杂样式可能失败；不把生成失败包装为业务成功。
+
 ## 运行时架构
 
 KsADK 把“框架适配”收敛为稳定的运行时分层，同时保留各框架的原生执行语义：

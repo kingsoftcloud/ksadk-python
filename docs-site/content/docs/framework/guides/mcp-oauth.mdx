@@ -26,6 +26,7 @@ MCP OAuth 是显式接入的 LangGraph 能力。服务声明只包含连接地�
 不跨会话缓存绑定的工具对象。SDK 不替换已有工具客户端，也不修改开发者的图。
 
 ```python
+from langchain_core.messages import HumanMessage
 from langgraph.graph import MessagesState, StateGraph, START
 from langgraph.prebuilt import ToolNode, tools_condition
 from ksadk.mcp_runtime.oauth.tools import McpOAuthTools
@@ -54,6 +55,12 @@ def ksadk_graph_factory(*, checkpointer):
     graph.add_edge("tools", "model")
     return graph.compile(checkpointer=checkpointer)
 
+def ksadk_prepare_state(payload, session_context):
+    return {"messages": payload.get("messages") or [
+        HumanMessage(content=payload.get("input", ""))
+    ]}
+
+
 root_agent = ksadk_graph_factory(checkpointer=None)
 ```
 
@@ -66,6 +73,34 @@ SQLite interrupt checkpoint；已有 saver、显式 checkpoint 配置和显式�
 OAuth 等待要求持久化 checkpoint，内存 saver 无法提供该保证。托管 PostgreSQL 模式还必须导出
 `ksadk_prepare_state(payload, session_context)`，只整理本轮输入，避免把历史重复注入；
 见 [Agent Context](/cn/docs/framework/guides/agent-context/)。
+
+## API Key MCP 与混合工具
+
+API Key 服务不经过 OAuth Broker。额外安装 `langchain-mcp-adapters>=0.3.2`，按服务方协议配置
+运行时变量：`SEARCH_MCP_URL=https://search.example.com/mcp`、`SEARCH_MCP_API_KEY=your-service-api-key`。
+这里的 Bearer header 仅是常见示例；服务要求其他 header 时按其文档调整。
+
+```python
+import os
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+async def search_tools():
+    client = MultiServerMCPClient({"search": {
+        "url": os.environ["SEARCH_MCP_URL"],
+        "transport": "streamable_http",
+        "headers": {"Authorization": "Bearer " + os.environ["SEARCH_MCP_API_KEY"]},
+    }})
+    # Replace this allowlist with read-only tool names published by your service.
+    return [tool for tool in await client.get_tools() if tool.name == "search_documents"]
+
+async def all_tools(state):
+    return await oauth.get_tools(state, tools=await search_tools())
+```
+
+只有 API Key MCP 时，两个节点直接使用 `await search_tools()`，无需创建 OAuth 声明。
+混合使用时，上例的 `oauth` 沿用前一节声明。在模型节点和工具节点中都用 `await all_tools(state)` 替代
+`await oauth.get_tools(state)`。保留每次执行时的工具选择，不把其他会话绑定的工具对象缓存成全局
+结果；只给模型暴露所需的只读工具。`SEARCH_MCP_*` 是应用自定义变量，不是 SDK 自动读取的配置。
 
 ## 客户端与秘密引用
 
@@ -100,3 +135,18 @@ client_options = {
 同一操作系统用户的同一项目可跨会话复用授权，换目录视为另一项目。这不是多用户身份服务，
 也不防御已控制同一操作系统账号的进程。不要提交、复制到制品或共享本地 vault、密钥和会话文件。
 托管凭据继续由平台按可信身份、Agent、配置版本及任务绑定隔离，本地授权不能替代托管授权。
+
+
+## 本地与托管环境变量
+
+图不自带 saver 时，本地使用 `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1 agentengine web .`。
+自动 checkpoint 默认关闭；已有 saver 和显式关闭设置继续生效。托管 Code/Container 的
+OAuth 还需要 `KSADK_ENABLE_KERNEL=1`，以及平台批准的 Broker、可信身份与持久化存储。
+不要自行填写平台 permit、token 或 `AGENT_KERNEL_ENABLED` 来绕过准入。
+
+按[0.8.7 接入手册](/cn/docs/framework/guides/integration-0-8-7/)把模型、Session 和框架 checkpoint 配置
+写入未提交的运行时 env 文件，再用 `--env-file` 部署。Session 与 checkpoint 应分别报告 ready；
+只有 Session 数据库或只有 Python 包安装成功，都不能证明授权等待可以恢复。
+
+API Key MCP 可与这些工具对象接入同一个应用，但验证 OAuth 与 A2A 时使用独立工具集和新会话，
+不要把 OAuth 授权成功当作 A2A 已注册、已授权或已完成远端任务。

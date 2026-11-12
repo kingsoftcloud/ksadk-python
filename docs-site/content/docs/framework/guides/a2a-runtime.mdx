@@ -123,6 +123,43 @@ agentengine a2a cancel --space-id space-demo <task_id>
 未配置时命令会明确报错，而不会偷偷改为直连公网地址。完整变量说明见
 [环境变量参考](/cn/docs/references/environment-variables)。
 
+## 托管部署、注册与调用方工具
+
+对 LangGraph Code 项目，先按[0.8.7 接入手册](/cn/docs/framework/guides/integration-0-8-7/)配置模型、Kernel、
+Session 和框架 checkpoint。将已存在的测试运行时绑定到专用 Space：
+
+```bash
+agentengine deploy . --agent-id "$AGENT_ID" --region "$KSYUN_REGION" \
+  --artifact-type Code --env-file ./runtime.env \
+  --a2a-space-id "$A2A_SPACE_ID" --a2a-runtime-profile managed-a2a-basic
+```
+
+`managed-a2a-basic` 适用于不要求长期记忆的 LangGraph 场景；其他 profile 按实际运行时能力选择。
+不要向应用手工注入平台签名密钥、workload token 或 A2A 身份。
+
+绑定 Space 不会代替 A2A 注册。需要被远端调用的 callee 还要通过平台完成以下步骤：
+
+| 平台动作 | 关键字段与结果 |
+| --- | --- |
+| `GetAToARuntimeConfig` | 用自己的 `AgentId` 获取当前 `AgentCard` 候选；本地生成的 Card 不替代托管预览。 |
+| `CreateAToAAgent` | `Source=hosted`、现有 `AgentId`、预览得到的 `AgentCard`、目标 `A2ASpaceIds`。显式提交 Card，避免依赖平台缺省差异。 |
+| `ListAToASpaceAgents` | 确认注册和 `InvocationStatus` 可用，保存返回的 A2A Agent ID 与版本；运行时 ID 和注册 ID 是不同标识。 |
+
+以上是平台 Action/控制台流程，不是新增一个计算实例。普通调用方只需 Space 访问和相应工具；
+它只有在也要被远端调用时才需要注册。
+
+自有 LangGraph 可以把 `get_a2a_tools()` 返回的工具交给原生 `ToolNode` 或现有 agent 工厂：
+
+```python
+from ksadk.toolsets.a2a import get_a2a_tools
+
+a2a_tools = get_a2a_tools()
+```
+
+工具为 `list_a2a_agents`、`get_a2a_agent_card` 和 `call_a2a_agent`。未绑定 Space 时返回空工具集。
+按发现结果选定 callee，不硬编码其他环境的 ID。远端调用可能触发独立执行审批；审批与 OAuth
+不是同一动作。验收时核对实际远端 task 的终态、结果和审计事件，而不是只看调用方的自然语言。
+
 ## 出站访问
 
 首期托管版本通过 Runtime NAT 路径支持 `external_public` Agent。`Network.EnablePublicAccess` 是唯一的 public egress 策略输入，平台将其最终值投影为 `KSADK_A2A_ENABLE_PUBLIC_EGRESS`。关闭时，在解析凭据前拒绝 external-public 调用。

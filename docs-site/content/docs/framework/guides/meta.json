@@ -16,6 +16,7 @@
     "attachments-multimodal",
     "workspace-files",
     "---[Network]统一事件与互操作---",
+    "agui-a2ui",
     "mcp-oauth",
     "hosted-ui-events",
     "channel-connector",
@@ -28,6 +29,7 @@
     "---[Wrench]运维与维护---",
     "observability-tracing",
     "web-ui-source",
+    "integration-0-8-7",
     "upgrade-0-8-7",
     "upgrade-0-8-6"
   ]

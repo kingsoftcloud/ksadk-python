@@ -1,0 +1,126 @@
+---
+title: "AG-UI 与 A2UI 接入"
+description: "在自有 LangGraph 中加入可验证、可恢复的结构化输入"
+---
+
+AG-UI 是流式交互 transport，A2UI 是组件与用户 action 的表示；两者不替代业务授权或
+框架 checkpoint。本文面向 0.8.7 候选，安装与双持久化配置见
+[功能接入与配置](/cn/docs/framework/guides/integration-0-8-7/)。
+
+## 最小可运行表单
+
+安装 `ksadk[langgraph,agui]`。入口 `agent.py` 使用原生 LangGraph 和显式业务 Schema，
+没有模型调用，也没有云资源副作用，可先用于排查 UI、数据库和恢复链路：
+
+```python title="agent.py"
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.graph import END, START, MessagesState, StateGraph
+from ksadk.a2ui import build_a2ui_presentation
+from ksadk.a2ui.catalog import catalog_manifest
+from ksadk.interaction.langgraph import request_input
+
+SCHEMA = {"type": "object", "properties": {
+    "name": {"type": "string", "minLength": 2},
+}, "required": ["name"], "additionalProperties": False}
+
+
+def collect(state):
+    sid = "parameters-" + state["messages"][-1].id
+    def op(**body):
+        return {"version": "v0.9.1", **body}
+    presentation = build_a2ui_presentation([
+        op(createSurface={"surfaceId": sid,
+                          "catalogId": catalog_manifest()["catalog_id"]}),
+        op(updateComponents={"surfaceId": sid, "components": [
+            {"id": "root", "component": "Column", "children": ["name", "submit"]},
+            {"id": "name", "component": "TextField", "label": "Name",
+             "value": {"path": "/answer/name"}},
+            {"id": "submit", "component": "Button", "child": "submit-label",
+             "action": {"event": {"name": "submit",
+                                  "context": {"payload": {"path": "/answer"}}}}},
+            {"id": "submit-label", "component": "Text", "text": "Submit"},
+        ]}),
+        op(updateDataModel={"surfaceId": sid, "path": "/", "value": {"answer": {"name": ""}}}),
+    ], title="Confirm parameters")
+    answer = request_input("Enter a name", SCHEMA, presentation=presentation)
+    return {"messages": [AIMessage(content="Received: " + answer["name"])]}
+
+
+def ksadk_prepare_state(payload, session_context):
+    return {"messages": payload.get("messages") or [
+        HumanMessage(content=payload.get("input", ""))
+    ]}
+
+
+def ksadk_graph_factory(*, checkpointer):
+    graph = StateGraph(MessagesState)
+    graph.add_node("collect", collect)
+    graph.add_edge(START, "collect")
+    graph.add_edge("collect", END)
+    return graph.compile(checkpointer=checkpointer)
+
+
+root_agent = ksadk_graph_factory(checkpointer=None)
+```
+
+```yaml title="agentengine.yaml"
+name: input-demo
+framework: langgraph
+artifact_type: Code
+entry_point: agent.py
+agent_variable: root_agent
+```
+
+启用自动 checkpoint 后运行本地项目 Web：
+
+```bash
+KSADK_LANGGRAPH_AUTO_CHECKPOINT=1 agentengine web .
+```
+
+没有 PG 配置时使用本地 SQLite。托管模式请按接入手册配置 Kernel、Session 和框架 checkpoint；
+平台必须批准并投射运行时契约。不能用 `graph.ainvoke()` 代替完整 Web/Broker/Hosted 验证。
+
+## 生成动态界面
+
+先确保上面的固定表单能完成提交，再把模型生成接入自己的节点：
+
+```python
+from ksadk.compat.copilotkit_a2ui import build_ksadk_a2ui_tool
+
+# model is your configured LangChain chat model.
+generate_ui = build_ksadk_a2ui_tool({
+    "model": model,
+    "recovery": {"maxAttempts": 3},
+})
+```
+
+在原生 `ToolNode` 中执行生成工具，将成功返回的 `a2ui_operations` 交给
+`build_a2ui_presentation`，再传入 `request_input`。生成、等待输入、完成业务可以分为独立节点，
+让恢复从持久化等待继续，而不是重新生成界面或重做业务调用。
+
+当前生成和 wire 校验使用注册目录及 `v0.9.1` 操作；不要让模型自造组件名、属性或目录身份。
+业务输入 Schema 是权威约束，展示不允许增加业务权限。更复杂的自定义目录必须显式注册并同时
+提供匹配的前端 renderer，不能只返回一个未经注册的 `catalogId`。
+
+## Transport 与依赖
+
+| 层 | 当前契约 | 集成方式 |
+| --- | --- | --- |
+| AG-UI | `ag-ui-protocol==1.0.0`；协商协议 `1.0` | 安装 `agui` extra，读取 bootstrap，再选择 `/agentengine/agui` 等声明入口。 |
+| LangGraph bridge | `ag-ui-langgraph==0.0.47`、`copilotkit==0.1.96` | 由 SDK 装配，不直接依赖 bridge 的私有 graph 属性。 |
+| A2UI toolkit | `ag-ui-a2ui-toolkit==0.0.4` | 使用 SDK compatibility helper，保持模型调用在活动事件循环。 |
+| Web companion | `@kingsoftcloud/ksadk-web@0.3.18` | 核对实际前端资源；托管共享 UI 需另行部署兼容版本。 |
+
+原有 Responses 客户端仍可保留；自建客户端应按 bootstrap 协商，不能假定所有 Agent 都启用
+AG-UI。提交交互使用服务端返回的 `RunId`、`InteractionId`、`ExpectedRevision` 和幂等键；
+不要把输入 JSON 当作普通聊天消息重发，也不要在不确定是否已受理时重新入队原任务。
+
+## 验证与失败处理
+
+先检查 Session 和 checkpoint 分别 ready，再验证表单能显示、填写、提交、恢复到完成。
+刷新或重建后应恢复同一个 pending interaction；已提交的表单不应再次执行。
+
+模型可能生成目录不支持的样式或结构；复杂样式请求存在校验失败边界。检查生成结果及重试记录，
+把失败呈现给用户，或按业务规则使用不带 A2UI presentation 的 Schema 表单后备流程。
+`KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` 默认 20 秒，有效范围 1–120 秒；它不等于数据库超时，
+增大它也不能修正无效组件。不要删除校验或把失败返回值包装成成功界面。

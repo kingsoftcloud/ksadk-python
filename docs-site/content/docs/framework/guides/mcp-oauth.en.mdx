@@ -28,6 +28,7 @@ from the current state on every execution; do not cache bound tool objects acros
 The SDK preserves existing tool clients and leaves graph construction to the developer.
 
 ```python
+from langchain_core.messages import HumanMessage
 from langgraph.graph import MessagesState, StateGraph, START
 from langgraph.prebuilt import ToolNode, tools_condition
 from ksadk.mcp_runtime.oauth.tools import McpOAuthTools
@@ -56,6 +57,12 @@ def ksadk_graph_factory(*, checkpointer):
     graph.add_edge("tools", "model")
     return graph.compile(checkpointer=checkpointer)
 
+def ksadk_prepare_state(payload, session_context):
+    return {"messages": payload.get("messages") or [
+        HumanMessage(content=payload.get("input", ""))
+    ]}
+
+
 root_agent = ksadk_graph_factory(checkpointer=None)
 ```
 
@@ -70,6 +77,36 @@ opt-out remain effective. OAuth waits require durable checkpoints; an in-memory 
 that guarantee. Managed PostgreSQL mode additionally requires
 `ksadk_prepare_state(payload, session_context)` to prepare only the current turn instead of injecting
 history twice; see [Agent Context](/en/docs/framework/guides/agent-context/).
+
+## API Key MCP and mixed tools
+
+API Key services do not use the OAuth Broker. Additionally install `langchain-mcp-adapters>=0.3.2`
+and configure runtime variables: `SEARCH_MCP_URL=https://search.example.com/mcp` and
+`SEARCH_MCP_API_KEY=your-service-api-key`. Bearer authentication is a common example; use the headers
+required by your service.
+
+```python
+import os
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+async def search_tools():
+    client = MultiServerMCPClient({"search": {
+        "url": os.environ["SEARCH_MCP_URL"],
+        "transport": "streamable_http",
+        "headers": {"Authorization": "Bearer " + os.environ["SEARCH_MCP_API_KEY"]},
+    }})
+    # Replace this allowlist with read-only tool names published by your service.
+    return [tool for tool in await client.get_tools() if tool.name == "search_documents"]
+
+async def all_tools(state):
+    return await oauth.get_tools(state, tools=await search_tools())
+```
+
+For API Key MCP alone, use `await search_tools()` in both nodes; no OAuth declaration is required.
+For mixed tools, `oauth` is the declaration from the previous section. Replace `await oauth.get_tools(state)`
+with `await all_tools(state)` in both model and tool nodes. Select tools at execution time rather
+than caching tool objects bound to another session, and expose only required read-only tools.
+`SEARCH_MCP_*` are application-defined variables, not automatically consumed SDK configuration.
 
 ## Clients and secret references
 
@@ -113,3 +150,21 @@ of the same project; a different directory is a separate project. This is a sing
 not defend against a process controlling that same operating-system account. Keep the vault, key, and
 session files out of source control, artifacts, and shared copies. Hosted credentials remain isolated by
 trusted identity, Agent, configuration version, and task binding; local authorization cannot replace them.
+
+
+## Local and hosted environment variables
+
+For a graph without its own saver, run `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1 agentengine web .`
+locally. Automatic checkpoints are disabled by default; existing savers and explicit opt-out remain
+unchanged. OAuth on hosted Code/Container additionally requires `KSADK_ENABLE_KERNEL=1`, a
+platform-admitted Broker, trusted identity, and durable storage. Do not forge platform permits,
+tokens, or `AGENT_KERNEL_ENABLED` to bypass admission.
+
+Follow the [0.8.7 integration guide](/en/docs/framework/guides/integration-0-8-7/) to configure model, Session, and
+framework checkpoints in an untracked runtime env file, then deploy with `--env-file`. Check Session
+and checkpoint readiness independently; a Session database or an installed package alone does not
+prove authorization waits can resume.
+
+API Key MCP can share application tool composition, but validate OAuth and A2A with separate tool
+sets and fresh sessions. Successful OAuth consent does not prove A2A registration, authorization,
+or remote task completion.

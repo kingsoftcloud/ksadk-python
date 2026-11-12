@@ -4,7 +4,7 @@ This directory contains the public KsADK documentation built with Fumadocs and N
 
 ## Local development
 
-Requirements: Node.js 22 and pnpm 9.
+Requirements: Node.js 22 and pnpm 10.33.2.
 
 ```bash
 pnpm install --frozen-lockfile
@@ -51,3 +51,18 @@ git diff --check
 ```
 
 Architecture changes should also validate SVG syntax and visually inspect both language variants.
+
+
+## Public documentation ownership
+
+Maintain public content in this repository through reviewed GitHub PRs. `README.md` and `README.en.md`
+are short entry points; `content/docs/**` contains the bilingual integration manuals and references.
+GitHub Pages renders the same source. API/package examples must match the reviewed SDK revision;
+mark candidate-only features explicitly until release. DeepWiki is a supplementary code explanation,
+not the authoritative configuration or release documentation. Avoid maintaining a second independent
+Wiki or documentation copy that can drift from the repository.
+
+The current Pages deployment is part of `publish-pypi.yml`. Do not dispatch that workflow merely to
+preview documentation: it also contains package publishing jobs. Validate and review candidate docs
+locally and in PR CI; deploy Pages only through the approved trusted publishing flow. A source PR
+update does not mean the live Pages site has changed.

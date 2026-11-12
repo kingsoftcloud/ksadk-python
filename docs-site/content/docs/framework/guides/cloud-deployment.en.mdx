@@ -13,6 +13,13 @@ Agent on Kingsoft Cloud.
   your CI pipeline needs to review the artifact separately.
 </Callout>
 
+## LangGraph with interactions or OAuth
+
+An ordinary Code deployment does not imply hosted Kernel admission. AG-UI/A2UI input resume and
+OAuth additionally need Kernel admission, a durable checkpointer, entry factory, and current-input hook.
+Session and framework checkpoints are separate configuration layers. Before deployment, complete the
+settings and minimal form validation in the [0.8.7 integration guide](/en/docs/framework/guides/integration-0-8-7/).
+
 ## Choose A Target
 
 | Target | Use it when | Default artifact |

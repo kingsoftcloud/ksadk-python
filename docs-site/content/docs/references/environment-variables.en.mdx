@@ -162,6 +162,7 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 
 | Variable | Purpose |
 | --- | --- |
+| `KSADK_ENABLE_KERNEL` | Per-Agent hosted Kernel request for Code/Container, default `false`; set `1` in the interaction/OAuth integration examples, subject to server admission. It is distinct from platform-projected `AGENT_KERNEL_ENABLED` and cannot forge identity or permits. |
 | `KSADK_AGENT_KERNEL` | explicitly enable Kernel ingress for local development; disabled by default |
 | `AGENT_KERNEL_ENABLED` | platform-projected hosted enable flag; older Agents without it remain on the historical path |
 | `AGENT_KERNEL_STORE_DRIVER` | `memory`, local `sqlite`, or `postgres`; the hosted production composition supports ephemeral memory or durable PostgreSQL |
@@ -420,3 +421,6 @@ When one backend fails the other still works: primary failure keeps the secondar
 </Callout>
 
 Current Hosted UI static asset version: `0.3.12`.
+
+
+See the [0.8.7 integration guide](/en/docs/framework/guides/integration-0-8-7/) for deployment credentials, application settings, and platform-projected values.

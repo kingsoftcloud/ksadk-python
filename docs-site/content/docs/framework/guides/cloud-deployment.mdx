@@ -11,6 +11,12 @@ description: 从本地项目、云账号配置到托管 Agent 验证的完整部
   `build` 加 `deploy` 可以把构建和发布拆开。
 </Callout>
 
+## 需要交互或 OAuth 的 LangGraph
+
+普通 Code 部署不等于已启用托管 Kernel。AG-UI/A2UI 输入恢复与 OAuth 接入还需要正确的
+Kernel 准入、持久化 checkpointer、入口工厂和本轮输入 hook；Session 数据库与框架 checkpoint
+是两个配置层。部署前完成[0.8.7 接入手册](/cn/docs/framework/guides/integration-0-8-7/)中的变量清单和最小表单验证。
+
 ## 选择部署方式
 
 | 目标 | 适用场景 | 默认制品 |
