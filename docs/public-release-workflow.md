@@ -51,6 +51,21 @@
 Pending，不能复制上一版本的 Approved 行。此状态应使 `make public-publish-gate` 拒绝发布，
 但不代替或跳过源码、构建、安装及完整预检。
 
+## PostgreSQL 兼容检查
+
+公开候选的数据库 CI 矩阵覆盖 PostgreSQL 9.6.21、10、11、12、13、14、15、16。
+每个版本都连接独立的真实数据库，执行 session/history、Kernel/interaction、checkpoint、
+OAuth 恢复、A2A outbox/进程恢复、Memory 和 Teams 检查；执行授权另有独立报告。
+两份 JUnit 报告均须非空且零跳过，测试失败或意外跳过都会阻断检查。
+
+Memory 的 PostgreSQL 后端保留既有表、旧列与历史记录，只新增 `record_json` 列承载
+当前记录协议；跨连接版本更新使用事务锁与 revision 校验，不以静默覆盖代替 CAS。
+测试包括旧表迁移、scope/tenant/workspace 隔离、TTL、软硬删除与并发更新。
+
+配套服务的跨仓检查可通过 `A2A_TEST_SERVER_REPO`、`A2A_TEST_GATEWAY_REPO` 指定已固定
+提交的本地 checkout；OAuth 协议镜像检查同样接受 `A2A_TEST_SERVER_REPO`。
+本地控制面/网关测试使用隔离的身份和模型 fixture，不等同于真实云端环境验收。
+
 ## 0.8.4 CI 与本地门禁分工
 
 PR 的 Release Check 负责源码清洁检查、前端构建、可追溯的 wheel/sdist、全新环境安装和制品内容审计。它使用 `--skip-tests` 避免在组合门禁里重复执行实时运行时 E2E；报告中的 source E2E 保持 `not_run`，不得把该报告当作完整发布证据。

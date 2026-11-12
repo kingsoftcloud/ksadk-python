@@ -7,6 +7,7 @@ PostgreSQL, workload environment or fixed-success signature verifier.
 import asyncio
 import errno
 import json
+import os
 import socket
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -317,6 +318,7 @@ async def test_node_declares_local_connection_only_when_invoked(local_env, tmp_p
     from langchain_core.messages import AIMessage, ToolMessage
     from langgraph.graph import MessagesState
     from langgraph.prebuilt import ToolNode
+
     from ksadk.mcp_runtime.oauth.tools import McpOAuthTools
 
     def graph():
@@ -367,6 +369,7 @@ async def test_node_declares_local_connection_only_when_invoked(local_env, tmp_p
 
 async def test_restored_tool_with_a_lost_reply_cannot_be_redispatched(local_env, tmp_path, provider):
     from langchain_core.messages import AIMessage
+
     from ksadk.mcp_runtime.oauth.client import MCPToolOutcomeUnknown
     from ksadk.mcp_runtime.oauth.tools import McpOAuthState, McpOAuthTools
     from tests.test_mcp_oauth_agent import ScriptedModel, ai_call
@@ -907,7 +910,10 @@ async def test_authorization_preserves_provider_query_and_rejects_duplicate_stat
 
 
 def test_protocol_mirror_has_not_diverged_from_platform():
-    server = Path(__file__).resolve().parents[2] / "agentengine-server" / "app/services/mcp_oauth"
+    configured = os.getenv("A2A_TEST_SERVER_REPO")
+    server_root = (Path(configured) if configured
+                   else Path(__file__).resolve().parents[2] / "agentengine-server")
+    server = server_root / "app/services/mcp_oauth"
     if not server.exists():
         pytest.skip("Cross-repository parity requires Server checkout")
     local = Path(__file__).resolve().parents[1] / "ksadk/mcp_runtime/oauth/local"

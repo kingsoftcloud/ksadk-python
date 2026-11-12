@@ -277,6 +277,7 @@ PUBLIC_TEST_FILES = {
 
     "tests/plugins/test_teams_migration.py",
     "tests/plugins/test_teams_postgres.py",
+    "tests/memory/test_postgres_provider_live.py",
     "tests/plugins/test_teams_workspaces.py",
     "tests/studio/e2e/studio_creation_layout_smoke.py",
     "tests/studio/test_dsh_studio_assets.py",

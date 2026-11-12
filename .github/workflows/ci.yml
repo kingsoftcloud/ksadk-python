@@ -10,11 +10,11 @@ on:
 
 jobs:
   test-postgres:
-    name: ${{ matrix.postgres == '16' && 'PostgreSQL persistence gates' || 'PostgreSQL 9.6.21 persistence gates' }}
+    name: ${{ matrix.postgres == '16' && 'PostgreSQL persistence gates' || format('PostgreSQL {0} persistence gates', matrix.postgres) }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        postgres: ["9.6.21", "16"]
+        postgres: ["9.6.21", "10", "11", "12", "13", "14", "15", "16"]
     services:
       postgres:
         image: postgres:${{ matrix.postgres }}
@@ -34,6 +34,10 @@ jobs:
       KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       R86_TEST_CHECKPOINT_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       KSADK_TEST_A2UI_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      KSADK_TEST_MEMORY_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      KSADK_TEST_TEAMS_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      KSADK_TEST_GRANTS_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+      KSADK_SELECTED_KERNEL_TEST_PG: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       KSADK_A2A_TEST_DATABASE_URL: postgresql+asyncpg://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       A2A_TEST_POSTGRES_DSN: postgresql+asyncpg://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
     steps:
@@ -52,10 +56,26 @@ jobs:
 
       - name: Run live PostgreSQL persistence tests
         run: |
+          uv run --no-sync python - <<'PY'
+          import os
+          import psycopg
+          from psycopg import sql
+
+          with psycopg.connect(os.environ["KSADK_TEST_POSTGRES_DSN"], autocommit=True) as connection:
+              for name in ("kernel_user", "kernel_platform", "kernel_native", "kernel_a2a"):
+                  connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+          PY
           set +e
           uv run --no-sync pytest \
             tests/kernel/test_orphan_sessions.py \
             tests/kernel/test_scheduler_metadata_postgres.py \
+            tests/kernel/test_postgres_store.py \
+            tests/kernel/test_a2a_bounded_reads_postgres.py \
+            tests/kernel/test_a2a_observation_recovery_postgres.py \
+            tests/interaction/test_ledger_conformance.py::test_postgres_ledger_conformance \
+            tests/memory/test_postgres_provider_live.py \
+            tests/plugins/test_teams_postgres.py \
+            tests/a2a/test_selected_kernel_database.py \
             tests/server/test_checkpoint_resume_audit.py \
             tests/server/test_postgres_jsonb_codec_guard.py \
             tests/server/test_checkpoint_resume_attempt_audit.py \
@@ -89,18 +109,25 @@ jobs:
             'tests/server/test_app_factory_agui.py::test_factory_agui_resilient_cold_miss_race_skips_full_hydration[postgres]' \
             -q --junitxml="$RUNNER_TEMP/postgres-junit.xml"
           test_code=$?
+          uv run --no-sync pytest tests/kernel/test_execution_grants.py -k postgres \
+            -q --junitxml="$RUNNER_TEMP/postgres-grants-junit.xml"
+          grants_code=$?
           set -e
-          TEST_REPORT="$RUNNER_TEMP/postgres-junit.xml" python - <<'PY'
+          TEST_REPORT_ROOT="$RUNNER_TEMP" python - <<'PY'
           import os
+          from pathlib import Path
           import xml.etree.ElementTree as ET
 
-          report = ET.parse(os.environ["TEST_REPORT"])
-          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in report.findall(".//testsuite"))
-          tests = sum(int(suite.attrib.get("tests", "0")) for suite in report.findall(".//testsuite"))
-          print(f"PostgreSQL persistence tests executed: {tests}; skipped: {skipped}")
-          if skipped:
-              raise SystemExit("PostgreSQL persistence tests unexpectedly skipped")
+          for name in ("postgres-junit.xml", "postgres-grants-junit.xml"):
+              report = ET.parse(Path(os.environ["TEST_REPORT_ROOT"]) / name)
+              suites = report.findall(".//testsuite")
+              skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
+              tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+              print(f"{name}: PostgreSQL tests executed: {tests}; skipped: {skipped}")
+              if not tests or skipped:
+                  raise SystemExit("PostgreSQL persistence tests empty or unexpectedly skipped")
           PY
+          if [ "$test_code" -eq 0 ]; then test_code=$grants_code; fi
           exit "$test_code"
 
   test:
