@@ -89,7 +89,11 @@ def create_provider(base_url):
     async def consent(request: Request):
         body = dict(await request.form())
         client = clients.get(body.get("client_id"))
-        if not client or body.get("redirect_uri") not in client["redirect_uris"]:
+        requested_redirect_uri = body.get("redirect_uri")
+        if not client or requested_redirect_uri not in client["redirect_uris"]:
+            return JSONResponse({"error": "invalid_client"}, status_code=400)
+        redirect_uri = next((uri for uri in client["redirect_uris"] if uri == requested_redirect_uri), None)
+        if not redirect_uri:
             return JSONResponse({"error": "invalid_client"}, status_code=400)
         values = {"state": body["state"], "iss": base_url}
         if body.get("decision") != "allow":
@@ -98,7 +102,7 @@ def create_provider(base_url):
             code = secrets.token_urlsafe(24)
             codes[code] = body
             values["code"] = code
-        return RedirectResponse(body["redirect_uri"] + "?" + urlencode(values), status_code=303)
+        return RedirectResponse(redirect_uri + "?" + urlencode(values), status_code=303)
 
     @app.post("/token")
     async def token(request: Request):
