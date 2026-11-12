@@ -69,7 +69,10 @@ dependencies = [
     "qrcode>=7.4.0",
     # 生产多副本共享会话后端
     "asyncpg>=0.30.0,<1.0.0",
-    # ADK / SQLAlchemy async session backend 依赖
+    # ADK 2.14 将数据库支持移入可选 extra；默认 SDK 的 SQLite/Postgres
+    # session 能力必须显式声明依赖，避免选择持久化后静默退回内存。
+    "SQLAlchemy[asyncio]>=2.0.0,<3.0.0",
+    "aiosqlite>=0.20.0,<1.0.0",
     "greenlet>=1.0.0",
     # KS3 上传 (build --push)
     "ks3sdk>=1.15.0",

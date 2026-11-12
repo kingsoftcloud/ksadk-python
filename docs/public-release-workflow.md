@@ -196,6 +196,7 @@ make public-preflight PUBLIC_PREFLIGHT_MODE=source-sync \
 - 公开测试集。
 - `docs-site` Fumadocs 静态构建。
 - wheel/sdist 构建。
+- wheel 与 sdist 重建 wheel 的默认安装均验证 ADK 原生 SQLite 跨进程写入/读取，不依赖 `[all]` 或 A2A extra 补齐数据库依赖。
 - `twine check dist/*`。
 - wheel/sdist 文件列表 audit。
 
