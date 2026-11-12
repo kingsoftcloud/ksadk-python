@@ -3,8 +3,8 @@ title: "0.8.7 Integration and Configuration"
 description: "Install and configure AG-UI, A2UI, MCP OAuth, and A2A with explicit runtime boundaries"
 ---
 
-0.8.7 is a review candidate, not a release announcement. Python 3.12 or later is required;
-the candidate bundles `@kingsoftcloud/ksadk-web@0.3.18`. Upgrading the local SDK does not update deployed Agents.
+This guide describes integration with 0.8.7. Python 3.12 or later is required;
+the SDK bundles `@kingsoftcloud/ksadk-web@0.3.18`. Upgrading the local SDK does not update deployed Agents.
 
 ## Choose an integration by capability
 
@@ -21,10 +21,10 @@ The SDK owns framework adaptation, runtime, and protocol consumption. The compan
 Space/Agent registration, routing, Broker, and hosted resource lifecycle. Installing Python packages
 does not create a complete control plane locally.
 
-## Install the candidate and framework dependencies
+## Install the SDK and framework dependencies
 
-Install a reviewed local wheel in an isolated environment. Do not describe an unpublished candidate
-as already downloadable from PyPI:
+Install in an isolated environment and verify the version. A reviewed local wheel can also be used
+for build validation:
 
 ```bash
 uv venv --python 3.12 .venv

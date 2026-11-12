@@ -3,7 +3,7 @@ title: "0.8.7 功能接入与配置"
 description: "从安装、运行时变量到 AG-UI、A2UI、MCP OAuth 和 A2A 的接入清单"
 ---
 
-0.8.7 是待审核候选，本文不是正式发版公告。Python 最低版本为 3.12；候选内置
+本文描述 0.8.7 的集成方式。Python 最低版本为 3.12；内置
 `@kingsoftcloud/ksadk-web@0.3.18`。已有 Agent 不会因为本机升级 SDK 而自动更新。
 
 ## 按能力选择接入方式
@@ -20,9 +20,9 @@ description: "从安装、运行时变量到 AG-UI、A2UI、MCP OAuth 和 A2A �
 SDK 负责框架适配、运行时与协议消费。Space/Agent 注册、路由、Broker 与托管资源生命周期
 由配套平台负责；安装 Python 包不会在本机创建完整控制面。
 
-## 安装候选与框架依赖
+## 安装 SDK 与框架依赖
 
-在独立环境安装已审核的本地 wheel，不把未发布候选写成已经可以从 PyPI 下载的版本：
+在独立环境安装并核对版本；本地构建验证也可使用经过审核的 wheel：
 
 ```bash
 uv venv --python 3.12 .venv

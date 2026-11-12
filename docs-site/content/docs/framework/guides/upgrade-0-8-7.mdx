@@ -1,20 +1,19 @@
 ---
-title: "升级到 0.8.7 候选"
-description: "0.8.7 候选的安装验证、OAuth、交互恢复与兼容边界"
+title: "升级到 0.8.7"
+description: "0.8.7 的安装验证、OAuth、交互恢复与兼容边界"
 ---
 
-0.8.7 当前为待审核候选，尚未正式发布。本文描述候选行为；正式安装命令应在
-GitHub Release 与两个 PyPI 发行包完成一致性核对后使用。最低 Python 版本仍为 3.12，
+本文描述 0.8.7 的升级方式。安装前核对 GitHub Release 与两个 PyPI 发行包的版本。最低 Python 版本仍为 3.12，
 Web companion 固定为已发布的 `@kingsoftcloud/ksadk-web@0.3.18`。
 
 ## 在独立环境验证
 
-从审核过的候选 wheel 安装，不覆盖现有工作环境：
+从审核过的 wheel 安装，不覆盖现有工作环境：
 
 ```bash
-uv venv --python 3.12 .venv-087-candidate
-uv pip install --python .venv-087-candidate/bin/python /absolute/path/ksadk-0.8.7-py3-none-any.whl
-.venv-087-candidate/bin/agentengine --version
+uv venv --python 3.12 .venv-087
+uv pip install --python .venv-087/bin/python /absolute/path/ksadk-0.8.7-py3-none-any.whl
+.venv-087/bin/agentengine --version
 ```
 
 `agentengine-sdk-python` 与 `ksadk` 提供相同的 `ksadk` 导入，两种发行名二选一。
@@ -22,7 +21,7 @@ uv pip install --python .venv-087-candidate/bin/python /absolute/path/ksadk-0.8.
 用户无需现场编译 Studio。模型、浏览器和官方 Provider 工具链仍需按目标环境配置。
 
 ADK 的验证锚点包括 1.34.3、开发锁文件中的 2.5.0，以及当前默认安装解析的 2.14.0。
-普通 wheel 安装会重新解析依赖；候选验证同时检查锁文件环境和默认安装组合，
+普通 wheel 安装会重新解析依赖；发布验证同时检查锁文件环境和默认安装组合，
 最低 Python 版本均为 3.12。
 
 ## 本版本保留和更新的能力

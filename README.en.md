@@ -37,11 +37,11 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
-## 0.8.7 Candidate: Capabilities and Integration
+## 0.8.7: Capabilities and Integration
 
-0.8.7 is not formally released. It requires Python 3.12+ and bundles Web companion `0.3.18`.
-This table describes candidate capabilities. The live documentation reflects its deployed version;
-candidate guides are reviewed with the repository PR.
+0.8.7 requires Python 3.12+ and bundles Web companion `0.3.18`.
+This table describes this version. Before installing, check that the GitHub Release and both PyPI
+distributions use the expected version.
 
 | Capability | Integration |
 | --- | --- |

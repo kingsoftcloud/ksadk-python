@@ -36,10 +36,10 @@ agentengine run -i
 agentengine web . --no-open
 ```
 
-## 0.8.7 候选：能力与接入
+## 0.8.7：能力与接入
 
-0.8.7 尚未正式发布，要求 Python 3.12+，内置 Web companion 为 `0.3.18`。
-下表介绍候选能力；线上文档站以已部署版本为准，候选手册随本仓库 PR 一同审核。
+0.8.7 要求 Python 3.12+，内置 Web companion 为 `0.3.18`。
+下表介绍本版本能力；安装前核对 GitHub Release 与两个 PyPI 发行包的版本。
 
 | 能力 | 如何接入 |
 | --- | --- |
