@@ -401,8 +401,7 @@ class PostgresTeamsExecutionContextRegistry(_Registry):
         async with self.kernel_store._connection() as connection:
             async with connection.transaction():
                 # Serialize initial DDL and owner/context insert across pods.
-                await connection.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                    "teams-host-registry:" + self.namespace,
-                )
+                from ksadk.kernel.postgres_locks import acquire_text_advisory_lock
+
+                await acquire_text_advisory_lock(connection, "teams-host-registry:" + self.namespace)
                 yield _PostgresConnection(connection)

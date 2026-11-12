@@ -330,7 +330,11 @@ async def cloud(tmp_path, monkeypatch, temporary_postgres, request):
                 loaded_build=build,
             )
     await transport_client.aclose()
-    await admin.execute(f'DROP DATABASE "{name}" WITH (FORCE)')
+    await admin.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE datname=$1 AND pid<>pg_backend_pid()", name,
+    )
+    await admin.execute(f'DROP DATABASE "{name}"')
     await admin.close()
 
 

@@ -13,6 +13,7 @@ jobs:
     name: ${{ matrix.postgres == '16' && 'PostgreSQL persistence gates' || format('PostgreSQL {0} persistence gates', matrix.postgres) }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         postgres: ["9.6.21", "10", "11", "12", "13", "14", "15", "16"]
     services:
@@ -72,6 +73,18 @@ jobs:
             tests/kernel/test_postgres_store.py \
             tests/kernel/test_a2a_bounded_reads_postgres.py \
             tests/kernel/test_a2a_observation_recovery_postgres.py \
+            tests/kernel/test_postgres_locks.py \
+            tests/kernel/test_teams_execution_context.py \
+            tests/kernel/test_teams_effects.py \
+            tests/kernel/test_teams_artifact_tools.py \
+            tests/kernel/test_teams_host_http.py \
+            tests/kernel/test_teams_host_ingress.py \
+            tests/kernel/test_teams_material_transport.py \
+            tests/kernel/test_teams_materials.py \
+            tests/kernel/test_teams_runtime_bootstrap.py \
+            tests/kernel/test_teams_sqlite_concurrency.py \
+            tests/kernel/test_teams_tool_runtime.py \
+            tests/kernel/test_teams_workspace.py \
             tests/interaction/test_ledger_conformance.py::test_postgres_ledger_conformance \
             tests/memory/test_postgres_provider_live.py \
             tests/plugins/test_teams_postgres.py \

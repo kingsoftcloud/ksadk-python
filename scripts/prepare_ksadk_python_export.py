@@ -241,6 +241,7 @@ PUBLIC_TEST_FILES = {
     'tests/kernel/control_harness.py',
     'tests/kernel/loaded_build_harness.py',
     'tests/kernel/teams_host_harness.py',
+    'tests/kernel/test_postgres_locks.py',
     'tests/kernel/test_contracts.py',
     'tests/kernel/test_execution_grants.py',
     'tests/kernel/test_teams_artifact_tools.py',
