@@ -23,6 +23,7 @@ from .context_history import (
     compact_historical_protocol,
     summary_media_blocks,
 )
+from .context_search import complete_search_observation
 from .context_source_fragments import (
     FRESH_TEXT_FRAGMENT_POLICY,
     SOURCE_FRAGMENT_POLICY,
@@ -87,11 +88,16 @@ def source_manifest(
     messages, old_messages, retained_refs, *, capture_reader_names=(),
     fresh_tool_observation_policy=None, fresh_tool_message_refs=(),
     fresh_text_fragment_policy=None, fresh_text_excluded_tool_names=(),
+    search_fragment_policy=None, capture_search_names=(),
 ):
     refs = tuple(
         f"message:{index}:{projection_digest((message,))}" for index, message in enumerate(messages)
     )
     raw = dict(zip(refs, messages))
+    if search_fragment_policy not in {None, "complete-search-fragments/v1"} or (
+        capture_search_names and search_fragment_policy is None
+    ):
+        raise ContextRuntimeError("compaction_search_fragment_policy_changed")
     if fresh_text_fragment_policy is not None and (
         fresh_text_fragment_policy != FRESH_TEXT_FRAGMENT_POLICY
         or fresh_tool_observation_policy != FRESH_TOOL_OBSERVATION_POLICY
@@ -173,6 +179,29 @@ def source_manifest(
                     ) is not None:
                         captures[ref]["source_field"] = "content.content"
                         batches[assistant_ref].setdefault("artifact_page_refs", []).append(ref)
+        if search_fragment_policy is not None:
+            functions = {
+                call["id"]: call["function"] for call in raw[assistant_ref]["tool_calls"]
+            }
+            for ref in receipt_refs:
+                function = functions[raw[ref]["tool_call_id"]]
+                if function["name"] not in capture_search_names:
+                    continue
+                observation = history_observation_message(raw[ref])
+                if complete_search_observation(
+                    observation, arguments=_unambiguous_json_object(function["arguments"])
+                ) is None:
+                    continue
+                # Quote the entire authorized envelope as contiguous historical
+                # text, including query, matches, context and truncation flags.
+                # Each part is data, never a partial live search result.
+                quoted, images = _historical_message(raw[ref])
+                body = quoted.get("content")
+                if isinstance(body, str) and body and not images:
+                    captures[ref] = {
+                        "total_chars": len(body), "text_digest": text_digest(body),
+                        "source_field": "content",
+                    }
         if fresh_text_fragment_policy is not None:
             functions = {
                 call["id"]: call["function"] for call in raw[assistant_ref]["tool_calls"]
@@ -197,6 +226,9 @@ def source_manifest(
         "payload_digests": tuple(projection_digest((raw[ref],)) for ref in dropped),
         "batches": batches,
     }
+    if search_fragment_policy is not None:
+        manifest["search_fragment_policy"] = search_fragment_policy
+        manifest["capture_search_names"] = tuple(sorted(capture_search_names))
     if captures:
         manifest["source_captures"] = captures
     if fresh_tool_observation_policy is not None:
@@ -452,7 +484,11 @@ def fragment_view(unit, state, manifest, plan, *, receipt_offset=None):
         max(0, state.covered_count - parent_index - 1) if receipt_offset is None else receipt_offset
     )
     total = len(batch["receipt_refs"])
-    if offset >= total or offset % plan.receipts_per_fragment:
+    # Coverage acknowledgement owns the cursor. Text captures can consume a
+    # different number of receipts, and later quotes can require a narrower
+    # packing width. Neither must realign or replay an accepted prefix.
+    # bind_pending/validate_coverage still require the exact canonical prefix.
+    if not 0 <= offset < total:
         raise ContextRuntimeError("compaction_partition_fragment_cursor_invalid")
     stop = min(offset + plan.receipts_per_fragment, total)
     assistant = unit[0]

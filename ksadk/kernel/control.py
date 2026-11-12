@@ -79,6 +79,7 @@ class AgentKernel:
         queue_limit: int = 100,
         capabilities: CapabilityProvider | None = None,
         clock: Callable[[], datetime] = now_utc,
+        session_admission_error: Callable[[str], str | None] | None = None,
     ) -> None:
         self._store = store
         self._events = session_events
@@ -86,6 +87,7 @@ class AgentKernel:
         self._queue_limit = int(queue_limit)
         self._capabilities = capabilities or default_capability_matrix
         self._clock = clock
+        self._session_admission_error = session_admission_error
 
     def capabilities(self) -> RuntimeCapabilityMatrix:
         """Return the runtime's current typed capability snapshot.
@@ -216,6 +218,16 @@ class AgentKernel:
                 message=error.message,
             )
 
+        if self._session_admission_error is not None:
+            error = self._session_admission_error(command.session_id)
+            if error:
+                # Preserve a lost-ack retry's original admission identity.
+                existing = await self._store.load_by_idempotency(command.session_id, command.idempotency_key)
+                if existing is None:
+                    return await self._store.reject_command(
+                        command, status="rejected", code=error,
+                        message="Session is quarantined; recovery is required before new commands",
+                    )
         matrix = self._capabilities()
         field, capability = capability_of(command.command_type, matrix)
         if command.command_type == "interrupt" and command.payload.get("scope_id") is not None:
@@ -309,6 +321,56 @@ class AgentKernel:
 
     # ---------------------------------------------------------------- status
 
+    async def public_run_id(self, query, public_ref: str, *, permit) -> str | None:
+        """Resolve an authorized logical Run or its admitted wire attempt ID."""
+        await self._permit_verifier.verify(permit, query, "get_status", self._clock())
+        if not query.session_id:
+            return None
+        run = await self._store.load_run(public_ref)
+        if (run is not None and run.session_id == query.session_id
+                and run.agent_instance_id == query.agent_instance_id
+                and run.metadata.get("tenant_id") == query.tenant_id):
+            return run.run_id
+        message = await self._store.load_by_idempotency(query.session_id, public_ref)
+        command = message.command if message is not None else None
+        if (command is None or command.command_type != "enqueue"
+                or command.tenant_id != query.tenant_id
+                or command.agent_instance_id != query.agent_instance_id):
+            return None
+        prior = await self._store.find_command_run(
+            query.agent_instance_id, query.session_id, str(command.command_id),
+        )
+        if prior is not None:
+            return prior.run_id
+        from ksadk.kernel.execution_grants import execution_grant_run_id
+
+        return execution_grant_run_id(command)
+
+    async def pending_interactions(
+        self, query: AgentStatusQuery, *, permit: AgentControlPermit
+    ) -> list[dict[str, Any]]:
+        """Authorized public waits; native/checkpoint bindings never leave Store."""
+        await self._permit_verifier.verify(permit, query, "get_status", self._clock())
+        if not query.session_id:
+            raise ValueError("A Session is required to read interactions")
+        return [
+            {**record.public_request(), "status": record.status}
+            for record in await self._store.list_pending_interactions(
+                query.tenant_id, query.session_id
+            )
+            if record.agent_instance_id == query.agent_instance_id
+        ]
+
+    async def public_interaction(self, query, interaction_id, *, permit):
+        """Point-read an authorized public occurrence, including its terminal fact."""
+        await self._permit_verifier.verify(permit, query, "get_status", self._clock())
+        if not query.session_id:
+            return None
+        return await self._store.read_public_interaction(
+            interaction_id, tenant_id=query.tenant_id,
+            agent_instance_id=query.agent_instance_id, session_id=query.session_id,
+        )
+
     async def status(
         self, query: AgentStatusQuery, *, permit: AgentControlPermit
     ) -> AgentStatusSnapshot:
@@ -324,10 +386,15 @@ class AgentKernel:
             )
         active = await self._store.find_active_run(query.agent_instance_id, query.session_id)
         lease = await self._store.current_lease(query.agent_instance_id, query.session_id)
+        watermark = None
+        read_watermark = getattr(self._events, "get_max_seq_id", None)
+        if query.session_id and callable(read_watermark):
+            watermark = await read_watermark(query.session_id)
         return AgentStatusSnapshot(
             agent_instance_id=query.agent_instance_id,
             instance_state="ready" if lease is not None else "degraded",
             session_id=query.session_id or (active.session_id if active else None),
+            session_event_seq=watermark,
             active_run_id=active.run_id if active else None,
             active_run_state=active.state.value if active else None,
             inbox_depth=await self._store.inbox_depth(query.agent_instance_id, query.session_id),

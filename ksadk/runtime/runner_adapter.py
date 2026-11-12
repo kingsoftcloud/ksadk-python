@@ -40,6 +40,7 @@ from ksadk.events.identity import (
 from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
 from ksadk.kernel.errors import UnsupportedControlError
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime._runner_adapter.resume_context import preserve_resume_context
 from ksadk.runtime.adapter import (
     RESUME_START_REQUEST_NATIVE_KEY,
     BaseRuntime,
@@ -54,6 +55,8 @@ from ksadk.runtime.adapter import (
 )
 from ksadk.runtime.preprocessing import PreparedRuntimeStart, prepare_runtime_start
 from ksadk.runtime.runner_loading import ensure_runner_loaded
+from ksadk.a2ui.registry import catalog_bound, catalog_scope, default_catalog_registry
+from ksadk.runtime.session_storage import RunnerSessionStorageMixin
 from ksadk.runtime.timing import normalize_timing
 from ksadk.runtime_context import (
     TRUSTED_IDENTITY_METADATA_KEY,
@@ -124,15 +127,17 @@ class _ActiveRun:
     final_answer_item_id: Optional[str] = None
 
 
-class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
+class RunnerRuntimeAdapter(RunnerSessionStorageMixin, _RunnerStreamMappingMixin, RuntimeAdapter):
     """把 ``BaseRunner`` 映射为平台六动词的通用 adapter。"""
 
-    def __init__(self, runner: BaseRunner, *, runtime_type: str) -> None:
+    def __init__(self, runner: BaseRunner, *, runtime_type: str, a2ui_catalog_registry=None) -> None:
         super().__init__(_RunnerAsBaseRuntime(runner, runtime_type))
         self._runner = runner
         self._runner_owned_by_app = False
         self._app_resources_closed = False
         self._runtime_type = runtime_type
+        self.a2ui_catalog_registry = a2ui_catalog_registry or default_catalog_registry()
+        self._a2ui_catalog_registry_explicit = a2ui_catalog_registry is not None
         self._active_runs: dict[str, _ActiveRun] = {}
         self._known_runs: set[str] = set()
         self._run_sessions: dict[str, str] = {}
@@ -157,6 +162,19 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                 result = close()
                 if inspect.isawaitable(result):
                     await result
+
+    def validate_a2ui_catalog_registry(self, registry) -> None:
+        if self.a2ui_catalog_registry is registry:
+            return
+        if self._active_runs:
+            raise RuntimeError("cannot configure A2UI catalogs during active execution")
+        if self._a2ui_catalog_registry_explicit and self.a2ui_catalog_registry is not registry:
+            raise ValueError("RuntimeAdapter already belongs to another A2UI catalog registry")
+
+    def configure_a2ui_catalog_registry(self, registry) -> None:
+        self.validate_a2ui_catalog_registry(registry)
+        self.a2ui_catalog_registry = registry
+        self._a2ui_catalog_registry_explicit = True
 
     def configure_managed_a2a(self, bootstrap) -> None:
         if self._active_runs:
@@ -295,6 +313,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
 
     # ---- 六动词 ----
 
+    @catalog_bound
     async def preflight(self) -> None:
         """Load the framework agent before a streaming HTTP response commits."""
 
@@ -305,6 +324,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         if callable(prepare):
             await prepare()
 
+    @catalog_bound
     async def start(self, request: StartRequest) -> RunHandle:
         ensure_runner_loaded(self._runner, runtime_type=self._runtime_type)
         run_id = str(request.metadata.get("invocation_id") or self._next_invocation_id())
@@ -336,8 +356,21 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             self._active_runs[run_id].__dict__["_prepared_start"] = prepared_start
         return handle
 
-    def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
-        return self._stream_events(handle)
+    async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+        iterator = self._stream_events(handle)
+        try:
+            while True:
+                # Reset before yielding to the caller: a consumer can drive
+                # streams from several applications in the same Task.
+                with catalog_scope(self.a2ui_catalog_registry):
+                    try:
+                        event = await anext(iterator)
+                    except StopAsyncIteration:
+                        break
+                yield event
+        finally:
+            with catalog_scope(self.a2ui_catalog_registry):
+                await iterator.aclose()
 
     def is_handle_attached(self, handle: RunHandle) -> bool:
         return (
@@ -346,6 +379,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             and self._run_sessions.get(handle.run_id) == handle.session_id
         )
 
+    @catalog_bound
     async def attach(self, handle: RunHandle) -> RunHandle:
         """Restore a persisted handle through an explicit native runner seam.
 
@@ -408,6 +442,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             logger.exception("cancel active run %s 失败", run_id)
             return CancelResult.FAILED
 
+    @catalog_bound
     async def resume(
         self,
         handle: RunHandle,
@@ -425,6 +460,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         self._require_native_checkpoint_capability()
         self._known_runs.add(handle.run_id)
         prepared_start: PreparedRuntimeStart | None = None
+        resume_request = None
         resume_invocation_id = handle.run_id
         raw_start_request = handle.native_ref.pop(RESUME_START_REQUEST_NATIVE_KEY, None)
         if isinstance(raw_start_request, Mapping):
@@ -436,13 +472,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         # _resume_native 返回的 runner_input 覆盖存到 run 上,下一次 stream() 经
         # _build_runner_input 消费,以框架原生方式真驱动恢复。
         override = await self._resume_native(handle, target, payload)
-        resume_key = (
-            handle.run_id,
-            handle.session_id,
-            target.kind,
-            target.id,
-            str(payload.call_id or "") if payload is not None else "",
-        )
+        resume_key = self._resume_identity(handle, target, payload, override)
         resume_fingerprint = (
             (payload.kind, copy.deepcopy(payload.data)) if payload is not None else None
         )
@@ -477,14 +507,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             resume_key=resume_key,
             resume_fingerprint=resume_fingerprint,
         )
-        if payload is not None and payload.session_context is not None:
-            run.__dict__["_tag_context"] = session_invocation_context(
-                payload.session_context,
-                agent_id=str(handle.native_ref.get("agent_id") or ""),
-                user_id=str(handle.native_ref.get("user_id") or ""),
-                session_id=handle.session_id,
-                runner_type=self._runtime_type,
-            )
+        preserve_resume_context(run, current, resume_request, payload, handle, self._runtime_type)
         if prepared_start is not None:
             run.__dict__["_prepared_start"] = prepared_start
         if override:
@@ -493,6 +516,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         self._active_runs[handle.run_id] = run
         return handle
 
+    @catalog_bound
     async def checkpoint(self, handle: RunHandle) -> CheckpointDescriptor:
         capability = self._require_native_checkpoint_capability()
         checkpoint_id = str(handle.native_ref.get("checkpoint_id") or "").strip()
@@ -506,6 +530,19 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             capability=capability,
             ref=dict(handle.native_ref),
         )
+
+    def _resume_identity(self, handle, target, payload, override):
+        return (handle.run_id, handle.session_id, target.kind, target.id,
+                str(payload.call_id or "") if payload is not None else "")
+
+    def _resume_consumed_on_start(self, run):
+        return True
+
+    def _observe_runner_event(self, handle, run, event):
+        pass
+
+    def _original_start_fact(self, handle):
+        return self._make_run_started(handle)
 
     def _require_native_checkpoint_capability(self) -> CheckpointCapability:
         """Fail closed when a runner cannot create or resume a native checkpoint."""
@@ -570,8 +607,11 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
     # ---- 内部:stream → RuntimeEvent ----
 
     def _next_invocation_id(self) -> str:
-        self._seq += 1
-        return f"inv_{self._runtime_type}_{self._seq}"
+        while True:
+            self._seq += 1
+            candidate = f"inv_{self._runtime_type}_{self._seq}"
+            if candidate not in self._known_runs:
+                return candidate
 
     def _next_seq(self) -> int:
         self._seq += 1
@@ -592,7 +632,8 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         existing_start = None
         if self._runtime_type == "adk" or (
             self._runtime_type == "langgraph"
-            and getattr(self._runner, "_managed_a2a_bootstrap", None) is not None
+            and (getattr(self._runner, "_managed_a2a_bootstrap", None) is not None
+                 or getattr(self._runner, "prefers_canonical_stream", False))
         ):
             from ksadk.events.run_authority import current_run_event_authority
 
@@ -606,7 +647,9 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                     # Keep the shared native_ref: canonical checkpoint mapping
                     # records resume targets on the original opaque handle.
                     event_handle.native_ref["invocation_id"] = run.invocation_id
-                    for existing in await authority.list(handle.session_id):
+                    for existing in await authority.first(
+                        handle.session_id, event_types=["run.started"], limit=256
+                    ):
                         if (
                             isinstance(existing, RunStarted)
                             and existing.run_id == authority.run_id
@@ -638,27 +681,23 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             yield self._make_run_completed(event_handle)
             return
 
-        if run.resume_key is not None:
+        if run.resume_key is not None and self._resume_consumed_on_start(run):
             self._consumed_resumes.add(run.resume_key)
 
         # Reuse the original fact across producer upgrades and fenced takeover.
-        started = existing_start or self._make_run_started(event_handle)
+        started = existing_start or self._original_start_fact(event_handle)
         if run.__dict__.get("_restored_from_record"):
             if authority is None:
                 raise RuntimeError("ADK restored stream requires Kernel run authority")
-            for existing in await authority.list(handle.session_id):
-                if existing.event_id == started.event_id:
-                    # Reuse the original fact's timestamp; guarded append
-                    # still checks the full payload and current fencing token.
-                    started = started.model_copy(update={"timestamp": existing.timestamp})
-                    break
+            existing = await authority.event_by_id(handle.session_id, started.event_id)
+            if existing is not None:
+                # Guarded append still checks the payload and current fence.
+                started = started.model_copy(update={"timestamp": existing.timestamp})
         if authority is not None and run.resume_key is not None:
-            for existing in await authority.list(handle.session_id):
-                if existing.event_id == started.event_id:
-                    # Resuming an interaction continues the same public run.
-                    # Its initial start fact must not acquire a new timestamp.
-                    started = existing
-                    break
+            existing = await authority.event_by_id(handle.session_id, started.event_id)
+            if existing is not None:
+                # Resuming an interaction continues the same public run.
+                started = existing
         yield started
 
         request = run.__dict__.get("_start_request")
@@ -678,6 +717,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             gen = self._map_runner_stream(event_handle, runner_input, active_run=run)
             run.stream = gen
             async for event in gen:
+                self._observe_runner_event(handle, run, event)
                 if event.event_type in {
                     "run.completed",
                     "run.failed",

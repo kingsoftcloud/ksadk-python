@@ -44,11 +44,11 @@ class StudioNativeActivationMixin:
             )
         effort = spec.request_config.get("effort")
         if effort is not None and (
-            type(effort) is not str or effort not in {"", "low", "medium", "high"}
+            type(effort) is not str or effort not in {"", "low", "medium", "high", "xhigh", "max"}
         ):
             raise PluginHostError(
                 "harness_native_reasoning_effort_invalid",
-                "Native Harness reasoning effort must be low, medium or high",
+                "Native Harness reasoning effort must be low, medium, high, xhigh or max",
             )
         return {
             "tenant_id": self._native_tenant_id,

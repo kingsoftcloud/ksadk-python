@@ -298,6 +298,14 @@ def _is_custom_ui_static_asset_path(relative_path: str) -> bool:
     return first_segment == "assets" or bool(Path(path).suffix)
 
 
+def _is_local_oauth_vault_file(resolved: Path) -> bool:
+    # A custom UI bundle can point at the project root, including local state.
+    return any(
+        parent.name.casefold() == "mcp-oauth" and parent.parent.name.casefold() == ".agentengine"
+        for parent in resolved.parents
+    )
+
+
 def _find_ui_static_asset(bundle_dir: Path, requested_relative_path: str) -> Path | None:
     """Look up an asset without constructing a filesystem path from HTTP input."""
     requested = str(requested_relative_path or "").strip("/")
@@ -315,7 +323,7 @@ def _find_ui_static_asset(bundle_dir: Path, requested_relative_path: str) -> Pat
         except ValueError:
             continue
         if relative == requested:
-            return resolved
+            return None if _is_local_oauth_vault_file(resolved) else resolved
     return None
 
 
@@ -326,6 +334,8 @@ def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
 
     bundle_dir = Path(str(spec["bundle_path"]))
     index_file = Path(str(spec["index_path"]))
+    if _is_local_oauth_vault_file(index_file.resolve()):
+        return None
     path = _normalize_request_ui_path(request_path)
 
     if spec.get("source") == "custom":

@@ -11,8 +11,6 @@ wire 对象在 a2a-sdk 1.1.0 是 protobuf(``a2a_pb2``);文本用 ``Part(text=...
 
 from __future__ import annotations
 
-from ksadk.a2a.inbound_kernel import ManagedKernelRequestError
-
 import inspect
 import json
 import logging
@@ -26,6 +24,7 @@ from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, Task, TaskState, TaskStatus
 from a2a.utils.errors import TaskNotCancelableError
 
+from ksadk.a2a.inbound_kernel import ManagedKernelRequestError
 from ksadk.a2a.resume_store import A2AResumePayloadKind
 from ksadk.a2a.tool_activity import PublicToolActivityPolicy, PublicToolActivityProducer
 from ksadk.events.canonical import (
@@ -80,6 +79,7 @@ class _ArtifactStreamEmitter:
         self._task_id = task_id
         self._clock = clock or time.monotonic
         self._emitted: dict[tuple[_ArtifactKind, tuple[str, str]], int] = {}
+        self._visible_artifacts: set[tuple[_ArtifactKind, tuple[str, str]]] = set()
         self._pending: tuple[_ArtifactKind, str, bool, tuple[str, str], float] | None = None
         self.source_updates = 0
         self.wire_updates = 0
@@ -99,7 +99,7 @@ class _ArtifactStreamEmitter:
             return
         pending_kind, pending_text, pending_replace, pending_identity, started = self._pending
         switched = (pending_kind, pending_identity) != (kind, identity)
-        first_visible = (pending_kind, pending_identity) not in self._emitted
+        first_visible = (pending_kind, pending_identity) not in self._visible_artifacts
         if (
             switched
             or first_visible
@@ -150,6 +150,13 @@ class _ArtifactStreamEmitter:
             append=False if replace_snapshot else self._emitted[key] > 1,
             last_chunk=last_chunk,
         )
+        # Canonical streams can begin with an empty replacement snapshot.
+        # That creates an artifact, but has not delivered visible text yet.
+        # A clear also rearms the first-text flush for this same identity.
+        if text:
+            self._visible_artifacts.add(key)
+        elif replace_snapshot:
+            self._visible_artifacts.discard(key)
         self.wire_updates += 1
 
 
@@ -225,7 +232,9 @@ class A2ARuntimeExecutor(AgentExecutor):
         if callable(select):
             selected = select(context)
             if selected is not self.task_adapter:
-                return await A2ARuntimeExecutor(selected, self.include_reasoning, self.public_tool_policy).execute(context, event_queue)
+                return await A2ARuntimeExecutor(
+                    selected, self.include_reasoning, self.public_tool_policy
+                ).execute(context, event_queue)
         current_task = getattr(context, "current_task", None)
         durable_context_id = str(
             getattr(current_task, "context_id", "") or context.context_id or "unknown-context"
@@ -290,7 +299,10 @@ class A2ARuntimeExecutor(AgentExecutor):
                     answer=interaction_response,
                 )
                 if server_admitted:
-                    await updater.update_status(TaskState.TASK_STATE_WORKING, metadata=dict(ADK_V2_INTEGRATION_METADATA))
+                    await updater.update_status(
+                        TaskState.TASK_STATE_WORKING,
+                        metadata=dict(ADK_V2_INTEGRATION_METADATA),
+                    )
                 await self._run_runtime(context, updater, handle)
             else:
                 handle = await self.task_adapter.start_task(
@@ -299,7 +311,10 @@ class A2ARuntimeExecutor(AgentExecutor):
                     input_data=context.get_user_input(),
                 )
                 if server_admitted:
-                    await updater.update_status(TaskState.TASK_STATE_WORKING, metadata=dict(ADK_V2_INTEGRATION_METADATA))
+                    await updater.update_status(
+                        TaskState.TASK_STATE_WORKING,
+                        metadata=dict(ADK_V2_INTEGRATION_METADATA),
+                    )
                 await self._run_runtime(context, updater, handle)
             # Every output is already a durable, identity-bearing Task artifact.
             # A fresh status Message would introduce a third output identity for
@@ -440,7 +455,9 @@ class A2ARuntimeExecutor(AgentExecutor):
         if callable(select):
             selected = select(context)
             if selected is not self.task_adapter:
-                return await A2ARuntimeExecutor(selected, self.include_reasoning, self.public_tool_policy).cancel(context, event_queue)
+                return await A2ARuntimeExecutor(
+                    selected, self.include_reasoning, self.public_tool_policy
+                ).cancel(context, event_queue)
         # §7.4:cancel 统一由 adapter 提供。有 RuntimeAdapter → 尊重其 CancelResult,
         # 只有底层真取消(CANCELLED)才把协议 Task 置 canceled;其余状态如实抛
         # TaskNotCancelableError 拒绝,不伪造终态。无 adapter 时底层状态未知,

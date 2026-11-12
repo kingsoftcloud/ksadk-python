@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ksadk.skills.request_connection import transient_skill_connection
+
 import asyncio
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -22,6 +24,7 @@ from ksadk.events.canonical import (
     ContinuationResumed,
     InteractionRequested,
     ItemCompleted,
+    ItemSnapshotReplaced,
     ItemStarted,
     ItemUpdated,
     RunCanceled,
@@ -31,7 +34,6 @@ from ksadk.events.canonical import (
     RunStarted,
     RuntimeEvent,
     SourceRef,
-    UsageReported,
 )
 from ksadk.events.content import TextContent, ToolCallContent, ToolResultContent
 from ksadk.events.pipeline import CanonicalEventPipeline
@@ -69,6 +71,7 @@ _RUN_STATUS_BY_EVENT = {
 }
 
 
+@transient_skill_connection
 async def iter_runtime_conversation_events(
     *,
     executor: RuntimeExecutor,
@@ -187,7 +190,6 @@ async def iter_runtime_conversation_events(
     terminal = False
     interrupted = False
     completed_assistant_text = ""
-    usage: dict[str, int] | None = None
     try:
         for context_event in _compaction_runtime_events(
             prepared=prepared,
@@ -217,18 +219,15 @@ async def iter_runtime_conversation_events(
                 )
                 terminal = persisted.event_type in _TERMINAL_EVENTS
                 interrupted = persisted.event_type == "run.interrupted"
+                if terminal and _execution_context is not None:
+                    # HTTP may attach mid-run. Its live reducer only saw this
+                    # stream; the ingestion reducer also read the saved prefix.
+                    if (terminal_usage := pipeline.reducer.usage_snapshot()) is not None:
+                        _execution_context["terminal_usage"] = terminal_usage
                 if isinstance(persisted, RunCompleted):
                     completed_assistant_text = _selected_output_text(
                         pipeline.reducer.snapshot(), persisted
                     )
-                elif isinstance(persisted, UsageReported):
-                    usage = {
-                        "input_tokens": persisted.input_tokens,
-                        "output_tokens": persisted.output_tokens,
-                        "total_tokens": persisted.total_tokens,
-                        "cached_tokens": persisted.cached_tokens,
-                        "reasoning_tokens": persisted.reasoning_tokens,
-                    }
                 yield persisted
         if not terminal and not interrupted:
             raise RuntimeError("runtime stream ended without a terminal or interrupted event")
@@ -277,10 +276,11 @@ async def iter_runtime_conversation_events(
                 model=model,
             )
         if terminal:
+            usage = pipeline.reducer.usage_snapshot()
             _record_canonical_baseline_turn(
                 prepared=prepared,
                 model=model,
-                usage=usage,
+                usage=usage.model_dump() if usage is not None else None,
                 turn_started_monotonic=turn_started_monotonic,
             )
         if terminal:
@@ -535,12 +535,15 @@ def _validate_event_scope(
         )
 
 
+@transient_skill_connection
 async def iter_runtime_conversation_semantic_events(
     **kwargs: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     """Project canonical RuntimeEvents into the transport-neutral serializer input."""
 
     reducer = StreamReducer()
+    emitted_text = ""
+    reasoning_parts: dict[tuple[str, str, str], str] = {}
     approval: dict[str, Any] | None = None
     execution_context: dict[str, str] = {}
     # (scope_id, call_id) → tool_name：不同子运行可复用原生 call_id。
@@ -558,6 +561,27 @@ async def iter_runtime_conversation_semantic_events(
         if not patch.applied:
             continue
         projection = reducer.snapshot()
+        if isinstance(event, (ItemStarted, ItemUpdated, ItemSnapshotReplaced, ItemCompleted)):
+            # Flat compatibility transports expose one output text buffer,
+            # while native snapshots replace only one identified item/part.
+            # Fold through the canonical reducer before emitting suffixes/edits;
+            # repeated snapshots must not replay text or erase an earlier item.
+            current = "".join(
+                part.text
+                for item in projection.items
+                if item.item_kind != "reasoning" and item.phase != "commentary"
+                for part in item.parts
+                if isinstance(part, TextContent)
+            )
+            if current != emitted_text:
+                append = current.startswith(emitted_text)
+                yield {
+                    "type": "text",
+                    "delta": current[len(emitted_text):] if append else current,
+                    "operation": "append" if append else "replace",
+                    **({"replace": True} if not append else {}),
+                }
+                emitted_text = current
         if isinstance(event, RunStarted):
             yield {
                 "type": "started",
@@ -575,26 +599,30 @@ async def iter_runtime_conversation_semantic_events(
             yield semantic
         elif isinstance(event, ItemUpdated) and isinstance(event.update, TextContent):
             item = next(
-                candidate
-                for candidate in projection.items
-                if candidate.scope_id == event.scope_id and candidate.item_id == event.item_id
+                item for item in projection.items
+                if item.scope_id == event.scope_id and item.item_id == event.item_id
             )
-            semantic_type = (
-                "thinking"
-                if item.item_kind == "reasoning" or item.phase == "commentary"
-                else "text"
-            )
-            semantic: dict[str, Any] = {
-                "type": semantic_type,
-                "delta": event.update.text,
+            if item.item_kind == "reasoning" or item.phase == "commentary":
+                key = (event.scope_id, event.item_id, event.update.part_id)
+                previous = reasoning_parts.get(key, "")
+                current = previous + event.update.text if event.op == "append" else event.update.text
+                if current != previous:
+                    reasoning_parts[key] = current
+                    append = current.startswith(previous)
+                    yield {
+                        "type": "thinking", "delta": current[len(previous):] if append else current,
+                        "scope_id": event.scope_id, "item_id": event.item_id,
+                        "part_id": event.update.part_id, "operation": "append" if append else "replace",
+                        **({"replace": True} if not append else {}),
+                    }
+        elif (isinstance(event, ItemStarted) and event.item_kind == "tool_call"
+              and event.initial is None and event.source.native_item_id
+              and event.source.metadata.get("tool_name")):
+            yield {
+                "type": "tool_call_started", "name": event.source.metadata["tool_name"],
+                "run_id": event.source.native_item_id, "item_id": event.item_id,
                 "scope_id": event.scope_id,
-                "item_id": event.item_id,
-                "part_id": event.update.part_id,
-                "operation": event.op,
             }
-            if event.op == "replace":
-                semantic["replace"] = True
-            yield semantic
         elif isinstance(event, ItemStarted) and event.initial is not None:
             for part in event.initial.parts:
                 if isinstance(part, ToolCallContent):
@@ -619,7 +647,7 @@ async def iter_runtime_conversation_semantic_events(
                         continue
                     if part.call_id:
                         _emitted_tool_call_ids.add((event.scope_id, part.call_id))
-                    yield _tool_call_semantic(part)
+                    yield {**_tool_call_semantic(part), "item_id": event.item_id, "scope_id": event.scope_id}
                 elif isinstance(part, ToolResultContent):
                     # ToolResultContent 不带 name，用 call_id 反查 tool_call 的 name。
                     tool_name = _tool_name_by_call_id.get((event.scope_id, part.call_id), "")
@@ -657,7 +685,7 @@ async def iter_runtime_conversation_semantic_events(
                 "type": "error",
                 "message": event.error.message or "Agent 运行失败",
                 "session_id": execution_context.get("session_id", ""),
-                "usage": projection.usage.model_dump(),
+                "usage": execution_context.get("terminal_usage", projection.usage).model_dump(),
                 **({"timing": timing} if timing else {}),
                 **skill_eval_response_fields(metrics),
             }
@@ -667,7 +695,7 @@ async def iter_runtime_conversation_semantic_events(
             yield {
                 "type": "cancelled",
                 "session_id": execution_context.get("session_id", ""),
-                "usage": projection.usage.model_dump(),
+                "usage": execution_context.get("terminal_usage", projection.usage).model_dump(),
                 **({"timing": timing} if timing else {}),
                 **skill_eval_response_fields(metrics),
             }
@@ -699,7 +727,7 @@ async def iter_runtime_conversation_semantic_events(
                 "type": "completed",
                 "output_text": _selected_output_text(projection, event),
                 "session_id": execution_context.get("session_id", ""),
-                "usage": projection.usage.model_dump(),
+                "usage": execution_context.get("terminal_usage", projection.usage).model_dump(),
                 "metadata": completion_metadata,
                 **({"timing": timing} if timing else {}),
                 **skill_eval_response_fields(metrics),
@@ -738,6 +766,7 @@ def _selected_output_text(projection: RunProjection, completed: RunCompleted) ->
     return "".join(chunks)
 
 
+@transient_skill_connection
 async def invoke_runtime_conversation_once(
     **kwargs: Any,
 ) -> tuple[str, dict[str, Any]]:

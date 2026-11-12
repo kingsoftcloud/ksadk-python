@@ -21,17 +21,19 @@ class _DummyAgent:
         self.last_ainvoke_state = state
         self.last_ainvoke_context = context
         self.last_ainvoke_config = config
-        return {"messages": [{"content": "ok"}]}
+        return {"messages": [{"role": "assistant", "content": "ok"}]}
 
     def get_state(self, config):
         del config
         return SimpleNamespace(config=self.state_config)
 
-    async def astream_events(self, state, version="v2", config=None):
+    async def astream_events(self, state, version="v2", config=None, context=None):
         self.last_astream_state = state
         self.last_astream_config = config
-        if False:
-            yield {}
+        # An event stream executes the graph once; it is not an empty probe
+        # that requires the SDK to execute a second invocation afterwards.
+        output = await self.ainvoke(state, config=config, context=context)
+        yield {"event": "on_chain_end", "data": {"output": output}, "parent_ids": []}
 
 
 class _AsyncStateAgent(_DummyAgent):
@@ -524,6 +526,7 @@ class _UsageMessage:
         output_tokens: int = 13,
         reasoning_tokens: int = 5,
     ):
+        self.type = "ai"
         self.content = "ok"
         self.usage_metadata = {
             "input_tokens": input_tokens,
@@ -1462,7 +1465,7 @@ async def test_stream_checkpoint_resume_uses_checkpoint_id_and_none_input():
 
 
 @pytest.mark.asyncio
-async def test_stream_checkpoint_resume_prefers_astream_updates_over_events():
+async def test_stream_checkpoint_resume_uses_one_event_stream_and_persisted_answer():
     runner = _make_checkpoint_resume_updates_runner()
 
     chunks = [
@@ -1481,8 +1484,8 @@ async def test_stream_checkpoint_resume_prefers_astream_updates_over_events():
     ]
 
     assert runner._agent.last_astream_state is None
-    assert runner._agent.last_astream_stream_mode == "updates"
-    assert runner._agent.astream_events_called is False
+    assert runner._agent.last_astream_stream_mode is None
+    assert runner._agent.astream_events_called is True
     assert {"type": "final", "output": "resumed via updates"} in chunks
     checkpoint = chunks[-1]
     assert checkpoint["type"] == "checkpoint"
@@ -1515,7 +1518,7 @@ async def test_stream_checkpoint_resume_reads_latest_state_after_continuation():
 
     final = next(chunk for chunk in chunks if chunk["type"] == "final")
     assert final["output"] == "a,b,c"
-    assert runner._agent.last_astream_config["configurable"]["checkpoint_id"] == "checkpoint-before"
+    assert runner._agent.astream_events_called is True
     assert runner._agent.state_configs
     assert all(
         "checkpoint_id" not in (config.get("configurable") or {})

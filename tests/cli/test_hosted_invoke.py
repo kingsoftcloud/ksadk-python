@@ -94,24 +94,47 @@ def test_receipt_waits_for_paginated_result_without_reposting(monkeypatch):
     assert [b["AfterSeqId"] for n, b in calls if n == "ListSessionEvents"] == [0, 1]
 
 
-@pytest.mark.parametrize("next_epoch", ["epoch-one", "epoch-two", None])
-def test_forward_cursor_preserves_history_epoch(monkeypatch, next_epoch):
+def test_history_identity_is_carried_across_pages_but_snapshot_ends_before_next_poll(monkeypatch):
     calls = install(monkeypatch, [
-        {"Events": [event("run.started", 1)], "HasMore": True, "HistoryEpoch": "epoch-one"},
-        {"Events": [event("assistant_message", 2, text="remote reply"), event("run.completed", 3)],
-         "HistoryEpoch": next_epoch},
+        {"Events": [event("run.started", 1)], "HasMore": True,
+         "HistoryEpoch": "live-one", "SnapshotSeqId": 2},
+        {"Events": [event("assistant_stream_delta", 2, text="hello ")],
+         "HistoryEpoch": "live-one", "SnapshotSeqId": 2},
+        {"Events": [event("assistant_stream_delta", 3, text="world"), event("run.completed", 4)],
+         "HistoryEpoch": "live-one", "SnapshotSeqId": 4},
     ])
     result = CliRunner().invoke(invoke)
+    assert result.exit_code == 0, result.output
+    assert "hello world" in result.output
     queries = [body for name, body in calls if name == "ListSessionEvents"]
-    assert queries[1]["HistoryEpoch"] == "epoch-one"
-    assert [name for name, _ in calls].count("RunAgent") == 1
-    assert "SubmitInteraction" not in [name for name, _ in calls]
-    if next_epoch == "epoch-one":
-        assert result.exit_code == 0, result.output
-        assert "remote reply" in result.output
-    else:
-        assert result.exit_code != 0
-        assert "history epoch changed" in result.output
+    assert [q.get("HistoryEpoch") for q in queries] == [None, "live-one", "live-one"]
+    assert [q.get("SnapshotSeqId") for q in queries] == [None, 2, None]
+    assert sum(name == "RunAgent" for name, _ in calls) == 1
+
+
+def test_history_epoch_switch_does_not_mix_results_or_repost_run(monkeypatch):
+    calls = install(monkeypatch, [
+        {"Events": [event("run.started", 1)], "HasMore": True, "HistoryEpoch": "first"},
+        {"Events": [event("run.completed", 2)], "HistoryEpoch": "different"},
+    ])
+    result = CliRunner().invoke(invoke)
+    assert result.exit_code != 0 and "history epoch changed" in result.output
+    assert sum(name == "RunAgent" for name, _ in calls) == 1
+    assert not any(name == "SubmitInteraction" for name, _ in calls)
+
+
+def test_history_reload_409_reports_existing_run_without_resubmission(monkeypatch):
+    from types import SimpleNamespace
+
+    def reload_required(query):
+        raise hosted_invoke.requests.HTTPError(response=SimpleNamespace(status_code=409))
+
+    calls = install(monkeypatch, reload_required)
+    result = CliRunner().invoke(invoke)
+    assert result.exit_code != 0 and "Run continues" in result.output
+    assert "reload the session" in result.output
+    assert sum(name == "RunAgent" for name, _ in calls) == 1
+    assert not any(name == "SubmitInteraction" for name, _ in calls)
 
 
 def test_queued_receipt_matches_its_own_claim_before_selecting_run(monkeypatch):

@@ -24,15 +24,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import time
+from bisect import bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Literal
+from typing import Any
+from uuid import uuid4
 
 from ksadk.events.session_event import SessionServiceEventStore
-from ksadk.kernel.authorization import AgentControlPermitVerifier, InMemoryNonceStore
+from ksadk.kernel.authorization import AgentControlPermitVerifier
 from ksadk.kernel.contract_fingerprints import (
     AGENT_KERNEL_V1_AGGREGATE_DIGEST,
     runtime_capability_admission_digest,
@@ -42,70 +42,23 @@ from ksadk.kernel.contracts import RuntimeCapabilityMatrix
 from ksadk.kernel.control import AgentKernel, default_capability_matrix
 from ksadk.kernel.errors import InvalidCommandError, StaleFenceError
 from ksadk.kernel.recovery import RecoveryCoordinator
+from ksadk.kernel.runtime_config import AgentKernelRuntimeConfig
 from ksadk.kernel.runtime_identity import runtime_identity
-from ksadk.kernel.store import AgentKernelStore, now_utc
+from ksadk.kernel.store import AgentKernelStore
 from ksadk.kernel.worker import AgentKernelWorker
 from ksadk.runtime.adapter import RuntimeAdapter
-
-from ksadk.kernel.readiness import AgentKernelReadiness
-
-AuthorityMode = Literal["local", "hosted"]
-DurabilityTier = Literal["durable", "ephemeral"]
+from ksadk.sessions.resilience import is_transient_session_backend_failure
 
 logger = logging.getLogger(__name__)
 MAX_CONCURRENT_KERNEL_SESSIONS = 64
 
 
-@dataclass
-class AgentKernelRuntimeConfig:
-    """生产装配配置（Operator env 投影或测试注入 fake PG provider）。"""
+def _transient_backend_error(exc: BaseException) -> bool:
+    # Statement/lock deadlines and aborted transactions are recoverable without
+    # treating syntax, integrity or canonical conformance errors as outages.
+    return is_transient_session_backend_failure(exc)
 
-    agent_instance_id: str
-    authority_mode: AuthorityMode = "local"
-    driver: str = "memory"  # postgres | sqlite | memory
-    # durable: PG-backed inbox/lease/nonce + recovery; ephemeral: one-pod
-    # runtime that intentionally loses kernel state on restart.
-    durability_tier: DurabilityTier = "durable"
-    dsn: str = ""
-    # server authority（hosted 必填）
-    jwks: Any | None = None
-    permit_issuer: str | None = None
-    nonce_store: Any | None = None
-    # 运行时
-    adapter_provider: Callable[[], RuntimeAdapter] | None = None
-    capabilities: Callable[[], RuntimeCapabilityMatrix] | None = None
-    start_request_defaults: dict[str, Any] = field(default_factory=dict)
-    # 契约 digest（hosted 必填 contract_digest）
-    contract_digest: str = ""
-    capability_digest: str = ""
-    bundle_digest: str = ""
-    # Session log 的 scope 必须与普通 SessionService、canonical event log
-    # 完全一致；否则 worker 可启动却会在首条 command 后看不到 session。
-    session_namespace: str = "default"
-    tenant_id: str = "default"
-    workspace_id: str = "default"
-    # 测试注入的 fake PG provider：提供时不再从 dsn 建真实连接，
-    # 但 hosted 模式的 dsn 必填校验仍然生效。
-    store: AgentKernelStore | None = None
-    session_events: Any | None = None
-    session_service: Any | None = None
-    # Runtime App composition root supplies these so recovery can attach via
-    # the same RuntimeAdapter registry rather than creating an unrelated path.
-    runtime_executor: Any | None = None
-    launch_context: Any | None = None
-    pool: Any | None = None
-    owns_pool: bool = False
-    # 生命周期参数
-    queue_limit: int = 100
-    lease_ttl_seconds: float = 60.0
-    poll_interval: float = 0.25
-    activation_id: str | None = None
-    runtime_type: str = "ksadk-agent-kernel"
-    clock: Callable[[], datetime] = now_utc
-    # 容错粒度：连续多少个不同 session 恢复失败才认为全局性故障（进程级
-    # degraded）；store 连续多少个 poll 周期不可达才整体降级。
-    quarantine_degrade_threshold: int = 5
-    store_failure_degrade_threshold: int = 10
+
 
 
 class LeaseHeartbeat:
@@ -184,6 +137,121 @@ class LeaseHeartbeat:
 
 
 @dataclass
+class AgentKernelReadiness:
+    """truthful readiness probe：每个维度都是真实查询，不是配置回显。"""
+
+    runtime: "AgentKernelRuntime"
+
+    async def check(self) -> dict[str, Any]:
+        config = self.runtime.config
+        store_ok = False
+        sessions = list(self.runtime.heartbeat_sessions())
+        read_leases = getattr(self.runtime.kernel_store, "read_runtime_leases", None)
+        leases = {}
+        try:
+            # 真实 store 查询（PG driver 即真实 SQL round-trip）。
+            if callable(read_leases):
+                leases = await read_leases(config.agent_instance_id, sessions)
+            else:
+                await self.runtime.kernel_store.list_messages(config.agent_instance_id)
+            store_ok = True
+        except Exception:
+            store_ok = False
+
+        lease_healthy = True
+        activation_id: str | None = None
+        for session_id in sessions:
+            try:
+                lease = (leases.get(session_id) if callable(read_leases)
+                         else await self.runtime.kernel_store.current_lease(
+                             config.agent_instance_id, session_id))
+            except Exception:
+                lease = None
+            if lease is None:
+                lease_healthy = False
+                continue
+            if not self.runtime.lease_heartbeat.owns_lease(session_id, lease):
+                # lease 存在但已被其它 activation 接管：对本 runtime 而言
+                # 等价于丢失，必须如实上报 not-ready。
+                lease_healthy = False
+                continue
+            activation_id = activation_id or lease.activation_id
+            expires = getattr(lease, "lease_expires_at", "")
+            try:
+                from datetime import datetime
+
+                expires_at = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+                if expires_at <= datetime.now(expires_at.tzinfo):
+                    lease_healthy = False
+            except ValueError:
+                lease_healthy = False
+
+        worker_running = self.runtime.worker_running
+        degraded = self.runtime.degraded
+        quarantined = self.runtime.quarantined_sessions()
+        capability = self.runtime.kernel.capabilities()
+        capability_matrix = runtime_capability_matrix_wire_value(capability)
+        computed_capability_digest = runtime_capability_admission_digest(
+            capability, config.capability_digest
+        )
+        # The control plane compares all three digests before declaring an
+        # AgentInstance ready.  Reporting ready with only a contract digest
+        # would conceal a missing bundle/capability projection and make the
+        # runtime's health endpoint more optimistic than Server readiness.
+        digests_match = all(
+            (
+                config.contract_digest == AGENT_KERNEL_V1_AGGREGATE_DIGEST,
+                config.capability_digest == computed_capability_digest,
+                config.bundle_digest,
+            )
+        )
+        ready = store_ok and worker_running and lease_healthy and digests_match and not degraded
+        health = {
+            "ready": ready,
+            "store_ok": store_ok,
+            "worker_running": worker_running,
+            "degraded": degraded,
+            # additive：被隔离（恢复失败）的 session 数量；隔离本身不影响
+            # ready，其余 session 照常服务。
+            "quarantined_sessions": len(quarantined),
+            "recovering_sessions": len(self.runtime._session_retry_after),
+            "lease_healthy": lease_healthy,
+            "activation_id": activation_id,
+            # Contract support is packaged with this KsADK image; never echo
+            # an unverified control-plane environment value as evidence.
+            "contract_digest": AGENT_KERNEL_V1_AGGREGATE_DIGEST,
+        # Derive the admission proof from the actual Adapter matrix and the
+        # selected policy rather than echoing the deployment value blindly.
+            "capability_digest": computed_capability_digest,
+            # Runtime/Operator/Server readiness chain must carry the actual
+            # typed capability facts, not merely a digest supplied at deploy
+            # time. Server admission uses these to reject unsupported control
+            # operations before they enter the durable inbox.
+            "capabilities": capability_matrix,
+            "bundle_digest": config.bundle_digest,
+            "durability_tier": config.durability_tier,
+            # Identity is derived from the KsADK source Python imported, not
+            # ``importlib.metadata`` for the base image distribution.
+            "runtime_identity": runtime_identity(),
+        }
+        # 诊断字段（additive，runtime 内部端点非 wire 冻结合同）：
+        # degraded 时必须能从 health 直接回答 "为什么降级、何时降级"，
+        # 出问题的 session 明细同样可见，运维不必再对着布尔值猜。
+        teams_descriptor = getattr(self.runtime, "teams_host_descriptor", None)
+        if teams_descriptor is not None:
+            health["teams_host"] = await teams_descriptor()
+        if quarantined:
+            health["quarantined_session_ids"] = sorted(quarantined)
+        if self.runtime._session_retry_after:
+            health["recovering_session_ids"] = sorted(self.runtime._session_retry_after)
+        if degraded:
+            health["degradation_reason"] = self.runtime._degradation_reason
+            health["degraded_at"] = self.runtime._degraded_at
+            health["degradation_last_error"] = self.runtime._degraded_last_error
+        return health
+
+
+@dataclass
 class AgentKernelRuntime:
     """生产 kernel runtime：start() 启动后台 worker/lease loop，close() 全停。"""
 
@@ -204,14 +272,16 @@ class AgentKernelRuntime:
         self._session_tasks: dict[str, asyncio.Task[bool]] = {}
         self._worker_running = False
         self._last_scheduler_poll = 0.0
-        self._session_capacity_exhausted = False
         self._heartbeat_sessions: set[str] = set()
         self._last_renewed: dict[str, float] = {}
         self._degraded = False
         # P0-1 粒度修正：单个 session 恢复失败不再拖垮整个 runtime。
         self._quarantined: set[str] = set()
+        self._session_retry_after: dict[str, float] = {}
+        self._session_retry_attempts: dict[str, int] = {}
         self._recovery_failed_sessions: set[str] = set()
         self._store_failures = 0
+        self._last_scheduled_session = ""
         # 诊断状态：degraded 必须能回答 "为什么、什么时候、哪些 session"，
         # 让 kubectl logs 与 health 端点一眼可见（此前只有 degraded 布尔值）。
         self._degradation_reason: str | None = None
@@ -249,7 +319,6 @@ class AgentKernelRuntime:
         return (
             self._worker_running
             and not self._degraded
-            and not self._session_capacity_exhausted
             and time.monotonic() - self._last_scheduler_poll
             <= max(10.0, self.config.poll_interval * 20)
         )
@@ -300,6 +369,9 @@ class AgentKernelRuntime:
         self._tasks.clear()
         self._session_tasks.clear()
         self._worker_running = False
+        await self.worker.close()
+        if self.worker._mcp_authorization is not None:
+            await self.worker._mcp_authorization.client.close()
         # best-effort 释放持有的 activation（不阻塞关闭）。
         for session_id in list(self._heartbeat_sessions | self._quarantined):
             try:
@@ -311,13 +383,18 @@ class AgentKernelRuntime:
                         lease.activation_id, expected_fence=lease.fencing_token
                     )
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to release Kernel activation on shutdown: session_id=%s",
+                    session_id,
+                )
             self.lease_heartbeat.forget(session_id)
         self._heartbeat_sessions.clear()
         self._last_renewed.clear()
         if self._owns_pool and self._pool is not None and hasattr(self._pool, "close"):
+            from ksadk.kernel.session_storage import close_owned_kernel_pool
+            pool, self._pool = self._pool, None
             try:
-                await self._pool.close()
+                await close_owned_kernel_pool(self.config.session_service, pool)
             except Exception:
                 pass
         if self._owns_store and hasattr(self.kernel_store, "close"):
@@ -325,6 +402,8 @@ class AgentKernelRuntime:
                 await self.kernel_store.close()  # type: ignore[attr-defined]
             except Exception:
                 pass
+        from ksadk.runtime.session_storage import close_preflight_adapter
+        await close_preflight_adapter(self.config.preflight_adapter)
 
     # ------------------------------------------------------------- run loop
 
@@ -348,6 +427,8 @@ class AgentKernelRuntime:
                         except Exception as exc:
                             task_failed = True
                             self._store_failures += 1
+                            if _transient_backend_error(exc):
+                                await self._quarantine_session(session_id, exc, context="session poll")
                             logger.exception(
                                 "agent kernel session poll failed: "
                                 "agent_instance_id=%s session_id=%s "
@@ -364,18 +445,29 @@ class AgentKernelRuntime:
                                 self._mark_degraded("store_unreachable", exc)
                                 return
                     sessions = await self._pending_sessions()
-                    self._last_scheduler_poll = time.monotonic()
-                    self._session_capacity_exhausted = False
-                    for session_id in sorted(sessions):
+                    had_capacity = len(self._session_tasks) < MAX_CONCURRENT_KERNEL_SESSIONS
+                    blocked = False
+                    ordered = sorted(sessions)
+                    # WAITING runs stay eligible between polls. Rotate the first
+                    # slot so a full batch cannot permanently starve a new id.
+                    start = bisect_right(ordered, self._last_scheduled_session)
+                    for session_id in ordered[start:] + ordered[:start]:
                         if session_id in self._quarantined or session_id in self._session_tasks:
                             continue
+                        if time.monotonic() < self._session_retry_after.get(session_id, 0):
+                            continue
                         if len(self._session_tasks) >= MAX_CONCURRENT_KERNEL_SESSIONS:
-                            self._session_capacity_exhausted = True
+                            blocked = True
                             break
                         self._session_tasks[session_id] = asyncio.create_task(
                             self._run_session_once(session_id),
                             name=f"kernel-session:{session_id}",
                         )
+                        self._last_scheduled_session = session_id
+                    # A full batch that keeps freeing slots is healthy. Retain
+                    # the existing liveness deadline for genuinely stuck tasks.
+                    if had_capacity or not blocked:
+                        self._last_scheduler_poll = time.monotonic()
                     if not task_failed:
                         self._store_failures = 0
                 except asyncio.CancelledError:
@@ -392,6 +484,16 @@ class AgentKernelRuntime:
                         self._store_failures >= self.config.store_failure_degrade_threshold
                         and not await self._store_reachable()
                     ):
+                        if _transient_backend_error(exc):
+                            # A background read outage must not permanently stop
+                            # this runtime. Readiness remains truthful/unavailable;
+                            # the same durable Inbox is polled after recovery.
+                            await asyncio.sleep(min(
+                                5.0, max(0.2, self.config.poll_interval * 4)
+                                * 2 ** min(5, self._store_failures
+                                           - self.config.store_failure_degrade_threshold),
+                            ))
+                            continue
                         # store 持续不可达是全局性故障：宁降级不静默。
                         self._mark_degraded("store_unreachable", exc)
                         return
@@ -409,6 +511,36 @@ class AgentKernelRuntime:
             return False
         self._heartbeat_sessions.add(session_id)
         self._last_renewed[session_id] = time.monotonic()
+        if session_id in self._session_retry_after:
+            # A provider start/commit may have succeeded before a transport
+            # failure. Settle the existing run under the current fence rather
+            # than blindly starting it again. With no run (pre-start read
+            # failure), the same claimed command can safely be tried again.
+            try:
+                active = await self.kernel_store.find_active_run(self.config.agent_instance_id, session_id)
+                execution = self.worker.execution_for(active.run_id) if active is not None else None
+                live_owner = (
+                    execution is not None and execution.stream_task is not None
+                    and not execution.stream_task.done() and execution.stream_guard is not None
+                    and execution.stream_guard.activation_id == lease.activation_id
+                    and execution.stream_guard.fencing_token == lease.fencing_token
+                )
+                if not live_owner:
+                    await self.recovery.settle_interrupted(
+                        self.config.agent_instance_id, lease, session_id=session_id,
+                        reason="runtime_backend_timeout",
+                    )
+            except StaleFenceError:
+                self._session_retry_after.pop(session_id, None)
+                self._heartbeat_sessions.discard(session_id)
+                self._last_renewed.pop(session_id, None)
+                self.lease_heartbeat.forget(session_id)
+                return False
+            except Exception as error:
+                await self._quarantine_session(session_id, error, context="backend recovery")
+                return False
+            self._session_retry_after.pop(session_id, None)
+            took_over = False
         if took_over:
             failure = await self._recover_safely(lease, session_id)
             if failure is not None:
@@ -417,6 +549,10 @@ class AgentKernelRuntime:
         active = await self.kernel_store.find_active_run(
             self.config.agent_instance_id, session_id
         )
+        if active is None:
+            await self.worker.close_retired_session_attachments(session_id)
+            if await self._release_missing_session(session_id, lease):
+                return False
         if active is not None and self.worker.take_stream_failure(
             active.run_id, lease
         ) is not None:
@@ -451,6 +587,8 @@ class AgentKernelRuntime:
                 await self._quarantine_session(
                     session_id, failure, context="command execution"
                 )
+        if result.outcome in {"claimed", "completed"}:
+            self._session_retry_attempts.pop(session_id, None)
         return result.outcome in {"claimed", "completed"}
 
     async def _heartbeat_loop(self) -> None:
@@ -462,6 +600,22 @@ class AgentKernelRuntime:
             await self._renew_leased_sessions()
             if self._degraded:
                 return
+
+    async def _release_missing_session(self, session_id: str, lease) -> bool:
+        missing = getattr(self.kernel_store, "is_session_missing", None)
+        if missing is None or not await missing(session_id):
+            return False
+        try:
+            await self.kernel_store.release_activation(lease.activation_id, expected_fence=lease.fencing_token)
+        except StaleFenceError:
+            pass
+        if self.lease_heartbeat._last_tokens.get(session_id) == lease.fencing_token:
+            self.lease_heartbeat.forget(session_id)
+            self._heartbeat_sessions.discard(session_id)
+            self._last_renewed.pop(session_id, None)
+            self._session_retry_after.pop(session_id, None)
+            self._session_retry_attempts.pop(session_id, None)
+        return True
 
     async def _renew_leased_sessions(self) -> None:
         """P0：已持有 lease 的 session 在固定间隔上持续续约。
@@ -475,7 +629,31 @@ class AgentKernelRuntime:
 
         interval = max(self.config.lease_ttl_seconds / 3.0, self.config.poll_interval)
         now = time.monotonic()
-        for session_id in sorted(self._heartbeat_sessions):
+        due = [s for s in sorted(self._heartbeat_sessions)
+               if s not in self._quarantined
+               and now - self._last_renewed.get(s, 0.0) >= interval]
+        renew = getattr(self.kernel_store, "renew_owned_activations", None)
+        if callable(renew):
+            owned = {s: (self.lease_heartbeat.activation_id_for_session(s),
+                         self.lease_heartbeat._last_tokens[s])
+                     for s in due if s in self.lease_heartbeat._last_tokens}
+            try:
+                renewed = await renew(
+                    self.config.agent_instance_id, owned,
+                    lease_ttl_seconds=self.config.lease_ttl_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Retry the same lease renewal on the next heartbeat. Never
+                # turn a shared outage into hundreds of sequential DB calls.
+                logger.warning("Kernel batch lease renewal failed (%s); retrying next heartbeat",
+                               type(exc).__name__)
+                return
+            for session_id in renewed:
+                self._last_renewed[session_id] = now
+            due = [s for s in due if s not in renewed]
+        for session_id in due:
             if session_id in self._quarantined:
                 continue
             if now - self._last_renewed.get(session_id, 0.0) < interval:
@@ -483,6 +661,8 @@ class AgentKernelRuntime:
             self._last_renewed[session_id] = now
             try:
                 lease, took_over = await self.lease_heartbeat.ensure_lease(session_id)
+                if lease is not None and await self._release_missing_session(session_id, lease):
+                    continue
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -564,7 +744,11 @@ class AgentKernelRuntime:
         """store 是否仍可用：用于区分 session 级故障与全局连接故障。"""
 
         try:
-            await self.kernel_store.list_messages(self.config.agent_instance_id)
+            probe = getattr(self.kernel_store, "read_runtime_leases", None)
+            if callable(probe):
+                await probe(self.config.agent_instance_id, [])
+            else:
+                await self.kernel_store.list_messages(self.config.agent_instance_id)
         except Exception:
             return False
         return True
@@ -585,10 +769,43 @@ class AgentKernelRuntime:
         才升级为进程级 degraded。
         """
 
+        if _transient_backend_error(exc):
+            # Database deadlines are transient transport failures, not proof
+            # of corrupt history. Keep the lease heartbeat and retry with
+            # capped exponential backoff; do not permanently quarantine.
+            attempt = self._session_retry_attempts.get(session_id, 0) + 1
+            self._session_retry_attempts[session_id] = attempt
+            delay = min(30.0, 0.5 * 2 ** min(attempt - 1, 6))
+            self._session_retry_after[session_id] = time.monotonic() + delay
+            logger.warning("agent kernel session %s retrying %s after %.1fs: %s: %s",
+                           session_id, context, delay, type(exc).__name__, exc)
+            return True
+        self._session_retry_after.pop(session_id, None)
         if not await self._store_reachable():
             # store 本身不可达：这不是单个 session 的问题。
             self._mark_degraded("store_unreachable_during_recovery", exc)
             return False
+        # Deletion can race a recovery/stream that already acquired its lease.
+        # Built-in stores retire missing sessions on their next fenced claim.
+        # An external event log can report absence without being atomic with
+        # the Kernel. Isolate that session locally, preserving its durable work.
+        missing = getattr(self.kernel_store, "is_session_missing", None)
+        event_missing = getattr(self.session_events, "is_session_missing", None)
+        try:
+            if missing is not None and await missing(session_id):
+                return True
+            if event_missing is not None and await event_missing(session_id):
+                self._quarantined.add(session_id)
+                self._heartbeat_sessions.discard(session_id)
+                self._last_renewed.pop(session_id, None)
+                self.lease_heartbeat.forget(session_id)
+                await self.worker.close_retired_session_attachments(session_id, missing=True)
+                logger.warning("Kernel session %s is missing from its external session store", session_id)
+                return True
+        except Exception as lookup_error:
+            if _transient_backend_error(lookup_error):
+                return await self._quarantine_session(session_id, lookup_error, context="session lookup")
+            logger.exception("Could not verify existence of kernel session %s", session_id)
         self._quarantined.add(session_id)
         self._recovery_failed_sessions.add(session_id)
         self._heartbeat_sessions.discard(session_id)
@@ -604,6 +821,23 @@ class AgentKernelRuntime:
             exc,
         )
         if len(self._recovery_failed_sessions) >= self.config.quarantine_degrade_threshold:
+            # A session quarantined for another reason may since have been
+            # deleted. Historical failures are not evidence of a current outage.
+            if missing is not None:
+                for previous in self._recovery_failed_sessions.copy() - {session_id}:
+                    try:
+                        deleted = await missing(previous)
+                    except Exception as lookup_error:
+                        logger.warning("Could not recheck quarantined session %s: %s", previous,
+                                       type(lookup_error).__name__)
+                        if _transient_backend_error(lookup_error):
+                            return True
+                        continue
+                    if deleted:
+                        self._quarantined.discard(previous)
+                        self._recovery_failed_sessions.discard(previous)
+                if len(self._recovery_failed_sessions) < self.config.quarantine_degrade_threshold:
+                    return True
             self._mark_degraded(
                 "recovery_failures_spread_to_%d_sessions" % len(self._recovery_failed_sessions),
                 exc,
@@ -612,6 +846,12 @@ class AgentKernelRuntime:
         return True
 
     async def _pending_sessions(self) -> set[str]:
+        read_pending = getattr(self.kernel_store, "pending_session_ids", None)
+        if callable(read_pending):
+            sessions = await read_pending(self.config.agent_instance_id)
+            oauth_sessions = (await self.worker._mcp_authorization.pending_session_ids(self.config.agent_instance_id)
+                              if self.worker._mcp_authorization is not None else set())
+            return set(sessions) | oauth_sessions | self.worker.active_session_ids() | set(self._session_retry_after)
         messages = await self.kernel_store.list_messages(self.config.agent_instance_id)
         inbox_sessions = {
             message.session_id
@@ -639,7 +879,17 @@ class AgentKernelRuntime:
         # releases the retained leases; an ungraceful stop lets their TTL
         # expire for recovery by a new activation.
         active_sessions = self.worker.active_session_ids()
-        return inbox_sessions | open_run_sessions | active_sessions
+        # SQLite's fallback scan also needs the extension's final acknowledgement
+        # after a Run becomes terminal. Otherwise the OAuth card remains waiting.
+        oauth_sessions = (
+            await self.worker._mcp_authorization.pending_session_ids(self.config.agent_instance_id)
+            if self.worker._mcp_authorization is not None
+            else set()
+        )
+        return (
+            inbox_sessions | open_run_sessions | active_sessions | oauth_sessions
+            | set(self._session_retry_after)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -759,12 +1009,15 @@ def build_agent_kernel_runtime(
             events = PostgresFencedSessionEventStore(kernel_store)  # type: ignore[arg-type]
         elif config.driver == "sqlite":
             from ksadk.kernel.sqlite_store import SQLiteAgentKernelStore
-            from ksadk.sessions.in_memory import InMemorySessionService
+            from ksadk.sessions.local_service import LocalSessionService
 
             if not config.dsn:
                 raise RuntimeError("sqlite agent kernel runtime requires a database path")
             if session_service is None:
-                session_service = InMemorySessionService()
+                session_service = LocalSessionService(db_path=config.dsn)
+            # Legacy Studio/control hosts may use another Session backend.
+            # Preserve that composition; SQLiteInteractionStoreMixin checks
+            # same-database atomicity before publishing an Interaction/v1 fact.
             base_events = SessionServiceEventStore(session_service)
             kernel_store = SQLiteAgentKernelStore(config.dsn, base_events)
             events = base_events
@@ -832,6 +1085,9 @@ def build_agent_kernel_runtime(
         queue_limit=config.queue_limit,
         capabilities=capabilities,
         clock=config.clock,
+        session_admission_error=lambda sid: (
+            "session_quarantined" if sid in runtime.quarantined_sessions() else None
+        ),
     )
     worker = AgentKernelWorker(
         store,
@@ -856,7 +1112,10 @@ def build_agent_kernel_runtime(
     heartbeat = LeaseHeartbeat(
         store,
         agent_instance_id=config.agent_instance_id,
-        activation_id=config.activation_id or f"{config.agent_instance_id}:kernel-runtime",
+        # An unspecified owner belongs to this Runtime lifetime. Reusing a
+        # deterministic owner after a crash can renew its old fence and skip
+        # recovery even though this process has no attached execution.
+        activation_id=config.activation_id or f"{config.agent_instance_id}:kernel-runtime:{uuid4().hex}",
         runtime_type=config.runtime_type,
         bundle_digest=config.bundle_digest,
         # The lease carries the verified admission policy; command admission
@@ -866,6 +1125,7 @@ def build_agent_kernel_runtime(
         ),
         lease_ttl_seconds=config.lease_ttl_seconds,
     )
+    config.session_service = session_service
     runtime = AgentKernelRuntime(
         config=config,
         kernel=kernel,
@@ -894,163 +1154,19 @@ async def bootstrap_agent_kernel_runtime_from_env(
     launch_context: Any | None = None,
     start_request_defaults: dict[str, Any] | None = None,
     session_service: Any | None = None,
+    session_service_explicit: bool | None = None,
+    storage_owner: Any | None = None,
     before_start: Any | None = None,
 ) -> AgentKernelRuntime | None:
-    """Operator env 投影 -> 生产 runtime（AGENT_KERNEL_ENABLED=1 时）。
+    """Assemble the configured runtime through the environment projection."""
+    from ksadk.kernel.runtime_environment import bootstrap_runtime_from_env
 
-    hosted 部署（AGENT_KERNEL_STORE_DRIVER=postgres + JWKS URL）装配并启动
-    worker/lease/recovery，同时注册 kernel ingress 与 runtime health。
-    """
-
-    from ksadk.kernel.ingress import (
-        ENV_JWKS_URL,
-        _remote_jwks_source,
-        authority_mode,
-        set_agent_kernel,
+    return await bootstrap_runtime_from_env(
+        adapter_provider=adapter_provider, runtime_executor=runtime_executor,
+        launch_context=launch_context, start_request_defaults=start_request_defaults,
+        session_service=session_service, session_service_explicit=session_service_explicit,
+        storage_owner=storage_owner, before_start=before_start,
     )
-
-    enabled = os.environ.get("AGENT_KERNEL_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if not enabled:
-        return None
-    if get_agent_kernel_runtime() is not None:
-        return get_agent_kernel_runtime()
-
-    driver = os.environ.get("AGENT_KERNEL_STORE_DRIVER", "memory").strip().lower()
-    dsn = os.environ.get("AGENT_KERNEL_STORE_DSN", "").strip()
-    jwks_url = os.environ.get(ENV_JWKS_URL, "").strip()
-    session_namespace = os.environ.get("KSADK_SESSION_NAMESPACE", "default").strip() or "default"
-    tenant_id = (
-        os.environ.get("KSADK_TENANT_ID") or os.environ.get("AGENTENGINE_TENANT_ID") or "default"
-    ).strip()
-    workspace_id = (
-        os.environ.get("KSADK_WORKSPACE_ID")
-        or os.environ.get("AGENTENGINE_WORKSPACE_ID")
-        or "default"
-    ).strip()
-    mode: AuthorityMode = authority_mode()  # type: ignore[assignment]
-    durability_tier: DurabilityTier = (
-        os.environ.get("AGENT_KERNEL_DURABILITY_TIER", "durable").strip().lower()
-    )  # type: ignore[assignment]
-    injected_contract_digest = os.environ.get("AGENT_KERNEL_CONTRACT_DIGEST", "").strip()
-    if mode == "hosted" and injected_contract_digest != AGENT_KERNEL_V1_AGGREGATE_DIGEST:
-        raise RuntimeError(
-            "contract_digest_mismatch: hosted agent kernel runtime image "
-            "does not support the control-plane contract digest"
-        )
-
-    # Lazy framework adapters learn their native checkpoint capabilities during
-    # preflight. Snapshotting before it permanently disables cold recovery even
-    # when the deployment has configured durable native sessions.
-    capabilities = None
-    if adapter_provider is not None:
-        capability_adapter = adapter_provider()
-        await capability_adapter.preflight()
-        capabilities = capability_adapter.capabilities
-
-    pool = None
-    owns_pool = False
-    if driver == "postgres":
-        from ksadk.kernel.postgres_store import (
-            PostgresAgentKernelStore,
-            PostgresFencedSessionEventStore,
-            PostgresKernelEventLog,
-            PostgresNonceStore,
-        )
-        from ksadk.sessions.postgres_service import PostgresSessionService
-
-        if not dsn:
-            raise RuntimeError("postgres kernel store requires AGENT_KERNEL_STORE_DSN")
-        session_service = PostgresSessionService(
-            dsn=dsn,
-            namespace=session_namespace,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-        )
-        await session_service._ensure_pool()
-        pool = session_service._pool
-        event_log = PostgresKernelEventLog(
-            pool,
-            namespace=session_service.namespace,
-            tenant_id=session_service.tenant_id,
-            workspace_id=session_service.workspace_id,
-        )
-        store: AgentKernelStore = PostgresAgentKernelStore(
-            pool, event_log, tenant_id=session_service.tenant_id, owns_pool=True
-        )
-        await store.ensure_schema()
-        session_events: Any = PostgresFencedSessionEventStore(store)
-        nonce_store: Any = PostgresNonceStore(pool)
-        owns_pool = True
-    else:
-        from ksadk.kernel.memory_store import InMemoryAgentKernelStore
-        from ksadk.sessions.in_memory import InMemorySessionService
-
-        # The HTTP Session routes and the Kernel worker must project through
-        # one physical Session log.  The Runtime App passes its owned service
-        # here so a foreground kernel stream remains replayable through
-        # ListSessionEvents/ListSessionMessages after refresh.  Standalone
-        # bootstrap callers retain the historical in-memory default.
-        if session_service is None:
-            session_service = InMemorySessionService()
-        session_events = SessionServiceEventStore(session_service)
-        store = InMemoryAgentKernelStore(session_events)
-        # Explicit ephemeral hosted mode still needs replay protection while
-        # this process lives. It does not promise restart durability.
-        nonce_store = InMemoryNonceStore()
-
-    agent_instance_id = os.environ.get("AGENT_INSTANCE_ID", "").strip()
-    if not agent_instance_id and mode != "hosted":
-        agent_instance_id = "local-agent"
-    pod_uid = os.environ.get("POD_UID", "").strip()
-    config = AgentKernelRuntimeConfig(
-        agent_instance_id=agent_instance_id,
-        authority_mode=mode,
-        driver=driver,
-        durability_tier=durability_tier,
-        dsn=dsn,
-        jwks=_remote_jwks_source(jwks_url) if mode == "hosted" else None,
-        permit_issuer=os.environ.get("AGENT_CONTROL_PERMIT_ISSUER", ""),
-        nonce_store=nonce_store,
-        adapter_provider=adapter_provider,
-        capabilities=capabilities,
-        start_request_defaults=dict(start_request_defaults or {}),
-        contract_digest=(
-            AGENT_KERNEL_V1_AGGREGATE_DIGEST if mode == "hosted" else injected_contract_digest
-        ),
-        capability_digest=os.environ.get("AGENT_KERNEL_CAPABILITY_DIGEST", ""),
-        bundle_digest=os.environ.get("AGENT_BUNDLE_DIGEST", ""),
-        session_namespace=session_namespace,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        store=store,
-        session_events=session_events,
-        session_service=session_service,
-        runtime_executor=runtime_executor,
-        launch_context=launch_context,
-        pool=pool,
-        owns_pool=owns_pool,
-        # Operator 通过 downward API 注入 POD_UID。与 stable instance id
-        # 组合才是 activation owner；hosted 少了它必须拒绝启动，不能退回到
-        # 所有副本共享的固定字符串。
-        activation_id=f"{agent_instance_id}:{pod_uid}" if pod_uid else None,
-        lease_ttl_seconds=float(os.environ.get("AGENT_KERNEL_LEASE_TTL_SECONDS", "60") or "60"),
-    )
-    runtime = build_agent_kernel_runtime(config)
-    try:
-        if before_start is not None:
-            await before_start(runtime)
-        await runtime.start()
-    except BaseException:
-        await runtime.close()
-        raise
-    set_agent_kernel(runtime.kernel)
-    set_agent_kernel_runtime(runtime)
-    return runtime
 
 
 __all__ = [

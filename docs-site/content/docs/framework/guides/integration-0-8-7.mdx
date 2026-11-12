@@ -1,0 +1,133 @@
+---
+title: "0.8.7 功能接入与配置"
+description: "从安装、运行时变量到 AG-UI、A2UI、MCP OAuth 和 A2A 的接入清单"
+---
+
+0.8.7 是待审核候选，本文不是正式发版公告。Python 最低版本为 3.12；候选内置
+`@kingsoftcloud/ksadk-web@0.3.18`。已有 Agent 不会因为本机升级 SDK 而自动更新。
+
+## 按能力选择接入方式
+
+| 能力 | 开发者接入点 | 配套条件 |
+| --- | --- | --- |
+| 普通聊天与流式输出 | 现有 ADK / LangGraph / LangChain / DeepAgents 入口 | 模型配置、框架依赖；保留各框架原生语义。 |
+| AG-UI | 安装 `ksadk[langgraph,agui]`；由 bootstrap 协商 transport | 兼容前端与运行时；托管 LangGraph 还需 Kernel 准入。 |
+| A2UI / 表单恢复 | `request_input`、可选 A2UI presentation、原生 checkpointer | 业务 JSON Schema、注册目录和持久化状态。 |
+| API Key MCP | 保留 `MultiServerMCPClient` 或既有 MCP 客户端 | 服务地址、服务方 API Key、显式工具选择。 |
+| OAuth MCP | `McpOAuthTools` 加入自有 LangGraph 的模型与工具节点 | 本地项目 Web 或兼容托管 Broker、持久化 checkpoint、实际用户授权。 |
+| A2A | 调用方接入 `get_a2a_tools()` 或受控 Space client | 平台 Space、被调用方注册、可用 Card、Gateway 和 workload 身份。 |
+
+SDK 负责框架适配、运行时与协议消费。Space/Agent 注册、路由、Broker 与托管资源生命周期
+由配套平台负责；安装 Python 包不会在本机创建完整控制面。
+
+## 安装候选与框架依赖
+
+在独立环境安装已审核的本地 wheel，不把未发布候选写成已经可以从 PyPI 下载的版本：
+
+```bash
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python \
+  '/absolute/path/ksadk-0.8.7-py3-none-any.whl[langgraph,agui]'
+source .venv/bin/activate
+agentengine --version
+```
+
+正式版本使用 `uv pip install "ksadk[langgraph,agui]"`；其他框架按实际需要选择 extra。
+业务项目在 `requirements.txt` 中声明自己的依赖。模型、框架和可选 UI 依赖必须在干净环境中
+实际导入成功，不能只依赖开发机已有安装。
+
+## 区分三类配置
+
+| 变量 | 所在位置 | 何时需要 |
+| --- | --- | --- |
+| `KSYUN_ACCESS_KEY`、`KSYUN_SECRET_KEY` | 部署机器或 CI secret | 调用云端部署 API；不要写进 Agent 源码或 `runtime.env`。 |
+| `KSYUN_REGION` | 部署机器，命令显式传入目标区域 | 部署、状态查询和调用必须使用同一目标环境。 |
+| `KSYUN_ACCOUNT_ID` | 部署机器，可选 | 可用时由 AK/SK 反查；不要把本机账号配置当成业务运行时配置。 |
+| `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL_NAME` | Agent 运行环境 | 使用 OpenAI 兼容模型的示例需要；其他 provider 使用自己的配置。 |
+| `KSADK_ENABLE_KERNEL=1` | Code/Container 的发布环境变量 | 请求平台启用该 Agent 的托管 Kernel，适用于这里的托管交互/OAuth 场景。 |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1` | LangGraph 运行环境 | 图尚无 saver 时允许 SDK 自动绑定；默认关闭，不替换已有 saver 或显式 `False`。 |
+| `KSADK_SESSION_BACKEND=postgres`、`KSADK_SESSION_DSN` | 运行环境或平台资源绑定 | 配置 Agent 会话持久化。 |
+| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph 运行环境或平台资源绑定 | 显式配置框架 checkpoint；可以与 Session 使用同一个测试数据库。 |
+| `AGENT_KERNEL_ENABLED`、permit/JWKS、workload token、A2A 身份 | 平台注入 | 应用不自行构造，也不能用普通用户 env 伪造平台准入。 |
+
+完整变量和优先级见[环境变量参考](/cn/docs/references/environment-variables/)。
+`KSADK_ENABLE_KERNEL` 是部署请求意图，不能代替可信的 `AGENT_KERNEL_ENABLED`。
+
+## 给托管 LangGraph 配置双持久化
+
+Session 保存对话与事件；框架 checkpoint 保存图的执行位置、state 和 interrupt。
+只有 Session 数据库不代表图已经可以恢复。下面使用同一 PostgreSQL 地址显式配置两者：
+
+```dotenv title="runtime.env.example"
+OPENAI_API_KEY=your-model-api-key
+OPENAI_BASE_URL=https://model.example.com/v1
+OPENAI_MODEL_NAME=your-model-name
+KSADK_ENABLE_KERNEL=1
+KSADK_LANGGRAPH_AUTO_CHECKPOINT=1
+KSADK_SESSION_BACKEND=postgres
+KSADK_SESSION_DSN=postgresql://example_user:example_password@db.example.com:5432/example_db
+KSADK_LANGGRAPH_CHECKPOINT_DSN=postgresql://example_user:example_password@db.example.com:5432/example_db
+```
+
+复制为未提交的 `runtime.env` 并替换占位值；该文件含模型和数据库秘密，应排除出 Git、
+代码 ZIP、截图和公开日志。示例地址不会连接真实服务。需要分库存储时分别填写 DSN，
+并按平台的存储绑定规则验证两者；不要让两个 SDK 版本同时写同一工作区。
+
+入口模块同时导出 `ksadk_graph_factory(*, checkpointer)` 和
+`ksadk_prepare_state(payload, session_context)`。后者只整理本轮输入，让历史由 checkpoint
+恢复，避免重复追加。完整示例见 [AG-UI 与 A2UI 接入](/cn/docs/framework/guides/agui-a2ui/)。
+
+本地 Web 使用 `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1 agentengine web .`；没有 PostgreSQL
+配置时可绑定项目内 SQLite。SQLite/内存不等同于跨 Pod 的共享持久化；托管 OAuth 还需要
+平台兼容 Broker、可信身份和完成许可，不能只靠设置 DSN。
+
+## 构建、部署与更新
+
+先通过本地运行和依赖检查，再确认 `KSYUN_REGION`、平台提供的目标入口与凭据对应的环境。
+真实运行时变量用 `--env-file` 显式传入，代码制品不携带本机 `.env` 或授权 vault：
+
+```bash
+agentengine build . --mode code
+agentengine deploy . --target serverless --region "$KSYUN_REGION" \
+  --artifact-type Code --env-file ./runtime.env
+
+# Update an existing test Agent after confirming its ID and target environment.
+agentengine deploy . --agent-id "$AGENT_ID" --region "$KSYUN_REGION" \
+  --artifact-type Code --env-file ./runtime.env
+```
+
+热更新使用环境变量 patch，省略某个键会保留旧值。卸载集成时需要显式移除或清空对应键，
+并检查实际运行时与工具列表；仅看到控制面不再展示某键，不能证明旧 Pod 已无该凭据。
+更新失败、繁忙或滚动期间不可达时先查询原操作状态，不重复创建 Agent 或重发业务任务。
+
+已经使用 Kernel 的 Agent 不能随意切换持久化目标。服务端不能证明旧、新 Session 存储一致时
+会拒绝在线迁移；先保留原数据、审核迁移方案，再决定更新或创建隔离实例。
+
+## 分别接入 MCP 与 A2A
+
+[OAuth MCP 指南](/cn/docs/framework/guides/mcp-oauth/)给出模型节点、工具节点和输入 hook。
+API Key MCP 继续使用服务方的 header/客户端，不需要伪装成 OAuth。应用示例中的
+`SEARCH_MCP_URL`、`SEARCH_MCP_API_KEY` 是自定义变量名，不是 SDK 统一配置项。
+OAuth 的作用域、客户端登记、回调地址和授权期限以服务方与平台配置为准。
+
+[A2A 指南](/cn/docs/framework/guides/a2a-runtime/)说明 Card、Space 和出站边界。`--a2a-space-id` 是运行时绑定，
+不等于被调用方已注册且可发现。先注册并验证 callee，再启用调用方；不要照抄其他环境的 Agent ID。
+
+分别使用独立工具集和新会话验证 OAuth 与 A2A。需要复用计算实例时，先结束当前任务，
+切换制品和配置、清理上一模式的凭据并核对实际 Pod，再开始下一种协议的测试。
+
+## UI 配套与验收边界
+
+wheel 内置 Web 版本与平台共享 Hosted UI 是不同交付物；升级 SDK 不会自动部署共享前端。
+核对实际加载的静态资源、版本与 bootstrap capabilities，不能仅凭包版本断言前端已经升级。
+
+AG-UI transport、A2UI presentation、OAuth 授权、执行审批分别协商和校验，不使用一个普通
+“同意”消息替代它们。自建客户端消费事件时必须处理 `HasMore`/`NextCursor`、历史 epoch 和
+快照边界，不能把首个分页窗口当成完整任务结果。
+
+最小验收包括：普通聊天；真实工具结果；OAuth 首次授权/恢复/复用；表单提交/刷新恢复；
+A2A 的远端 task 状态和结果。多副本接管、凭据刷新或特定 provider 未验证时应单独标注。
+测试通过也不等于正式发布批准。
+
+A2UI 模型输出可能违反注册目录，复杂样式请求存在校验失败的边界；失败时应显示明确错误或
+进入业务允许的结构化输入后备流程，不放宽 Schema、不伪造成功，也不自动重放业务副作用。

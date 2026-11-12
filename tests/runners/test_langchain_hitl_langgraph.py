@@ -69,8 +69,8 @@ class SeqToolModel(BaseChatModel):
         m = self._next()
         if getattr(m, "tool_calls", None):
             tcc: Any = [
-                {"name": t["name"], "args": json.dumps(t["args"]), "id": t["id"], "index": 0}
-                for t in m.tool_calls
+                {"name": t["name"], "args": json.dumps(t["args"]), "id": t["id"], "index": i}
+                for i, t in enumerate(m.tool_calls)
             ]
             yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=tcc))
         else:
@@ -162,7 +162,15 @@ async def test_langchain_hitl_reject_skips_tool_with_feedback():
 
 
 @pytest.mark.asyncio
-async def test_langchain_hitl_edit_uses_edited_args():
+async def test_langchain_hitl_edit_uses_edited_args(monkeypatch):
+    calls = []
+    original = write_file.func
+
+    def record_write(path: str, content: str) -> str:
+        calls.append((path, content))
+        return original(path, content)
+
+    monkeypatch.setattr(write_file, "func", record_write)
     agent = _make_agent()
     cfg = {"configurable": {"thread_id": "core-edit"}}
     await _run_until_interrupt(agent, cfg)
@@ -180,7 +188,11 @@ async def test_langchain_hitl_edit_uses_edited_args():
         ],
     )
     tm = [m for m in msgs if m.__class__.__name__ == "ToolMessage"]
-    assert tm and tm[-1].content == "wrote:/tmp/EDITED.txt"
+    assert calls == [("/tmp/EDITED.txt", "hi")]
+    # Newer LangChain preserves an authorized edit explanation before the
+    # actual tool response. Keep it, and check the business result separately.
+    assert tm and tm[-1].content.endswith("wrote:/tmp/EDITED.txt")
+    assert not (await agent.aget_state(cfg)).next
 
 
 # ---------------------------------------------------------------------------
@@ -278,10 +290,17 @@ async def test_runner_stream_surfaces_nested_subgraph_interrupt():
     assert approval["interrupt_info"]["action_requests"][0]["name"] == "write_file"
 
 
-@pytest.mark.xfail(reason="langgraph stream_canonical_events normal completion path: checkpoint() on non-interrupted run requires checkpoint_id in native_ref, but v3 stream completion doesn't set it (only interrupt path sets via ContinuationCreated). Requires v3 stream completion checkpoint extraction, beyond Task 7 scope.")
 @pytest.mark.asyncio
-async def test_runtime_adapter_resume_approve_decision_executes_tool():
+async def test_runtime_adapter_resume_approve_decision_executes_tool(monkeypatch):
     """RuntimeAdapter 把真实 HITL 决定送入 Command(resume=),工具真执行。"""
+    calls = []
+    original = write_file.func
+
+    def record_write(path: str, content: str) -> str:
+        calls.append((path, content))
+        return original(path, content)
+
+    monkeypatch.setattr(write_file, "func", record_write)
     runner = _make_runner()
     adapter = LangGraphRuntimeAdapter(runner)
     handle = await adapter.start(StartRequest(input="写文件", user_id="u", session_id="s2"))
@@ -290,6 +309,7 @@ async def test_runtime_adapter_resume_approve_decision_executes_tool():
         event for event in interrupted if isinstance(event, InteractionRequested)
     )
     checkpoint = await adapter.checkpoint(handle)
+    assert calls == []
 
     await adapter.resume(
         handle,
@@ -305,29 +325,40 @@ async def test_runtime_adapter_resume_approve_decision_executes_tool():
     # Canonical: tool_call items use ItemStarted/ItemCompleted with
     # ToolCallContent/ToolResultContent in their snapshot parts.
     tool_call_starts = [
-        event for event in resumed
+        event for event in interrupted + resumed
         if isinstance(event, ItemStarted) and event.item_kind == "tool_call"
     ]
     tool_call_completions = [
-        event for event in resumed
+        event for event in interrupted + resumed
         if isinstance(event, ItemCompleted) and event.item_kind == "tool_call"
     ]
     tool_result_completions = [
         event for event in resumed
         if isinstance(event, ItemCompleted) and event.item_kind == "tool_result"
     ]
-    # ItemStarted carries the tool call content in initial snapshot.
-    assert len(tool_call_starts) >= 1
-    call_part = tool_call_starts[0].initial.parts[0]
+    # The model publishes the planned call before approval; resume executes it
+    # and publishes its result without starting the same call item a second time.
+    assert len(tool_call_starts) == 1
+    assert tool_call_starts[0] in interrupted
+    assert len(tool_call_completions) == 1
+    call_part = tool_call_completions[0].snapshot.parts[0]
     assert isinstance(call_part, ToolCallContent)
     assert call_part.call_id == "c1"
     assert call_part.name == "write_file"
     assert call_part.arguments == {"path": "/tmp/x.txt", "content": "hi"}
     # ItemCompleted for tool_call carries the same call content.
-    assert len(tool_call_completions) >= 1
     # ItemCompleted for tool_result carries the result.
-    assert len(tool_result_completions) >= 1
+    assert len(tool_result_completions) == 1
     result_part = tool_result_completions[0].snapshot.parts[0]
     assert isinstance(result_part, ToolResultContent)
     assert result_part.call_id == "c1"
     assert result_part.result == "wrote:/tmp/x.txt"
+    assert calls == [("/tmp/x.txt", "hi")]
+    assert resumed[-1].event_type == "run.completed"
+    config = await runner._get_session_config("s2")
+    state, error = await runner._read_graph_state(config)
+    assert error is None and not state.next
+    final_checkpoint = await adapter.checkpoint(handle)
+    assert final_checkpoint.checkpoint_id == state.config["configurable"]["checkpoint_id"]
+    assert final_checkpoint.checkpoint_id != checkpoint.checkpoint_id
+    await runner.close()

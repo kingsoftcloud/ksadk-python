@@ -1155,7 +1155,10 @@ class LocalResourceCatalog:
                 # Browser inspection may spend 30 s loading and another 30 s
                 # capturing a busy page. The generic 20 s Python Tool lease
                 # killed it before Playwright could return a repairable error.
-                timeout_seconds=90 if name == "browser_inspect_workspace" else 20,
+                # An output wait and the owned process have independent deadlines.
+                # Only new Builds lock this extended query lease.
+                timeout_seconds=(90 if name == "browser_inspect_workspace" else
+                                 610 if name == "read_command_output" else 20),
                 permissions=permissions,
                 side_effect=cast(Any, side_effect),
                 approval="always" if descriptor.get("requires_approval") else "never",

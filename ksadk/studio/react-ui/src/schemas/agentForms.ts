@@ -18,7 +18,7 @@ const description = z.string().trim().max(1024, "描述不能超过 1024 个字�
 
 export const executionLimitFields = {
   maxSteps: z.number({ error: "请填写最大步骤" }).int("最大步骤须为整数").min(1, "最大步骤至少为 1").max(100, "最大步骤不能超过 100").default(100),
-  timeoutSeconds: z.number({ error: "请填写超时时间" }).int("超时时间须为整数").min(1, "超时时间至少为 1 秒").max(3600, "超时时间不能超过 3600 秒").default(600),
+  timeoutSeconds: z.number({ error: "请填写超时时间" }).int("超时时间须为整数").min(0, "超时时间不能小于 0").max(3600, "超时时间不能超过 3600 秒").default(600),
 };
 
 export const quickAgentSchema = z.object({
@@ -26,7 +26,7 @@ export const quickAgentSchema = z.object({
   name: agentName,
   slug: agentSlug,
   runtimeType: studioRuntimeType,
-  template: z.enum(["blank", "research"]).default("blank"),
+  template: z.enum(["blank", "research", "coding"]).default("blank"),
   prompt: agentRequirement,
   description,
   audience: z.string().trim().max(256, "目标读者不能超过 256 个字符").default(""),
@@ -37,6 +37,9 @@ export const quickAgentSchema = z.object({
   taskPrompt: z.string().max(32768, "任务契约不能超过 32768 个字符").default(""),
   buildAfterCreate: z.boolean().default(true),
 }).superRefine((value, context) => {
+  if (value.runtimeType !== "harness" && value.timeoutSeconds === 0) {
+    context.addIssue({ code: "custom", path: ["timeoutSeconds"], message: "超时时间至少为 1 秒" });
+  }
   if (value.template === "research" && !value.audience) {
     context.addIssue({ code: "custom", path: ["audience"], message: "请填写目标读者" });
   }

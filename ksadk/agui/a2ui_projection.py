@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ksadk.a2ui.catalog import catalog_manifest
+
 
 def project_a2ui_operations(event_type: str, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Return A2UI v0.9 operations carried by an AG-UI activity event.
@@ -39,7 +41,7 @@ def project_a2ui_operations(event_type: str, payload: Mapping[str, Any]) -> list
             or surface_data.get("catalogId")
             or payload.get("catalog_id")
             or payload.get("catalogId")
-            or "https://a2ui.org/specification/v0_9/basic_catalog.json"
+            or catalog_manifest()["catalog_id"]
         )
         operations.append(
             {

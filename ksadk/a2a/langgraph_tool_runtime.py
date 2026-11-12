@@ -90,10 +90,9 @@ class ManagedLangGraphTools:
             return await _invoke(spec, {"message": message}, config,
                                  surface="tool", result_envelope=True)
         except Exception as exc:
-            code = str(exc)
-            if not code.startswith("A2A_") or len(code) >= 128:
-                code = "A2A_INVOCATION_FAILED"
-            return {"ok": False, "error_type": code, "error_message": "Managed A2A invocation failed"}
+            from ksadk.a2a.tool_outcomes import tool_error_result
+
+            return tool_error_result(exc)
 
     async def tool_trigger(self, spec, config):
         call_id = native_tool_call_id()
@@ -102,7 +101,7 @@ class ManagedLangGraphTools:
         async def resolve():
             async with self.changed:
                 while True:
-                    facts = await self.authority.list(self.authority.session_id)
+                    facts = await self.authority.list(self.authority.session_id, item_kinds=["tool_call"])
                     # v3 message facts carry the graph namespace, while the
                     # running ToolNode config adds its own node:task segment.
                     # Some supported ToolNodes emit no tools-channel events;
@@ -127,6 +126,9 @@ class ManagedLangGraphTools:
                         raise ValueError("A2A_NATIVE_TRIGGER_AMBIGUOUS")
                     await self.changed.wait()
         try:
-            return await asyncio.wait_for(resolve(), timeout=5)
+            from ksadk.a2a.timeouts import seconds
+
+            return await asyncio.wait_for(
+                resolve(), timeout=seconds("KSADK_A2A_NATIVE_TRIGGER_SECONDS", 15.0))
         except TimeoutError as exc:
             raise ValueError("A2A_NATIVE_TRIGGER_NOT_PERSISTED") from exc

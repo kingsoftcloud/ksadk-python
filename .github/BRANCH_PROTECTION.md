@@ -1,7 +1,8 @@
 # Branch Protection Baseline
 
-Apply this baseline to the public `main` branch after the one-time `new-main`
-overwrite push is complete.
+Apply this baseline to the public `main` branch. Update it through reviewed
+public candidate pull requests; preserve public history and keep the internal
+`master` branch in the internal repository.
 
 ## Required branch rules
 
@@ -9,7 +10,7 @@ overwrite push is complete.
 - Require approvals from maintainers before merge.
 - Require status checks to pass before merging.
 - Require branches to be up to date before merging.
-- Do not allow force pushes after the one-time bootstrap push.
+- Do not allow force pushes.
 - Do not allow deletions.
 - Require conversation resolution before merging.
 
@@ -27,7 +28,6 @@ overwrite push is complete.
 - `Publish PyPI` must remain limited to GitHub Release `published` and manual
   `workflow_dispatch` events. It must not run on plain `push`.
 - The public candidate must pass the complete local `make public-preflight`
-  and required PR checks before merge. The `Publish PyPI` workflow rechecks
+  and required PR checks before merge. `Publish PyPI` rechecks
   `make public-preflight-publish` and `make public-publish-gate`, then builds
-  and audits both Python distributions before the first
-  `pypa/gh-action-pypi-publish` upload.
+  and audits both Python distributions before the first upload.

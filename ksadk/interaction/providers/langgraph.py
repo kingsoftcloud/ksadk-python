@@ -42,17 +42,28 @@ class LangGraphInteractionProvider:
             )
         thread_id = str(native_target.get("thread_id") or context.handle.session_id)
         context.handle.native_ref.setdefault("thread_id", thread_id)
-        payload_kind = "approval_decision" if record.kind == "approval" else "hitl_answer"
         data = submission.response
-        if record.kind == "approval" and (data is None or data == {}):
-            if submission.action not in {"approve", "reject"}:
-                raise ValueError("langgraph approval requires approve or reject")
-            # Server-admitted approvals carry their decision in action. Preserve
-            # explicit native response bodies used by existing integrations.
-            data = {"decisions": [{"type": submission.action}]}
+        if record.kind == "approval":
+            from ksadk.interaction.langgraph_approval import approval_response
+
+            data = approval_response(
+                native_target.get("approval_contract"), submission.action, data
+            )
+        native_wait = bool(native_target.get("task_id"))
+        if native_wait:
+            from ksadk.runtime._runner_adapter.a2ui_surface import restore_a2ui_presentation
+
+            restore_a2ui_presentation(context.handle, record,
+                                      registry=getattr(context.adapter, "a2ui_catalog_registry", None))
+            context.handle.native_ref.setdefault("native_waits", {})[record.interaction_id] = (
+                dict(native_target)
+            )
+            context.handle.native_ref["native_submission_key"] = submission.idempotency_key
+        payload_kind = "approval_decision" if record.kind == "approval" else "hitl_answer"
         payload = ResumePayload(
             kind=payload_kind,
-            call_id=str(native_target.get("call_id") or record.interaction_id),
+            call_id=(record.interaction_id if native_wait
+                     else str(native_target.get("call_id") or record.interaction_id)),
             data=data,
             session_context=context.session_context,
         )

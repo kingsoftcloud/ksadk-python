@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 StorageSource = Literal[
@@ -12,6 +12,9 @@ StorageSource = Literal[
     "session_fallback",
     "checkpoint_fallback",
     "framework_override",
+    "kernel_session_service",
+    "platform_kernel_fallback",
+    "session_service",
 ]
 
 
@@ -20,7 +23,7 @@ class StorageTarget:
     """A logical persistent-storage target without connection diagnostics."""
 
     backend: str
-    dsn: str = ""
+    dsn: str = field(default="", repr=False)
     source: StorageSource = "none"
     explicit_local: bool = False
 
@@ -74,6 +77,7 @@ def resolve_persistence_topology(
     *,
     framework: str | None = None,
     session_backend: str | None = None,
+    effective_session: StorageTarget | None = None,
 ) -> PersistenceTopology:
     """Resolve dual persistence with documented Session/Checkpoint fallbacks.
 
@@ -107,6 +111,9 @@ def resolve_persistence_topology(
         )
     else:
         session = StorageTarget(backend=backend)
+
+    if effective_session is not None:
+        session = effective_session
 
     if framework_dsn:
         checkpoint = StorageTarget(

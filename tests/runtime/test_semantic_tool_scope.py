@@ -6,10 +6,11 @@ from ksadk.events.canonical import (
     ContentSnapshot,
     ItemCompleted,
     ItemStarted,
+    ItemUpdated,
     RunStarted,
     SourceRef,
 )
-from ksadk.events.content import ToolCallContent, ToolResultContent
+from ksadk.events.content import TextContent, ToolCallContent, ToolResultContent
 from ksadk.runtime import conversation_execution
 
 
@@ -79,4 +80,41 @@ async def test_same_native_call_id_in_sibling_scopes_keeps_both_tools(
     assert [(event["name"], event["output"]) for event in results] == [
         ("read_file", "child-a"),
         ("delete_file", "child-b"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrected", ["corrected", ""])
+async def test_flat_text_projection_folds_snapshots_by_item_identity(monkeypatch, corrected):
+    async def events(**kwargs):
+        seq = 0
+
+        def envelope():
+            nonlocal seq
+            seq += 1
+            return dict(schema_version=2, event_id=f"e{seq}", seq=seq,
+                        timestamp=float(seq), run_id="run", scope_id="root",
+                        source=SourceRef(framework="langgraph"))
+
+        yield RunStarted(**envelope(), status="running")
+        for item_id in ("first", "second"):
+            yield ItemStarted(**envelope(), item_id=item_id, item_kind="message")
+            yield ItemUpdated(**envelope(), item_id=item_id, item_kind="message", op="append",
+                              update=TextContent(part_id="text", text="same"))
+            # Native adapters may repeat full text before completing the item.
+            yield ItemUpdated(**envelope(), item_id=item_id, item_kind="message", op="replace",
+                              update=TextContent(part_id="text", text="same"))
+            yield ItemCompleted(**envelope(), item_id=item_id, item_kind="message",
+                                snapshot=ContentSnapshot(parts=(TextContent(part_id="text", text="same"),)))
+        yield ItemStarted(**envelope(), item_id="third", item_kind="message")
+        yield ItemUpdated(**envelope(), item_id="third", item_kind="message", op="append",
+                          update=TextContent(part_id="text", text="draft"))
+        yield ItemCompleted(**envelope(), item_id="third", item_kind="message",
+                            snapshot=ContentSnapshot(parts=(TextContent(part_id="text", text=corrected),)))
+
+    monkeypatch.setattr(conversation_execution, "iter_runtime_conversation_events", events)
+    projected = [event async for event in conversation_execution.iter_runtime_conversation_semantic_events()]
+    text = [event for event in projected if event["type"] == "text"]
+    assert [(event["delta"], event.get("replace", False)) for event in text] == [
+        ("same", False), ("same", False), ("draft", False), ("samesame" + corrected, True),
     ]

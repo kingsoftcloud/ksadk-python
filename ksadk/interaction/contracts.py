@@ -9,10 +9,11 @@ durable 行（含内部 ``provider_id`` / ``native_target`` / 不透明的
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 InteractionKind = Literal["approval", "structured_input", "plan_review", "custom"]
 InteractionStatus = Literal[
@@ -75,7 +76,7 @@ class InteractionRecord(_StrictModel):
             "session_id": self.session_id,
             "run_id": self.run_id,
             "kind": self.kind,
-            "request_schema": self.request_schema,
+            "request_schema": deepcopy(self.request_schema),
             "revision": self.revision,
             "created_at": self.created_at,
         }
@@ -93,8 +94,22 @@ class InteractionSubmission(_StrictModel):
     interaction_id: str
     expected_revision: int
     action: InteractionAction
-    response: Any = None
-    idempotency_key: str
+    response: JsonValue = None
+    idempotency_key: str = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _response_presence(cls, value):
+        if isinstance(value, dict) and value.get("action") == "submit" and "response" not in value:
+            raise ValueError("Structured submissions require an explicit response")
+        return value
+
+    @field_validator("response", mode="before")
+    @classmethod
+    def _json_response(cls, value):
+        from ksadk.interaction.schema import require_json
+
+        return require_json(value)
 
 
 class InteractionReceipt(_StrictModel):

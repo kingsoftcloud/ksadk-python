@@ -1,0 +1,19 @@
+{
+  "schema": "ksadk.adk-two-llm-output/v1",
+  "run_id": "run-1",
+  "scope_id": "scope-1",
+  "cursor_break_after_seq": 5,
+  "responses": [
+    {
+      "item_id": "llm-1",
+      "partials": ["first ", "answer"],
+      "terminal": "first answer"
+    },
+    {
+      "item_id": "llm-2",
+      "partials": ["second", " answer"],
+      "terminal": "second answer"
+    }
+  ],
+  "expected_text": "first answersecond answer"
+}

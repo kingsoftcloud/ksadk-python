@@ -160,6 +160,7 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 
 | 变量 | 用途 |
 | --- | --- |
+| `KSADK_ENABLE_KERNEL` | Code/Container 的每 Agent 托管 Kernel 请求开关，默认 `false`；交互/OAuth 接入示例设为 `1`，仍需服务端准入。不同于平台注入的 `AGENT_KERNEL_ENABLED`，不能据此伪造身份或 permit。 |
 | `KSADK_AGENT_KERNEL` | 本地显式启用 Kernel ingress；默认关闭 |
 | `AGENT_KERNEL_ENABLED` | 托管部署由平台投射的启用开关；旧 Agent 未投射时继续走历史路径 |
 | `AGENT_KERNEL_STORE_DRIVER` | `memory`、本地 `sqlite` 或 `postgres`；托管生产组合支持 ephemeral memory 或 durable PostgreSQL |
@@ -182,12 +183,14 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 
 | 变量 | 用途 |
 | --- | --- |
-| `KSADK_CHECKPOINT_BACKEND` | checkpoint backend：`local` / `sqlite` / `memory` / `postgres`，默认 `local`（0.6.7） |
+| `KSADK_CHECKPOINT_BACKEND` | 开启自动绑定且无 PG 配置时的 backend 选择：`local` / `sqlite` / `memory` / `postgres`，默认 `local`；有效 PG 配置优先，显式 `postgres` 却没有 DSN 时报告配置缺失。 |
 | `KSADK_CHECKPOINT_PATH` | 本地 SQLite checkpoint 路径，默认 `.agentengine/ui/checkpoints.sqlite`（0.6.7） |
-| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph PostgreSQL checkpoint DSN；`postgres` backend 时必传（0.6.7） |
-| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | 托管 LangGraph runner 是否注入受控 PostgreSQL saver；默认 `false`，启用时入口模块必须导出 `ksadk_graph_factory(*, checkpointer)` 和 `ksadk_prepare_state(payload, session_context)`，缺失时分别以 `LANGGRAPH_FACTORY_REQUIRED` 或 `PREPARE_STATE_HOOK_REQUIRED` fail-closed |
+| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | 框架专用 PG 地址，优先于 `KSADK_CHECKPOINT_DSN`，其次回退有效的 PostgreSQL session 地址。 |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | 唯一的自动 checkpoint 开关，默认 `false`。保留已有 saver 和 `checkpointer=False`；开启且图未配置 saver 时，有 PG 配置用 PG，没有 PG 配置用 SQLite 并记录日志。PG 路径仍要求 `ksadk_graph_factory(*, checkpointer)` 和 `ksadk_prepare_state(payload, session_context)`；PG 失败不回退 SQLite。 |
 
-本地 `agentengine web` 默认使用 local session backend，LangGraph checkpoint 默认走 SQLite，降低本地恢复链路对 PostgreSQL 的依赖（0.6.7）。
+本地 session 默认配置与图的自动 checkpoint 分开。需要 SDK 自动绑定时设置 `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1`；没有 PG 配置时使用 `.agentengine/ui/checkpoints.sqlite`。未设置或关闭时不为未配置 saver 的图自动绑定。这取代此前本地无需统一开关就绑定 SQLite 的行为。
+
+PG 选择顺序：框架专用 checkpoint DSN → 通用 checkpoint DSN → 有效的 PostgreSQL session DSN。显式本地 backend/path 不覆盖已配置 PG。选择日志只记录后端、原因、本地文件路径和本地能力，不记录 DSN 或凭证。SQLite 不是共享存储，不代表支持跨 Pod 恢复。
 
 ## Ambient 运行时上下文
 
@@ -340,11 +343,12 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | 变量 | 用途 |
 | --- | --- |
-| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，当前默认 `0.3.13`；wheel 构建前必须先发布并验证新版本 |
+| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，当前来源清单固定 `0.3.18`；wheel 构建前必须先发布并验证新版本 |
+| `KSADK_WEB_TARBALL` | 显式本地 npm 归档路径；与正式来源分开记录，保留包名、完整目录及安全解包检查 |
 | `KSADK_WEB_PACKAGE` | 本地 UI static 同步使用的 npm 包名，默认 `@kingsoftcloud/ksadk-web` |
-| `KSADK_WEB_TARBALL_NAME` | 设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式使用 npm 返回的真实 tarball 文件名 |
-| `KSADK_WEB_RELEASE_URL` | 可选兜底；设置后跳过 npm pack，改从该 tarball URL 下载 |
-| `KSADK_WEB_CACHE_DIR` | KsADK Web 包解压缓存目录，默认 `.cache/ksadk-web` |
+| `KSADK_WEB_TARBALL_NAME` | 历史参数，当前来源清单构建不读取；本地归档使用 `KSADK_WEB_TARBALL`，下载缓存固定为 `.cache/ksadk-web`。 |
+| `KSADK_WEB_RELEASE_URL` | 历史参数，当前来源清单构建不读取；本地归档使用 `KSADK_WEB_TARBALL`，下载缓存固定为 `.cache/ksadk-web`。 |
+| `KSADK_WEB_CACHE_DIR` | 历史参数，当前来源清单构建不读取；本地归档使用 `KSADK_WEB_TARBALL`，下载缓存固定为 `.cache/ksadk-web`。 |
 
 <Callout type="info">
   `make build` / `make build-wheel` 会自动执行 `sync-ksadk-web-static`，无需手动同步。
@@ -413,4 +417,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
   - 公开文档只使用 `sk-test`、`my-model`、`https://api.example.com/v1` 这类占位值。
 </Callout>
 
-当前 Hosted UI 静态资源版本：`0.3.13`。
+当前 Hosted UI 静态资源版本：`0.3.12`。
+
+
+按用途区分部署凭据、应用变量和平台注入值的完整示例见[0.8.7 接入手册](/cn/docs/framework/guides/integration-0-8-7/)。

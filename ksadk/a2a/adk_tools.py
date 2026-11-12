@@ -64,14 +64,9 @@ class ManagedA2ACallTool(FunctionTool):
                 return await runtime.call(args, tool_context, fixed_spec=spec)
             return await runtime.call(args, tool_context)
         except Exception as exc:
-            code = str(exc)
-            if not code.startswith("A2A_") or len(code) >= 128:
-                code = "A2A_INVOCATION_FAILED"
-            return {
-                "ok": False,
-                "error_type": code,
-                "error_message": "Managed A2A invocation failed",
-            }
+            from ksadk.a2a.tool_outcomes import tool_error_result
+
+            return tool_error_result(exc)
 
 
 class ManagedA2AHandoffTool(ManagedA2ACallTool):
@@ -268,6 +263,9 @@ class ManagedADKTools:
                 expected_version_id=agent.version_id,
                 exposure="tool",
             )
+        from ksadk.a2a.tool_outcomes import assert_target_outcome_known, unknown_service_outcome
+
+        await assert_target_outcome_known(self.authority, spec.target_agent_id)
         provider = ADKInvocationContextProvider(
             authority=self.authority,
             service_for_space=self.services,
@@ -293,12 +291,24 @@ class ManagedADKTools:
                             if isinstance(part, TextContent)
                         }
                     await self.emit(_project(event, ctx.agent.name, ctx))
-        except (asyncio.CancelledError, TimeoutError):
+        except asyncio.CancelledError:
             try:
                 await asyncio.shield(service.cancel(service.handle(request.scope_id)))
             finally:
                 raise
+        except Exception as exc:
+            unknown = unknown_service_outcome(service, request.scope_id)
+            if unknown is not None:
+                raise unknown from exc
+            if isinstance(exc, TimeoutError):
+                try:
+                    await asyncio.shield(service.cancel(service.handle(request.scope_id)))
+                finally:
+                    raise
+            raise
         snapshot = service.snapshot(service.handle(request.scope_id))
+        if unknown := unknown_service_outcome(service, request.scope_id):
+            raise unknown
         from ksadk.a2a.result_text import select_terminal_reply
 
         return {

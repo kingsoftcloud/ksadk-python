@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from time import time
 
+from .call_budget import call_room
 from .child_interruption import admit_interrupted_child_receipts
 from .child_lifecycle import (
     ChildLifecycleRequest,
@@ -24,8 +25,9 @@ from .machine import (
     reduce_tool,
     reduce_workspace,
 )
-from .model import ModelTurnResult
+from .model import ModelStreamEvent, ModelTurnResult
 from .model_runtime import (
+    StreamFlushError,
     provisional_delta,
     recover_unsealed_model_receipt,
     retry_delay,
@@ -46,6 +48,7 @@ from .state import (
     RunSnapshot,
 )
 from .stop_hook_runtime import reduce_stop_hook
+from .stream_display_buffer import _DISPLAY, StreamDisplayBuffer
 from .tool_hook_runtime import (
     close_tool_hook_run,
     consume_hook_feedback,
@@ -241,6 +244,24 @@ class EffectReceiptCommitter:
             ),
         )
 
+    def _flush_stream_guarded(self, run_id: str) -> None:
+        """Flush pending display via _flush_stream, wrapping store errors
+        as StreamFlushError.
+
+        All display commits from _stream_delta (immediate first display,
+        key-change old pending, size threshold, coalesced pending) route
+        through this method so that StoreConflict/CAS/fencing errors are
+        distinguishable from protocol errors. Without this wrapper, a
+        bare StoreConflict from _flush_stream would propagate through
+        emit → exchange → effect_control and be masked as a generic
+        uncertain receipt (effect_outcome_unknown), hiding a local store
+        fault from the host.
+        """
+        try:
+            self._flush_stream(run_id)
+        except Exception as exc:
+            raise StreamFlushError(str(exc)) from exc
+
     def _stream_delta(self, run_id, event):
         # The owning drive lock remains held during this callback.
         current = self.snapshot(run_id)
@@ -263,6 +284,32 @@ class EffectReceiptCommitter:
             if input_binding_failure(self.effective_configuration(current).profile,
                                      event.input_receipt):
                 raise ValueError("model input observation profile mismatch")
+            self._commit(current, provisional_delta(current, event))
+            return
+        # Display events (text_delta, public_summary): ALL display commits
+        # route through _flush_stream_guarded for prepared-batch retention
+        # and StreamFlushError boundary. This ensures StoreConflict/CAS/
+        # fencing errors are distinguishable from protocol errors and are
+        # not masked as generic uncertain receipts by effect_control.
+        if isinstance(event, ModelStreamEvent) and event.kind in _DISPLAY:
+            buffer = self._stream_buffers.setdefault(run_id, StreamDisplayBuffer())
+            pending = buffer.peek()
+            if pending is not None and pending.request_id != current.pending_intent:
+                buffer = StreamDisplayBuffer()
+                self._stream_buffers[run_id] = buffer
+            immediate, flush_now = buffer.push(event)
+            for ev in immediate:
+                if ev is buffer.peek():
+                    # Old pending from key change — already in buffer.
+                    self._flush_stream_guarded(run_id)
+                else:
+                    # First display for key, or new key's first event.
+                    buffer.set_pending(ev)
+                    self._flush_stream_guarded(run_id)
+            if flush_now:
+                # Size threshold: pending is already in buffer.
+                self._flush_stream_guarded(run_id)
+            return
         self._commit(current, provisional_delta(current, event))
 
     def _commit_receipt(
@@ -603,8 +650,8 @@ class EffectReceiptCommitter:
                     ),
                 )
             if (
-                updated.model_budget_claimed > config.limits.max_model_calls
-                or updated.tool_budget_claimed > config.limits.max_tool_calls
+                not call_room(config.limits.max_model_calls, updated.model_budget_claimed, 0)
+                or not call_room(config.limits.max_tool_calls, updated.tool_budget_claimed, 0)
             ):
                 updated = finish(updated, "blocked", "tool_resource_budget_violation")
         else:

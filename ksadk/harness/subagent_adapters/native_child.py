@@ -17,6 +17,7 @@ from typing import Awaitable, Callable, Literal
 from ksadk.harness.artifact_adapters.native_page_budget import ArtifactPagePolicy
 from ksadk.harness.artifact_adapters.native_search_budget import ArtifactSearchPolicy
 from ksadk.harness.artifact_adapters.native_tool import install_artifact_tool
+from ksadk.harness.native.call_budget import call_room, cap_calls, remaining_calls
 from ksadk.harness.stores.native_contract import RunStore, StoreConflict
 
 from ..native.completion import TaskContract
@@ -39,7 +40,8 @@ from ..native.ports import (
     digest,
 )
 from ..native.state import RunCommand, RunPhase, RunScope, RunSnapshot
-from ..native.subagents import ChildObservation, ChildRole, ChildRunRequest
+from ..native.subagents import ChildMediaRef, ChildObservation, ChildRole, ChildRunRequest
+from ..native.user_input import NativeUserInput
 
 
 @dataclass(frozen=True)
@@ -72,12 +74,16 @@ class ChildBindings:
     # its own observations are admitted; no parent path or ref inheritance.
     artifacts: ArtifactPort | None = None
     artifact_search: bool = False
+    artifact_catalog: bool = False
     artifact_page_policy: ArtifactPagePolicy | None = None
     artifact_search_policy: ArtifactSearchPolicy | None = None
     # Child-owned host bindings, consumed only by its declared configuration.
     # Parent ports and their authority are never inherited by this adapter.
     context_port: ContextPort | None = None
     hook_port: HookPort | None = None
+    # Host-resolved user input for the child run. Built from authorized parent
+    # media references; None retains the original plain-text goal identity.
+    user_input: NativeUserInput | None = None
 
 
 ChildFactory = Callable[[ChildRunRequest], ChildBindings | Awaitable[ChildBindings]]
@@ -156,6 +162,41 @@ class NativeChildToolPort:
                             "subtask with its own output format."
                         ),
                     },
+                    "media": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["source", "index"],
+                            "properties": {
+                                "source": {
+                                    "type": "string",
+                                    "enum": ["parent_user_input"],
+                                    "description": (
+                                        "The only authorized media source: a part of this "
+                                        "parent run's current user input."
+                                    ),
+                                },
+                                "index": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": (
+                                        "Position of the image part in the parent user "
+                                        "input content. The host resolves it to the original "
+                                        "image bytes; it never accepts a model-supplied path, "
+                                        "URL or data URL."
+                                    ),
+                                },
+                            },
+                        },
+                        "description": (
+                            "Pass already-admitted parent user input image parts to the "
+                            "child by scoped reference, not by value. The host fails closed on "
+                            "unknown, forged or foreign references and on an image-incapable "
+                            "child role. Omit for a text-only subtask."
+                        ),
+                    },
                 },
             },
             read_only=parallel,
@@ -167,6 +208,24 @@ class NativeChildToolPort:
     def _error(code: str) -> ToolResult:
         return ToolResult(status="error", content={"error_code": code})
 
+    @staticmethod
+    def _parse_media_refs(raw) -> tuple[ChildMediaRef, ...]:
+        # Structural validation only. The host authorizes the source and the
+        # addressable parent parts later, against the actual parent run. The
+        # model can never place bytes, paths, URLs or data URLs here: extra
+        # fields are rejected by the frozen contract before any store load.
+        if raw is None:
+            return ()
+        if not isinstance(raw, list) or len(raw) > 20:
+            raise ValueError("child_arguments_invalid")
+        refs: list[ChildMediaRef] = []
+        for item in raw:
+            try:
+                refs.append(ChildMediaRef.model_validate(item))
+            except (ValueError, TypeError):
+                raise ValueError("child_arguments_invalid")
+        return tuple(refs)
+
     def _request(self, request: ToolRequest) -> ChildRunRequest:
         if (
             request.scope != self.scope
@@ -176,7 +235,7 @@ class NativeChildToolPort:
             raise ValueError("child_scope_or_definition_mismatch")
         args = request.call.arguments
         dual_mode = request.definition.child_budget_policy == "delegate/v1"
-        allowed = {"role", "task", "output_format", "output_contract"}
+        allowed = {"role", "task", "output_format", "output_contract", "media"}
         if dual_mode:
             allowed.add("background")
         if (
@@ -196,11 +255,12 @@ class NativeChildToolPort:
             or len(args["task"]) > 32000
         ):
             raise ValueError("child_arguments_invalid")
+        media_refs = self._parse_media_refs(args.get("media"))
         if (
             # The delegated result returns as a tool receipt. The parent must
             # retain one model turn to read it and produce or repair its answer.
-            request.budget.max_model_calls_remaining
-            < (1 if request.budget.parent_finalization_reserved else 2)
+            not call_room(request.budget.max_model_calls_remaining, 0,
+                          1 if request.budget.parent_finalization_reserved else 2)
             or request.budget.depth >= request.budget.max_depth
         ):
             raise ValueError("child_budget_exhausted")
@@ -228,6 +288,7 @@ class NativeChildToolPort:
             if dual_mode else None,
             output_format=args.get("output_format"),
             output_contract=args.get("output_contract"),
+            media_refs=media_refs,
             role=role,
             budget=request.budget,
         )
@@ -282,12 +343,12 @@ class NativeChildToolPort:
         ):
             raise ValueError("child_parallel_read_only_grant_invalid")
         raw = config.model_dump(mode="json")
-        raw["limits"]["max_model_calls"] = min(
+        raw["limits"]["max_model_calls"] = cap_calls(
             config.limits.max_model_calls,
-            child.budget.max_model_calls_remaining
-            - (0 if child.budget.parent_finalization_reserved else 1),
+            remaining_calls(child.budget.max_model_calls_remaining, 0,
+                            0 if child.budget.parent_finalization_reserved else 1),
         )
-        raw["limits"]["max_tool_calls"] = min(
+        raw["limits"]["max_tool_calls"] = cap_calls(
             config.limits.max_tool_calls, child.budget.max_tool_calls_remaining
         )
         raw["limits"]["max_subagent_depth"] = min(
@@ -420,6 +481,15 @@ class NativeChildToolPort:
                 bindings = await bindings
             if not isinstance(bindings, ChildBindings):
                 raise ValueError("child_bindings_invalid")
+            # Fail closed before any child model work when the model asked for
+            # parent media by scoped reference but the host factory did not
+            # resolve it into a typed user input. A legacy or custom factory
+            # that ignores ``media_refs`` must not silently drop the requested
+            # image as plain text; the child never starts, so no HTTP dispatch
+            # and no silent text fallback. Empty refs retain the original
+            # text-only identity and need no resolved input.
+            if child.media_refs and bindings.user_input is None:
+                raise ValueError("child_media_ref_unresolved")
             config = self._configuration(child, bindings)
             tools = bindings.tools
             if bindings.artifacts is not None and tools is not None:
@@ -427,6 +497,7 @@ class NativeChildToolPort:
                 # grants no workspace capability and still consumes child budget.
                 config, tools = install_artifact_tool(
                     config, tools, bindings.artifacts, enable_search=bindings.artifact_search,
+                    enable_catalog=bindings.artifact_catalog,
                     page_policy=bindings.artifact_page_policy,
                     search_policy=bindings.artifact_search_policy,
                 )
@@ -521,9 +592,12 @@ class NativeChildToolPort:
                             **({"continuation_of": child.continuation_of,
                                 "continuation_parent_run_id": child.continuation_parent_run_id}
                                if child.continuation_of is not None else {}),
+                            **({"child_media_policy": "host-scoped-parent-user-input/v1"}
+                               if child.media_refs else {}),
                         },
                         expected_parent_run_id=child.continuation_of,
                         pin_parent=child.continuation_of is not None,
+                        user_input=bindings.user_input,
                     )
                 except StoreConflict:
                     if child.continuation_of is None:
@@ -681,6 +755,11 @@ class NativeChildToolPort:
                 "child_parent_output_contract_not_bound",
                 "child_parent_output_contract_changed",
                 "child_followup_not_available",
+                "child_media_ref_unauthorized",
+                "child_media_ref_not_image",
+                "child_media_ref_invalid",
+                "child_media_ref_unresolved",
+                "child_user_image_input_unsupported",
             }
             result = self._error(
                 str(error) if str(error) in codes else "child_configuration_invalid"

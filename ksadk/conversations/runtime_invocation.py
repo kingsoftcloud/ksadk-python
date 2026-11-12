@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ksadk.skills.request_connection import transient_skill_connection
+
 import asyncio
 import json
 import time
@@ -103,6 +105,7 @@ def _record_baseline_turn(
     )
 
 
+@transient_skill_connection
 async def invoke_conversation_once(
     *,
     runner: Any,

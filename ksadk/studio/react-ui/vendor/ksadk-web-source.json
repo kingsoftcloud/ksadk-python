@@ -1,0 +1,14 @@
+{
+  "source_commit": "3a1dde1f0b86ebd547d34a4787cc5fa57ea36319",
+  "package_name": "@kingsoftcloud/ksadk-web",
+  "package_version": "0.3.18",
+  "artifact_sha256": "da5ab06448e57c33c351d405d39bd38b173e7b7f6f24bfda6f3b6aa1ac101aff",
+  "library_tree_sha256": "920112bf1fcae5947c86b6e3330ace547346e8cbe52b399c310dec61c6da13c3",
+  "hosted_tree_sha256": "647b85c698debdf15d2cb634646dcae9f096e98eeddb33059d91692ac01e0d07",
+  "registry_release": true,
+  "kind": "published-npm-release",
+  "artifact": "kingsoftcloud-ksadk-web-0.3.18.tgz",
+  "artifact_url": "https://registry.npmjs.org/@kingsoftcloud/ksadk-web/-/ksadk-web-0.3.18.tgz",
+  "artifact_integrity": "sha512-RNQ1WLnx1PfwMLxHhFsC8ttiH5ULG00Cc6FVv3YuXZ8b0GD/g6acm3tPW0rIVVdEHQs6DtcRsZ9cGEIBq5aOMA==",
+  "scope": "Published npm release shared by Studio and the built-in Hosted UI"
+}

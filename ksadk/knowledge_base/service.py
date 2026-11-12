@@ -87,7 +87,9 @@ class KnowledgeBaseService:
         client_error = self.last_error
         if not results and client_error:
             return {"query": normalized, "formatted_text": "", "error": client_error}
+        instructions = getattr(self._client, "dataset_instructions", {})
         return {
             "query": normalized,
             "formatted_text": format_knowledge_results(results),
+            "instructions": instructions if instructions else None,
         }

@@ -524,10 +524,9 @@ class PostgresEffectJournal:
             # No lease expiry can turn an unknown effect into a fresh sender.
             # Advisory locking serializes per-tenant initialize and transitions
             # across independent pods while retaining original asyncpg storage.
-            await db.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-                "teams-effect-journal:" + self.namespace,
-            )
+            from ksadk.kernel.postgres_locks import acquire_text_advisory_lock
+
+            await acquire_text_advisory_lock(db, "teams-effect-journal:" + self.namespace)
             await db.execute("SELECT 1 FROM kernel_inbox LIMIT 1")
             row = await db.fetchrow(
                 "SELECT incarnation FROM teams_host_store_identity WHERE namespace=$1",

@@ -1,0 +1,132 @@
+---
+title: "AG-UI and A2UI Integration"
+description: "Add validated, resumable structured input to a developer-owned LangGraph"
+---
+
+AG-UI is an interaction streaming transport; A2UI represents components and user actions. Neither
+replaces business authorization or framework checkpoints. This guide targets the 0.8.7 candidate;
+see [Integration and Configuration](/en/docs/framework/guides/integration-0-8-7/) for installation and both persistence layers.
+
+## Minimal runnable form
+
+Install `ksadk[langgraph,agui]`. This `agent.py` uses native LangGraph and an explicit business Schema,
+with no model calls or cloud-resource side effects. Start here to diagnose UI, database, and resume paths:
+
+```python title="agent.py"
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.graph import END, START, MessagesState, StateGraph
+from ksadk.a2ui import build_a2ui_presentation
+from ksadk.a2ui.catalog import catalog_manifest
+from ksadk.interaction.langgraph import request_input
+
+SCHEMA = {"type": "object", "properties": {
+    "name": {"type": "string", "minLength": 2},
+}, "required": ["name"], "additionalProperties": False}
+
+
+def collect(state):
+    sid = "parameters-" + state["messages"][-1].id
+    def op(**body):
+        return {"version": "v0.9.1", **body}
+    presentation = build_a2ui_presentation([
+        op(createSurface={"surfaceId": sid,
+                          "catalogId": catalog_manifest()["catalog_id"]}),
+        op(updateComponents={"surfaceId": sid, "components": [
+            {"id": "root", "component": "Column", "children": ["name", "submit"]},
+            {"id": "name", "component": "TextField", "label": "Name",
+             "value": {"path": "/answer/name"}},
+            {"id": "submit", "component": "Button", "child": "submit-label",
+             "action": {"event": {"name": "submit",
+                                  "context": {"payload": {"path": "/answer"}}}}},
+            {"id": "submit-label", "component": "Text", "text": "Submit"},
+        ]}),
+        op(updateDataModel={"surfaceId": sid, "path": "/", "value": {"answer": {"name": ""}}}),
+    ], title="Confirm parameters")
+    answer = request_input("Enter a name", SCHEMA, presentation=presentation)
+    return {"messages": [AIMessage(content="Received: " + answer["name"])]}
+
+
+def ksadk_prepare_state(payload, session_context):
+    return {"messages": payload.get("messages") or [
+        HumanMessage(content=payload.get("input", ""))
+    ]}
+
+
+def ksadk_graph_factory(*, checkpointer):
+    graph = StateGraph(MessagesState)
+    graph.add_node("collect", collect)
+    graph.add_edge(START, "collect")
+    graph.add_edge("collect", END)
+    return graph.compile(checkpointer=checkpointer)
+
+
+root_agent = ksadk_graph_factory(checkpointer=None)
+```
+
+```yaml title="agentengine.yaml"
+name: input-demo
+framework: langgraph
+artifact_type: Code
+entry_point: agent.py
+agent_variable: root_agent
+```
+
+Enable automatic checkpoints and run project Web locally:
+
+```bash
+KSADK_LANGGRAPH_AUTO_CHECKPOINT=1 agentengine web .
+```
+
+Without PostgreSQL settings it uses local SQLite. For hosted execution configure Kernel, Session,
+and framework checkpoints as described in the integration guide; the platform must admit and project
+the runtime contract. A standalone `graph.ainvoke()` is not a complete Web/Broker/Hosted validation.
+
+## Generate dynamic interfaces
+
+First verify the fixed form above submits successfully, then add model generation to your own node:
+
+```python
+from ksadk.compat.copilotkit_a2ui import build_ksadk_a2ui_tool
+
+# model is your configured LangChain chat model.
+generate_ui = build_ksadk_a2ui_tool({
+    "model": model,
+    "recovery": {"maxAttempts": 3},
+})
+```
+
+Execute the generation tool through native `ToolNode`, pass successful `a2ui_operations` to
+`build_a2ui_presentation`, and then supply it to `request_input`. Generation, waiting for input, and
+business completion can be separate nodes so resume continues from a persisted wait rather than
+regenerating the interface or repeating business calls.
+
+Generation and wire validation use a registered catalog and `v0.9.1` operations. Models must not
+invent component names, properties, or catalog identities. Business input Schema is authoritative;
+presentation cannot expand business permissions. Custom catalogs require explicit registration and
+a matching frontend renderer, not merely an unregistered `catalogId`.
+
+## Transport and dependencies
+
+| Layer | Current contract | Integration |
+| --- | --- | --- |
+| AG-UI | `ag-ui-protocol==1.0.0`; negotiated protocol `1.0` | Install the `agui` extra, read bootstrap, and select its declared entry such as `/agentengine/agui`. |
+| LangGraph bridge | `ag-ui-langgraph==0.0.47`, `copilotkit==0.1.96` | SDK-owned composition; do not depend on private bridge graph attributes. |
+| A2UI toolkit | `ag-ui-a2ui-toolkit==0.0.4` | Use the SDK compatibility helper to keep model calls on the active event loop. |
+| Web companion | `@kingsoftcloud/ksadk-web@0.3.18` | Inspect loaded assets; the shared Hosted UI requires a separate compatible deployment. |
+
+Existing Responses clients can stay unchanged. Custom clients negotiate through bootstrap rather
+than assuming AG-UI is enabled for every Agent. Submit interactions with server-issued `RunId`,
+`InteractionId`, `ExpectedRevision`, and an idempotency key. Do not resend input JSON as a chat message
+or re-enqueue the original task when its admission outcome is uncertain.
+
+## Validation and failure handling
+
+Check Session and checkpoint readiness independently, then verify display, editing, submission,
+and completion. Reloads or restarts should restore the same pending interaction; submitted forms
+must not execute again.
+
+Models can generate unsupported styles or structures; complex style requests can fail validation.
+Inspect generation results and retry records. Show failures to users, or use a business-approved
+Schema form without A2UI presentation as fallback. `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` defaults
+to 20 seconds and accepts 1–120 seconds. It is not a database timeout, and increasing it does not fix
+invalid components. Never remove validation or wrap a failed result as a successful interface.

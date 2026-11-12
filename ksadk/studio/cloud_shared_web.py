@@ -343,6 +343,7 @@ class CloudSharedWebBridge:
         after_seq_id: int | None = None,
         before_seq_id: int | None = None,
         limit: int = 50,
+        **history_options: Any,
     ) -> dict[str, Any]:
         payload = await self.cloud.list_cloud_chat_messages(
             cloud_chat_target(agent_id),
@@ -350,7 +351,13 @@ class CloudSharedWebBridge:
             after_seq_id=after_seq_id,
             before_seq_id=before_seq_id,
             limit=min(200, max(1, limit)),
+            **history_options,
         )
+        # The signed gateway preserves the public wire contract, including
+        # opaque business JSON, tool facts and server-owned history cursors.
+        # Keep the legacy normalized projection below for older gateways.
+        if "Messages" in payload:
+            return payload
         rows = payload.get("messages") or []
         messages: list[dict[str, Any]] = []
         latest_seq_id = int(payload.get("latest_seq_id") or payload.get("latestSeqId") or 0)
@@ -405,6 +412,7 @@ class CloudSharedWebBridge:
         after_seq_id: int | None = None,
         offset: int | None = None,
         limit: int = 200,
+        **history_options: Any,
     ) -> dict[str, Any]:
         safe_limit = min(500, max(1, limit))
         payload = await self.cloud.list_cloud_chat_events(
@@ -413,7 +421,10 @@ class CloudSharedWebBridge:
             after_seq_id=after_seq_id,
             offset=offset,
             limit=safe_limit,
+            **history_options,
         )
+        if "Events" in payload:
+            return payload
         rows = payload.get("events") or []
         events: list[dict[str, Any]] = []
         for row in rows:
@@ -518,6 +529,10 @@ class CloudSharedWebBridge:
             tool_approval_mode=approval_mode,
             collaboration_mode=collaboration_mode,
             goal_objective=goal_objective,
+            **({"extensions": payload["Extensions"]}
+               if isinstance(payload.get("Extensions"), dict) else {}),
+            **({"invocation_id": str(payload["InvocationId"])}
+               if payload.get("InvocationId") else {}),
         )
 
     async def stream_run(
@@ -633,13 +648,27 @@ class CloudSharedWebBridge:
         session_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        if "Response" not in payload:
+            raise StudioError(
+                "INTERACTION_RESPONSE_REQUIRED", "缺少表单答案 Response", status_code=400
+            )
+        revision = payload.get("ExpectedRevision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise StudioError(
+                "INTERACTION_REVISION_INVALID", "ExpectedRevision 必须为正整数", status_code=400
+            )
+        action = payload.get("InteractionAction", payload.get("Action"))
+        if not isinstance(action, str) or not action or action == "SubmitInteraction":
+            raise StudioError(
+                "INTERACTION_ACTION_REQUIRED", "缺少交互操作 InteractionAction", status_code=400
+            )
         return await self.cloud.submit_cloud_chat_interaction(
             cloud_chat_target(agent_id),
             session_id=session_id,
             run_id=str(payload.get("RunId") or ""),
             interaction_id=str(payload.get("InteractionId") or ""),
-            expected_revision=int(payload.get("ExpectedRevision") or 1),
-            action=str(payload.get("Action") or "approve"),
-            response=payload.get("Response") if isinstance(payload.get("Response"), dict) else {},
+            expected_revision=revision,
+            action=action,
+            response=payload["Response"],
             idempotency_key=str(payload.get("IdempotencyKey") or ""),
         )

@@ -10,15 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 import logging
-import time
-from collections.abc import Mapping
+import traceback
 from contextlib import nullcontext
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional, cast
-
-from pydantic import JsonValue
 
 from ksadk.common.diagnostics import safe_exception_detail
 from ksadk.conversations.runtime_input import _runner_name
@@ -30,34 +26,24 @@ from ksadk.conversations.runtime_observability import (
     _set_skill_eval_result_attributes,
 )
 from ksadk.events.canonical import (
-    ApprovalRequest,
-    ContentSnapshot,
-    ContinuationCreated,
     ErrorInfo,
     EventEnvelope,
-    InteractionRequested,
     ItemCompleted,
-    ItemStarted,
-    ItemUpdated,
     RunCompleted,
     RunFailed,
-    RunProgress,
     RuntimeEvent,
-    SourceRef,
     UsageReported,
 )
-from ksadk.events.content import DataContent, TextContent, ToolCallContent, ToolResultContent
-from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
+from ksadk.events.content import TextContent
+from ksadk.events.identity import stable_item_id, stable_scope_id
+from ksadk.events.usage import apply_usage_report
+from ksadk.runtime._runner_adapter.chunk_mapping import RunnerChunkMappingMixin, _a2ui_surface_event
+from ksadk.runtime._runner_adapter.a2ui_surface import bind_legacy_input_surface
 from ksadk.runtime.adapter import RunHandle
 from ksadk.runtime.preprocessing import PreparedRuntimeStart
 from ksadk.runtime.skill_eval_result import extract_skill_eval_result
 from ksadk.runtime.timing import extract_timing
-from ksadk.runtime.usage import canonical_usage_payload
 from ksadk.runtime_context import platform_invocation_scope
-from ksadk.tools.gateway import approval_interrupt_info_from_result
-
-from ksadk.runtime._runner_adapter.a2ui_surface import _a2ui_surface_event
-from ksadk.runtime._runner_adapter.gateway_approvals import _canonical_gateway_approvals
 
 if TYPE_CHECKING:
     from ksadk.runtime.runner_adapter import _ActiveRun
@@ -107,7 +93,9 @@ async def _pump_stream_in_one_context(
     await results.put(outcome)
 
 
-class _RunnerStreamMappingMixin:
+
+
+class _RunnerStreamMappingMixin(RunnerChunkMappingMixin):
     """``_map_runner_stream`` / ``_chunk_to_event`` 的实现载体(纯移动自 runner_adapter)。"""
 
     async def _map_runner_stream(
@@ -140,6 +128,7 @@ class _RunnerStreamMappingMixin:
         runner_name = _runner_name(self._runner)  # type: ignore[attr-defined]
         accumulated_output = ""
         usage: dict[str, Any] = {}
+        usage_event_ids: set[str] = set()
         runner_gen: Optional[AsyncIterator[Any]] = None
         pump_requests: asyncio.Queue[None] | None = None
         pump_queue: asyncio.Queue[tuple[str, Any]] | None = None
@@ -174,7 +163,8 @@ class _RunnerStreamMappingMixin:
                         False,  # type: ignore[attr-defined]
                     ) and not (
                         self._runtime_type == "langgraph"
-                        and getattr(self._runner, "_managed_a2a_bootstrap", None) is not None
+                        and (getattr(self._runner, "_managed_a2a_bootstrap", None) is not None
+                             or getattr(self._runner, "prefers_canonical_stream", False))
                     ):
                         canonical_stream = None
                     stream_result = (
@@ -260,16 +250,12 @@ class _RunnerStreamMappingMixin:
                                     for part in chunk.snapshot.parts
                                     if isinstance(part, TextContent)
                                 )
-                            elif isinstance(chunk, UsageReported):
-                                usage.update(
-                                    {
-                                        "input_tokens": chunk.input_tokens,
-                                        "output_tokens": chunk.output_tokens,
-                                        "total_tokens": chunk.total_tokens,
-                                        "cached_tokens": chunk.cached_tokens,
-                                        "reasoning_tokens": chunk.reasoning_tokens,
-                                    }
-                                )
+                            elif (
+                                isinstance(chunk, UsageReported)
+                                and chunk.event_id not in usage_event_ids
+                            ):
+                                usage = apply_usage_report(usage, chunk)
+                                usage_event_ids.add(chunk.event_id)
                         if isinstance(chunk, dict):
                             chunk_type = str(chunk.get("type") or "")
                             if chunk_type == "final" and run is not None:
@@ -298,6 +284,8 @@ class _RunnerStreamMappingMixin:
                             raw_usage = chunk.get("usage")
                             if isinstance(raw_usage, dict):
                                 usage.update(raw_usage)
+                        # The ledger must see the verified display before it persists the wait.
+                        bind_legacy_input_surface(self, handle, chunk)
                         for event in self._chunk_to_event(handle, run, chunk):  # type: ignore[attr-defined]
                             if getattr(event, "event_type", "") in {
                                 "run.completed",
@@ -310,6 +298,15 @@ class _RunnerStreamMappingMixin:
                         for a2ui_surface in _a2ui_surface_event(self, handle, chunk):
                             yield a2ui_surface
             except Exception as exc:
+                # Record locations only: exception strings and locals can contain
+                # credentials or user tool payloads. Empty TimeoutError messages
+                # otherwise make checkpoint/transport failures indistinguishable.
+                logger.warning(
+                    "Runner stream exception type=%s locations=%s",
+                    type(exc).__name__,
+                    " > ".join(f"{frame.name}:{frame.lineno}"
+                               for frame in traceback.extract_tb(exc.__traceback__)),
+                )
                 # 原始 runner 异常(如 GraphRecursionError)不走 "error" chunk 路径。
                 # 不转换则 canonical 事件流没有 run.failed 终态：下游按"流结束无终态"
                 # 报错，会话 run 状态缺失 canonical failed，前端只见干净收尾。这里
@@ -356,571 +353,6 @@ class _RunnerStreamMappingMixin:
                         run.chunk_task = None
                     run.cancellation_ack.set()
 
-    _canonical_gateway_approvals = _canonical_gateway_approvals
-
-    def _chunk_to_event(
-        self, handle: RunHandle, run: Optional[_ActiveRun], chunk: Any
-    ) -> list[RuntimeEvent]:
-        if isinstance(chunk, EventEnvelope):
-            # canonical 事件(来自 stream_canonical_events):直接转发,
-            # 抑制 runner 自己的 run.started(adapter 已发自己的)。
-            if chunk.event_type == "run.started":
-                return []
-            if (
-                self._runtime_type == "langgraph"
-                and chunk.source.framework == "langgraph"
-                and isinstance(chunk, ContinuationCreated)
-                and chunk.continuation_kind == "graph_checkpoint"
-            ):
-                # The canonical continuation arrives before its interaction.
-                # Retain its native target just as the legacy checkpoint path
-                # does, so Kernel records and resumes the original interrupt.
-                checkpoint_id = chunk.ref.get("checkpoint_id")
-                thread_id = chunk.ref.get("thread_id")
-                if (
-                    isinstance(checkpoint_id, str)
-                    and checkpoint_id
-                    and isinstance(thread_id, str)
-                    and thread_id
-                ):
-                    native_ref = {key: chunk.ref[key] for key in (
-                        "checkpoint_id", "thread_id", "checkpoint_ns"
-                    ) if key in chunk.ref}
-                    handle.native_ref.update(native_ref)
-                    handle.native_ref["framework_ref"] = {"langgraph": native_ref}
-                    known = handle.native_ref.setdefault("known_checkpoint_ids", [])
-                    if checkpoint_id not in known:
-                        known.append(checkpoint_id)
-            if (
-                self._runtime_type == "langgraph"
-                and chunk.source.framework == "langgraph"
-                and isinstance(chunk, ItemCompleted)
-            ):
-                approvals = self._canonical_gateway_approvals(handle, run, chunk)
-                if approvals:
-                    return [chunk, *approvals]
-            return [chunk]
-        if not isinstance(chunk, dict):
-            chunk = {"type": "text", "delta": str(chunk)}
-
-        framework = self._runtime_type  # type: ignore[attr-defined]
-        run_id = handle.run_id
-        scope_id = stable_scope_id(framework, run_id)
-        started = run.started_items if run is not None else set()
-
-        def ensure_started(
-            *,
-            item_id: str,
-            item_kind: str,
-            phase: str | None = None,
-            initial: ContentSnapshot | None = None,
-        ) -> list[RuntimeEvent]:
-            key = (scope_id, item_id)
-            if key in started:
-                return []
-            started.add(key)
-            return [
-                ItemStarted(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="item.started",
-                        part_id="item",
-                    ),
-                    item_id=item_id,
-                    item_kind=item_kind,
-                    phase=phase,
-                    initial=initial,
-                )
-            ]
-
-        def tool_item_id(effective_call_id: str, item_kind: str) -> str:
-            components = (effective_call_id, item_kind)
-            if run is None:
-                return stable_item_id(framework, run_id, *components)
-            occurrences = run.__dict__.setdefault("_tool_item_occurrences", {})
-            occurrence_key = (scope_id, item_kind, effective_call_id)
-            occurrence = int(occurrences.get(occurrence_key, 0))
-            occurrences[occurrence_key] = occurrence + 1
-            if occurrence == 0:
-                return stable_item_id(framework, run_id, *components)
-            return stable_item_id(
-                framework,
-                run_id,
-                *components,
-                "occurrence",
-                occurrence,
-            )
-
-        chunk_type = chunk.get("type")
-
-        # ---- reasoning ----
-        if chunk_type in ("reasoning", "reasoning_delta", "thinking"):
-            text = self._coerce(  # type: ignore[attr-defined]
-                chunk.get("delta")
-                or chunk.get("content")
-                or chunk.get("output")
-                or chunk.get("data")
-            )
-            if not text:
-                return []
-            item_id = stable_item_id(framework, run_id, "reasoning")
-            events: list[RuntimeEvent] = ensure_started(
-                item_id=item_id, item_kind="reasoning", phase="commentary"
-            )
-            if chunk.get("status") in ("completed", "done"):
-                events.append(
-                    ItemCompleted(
-                        **self._canonical_kwargs(  # type: ignore[attr-defined]
-                            handle,
-                            scope_id=scope_id,
-                            item_id=item_id,
-                            event_type="item.completed",
-                            part_id="reasoning-text",
-                        ),
-                        item_id=item_id,
-                        item_kind="reasoning",
-                        snapshot=ContentSnapshot(
-                            parts=(TextContent(part_id="reasoning-text", text=text),)
-                        ),
-                    )
-                )
-            else:
-                events.append(
-                    ItemUpdated(
-                        **self._canonical_kwargs(  # type: ignore[attr-defined]
-                            handle,
-                            scope_id=scope_id,
-                            item_id=item_id,
-                            event_type="item.updated",
-                            part_id="reasoning-text",
-                        ),
-                        item_id=item_id,
-                        item_kind="reasoning",
-                        op="append",
-                        update=TextContent(part_id="reasoning-text", text=text),
-                    )
-                )
-            return events
-
-        # ---- tool_call ----
-        if chunk_type in ("tool_call", "tool_start"):
-            call_id = str(
-                chunk.get("tool_call_id")
-                or chunk.get("call_id")
-                or chunk.get("run_id")
-                or chunk.get("id")
-                or ""
-            )
-            name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
-            effective_call_id = call_id or name
-            item_id = tool_item_id(effective_call_id, "tool_call")
-            part_id = "tool_call"
-            tc_content = ToolCallContent(
-                part_id=part_id,
-                call_id=effective_call_id,
-                name=name,
-                arguments=cast(JsonValue, chunk.get("tool_args", chunk.get("args")) or {}),
-            )
-            return [
-                ItemStarted(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="item.started",
-                        part_id=part_id,
-                    ),
-                    item_id=item_id,
-                    item_kind="tool_call",
-                    phase="commentary",
-                    initial=ContentSnapshot(parts=(tc_content,)),
-                ),
-                ItemCompleted(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="item.completed",
-                        part_id=part_id,
-                    ),
-                    item_id=item_id,
-                    item_kind="tool_call",
-                    snapshot=ContentSnapshot(parts=(tc_content,)),
-                ),
-            ]
-
-        # ---- tool_result ----
-        if chunk_type in ("tool_result", "tool_end"):
-            call_id = str(
-                chunk.get("tool_call_id")
-                or chunk.get("call_id")
-                or chunk.get("run_id")
-                or chunk.get("id")
-                or ""
-            )
-            name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
-            effective_call_id = call_id or name
-            item_id = tool_item_id(effective_call_id, "tool_result")
-            part_id = "tool_result"
-            result_data = chunk.get("tool_output", chunk.get("output"))
-            # ToolGateway 审批可能出现在"本已终态"的 tool result 里;识别后转为
-            # canonical InteractionRequested(语义续跑由 runner 的
-            # supports_gateway_approval_semantic_resume 决定)。
-            tool_args = chunk.get("tool_args", chunk.get("args"))
-            approval_detail = approval_interrupt_info_from_result(
-                result_data,
-                fallback_tool_name=name,
-                tool_args=tool_args,
-                run_id=call_id or None,
-            )
-            if approval_detail is not None:
-                return self._interaction_requested_from_approval(  # type: ignore[attr-defined]
-                    handle,
-                    run,
-                    detail=approval_detail,
-                    call_id=call_id,
-                )
-            tr_content = ToolResultContent(
-                part_id=part_id,
-                call_id=effective_call_id,
-                result=cast(JsonValue, result_data if result_data is not None else {}),
-                is_error=bool(chunk.get("error")),
-            )
-            return [
-                ItemStarted(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="item.started",
-                        part_id=part_id,
-                    ),
-                    item_id=item_id,
-                    item_kind="tool_result",
-                    phase="commentary",
-                ),
-                ItemCompleted(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="item.completed",
-                        part_id=part_id,
-                    ),
-                    item_id=item_id,
-                    item_kind="tool_result",
-                    snapshot=ContentSnapshot(parts=(tr_content,)),
-                ),
-            ]
-
-        # ---- interrupt / approval ----
-        if chunk_type in ("interrupt", "approval", "approval_required"):
-            detail = chunk.get("interrupt_info") or chunk.get("detail") or {}
-            detail_id = detail.get("approval_request_id") if isinstance(detail, dict) else None
-            call_id = str(
-                chunk.get("call_id")
-                or chunk.get("approval_id")
-                or chunk.get("id")
-                or detail_id
-                or ""
-            )
-            if run is not None and call_id:
-                run.pending_approvals.add(call_id)
-            if call_id:
-                pending_approval_ids = handle.native_ref.setdefault("pending_approval_ids", [])
-                if call_id not in pending_approval_ids:
-                    pending_approval_ids.append(call_id)
-            interaction_id = call_id or stable_item_id(framework, run_id, "interaction")
-            item_id = stable_item_id(framework, run_id, "interaction")
-            detail_value: JsonValue = (
-                cast(JsonValue, detail)
-                if isinstance(detail, (dict, list, str, int, float, bool, type(None)))
-                else None
-            )
-            return [
-                InteractionRequested(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="interaction.requested",
-                        part_id="interaction",
-                    ),
-                    interaction_id=interaction_id,
-                    interaction_kind="approval",
-                    request=ApprovalRequest(
-                        call_id=call_id or None,
-                        kind="tool",
-                        detail=detail_value,
-                    ),
-                )
-            ]
-
-        # ---- checkpoint ----
-        if chunk_type == "checkpoint":
-            raw_metadata = chunk.get("metadata")
-            metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
-            raw_agentengine = metadata.get("agentengine")
-            agentengine: dict[str, Any] = (
-                raw_agentengine if isinstance(raw_agentengine, dict) else {}
-            )
-            ckpt_framework = str(agentengine.get("framework") or self._runtime_type)  # type: ignore[attr-defined]
-            framework_ref = agentengine.get("framework_ref") or {}
-            runtime_ref = (
-                framework_ref.get(ckpt_framework) if isinstance(framework_ref, dict) else {}
-            ) or {}
-            checkpoint_id = str(
-                runtime_ref.get("checkpoint_id") if isinstance(runtime_ref, dict) else ""
-            )
-            if not checkpoint_id:
-                return []
-            handle.native_ref["checkpoint_id"] = checkpoint_id
-            known_checkpoint_ids = handle.native_ref.setdefault("known_checkpoint_ids", [])
-            if checkpoint_id not in known_checkpoint_ids:
-                known_checkpoint_ids.append(checkpoint_id)
-            handle.native_ref["framework_ref"] = framework_ref
-            if isinstance(runtime_ref, dict):
-                handle.native_ref.update(runtime_ref)
-            item_id = stable_item_id(framework, run_id, "$run")
-            # Extract checkpoint capability from agentengine metadata so the
-            # canonical event carries backend/scope/next_node facts that the
-            # projection layer (projection.py) needs for the REST payload.
-            capability: dict[str, Any] = {}
-            for cap_key in (
-                # Capability / resume fields
-                "backend", "scope", "durable", "next_node",
-                "is_terminal", "is_resumable", "resume_status",
-                "resume_disabled_reason",
-                # Checkpoint display fields
-                "phase", "stage", "stage_name", "stage_key",
-                "stage_index", "total_stages", "summary",
-                "next_action", "status", "artifact_preview",
-                "tool_name", "receipt_key", "artifact_path",
-            ):
-                cap_val = agentengine.get(cap_key)
-                if cap_val is not None:
-                    capability[cap_key] = cap_val
-            canonical_kwargs = self._canonical_kwargs(  # type: ignore[attr-defined]
-                handle,
-                scope_id=scope_id,
-                item_id=item_id,
-                event_type="continuation.created",
-                part_id="continuation",
-            )
-            if capability:
-                base_source = canonical_kwargs["source"]
-                canonical_kwargs["source"] = SourceRef(
-                    framework=base_source.framework,
-                    protocol=base_source.protocol,
-                    native_run_id=base_source.native_run_id,
-                    metadata={**base_source.metadata, "capability": capability},
-                )
-            ref_value = cast(
-                JsonValue,
-                framework_ref if isinstance(framework_ref, dict) else {},
-            )
-            next_node_val = agentengine.get("next_node")
-            return [
-                ContinuationCreated(
-                    **canonical_kwargs,
-                    continuation_id=checkpoint_id,
-                    continuation_kind="graph_checkpoint",
-                    resumable=bool(agentengine.get("is_resumable", True)),
-                    ref={
-                        "framework": ckpt_framework,
-                        "framework_ref": ref_value,
-                        "resume_target": ref_value,
-                        **({"next_node": str(next_node_val)} if next_node_val else {}),
-                    },
-                )
-            ]
-
-        # ---- graph_update ----
-        if chunk_type == "graph_update":
-            item_id = stable_item_id(framework, run_id, "$run")
-            return [
-                RunProgress(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="run.progress",
-                        part_id="run",
-                    ),
-                    status="running",
-                    message=str(chunk.get("node") or ""),
-                )
-            ]
-
-        # ---- usage ----
-        if chunk_type == "usage":
-            raw_usage = chunk.get("usage")
-            usage_dict = (
-                canonical_usage_payload(raw_usage, runtime_type=framework)
-                if isinstance(raw_usage, Mapping)
-                else {}
-            )
-            item_id = stable_item_id(framework, run_id, "$run")
-            return [
-                UsageReported(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="usage.reported",
-                        part_id="usage",
-                    ),
-                    input_tokens=int(usage_dict.get("input_tokens") or 0),
-                    output_tokens=int(usage_dict.get("output_tokens") or 0),
-                    total_tokens=int(usage_dict.get("total_tokens") or 0),
-                    cached_tokens=int(usage_dict.get("cached_tokens") or 0),
-                    reasoning_tokens=int(usage_dict.get("reasoning_tokens") or 0),
-                )
-            ]
-
-        # ---- error ----
-        if chunk_type == "error":
-            error = self._coerce(chunk.get("message") or chunk.get("error"))  # type: ignore[attr-defined]
-            item_id = stable_item_id(framework, run_id, "$run")
-            return [
-                RunFailed(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="run.failed",
-                        part_id="run",
-                    ),
-                    status="failed",
-                    error=ErrorInfo(
-                        code="runner_failed",
-                        message=error or "runner failed",
-                        source=framework,
-                        scope_id=scope_id,
-                    ),
-                )
-            ]
-
-        # ---- final ----
-        if chunk_type == "final":
-            output = self._coerce(chunk.get("output"))  # type: ignore[attr-defined]
-            item_id = stable_item_id(framework, run_id, "message", "final_answer")
-            if run is not None:
-                run.final_answer_item_id = item_id
-            text_content = TextContent(part_id="text-0", text=output)
-            # Auto-close any open explicit commentary/reasoning item before completing
-            # final_answer. Text deltas already belong to the final-answer item and must
-            # keep that identity through completion.
-            # Commentary/thinking deltas create items that are never ItemCompleted;
-            # without this, RunCompleted fails _ensure_no_open_items.
-            #
-            # Close them *before* allocating the final-answer item.  Event
-            # constructors allocate ``seq`` eagerly, so inserting a later
-            # completion at index zero would otherwise return an event list
-            # whose physical order disagrees with its sequence numbers.
-            events: list[RuntimeEvent] = []
-            for close_kind, close_part_id, close_components in (
-                ("message", "text-0", ("message", "commentary")),
-                ("reasoning", "reasoning-text", ("reasoning",)),
-            ):
-                close_item_id = stable_item_id(framework, run_id, *close_components)
-                close_key = (scope_id, close_item_id)
-                if close_key in started:
-                    started.discard(close_key)
-                    events.append(
-                        ItemCompleted(
-                            **self._canonical_kwargs(  # type: ignore[attr-defined]
-                                handle,
-                                scope_id=scope_id,
-                                item_id=close_item_id,
-                                event_type="item.completed",
-                                part_id=close_part_id,
-                            ),
-                            item_id=close_item_id,
-                            item_kind=close_kind,
-                            snapshot=ContentSnapshot(
-                                parts=(TextContent(part_id=close_part_id, text=""),)
-                            ),
-                        ),
-                    )
-            events.extend(
-                ensure_started(item_id=item_id, item_kind="message", phase="final_answer")
-            )
-            # The dict-chunk path is still required for gateway approval flows.
-            # It must project runner-final usage into the canonical stream too;
-            # otherwise non-streaming Runs aggregate zero even when the runner
-            # returned provider token accounting.
-            raw_usage = chunk.get("usage")
-            if isinstance(raw_usage, Mapping):
-                usage_dict = canonical_usage_payload(
-                    raw_usage,
-                    runtime_type=framework,
-                )
-                input_tokens = usage_dict["input_tokens"]
-                output_tokens = usage_dict["output_tokens"]
-                total_tokens = usage_dict["total_tokens"]
-                if input_tokens or output_tokens or total_tokens:
-                    events.append(
-                        UsageReported(
-                            **self._canonical_kwargs(  # type: ignore[attr-defined]
-                                handle,
-                                scope_id=scope_id,
-                                item_id=stable_item_id(framework, run_id, "$run"),
-                                event_type="usage.reported",
-                                part_id="usage",
-                            ),
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            total_tokens=total_tokens,
-                            cached_tokens=usage_dict["cached_tokens"],
-                            reasoning_tokens=usage_dict["reasoning_tokens"],
-                        )
-                    )
-            events.append(
-                ItemCompleted(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="item.completed",
-                        part_id="text-0",
-                    ),
-                    item_id=item_id,
-                    item_kind="message",
-                    snapshot=ContentSnapshot(parts=(text_content,)),
-                )
-            )
-            return events
-
-        # ---- default: text delta ----
-        text = self._coerce(chunk.get("delta") or chunk.get("output") or chunk.get("data"))  # type: ignore[attr-defined]
-        if not text:
-            return []
-        is_commentary = chunk_type in {"commentary", "commentary_delta"}
-        phase = "commentary" if is_commentary else "final_answer"
-        item_id = stable_item_id(framework, run_id, "message", phase)
-        if run is not None and not is_commentary:
-            run.final_answer_item_id = item_id
-        op: str = "replace" if chunk.get("replace") else "append"
-        events = ensure_started(item_id=item_id, item_kind="message", phase=phase)
-        events.append(
-            ItemUpdated(
-                **self._canonical_kwargs(  # type: ignore[attr-defined]
-                    handle,
-                    scope_id=scope_id,
-                    item_id=item_id,
-                    event_type="item.updated",
-                    part_id="text-0",
-                ),
-                item_id=item_id,
-                item_kind="message",
-                op=op,
-                update=TextContent(part_id="text-0", text=text),
-            )
-        )
-        return events
 
 
 __all__ = ["_RunnerStreamMappingMixin", "_a2ui_surface_event", "_anext_or_stop", "_STREAM_STOP"]

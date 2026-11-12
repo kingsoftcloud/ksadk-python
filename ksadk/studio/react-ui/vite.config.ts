@@ -1,21 +1,17 @@
 import path from "path"
 import react from "@vitejs/plugin-react"
-import { defineConfig, type Plugin } from "vite"
-
-function stripTrailingWhitespace(): Plugin {
-  return {
-    name: "strip-generated-trailing-whitespace",
-    generateBundle(_options, bundle) {
-      for (const output of Object.values(bundle)) {
-        if (output.type === "chunk") output.code = output.code.replace(/[\t ]+$/gm, "")
-      }
-    },
-  }
-}
+import { defineConfig } from "vite"
 
 export default defineConfig(({ command }) => ({
   base: command === "build" ? "/static/" : "/",
-  plugins: [react(), stripTrailingWhitespace()],
+  // Generated chunks contain meaningful whitespace inside template literals
+  // (including Lit's attribute parser). Leave JS rewriting to the bundler.
+  plugins: [react(), {
+    name: "preserve-generated-js-literals",
+    // The removed generateBundle rewrite ran after content hashing. Fixed
+    // bytes would otherwise reuse an old, immutable-cached asset filename.
+    augmentChunkHash: () => "preserve-js-literals-v1",
+  }],
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "./src") },
   },

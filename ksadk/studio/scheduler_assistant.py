@@ -38,7 +38,9 @@ class ScheduleIntent(BaseModel):
 
 
 _SCHEDULE_TOPIC = re.compile(
-    r"定时|周期|自动化|计划任务|每天|每日|每周|每星期|每月|工作日|"
+    # 生命周期 is a lifecycle discussion, not a periodic scheduling request.
+    # Other explicit schedule terms in the same message still route normally.
+    r"定时|(?<!生命)周期|自动化|计划任务|每天|每日|每周|每星期|每月|工作日|"
     r"每(?:隔)?\s*[\d一二两三四五六七八九十百半几多少]+\s*(?:分|小时|天|日|周)|"
     r"(?:明天|后天|今晚|今天).{0,16}(?:点|时|[:：])|"
     r"\b(?:schedul\w*|automation\w*|cron|daily|weekly|hourly|tomorrow)\b|"

@@ -13,6 +13,7 @@ from .context import (
     ContextMessage,
 )
 from .context_artifact_page import artifact_page_observation
+from .context_directory_progress import directory_listing_observation
 from .context_history import (
     ContextRuntimeError,
     _content_blocks,
@@ -45,6 +46,8 @@ from .tool_observation import (
 )
 from .turn_control import ModelTurnControl
 
+FINALIZATION_READER_PROJECTION_POLICY = "existing-reader-view-without-summary/v1"
+
 
 class ContextRequestProjection:
     def _prune_old_results(self, prepared, *, refs, active, groups, mandatory, metadata,
@@ -68,10 +71,13 @@ class ContextRequestProjection:
             if ref in cleared_refs else message
             for ref, message in zip(refs, projected)
         )
-        if history.count:
+        if history.has_projection:
             from .context_runtime_contracts import _compacted_messages
 
-            projected = _compacted_messages(history.summary_text, projected, continuity.goal)
+            projected = _compacted_messages(
+                history.summary_text, projected, continuity.goal,
+                projection=self.compaction_message_projection,
+            )
         view = self._prepared(prepared.instructions, projected, fixed, turn_control,
                               profile=profile, goal=continuity.goal,
                               abandoned=history.abandoned_replay_digests,
@@ -92,9 +98,11 @@ class ContextRequestProjection:
             raise ContextRuntimeError(str(exc)) from None
 
     def summary_reservation(self, profile: ModelProfile) -> int:
-        """The actual rolling-summary text ceiling plus its two message frames."""
+        """The declared summary ceiling plus frames actually sent by this policy."""
         return (min(self.policy.summary_max_tokens, profile.max_output_tokens)
-                + self._count_message(_summary("")) + self._count_message(_resume()))
+                + self._count_message(_summary(""))
+                + (self._count_message(_resume())
+                   if self.compaction_message_projection is None else 0))
 
     def count_model_message(self, message, profile: ModelProfile) -> int:
         """Measure the same host projection used in admitted model requests."""
@@ -371,8 +379,34 @@ class ContextRequestProjection:
                 break
         return retained
 
+    def _post_summary_read_candidate(
+        self, metadata, active, groups, retained, fresh_group, *, continuity, history, tools,
+    ):
+        # Only reconsider the latest, not-yet-answered complete source group.
+        # Existing retained tool groups keep their original working-set budget;
+        # this narrow path never adds a second group above those limits.
+        if (
+            not groups or groups[-1] != fresh_group
+            or any(group.intersection(retained) for group in groups)
+        ):
+            return ()
+        eligible = self._read_working_set_groups(
+            metadata, active, groups, continuity=continuity, history=history, tools=tools,
+            allow_directory_companions=True,
+        )
+        latest = groups[-1]
+        cost = sum(m.token_count for m in metadata if m.message_id in latest)
+        if (
+            latest not in eligible
+            or cost > self.policy.read_working_set_max_tokens
+            or cost > self.policy.read_working_set_total_max_tokens
+        ):
+            return ()
+        return tuple(m.message_id for m in metadata if m.message_id in latest)
+
     def _read_working_set_groups(
-        self, metadata, active, groups, *, continuity=None, history=None, tools=()
+        self, metadata, active, groups, *, continuity=None, history=None, tools=(),
+        allow_directory_companions=False,
     ):
         """Select bounded, complete source receipts with the correct freshness domain.
 
@@ -385,7 +419,7 @@ class ContextRequestProjection:
         stale_historical_refs = (
             frozenset(history.retained_message_refs)
             if history is not None
-            and history.count
+            and history.has_projection
             and (
                 continuity is None
                 or continuity.workspace_revision is None
@@ -437,11 +471,25 @@ class ContextRequestProjection:
                 continue
             identities = set()
             immutable_artifact_batch = True
+            has_source = False
             for result in results:
                 name, arguments = names_by_call.get(result.tool_result_for, (None, None))
                 definition = definitions.get(name)
                 if definition is None or definition.context_role != "artifact_read":
                     immutable_artifact_batch = False
+                if (allow_directory_companions and definition is not None
+                        and definition.read_only and definition.context_role == "workspace_list"):
+                    request = _unambiguous_json_object(arguments)
+                    path = directory_listing_observation(
+                        raw_by_ref[result.message_id], arguments=request,
+                    )
+                    if path is None:
+                        break
+                    # Keep its original complete protocol group and model view.
+                    # A companion consumes a source slot, just like a read.
+                    identities.add(("listing", path,
+                                    hashlib.sha256(_json(request).encode()).hexdigest()))
+                    continue
                 if definition is not None and definition.context_role == "task_planning":
                     try:
                         planning = json.loads(raw_by_ref[result.message_id].get("content", ""))
@@ -463,6 +511,7 @@ class ContextRequestProjection:
                     # matches. A repeated query is one source slot; neither
                     # its presence nor this identity attests to file freshness.
                     identities.add(("search", hashlib.sha256(_json(request).encode()).hexdigest()))
+                    has_source = True
                     continue
                 if definition is not None and definition.context_role == "artifact_read":
                     request = _unambiguous_json_object(arguments)
@@ -476,6 +525,7 @@ class ContextRequestProjection:
                     # not evidence of workspace freshness or complete source.
                     identities.add(("artifact", page["uri"], page["content_hash"],
                                     page["offset_chars"], page["next_offset_chars"]))
+                    has_source = True
                     continue
                 if (
                     definition is None
@@ -510,7 +560,10 @@ class ContextRequestProjection:
                 else:
                     identity = (path, None, None)
                 identities.add(identity)
+                has_source = True
             else:
+                if allow_directory_companions and not has_source:
+                    continue
                 if workspace_stale and not immutable_artifact_batch:
                     continue
                 # Preserve the complete assistant/result batch. Splitting it

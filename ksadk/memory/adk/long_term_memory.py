@@ -22,7 +22,6 @@
 
 import json
 import logging
-import os
 from typing import Any, List, Literal, Optional, cast
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -253,7 +252,7 @@ class LongTermMemory(BaseMemoryService, BaseModel):
             KSADK_LTM_INDEX: 索引名称
         """
         service = LongTermMemoryService.from_env(app_name=app_name, backend=backend)
-        backend_name = backend or os.environ.get("KSADK_LTM_BACKEND", "local")
+        backend_name = str(service.backend)
         backend_config = dict(service.backend_config)
         if "index" in backend_config and backend_name != "local":
             backend_config.pop("index", None)

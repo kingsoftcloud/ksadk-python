@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "profile": "official-0.9.1",
+  "wire_versions": [
+    "v0.9",
+    "v0.9.1"
+  ],
+  "capability_family": "v0.9",
+  "catalog_id": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
+  "schema_resolution_aliases": {
+    "https://a2ui.org/specification/v0_9/catalog.json": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"
+  },
+  "schema_draft": "https://json-schema.org/draft/2020-12/schema",
+  "canonicalization": "RFC8785",
+  "catalog_digest": "34eefcf32a13860465c71e340dd8c6c2f5f328865db140fa31ab83e30cbf42b1",
+  "components": [
+    "AudioPlayer",
+    "Button",
+    "Card",
+    "CheckBox",
+    "ChoicePicker",
+    "Column",
+    "DateTimeInput",
+    "Divider",
+    "Icon",
+    "Image",
+    "List",
+    "Modal",
+    "Row",
+    "Slider",
+    "Tabs",
+    "Text",
+    "TextField",
+    "Video"
+  ],
+  "functions": [
+    "and",
+    "email",
+    "formatCurrency",
+    "formatDate",
+    "formatNumber",
+    "formatString",
+    "length",
+    "not",
+    "numeric",
+    "openUrl",
+    "or",
+    "pluralize",
+    "regex",
+    "required"
+  ],
+  "packages": {
+    "a2ui-core": "0.3.0",
+    "@a2ui/react": "0.13.0",
+    "@a2ui/web_core": "0.13.0",
+    "@a2ui/markdown-it": "0.2.1"
+  },
+  "sources": {
+    "basic-v0_9_1.json": {
+      "url": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
+      "raw_sha256": "8cc94d0a482e67048f9fc989964ca5da56fe42f531d919315a508989fb22e13e"
+    },
+    "common-types-v0_9.json": {
+      "url": "https://a2ui.org/specification/v0_9/common_types.json",
+      "raw_sha256": "a13897d7dbe14c37512c5cbc9b8561782fc3b01e3a6ff114c1f12c82275b5884"
+    }
+  },
+  "transform": "identity; official assets preserved byte-for-byte",
+  "legacy_profiles": [
+    {
+      "profile": "ksadk-legacy-seven-components",
+      "catalog_id": "a2ui.org/catalogs/basic/v1.0",
+      "catalog_digest": "56e78e6da4456d70b516f282518de2c75a59174874a0f49226ef3a3d920f829b",
+      "components": [
+        "ApprovalBar",
+        "Card",
+        "CheckboxGroup",
+        "Form",
+        "RadioGroup",
+        "Select",
+        "Text"
+      ],
+      "source": "ksadk.a2ui.models.BASIC_CATALOG; project compatibility asset"
+    }
+  ]
+}

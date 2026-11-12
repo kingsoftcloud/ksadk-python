@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, get_type_hints
 
 from ksadk.runtime_context import get_current_invocation_context
 from ksadk.sessions import resolve_session_service
@@ -168,6 +168,27 @@ class ADKSessionIdentityMixin:
 
 class LangGraphSessionIdentityMixin:
     """Bind canonical sessions to LangGraph thread/checkpoint addresses."""
+
+    def build_native_context(
+        self, platform_context: Any, *, context_schema: Any = None
+    ) -> dict[str, Any] | None:
+        """Project SDK fields only into context explicitly accepted by the graph."""
+        if context_schema is None and hasattr(self._agent, "context_schema"):
+            context_schema = self._agent.context_schema
+            if context_schema is None:
+                # Native ToolRuntime defaults its context type to None. Identity
+                # remains available through the SDK's invocation-scoped helpers.
+                return None
+        native = super().build_native_context(platform_context, context_schema=context_schema)
+        if native is None or not hasattr(context_schema, "__annotations__"):
+            # Keep the legacy contract for wrappers without schema metadata and
+            # open dict contexts; do not infer business fields or their types.
+            return native
+        try:
+            fields = get_type_hints(context_schema)
+        except (TypeError, NameError):
+            return native
+        return {key: value for key, value in native.items() if key in fields} or None
 
     def _invocation_identity_scope_ref(self) -> str:
         context = get_current_invocation_context()

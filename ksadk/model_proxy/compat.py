@@ -159,6 +159,10 @@ COMPAT_PROFILES: Mapping[str, CompatProfile] = {
     # 配“空闲进度”超时；超时后交给统一 provider policy 重试/切换。
     "zai": CompatProfile(
         "zai",
+        # GLM interleaved thinking returns the original reasoning with tool
+        # results. Displaying reasoning deltas alone does not retain this wire
+        # state. https://docs.z.ai/guides/capabilities/thinking-mode
+        provider_replay_mode="reasoning_content",
         stream_idle_timeout_seconds=60,
         # Z.AI 官方支持 thinking:{type:disabled}（OpenClaw 文档记载）；
         # "网关拒绝该字段"是 kspmas 的特性，由 kspmas-gateway 档承担。
@@ -243,6 +247,16 @@ _MODEL_PROFILES = {
     for rule in ("kspmas-gateway", "moonshot")
     for model in ("kimi-k2.7-code", "kimi-k2.7-code-highspeed")
 }
+
+# Preserve the measured gateway's transport and purpose-specific controls,
+# while retaining GLM/DeepSeek's private tool-turn protocol. Do not enable private
+# fields for unrelated gateway models or explicit strict-OpenAI profiles.
+_MODEL_PROFILES.update({
+    ("kspmas-gateway", model): replace(
+        COMPAT_PROFILES["kspmas-gateway"], provider_replay_mode="reasoning_content",
+    )
+    for model in ("glm-5.2", "glm-5.3", "glm-5.3-flash", "deepseek-v4-flash")
+})
 
 # Exact API identifiers and disabled value domains from the official model
 # catalog / thinking table. Do not extrapolate aliases or future releases.
@@ -649,6 +663,13 @@ def with_thinking_disabled(
     return {**payload, "thinking": {"type": "disabled"}}
 
 
+def with_thinking_enabled(payload: Mapping[str, Any], profile: CompatProfile) -> dict[str, Any]:
+    """An explicit Chat selection wins over automatic tool/budget defaults."""
+    if not profile.supports_thinking_field:
+        raise ValueError("model_thinking_mode_unsupported")
+    return {**payload, "thinking": {"type": "enabled"}}
+
+
 __all__ = [
     "COMPAT_PROFILES",
     "DEFAULT_COMPAT_RULE",
@@ -665,6 +686,7 @@ __all__ = [
     "required_output_budget",
     "resolve_compat_rule",
     "should_disable_thinking",
+    "with_thinking_enabled",
     "stream_idle_timeout",
     "with_thinking_disabled",
 ]

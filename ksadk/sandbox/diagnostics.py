@@ -13,6 +13,37 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 
+def exception_chain(exc: Exception) -> Iterator[Exception]:
+    """Follow both SDK chaining styles without looping on malformed chains."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        yield exc
+        exc = exc.__cause__ or exc.__context__
+
+
+def e2b_error_detail(
+    exc: Exception,
+    *,
+    sensitive_values: tuple[str, ...] = (),
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Return bounded, sanitized causal detail for retry logs and public errors."""
+    secrets = (
+        sensitive_values
+        + tuple((env or {}).values())
+        + tuple(
+            value
+            for key, value in os.environ.items()
+            if any(part in key.upper() for part in ("KEY", "TOKEN", "SECRET", "PASSWORD"))
+        )
+    )
+    detail = str(exc)
+    for item in list(exception_chain(exc))[1:]:
+        detail += f" <- {type(item).__name__}: {item}"
+    return _safe_detail(detail, secrets)[:2000]
+
+
 def _safe_detail(value: str, secrets: tuple[str, ...]) -> str:
     for secret in sorted(set(secrets), key=len, reverse=True):
         if secret:

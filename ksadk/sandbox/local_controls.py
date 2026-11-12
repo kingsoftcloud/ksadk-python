@@ -142,6 +142,7 @@ class BoundedProcessResult:
     stderr: str = ""
     exit_code: int | None = None
     timed_out: bool = False
+    cancelled: bool = False
     output_limit_exceeded: bool = False
     stdout_truncated: bool = False
     stderr_truncated: bool = False
@@ -197,6 +198,7 @@ def run_bounded_process(
     settings: LocalControlSettings,
     start_new_session: bool,
     on_output: Callable[[str, str], None] | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> BoundedProcessResult:
     read_fd, write_fd = os.pipe()
     # The local command owns a separate group from its caller (which can be a
@@ -217,6 +219,7 @@ def run_bounded_process(
     stdout_truncated = False
     stderr_truncated = False
     timed_out = False
+    cancelled = False
     output_limited = False
     cleanup_error: str | None = None
     started = time.monotonic()
@@ -250,6 +253,9 @@ def run_bounded_process(
             os.set_blocking(stream.fileno(), False)
             selector.register(stream, EVENT_READ)
         while True:
+            if process.poll() is None and cancel_requested is not None and cancel_requested():
+                cancelled = True
+                break
             elapsed = time.monotonic() - started
             if timeout is not None and elapsed >= timeout:
                 timed_out = True
@@ -282,7 +288,7 @@ def run_bounded_process(
                     output_limited = True
             if output_limited or process.poll() is not None:
                 break
-        if timed_out or output_limited:
+        if timed_out or output_limited or cancelled:
             if start_new_session:
                 cleanup_error = terminate_process_group(process)
             else:
@@ -320,6 +326,7 @@ def run_bounded_process(
         stderr=bytes(stderr).decode("utf-8", errors="replace"),
         exit_code=exit_code,
         timed_out=timed_out,
+        cancelled=cancelled,
         output_limit_exceeded=output_limited,
         stdout_truncated=stdout_truncated,
         stderr_truncated=stderr_truncated,

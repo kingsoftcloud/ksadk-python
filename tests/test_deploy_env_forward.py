@@ -15,6 +15,19 @@ def _clear_env_caches(monkeypatch):
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", None)
 
 
+def test_deploy_keeps_oauth_bootstrap_inputs_out_of_shell_forwarding():
+    settings = {
+        "KSADK_MCP_OAUTH_CONFIG_FILE": "/local/lab.json",
+        "KSADK_MCP_OAUTH_PROJECTION": "{}",
+        "KSADK_MCP_SERVERS": "[]",
+        "KSADK_MCP_KEY": "test-key",
+    }
+    assert forward_shell_process_env({}, settings) == {
+        "KSADK_MCP_SERVERS": "[]",
+        "KSADK_MCP_KEY": "test-key",
+    }
+
+
 def test_should_forward_process_env_prefixes():
     assert should_forward_process_env("KSYUN_ACCESS_KEY")
     assert should_forward_process_env("KSYUN_SECRET_KEY")

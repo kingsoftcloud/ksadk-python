@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable
 
 from pydantic import Field
 
+from ..native.call_budget import call_room
 from ..native.model import ModelImageContent, ModelProfile
 from ..native.ports import (
     ModelPort,
@@ -188,7 +189,7 @@ class NativeVisionBrowser:
                     "content_blocks": (),
                 }
             )
-        if request.budget.max_model_calls_remaining < 1:
+        if not call_room(request.budget.max_model_calls_remaining, 0):
             return text_result.model_copy(
                 update={
                     "content": {

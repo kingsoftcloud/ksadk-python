@@ -363,11 +363,12 @@ def test_pyproject_declares_validated_framework_dependency_windows():
     # Studio 是基础入口；ADK 本体必须随基础包安装，额外生成依赖仍保持在 [adk]。
     assert "google-adk>=1.34.0,<3.0.0" in dependencies
     assert any(item.startswith("litellm>=") for item in optional_dependencies["adk"])
-    # Native 不导入框架；基础安装仍为 Managed 兼容入口保留 LangGraph。
-    # 可选适配器保持已验证的版本窗口。
+    # Native Studio 不导入框架；兼容 Runtime 仍使用默认 LangGraph。
     assert "langchain>=1.3.14,<2.0.0" in optional_dependencies["langchain"]
     assert "langchain-core>=1.5.0,<2.0.0" in optional_dependencies["langchain"]
-    assert "langgraph>=1.2.0,<1.3.0" in optional_dependencies["langgraph"]
+    assert "langgraph==1.2.15" in dependencies
+    for extra in ("langgraph", "deepagents"):
+        assert "langgraph==1.2.15" in optional_dependencies[extra]
     assert (
         "deepagents>=0.6.2,<1.0.0; python_version >= '3.11'" in optional_dependencies["deepagents"]
     )
@@ -398,13 +399,18 @@ def test_built_wheel_makes_langchain_openai_framework_optional(tmp_path: Path):
     from ksadk.version import VERSION
     assert metadata["Version"] == VERSION
     requirements = [Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])]
-    mandatory_names = {
-        requirement.name
+    assert all(
+        requirement.name not in {
+            "langchain", "langchain-core",
+            "langchain-openai",
+        } or requirement.marker is not None
         for requirement in requirements
-        if requirement.marker is None or requirement.marker.evaluate({"extra": ""})
-    }
-    assert {"langgraph", "langgraph-checkpoint-sqlite"} <= mandatory_names
-    assert not mandatory_names & {"langchain", "langchain-core", "langchain-openai"}
+    )
+    assert any(
+        requirement.name == "langgraph" and requirement.marker is None
+        and str(requirement.specifier) == "==1.2.15"
+        for requirement in requirements
+    )
 
     for extra in ("langchain", "langgraph", "deepagents"):
         matching_requirements = [

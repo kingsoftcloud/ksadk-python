@@ -6,6 +6,7 @@ from typing import Iterable
 
 FASTAPI_REQUIREMENT = "fastapi>=0.136.0,<0.137.0"
 STARLETTE_REQUIREMENT = "starlette>=1.0,<1.4"
+LANGGRAPH_REQUIREMENT = "langgraph==1.2.15"
 
 ADK_REQUIREMENTS = (
     # 与 ksadk 自身 adk extra 对齐，支持 1.x 与 2.x。
@@ -18,8 +19,8 @@ LANGCHAIN_ECOSYSTEM_REQUIREMENTS = (
     "langchain>=1.3.14,<2.0.0",
     "langchain-openai>=1.4.0,<2.0.0",
     "langchain-core>=1.5.0,<2.0.0",
-    "langgraph>=1.2.0,<1.3.0",
-    # Plain Code runtimes use the local SQLite checkpoint backend by default.
+    LANGGRAPH_REQUIREMENT,
+    # Opt-in auto checkpoint uses SQLite when no PostgreSQL is configured.
     "langgraph-checkpoint-sqlite>=2.0.0",
 )
 
@@ -35,7 +36,7 @@ CODEX_REQUIREMENTS = ("openai-codex==0.154.0",)
 # package, so installing only ``langgraph`` leaves
 # ``langgraph.checkpoint.sqlite`` unavailable in a freshly built agent.
 HARNESS_REQUIREMENTS = (
-    "langgraph>=1.2.0,<1.3.0",
+    LANGGRAPH_REQUIREMENT,
     "langgraph-checkpoint-sqlite>=2.0.0",
     "langchain>=1.3.14,<2.0.0",
     "langchain-core>=1.5.0,<2.0.0",
@@ -88,7 +89,7 @@ def minimal_requirements_for_framework(framework: str) -> list[str]:
             "langchain-core>=1.5.0,<2.0.0",
         ]
         if normalized in {"langgraph", "deepagents"}:
-            requirements.append("langgraph>=1.2.0,<1.3.0")
+            requirements.append(LANGGRAPH_REQUIREMENT)
         if normalized == "deepagents":
             requirements.extend(DEEPAGENTS_REQUIREMENTS)
         return requirements

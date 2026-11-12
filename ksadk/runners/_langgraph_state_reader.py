@@ -75,8 +75,13 @@ def interrupt_info_from_state(state: Any, *, _depth: int = 0) -> dict:
 
 
 def _interrupt_info_from_value(intr: Any) -> dict:
+    from ksadk.interaction.langgraph_interrupt import normalize_interrupt
+
+    normalized = normalize_interrupt(intr)
     value = intr.value
     info = dict(value) if isinstance(value, Mapping) else {"value": value}
+    if normalized.kind == "structured_input":
+        info.update(kind="structured_input", schema=normalized.schema, prompt=normalized.prompt)
     interrupt_id = str(getattr(intr, "id", "") or "")
     if interrupt_id:
         info.setdefault("approval_request_id", interrupt_id)

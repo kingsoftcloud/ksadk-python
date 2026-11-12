@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import suppress
 
 from ksadk.harness.stores.native_contract import RunStore
@@ -13,6 +14,7 @@ from .effect_admission import effect_admission
 from .effect_runtime import dispatch_effect
 from .hook_runtime_contract import HookPort
 from .lease import RunLeaseController
+from .model_runtime import StreamFlushError
 from .ports import (
     ArtifactPort,
     ModelPort,
@@ -64,6 +66,8 @@ class NativeEffectDispatcher:
         *,
         wake: asyncio.Event,
         emit,
+        flush_callback: Callable[[], None] | None = None,
+        flush_interval: float = 0.2,
         on_child_promotion=None,
         on_child_input=None,
         on_child_cancellation=None,
@@ -91,6 +95,8 @@ class NativeEffectDispatcher:
                 ),
                 wake=wake,
                 emit=emit,
+                flush_callback=flush_callback,
+                flush_interval=flush_interval,
                 on_child_promotion=on_child_promotion,
                 on_child_input=on_child_input,
                 on_child_cancellation=on_child_cancellation,
@@ -119,6 +125,8 @@ async def dispatch_cancellable_effect(
     pending_commands,
     wake: asyncio.Event,
     emit,
+    flush_callback: Callable[[], None] | None = None,
+    flush_interval: float = 0.2,
     on_child_promotion=None,
     on_child_input=None,
     on_child_cancellation=None,
@@ -140,12 +148,32 @@ async def dispatch_cancellable_effect(
     )
     deadline = loop.time() + timeout_seconds
     timeout_reason = "wall_time_hard_limit" if wall_bounded else "effect_timeout"
+    idle_model = (
+        intent.kind == "model" and config.profile.streaming
+        and config.profile.stream_timeout_policy == "idle/v1"
+    )
+    wall_deadline = (
+        loop.time() + max(0, remaining_wall_seconds)
+        if remaining_wall_seconds is not None else float("inf")
+    )
 
     def emit_while_open(event) -> None:
+        nonlocal deadline, timeout_reason, wall_bounded
         # A port that ignores cancellation may still emit after the uncertain
         # receipt has closed this attempt. Late deltas must not mutate the Run.
         if stream_open:
-            emit(event)
+            if idle_model:
+                now = loop.time()
+                # Progress cannot revive an expired lease or extend the Run's wall limit.
+                if now < deadline:
+                    idle_deadline = now + config.limits.effect_timeout_seconds
+                    deadline = min(idle_deadline, wall_deadline)
+                    wall_bounded = wall_deadline <= idle_deadline
+                    timeout_reason = "wall_time_hard_limit" if wall_bounded else "effect_timeout"
+                    admission.deadline = deadline
+            # Activity proves liveness only; it is never a transcript or UI fact.
+            if event.kind != "activity":
+                emit(event)
 
     async def child_while_open(index, raw_call, operation_key, result) -> None:
         if stream_open and on_parallel_child is not None:
@@ -169,6 +197,8 @@ async def dispatch_cancellable_effect(
                 workspace=workspace,
                 artifacts=artifacts,
                 emit=emit_while_open,
+                flush_callback=flush_callback,
+                flush_interval=flush_interval,
                 on_parallel_child=child_while_open if on_parallel_child is not None else None,
                 reconcile_tool=reconcile_tool,
                 context_port=context_port,
@@ -282,6 +312,14 @@ async def dispatch_cancellable_effect(
                 status="uncertain",
                 result={"reason": "effect_child_canceled"},
             )
+        # Check for local persistence failures (flush_callback CAS/fence/store
+        # errors) BEFORE the generic except. These must not be masked by a
+        # generic "effect_port_error" uncertain receipt. A StreamFlushError
+        # indicates the host's own store commit failed — the caller must see
+        # the original cause, not a sanitized port error.
+        exc = task.exception()
+        if exc is not None and isinstance(exc, StreamFlushError):
+            raise exc
         result = task.result()
         if reconcile_tool and result.status not in {"ok", "error"}:
             return EffectReceipt(
@@ -297,6 +335,12 @@ async def dispatch_cancellable_effect(
             status="committed",
             result=result.model_dump(mode="json"),
         )
+    except StreamFlushError:
+        # Local persistence failure (CAS/fence/store from flush_callback).
+        # Propagate the original cause; do not mask with a generic uncertain
+        # receipt. The caller (_commit_receipt) will handle this as a store
+        # conflict, not an unknown port outcome.
+        raise
     except Exception:
         # Provider/tool exception bodies may contain secrets. A port owns safe
         # structured errors; unknown exceptions cannot prove execution.

@@ -330,7 +330,11 @@ async def cloud(tmp_path, monkeypatch, temporary_postgres, request):
                 loaded_build=build,
             )
     await transport_client.aclose()
-    await admin.execute(f'DROP DATABASE "{name}" WITH (FORCE)')
+    await admin.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE datname=$1 AND pid<>pg_backend_pid()", name,
+    )
+    await admin.execute(f'DROP DATABASE "{name}"')
     await admin.close()
 
 
@@ -569,25 +573,83 @@ def test_missing_configuration_has_no_host_and_partial_config_rejected(monkeypat
 
 
 async def test_callback_expiry_uses_pg_time_not_runtime_wall_clock(cloud, monkeypatch):
+    from contextlib import asynccontextmanager
+
     from ksadk.kernel import teams_runtime_bootstrap as module
     from ksadk.plugins.teams.cloud_permits import PermitError
 
     c = cloud
-    c.server.callback_changes = {
-        "expiresAt": timestamp(c.server.now() + timedelta(seconds=0.6))
-    }
     await prepare(c)
+    store = c.factory.runtime.kernel_store
+    database_connection = store._connection
+    stored_callback = c.factory.registry.get_callback
+    database_observations = []
+    callback_windows = []
 
     class WrongClock(datetime):
+        wall_time = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
         @classmethod
         def now(cls, tz=None):
-            return datetime(2000, 1, 1, tzinfo=timezone.utc)
+            return cls.wall_time
+
+    class ObservedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+        async def fetchval(self, query, *args, **kwargs):
+            value = await self.connection.fetchval(query, *args, **kwargs)
+            if query == "SELECT clock_timestamp()":
+                database_observations.append(value)
+            return value
+
+    @asynccontextmanager
+    async def observe_database_clock(**kwargs):
+        async with database_connection(**kwargs) as connection:
+            yield ObservedConnection(connection)
+
+    async def callback_provider(*args, **kwargs):
+        # Preserve the real persisted binding and signer. Change only the signed
+        # time window returned at this boundary, rather than waiting for a TTL.
+        permit = await stored_callback(*args, **kwargs)
+        assert permit is not None
+        async with database_connection() as connection:
+            now = await connection.fetchval("SELECT clock_timestamp()")
+        if not callback_windows:
+            issued = now - timedelta(seconds=5)
+            # Never extend the original grant's signed callback authority.
+            expires = min(
+                now + timedelta(seconds=20),
+                datetime.fromisoformat(permit.expiresAt.replace("Z", "+00:00")),
+            )
+        else:
+            issued, expires = now - timedelta(seconds=20), now - timedelta(seconds=5)
+            # A regressed wall-clock verifier would accept this expired permit.
+            WrongClock.wall_time = now - timedelta(seconds=10)
+        callback_windows.append((issued, expires))
+        return sign_permit(
+            permit.model_copy(update={
+                "issuedAt": timestamp(issued), "expiresAt": timestamp(expires),
+            }),
+            c.server.signer,
+        )
 
     monkeypatch.setattr(module, "datetime", WrongClock)
+    monkeypatch.setattr(store, "_connection", observe_database_clock)
+    monkeypatch.setattr(c.factory.registry, "get_callback", callback_provider)
     await c.factory.resolve("policy-test", request=request(c))
-    await asyncio.sleep(0.65)
+    first_clock_reads = len(database_observations)
+    assert first_clock_reads > 0
+    assert callback_windows[0][0] <= database_observations[-1] < callback_windows[0][1]
+
     with pytest.raises(PermitError, match="not currently valid"):
         await c.factory.resolve("policy-test", request=request(c))
+    assert len(database_observations) > first_clock_reads
+    assert callback_windows[1][1] < database_observations[-1]
+    assert callback_windows[1][0] < WrongClock.now(timezone.utc) < callback_windows[1][1]
     assert len(c.server.resolve_calls) == 1
     assert not c.server.invoke_calls
 

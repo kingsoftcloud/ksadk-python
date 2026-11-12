@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ksadk.skills.request_connection import transient_skill_connection
+
 import asyncio
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Sequence
@@ -87,6 +89,7 @@ from ksadk.tools.gateway import (
 )
 
 
+@transient_skill_connection
 async def _iter_conversation_turn_events(
     *,
     runner: Any,
@@ -326,7 +329,7 @@ async def _iter_conversation_turn_events(
         stream_last_usage: dict[str, Any] = {}
         reasoning_disabled = _model_options_disable_reasoning(prepared.model_options)
 
-        async def _persist_accumulated_reasoning(*, before_text: bool = False) -> None:
+        async def _persist_accumulated_reasoning(*, boundary: str | None = None) -> None:
             if not accumulated_reasoning_parts:
                 return
             reasoning = "".join(accumulated_reasoning_parts)
@@ -336,7 +339,7 @@ async def _iter_conversation_turn_events(
                 author=runner_name,
                 text=reasoning,
                 invocation_id=prepared.invocation_id,
-                metadata={"stream_boundary": "before_text"} if before_text else None,
+                metadata={"stream_boundary": boundary} if boundary else None,
                 session_service_provider=provider,
             )
 
@@ -480,7 +483,7 @@ async def _iter_conversation_turn_events(
                                     # sees one merged reasoning blob after all
                                     # streamed text and cannot rebuild an
                                     # interleaved turn.
-                                    await _persist_accumulated_reasoning(before_text=True)
+                                    await _persist_accumulated_reasoning(boundary="before_text")
                                     replace = bool(chunk.get("replace"))
                                     accumulated_text = (
                                         delta if replace else accumulated_text + delta
@@ -497,6 +500,7 @@ async def _iter_conversation_turn_events(
                                 continue
                             if chunk_type == "tool_call":
                                 await _persist_assistant_snapshot(force=True)
+                                await _persist_accumulated_reasoning(boundary="before_tool")
                                 _governance_record_tool_call(governance)
                                 emitted_response_artifacts = True
                                 tool_args = chunk.get("tool_args", {})
@@ -525,7 +529,6 @@ async def _iter_conversation_turn_events(
                                     session_service_provider=provider,
                                 )
                                 emitted_anything = True
-                                await _persist_accumulated_reasoning()
                                 yield {
                                     "type": "tool_call",
                                     "name": chunk.get("tool_name"),
@@ -539,6 +542,7 @@ async def _iter_conversation_turn_events(
                                 continue
                             if chunk_type in {"stage_tool_call", "stage_tool_result"}:
                                 await _persist_assistant_snapshot(force=True)
+                                await _persist_accumulated_reasoning(boundary="before_tool")
                                 emitted_response_artifacts = True
                                 tool_name = str(
                                     chunk.get("tool_name") or chunk.get("name") or "tool"
@@ -590,6 +594,7 @@ async def _iter_conversation_turn_events(
                                 continue
                             if chunk_type == "tool_result":
                                 await _persist_assistant_snapshot(force=True)
+                                await _persist_accumulated_reasoning(boundary="before_tool")
                                 emitted_response_artifacts = True
                                 tool_name = str(chunk.get("tool_name") or "tool")
                                 tool_args = chunk.get("tool_args", {})
@@ -643,7 +648,6 @@ async def _iter_conversation_turn_events(
                                         run_trigger=run_trigger,
                                     )
                                     emitted_anything = True
-                                    await _persist_accumulated_reasoning()
                                     yield {
                                         "type": "interrupt",
                                         "interrupt_info": approval_interrupt_info,
@@ -703,7 +707,6 @@ async def _iter_conversation_turn_events(
                                     governance, chunk.get("tool_output", "")
                                 )
                                 emitted_anything = True
-                                await _persist_accumulated_reasoning()
                                 yield {
                                     "type": "tool_result",
                                     "name": chunk.get("tool_name"),
@@ -713,6 +716,7 @@ async def _iter_conversation_turn_events(
                                 continue
                             if chunk_type in ("interrupt", "approval"):
                                 await _persist_assistant_snapshot(force=True)
+                                await _persist_accumulated_reasoning(boundary="before_tool")
                                 # langgraph_runner 流式路径冒 `approval`(含 HITL action_requests);
                                 # invoke 路径冒 `interrupt`。两者统一走 approval_request 通道。
                                 interrupt_info = chunk.get("interrupt_info")
@@ -920,7 +924,7 @@ async def _iter_conversation_turn_events(
             return
         _set_conversation_output_attributes(span, accumulated_text)
 
-        await _persist_accumulated_reasoning()
+        await _persist_accumulated_reasoning(boundary="before_text")
         await append_conversation_event(
             session_id=prepared.session_id,
             author=runner_name,

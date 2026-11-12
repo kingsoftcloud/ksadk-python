@@ -22,6 +22,7 @@ from ksadk.conversations.projector import (
 )
 from ksadk.conversations.runtime_projection import RuntimeConversationProjection
 from ksadk.events.canonical import parse_runtime_event
+from ksadk.events.usage import apply_usage_count, usage_mode
 from ksadk.kernel.contracts import AgentControlCommand
 from ksadk.kernel.execution_grants import ExecutionGrantSpec, execution_grant_run_id
 from ksadk.kernel.ingress import trusted_context
@@ -311,11 +312,15 @@ class StudioExecutionHost:
                         continue
                     payload = envelope.payload
                     if envelope.event_type == "usage.reported":
-                        tokens += int(
-                            payload.get("total_tokens")
-                            or int(payload.get("input_tokens") or 0)
-                            + int(payload.get("output_tokens") or 0)
-                        )
+                        sample = payload.get("total_tokens")
+                        if sample is None:
+                            sample = int(payload.get("input_tokens") or 0) + int(
+                                payload.get("output_tokens") or 0
+                            )
+                        mode = payload.get("mode") or "delta"
+                        if envelope.family_version == 2:
+                            mode = usage_mode(parse_runtime_event(payload))
+                        tokens = apply_usage_count(tokens, int(sample), mode)
                     source_metadata = (payload.get("source") or {}).get("metadata") or {}
                     if envelope.family_version == 2 and not source_metadata.get("parent_run_id"):
                         item = projection.apply(parse_runtime_event(payload))

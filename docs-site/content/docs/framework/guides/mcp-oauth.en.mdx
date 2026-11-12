@@ -1,0 +1,170 @@
+---
+title: "MCP OAuth authorization and recovery"
+description: "Authorize MCP on demand in a caller-owned LangGraph graph while preserving tool and session recovery"
+---
+
+MCP OAuth is an explicit LangGraph integration. Declarations contain the service URL, scopes,
+and optional client references; the runtime manages credentials. Existing API Key and unauthenticated MCP,
+`MultiServerMCPClient`, `MCPServerConfig(api_key=...)`, and `KSADK_MCP_SERVERS` keep their existing integration paths.
+
+## Supported entry points
+
+| Entry point | OAuth behavior |
+| --- | --- |
+| Project-local `agentengine web .` | Uses the local Kernel, durable checkpoints, and a loopback callback listener. Authorization starts on the first actual call. |
+| Hosted Runtime and Studio cloud sessions on a compatible platform | Use the platform Broker, trusted invocation identity, shared PostgreSQL checkpoints, and completion permits. Studio forwards authorization actions. |
+| Studio local direct executor | Has no durable authorization Broker. Authorization actions return `MCP_OAUTH_RUNTIME_UNSUPPORTED` (HTTP 409); use the project Web entry point for local debugging. |
+| Standalone `graph.ainvoke()` | Does not create a Broker or authorization context. It can test graph logic, but cannot independently complete OAuth authorization. |
+
+Install an SDK containing this capability and the LangGraph dependencies, such as `ksadk[langgraph,agui]`,
+and configure your model. Hosted use also requires the platform to enable a compatible Broker,
+Kernel, and workload projection; installing the SDK does not enable those platform services.
+
+## Integrate a caller-owned graph
+
+Define your existing asynchronous LangChain chat model as `model` in the entry module, then add this graph.
+Replace the example HTTPS URL and scopes with the provider's published values. Both nodes obtain tools
+from the current state on every execution; do not cache bound tool objects across sessions.
+The SDK preserves existing tool clients and leaves graph construction to the developer.
+
+```python
+from langchain_core.messages import HumanMessage
+from langgraph.graph import MessagesState, StateGraph, START
+from langgraph.prebuilt import ToolNode, tools_condition
+from ksadk.mcp_runtime.oauth.tools import McpOAuthTools
+
+oauth = McpOAuthTools({"cloud": {
+    "url": "https://mcp.example.com/mcp",
+    "description": "Search the configured service",
+    "scopes": ["mcp:read"],
+}})
+
+async def model_node(state, config):
+    reply = await model.bind_tools(await oauth.get_tools(state)).ainvoke(
+        state["messages"], config=config,
+    )
+    return {"messages": [reply]}
+
+async def tools_node(state, config):
+    return await ToolNode(await oauth.get_tools(state)).ainvoke(state, config=config)
+
+def ksadk_graph_factory(*, checkpointer):
+    graph = StateGraph(MessagesState)
+    graph.add_node("model", model_node)
+    graph.add_node("tools", tools_node)
+    graph.add_edge(START, "model")
+    graph.add_conditional_edges("model", tools_condition)
+    graph.add_edge("tools", "model")
+    return graph.compile(checkpointer=checkpointer)
+
+def ksadk_prepare_state(payload, session_context):
+    return {"messages": payload.get("messages") or [
+        HumanMessage(content=payload.get("input", ""))
+    ]}
+
+
+root_agent = ksadk_graph_factory(checkpointer=None)
+```
+
+`get_tools(state)` initially offers `connect_cloud`. Executing it checks authorization and loads the
+provider's catalog. Public tool definitions are saved for the current turn; credentials never enter graph
+state or model input. For mixed batches, use `oauth.get_tools(state, tools=existing_tools)` in both nodes
+so completed ordinary calls also retain their recovery receipts.
+
+The example exports `ksadk_graph_factory(*, checkpointer)`. Local Web can attach a SQLite interrupt
+checkpoint to a graph without a saver. Existing savers, explicit checkpoint configuration, and explicit
+opt-out remain effective. OAuth waits require durable checkpoints; an in-memory saver cannot provide
+that guarantee. Managed PostgreSQL mode additionally requires
+`ksadk_prepare_state(payload, session_context)` to prepare only the current turn instead of injecting
+history twice; see [Agent Context](/en/docs/framework/guides/agent-context/).
+
+## API Key MCP and mixed tools
+
+API Key services do not use the OAuth Broker. Additionally install `langchain-mcp-adapters>=0.3.2`
+and configure runtime variables: `SEARCH_MCP_URL=https://search.example.com/mcp` and
+`SEARCH_MCP_API_KEY=your-service-api-key`. Bearer authentication is a common example; use the headers
+required by your service.
+
+```python
+import os
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+async def search_tools():
+    client = MultiServerMCPClient({"search": {
+        "url": os.environ["SEARCH_MCP_URL"],
+        "transport": "streamable_http",
+        "headers": {"Authorization": "Bearer " + os.environ["SEARCH_MCP_API_KEY"]},
+    }})
+    # Replace this allowlist with read-only tool names published by your service.
+    return [tool for tool in await client.get_tools() if tool.name == "search_documents"]
+
+async def all_tools(state):
+    return await oauth.get_tools(state, tools=await search_tools())
+```
+
+For API Key MCP alone, use `await search_tools()` in both nodes; no OAuth declaration is required.
+For mixed tools, `oauth` is the declaration from the previous section. Replace `await oauth.get_tools(state)`
+with `await all_tools(state)` in both model and tool nodes. Select tools at execution time rather
+than caching tool objects bound to another session, and expose only required read-only tools.
+`SEARCH_MCP_*` are application-defined variables, not automatically consumed SDK configuration.
+
+## Clients and secret references
+
+You can omit `client_id` when the provider supports dynamic client registration. Otherwise, use a
+registered client and add these connection options:
+
+```python
+client_options = {
+    "client_id": "registered-client-id",
+    "token_endpoint_auth_method": "client_secret_post",
+    "client_secret_env": "MCP_CLIENT_SECRET",
+}
+```
+
+Merge these options into the corresponding `McpOAuthTools` connection and supply `MCP_CLIENT_SECRET`
+through the runtime environment. Keep secret values out of source, YAML, model messages, and build
+arguments. Code declarations resolve environment references only at the private boundary during actual
+tool execution. For existing YAML declarations, client options belong under `oauth`; deployment resolves
+secrets into the private configuration request and avoids forwarding them again as runtime environment values.
+Platform `client_ref` values are resolved by the platform and cannot be reused by local Web. A registered
+client must also allow the actual callback URI; automatically choosing a local port does not make an
+arbitrary fixed callback registration compatible.
+
+## Authorization, retry, and recovery
+
+1. An unauthorized connection saves the original task checkpoint and displays a separate MCP authorization
+   card. Open the provider page from that card, grant consent, and return to the original session. Ordinary
+   messages, input submission, and execution approval cannot substitute for authorization completion.
+2. Retry authorization from the card after denial or token-exchange failure. Retrying a failed connection
+   can retain valid credentials. Cancellation and expiry prevent late callbacks from continuing the task.
+3. Valid credentials can be reused within their ownership boundary. The runtime attempts refresh when due;
+   rejected credentials or failed refresh can require authorization again. OAuth controls service access;
+   execution approval comes from explicit developer tool policies.
+4. Restart recovery uses the original wait and checkpoint. If a business call was dispatched but its result
+   was not durably confirmed, its outcome is `unknown`. Reconcile the external result instead of resending
+   the call to guess whether it succeeded.
+
+Local authorization state lives in the project's `.agentengine/mcp-oauth/`, protected by an encrypted vault,
+file permissions, and a project lock. One operating-system user can reuse authorization across sessions
+of the same project; a different directory is a separate project. This is a single-user facility and does
+not defend against a process controlling that same operating-system account. Keep the vault, key, and
+session files out of source control, artifacts, and shared copies. Hosted credentials remain isolated by
+trusted identity, Agent, configuration version, and task binding; local authorization cannot replace them.
+
+
+## Local and hosted environment variables
+
+For a graph without its own saver, run `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1 agentengine web .`
+locally. Automatic checkpoints are disabled by default; existing savers and explicit opt-out remain
+unchanged. OAuth on hosted Code/Container additionally requires `KSADK_ENABLE_KERNEL=1`, a
+platform-admitted Broker, trusted identity, and durable storage. Do not forge platform permits,
+tokens, or `AGENT_KERNEL_ENABLED` to bypass admission.
+
+Follow the [0.8.7 integration guide](/en/docs/framework/guides/integration-0-8-7/) to configure model, Session, and
+framework checkpoints in an untracked runtime env file, then deploy with `--env-file`. Check Session
+and checkpoint readiness independently; a Session database or an installed package alone does not
+prove authorization waits can resume.
+
+API Key MCP can share application tool composition, but validate OAuth and A2A with separate tool
+sets and fresh sessions. Successful OAuth consent does not prove A2A registration, authorization,
+or remote task completion.

@@ -69,7 +69,12 @@ class SubAgentSpec:
     @classmethod
     def from_binding(cls, binding: SubAgentBinding) -> "SubAgentSpec":
         """把不可变 Revision 声明投影为本次 Run 的执行配置。"""
-        return cls(**binding.model_dump())
+        # This legacy engine shares its parent's Reasoner. Explicit child model
+        # selection needs a host which resolves and seals those bindings; never
+        # silently turn such a selection into inheritance of the parent model.
+        if binding.model_profile_id is not None:
+            raise ValueError("managed-langgraph child model_profile_id requires host resolution")
+        return cls(**binding.model_dump(exclude={"model_profile_id"}))
 
     @property
     def openai_schema(self) -> dict[str, Any]:

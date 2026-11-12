@@ -15,6 +15,7 @@ import weakref
 from collections import OrderedDict
 
 from ksadk.sessions.history_budget import CURRENT_HISTORY_READ_BUDGET, HistoryReadBudget
+from ksadk.server.history_deadline import history_request_seconds
 
 
 class HistoryPageCache:
@@ -27,6 +28,11 @@ class HistoryPageCache:
         self.waiters = {}
         self.lookups = {}
         self.lookup_waiters = {}
+        # A shared producer outlives any one waiter, but must still have a
+        # finite lifetime. Follow the configured HTTP cap, reserving up to one
+        # second for copying/serialization instead of a hidden 2.4s ceiling.
+        request_seconds = history_request_seconds()
+        self.operation_seconds = request_seconds - min(1.0, request_seconds * 0.1)
 
     async def lookup(self, key, producer):
         """Share only overlapping, identically scoped metadata reads.
@@ -43,7 +49,7 @@ class HistoryPageCache:
                 raise SessionBackendUnavailable("Concurrent history lookup capacity exhausted")
 
             async def produce():
-                async with asyncio.timeout(2.4):
+                async with asyncio.timeout(self.operation_seconds):
                     return await producer()
 
             context = contextvars.copy_context()
@@ -78,7 +84,7 @@ class HistoryPageCache:
                 from ksadk.sessions.errors import SessionBackendUnavailable
                 raise SessionBackendUnavailable("Concurrent history projection capacity exhausted")
             async def produce():
-                async with asyncio.timeout(2.4):
+                async with asyncio.timeout(self.operation_seconds):
                     data = await producer()
                     return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
             context = contextvars.copy_context()

@@ -32,14 +32,14 @@ clean export 保存 Studio React / TypeScript 源码和依赖锁，不包含生�
 # 默认拉已验证的 npm 版本
 make sync-ksadk-web-static
 
-# 0.8.6 候选固定具体版本
-make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.13
+# 断言与当前来源清单一致
+make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.18
 ```
 
 <Callout type="warning" title="不要在 wheel 构建时实时拉 GitHub latest release">
 `latest` 不可复现，会引入网络和供应链风险，也无法保证 wheel 内容与发布记录一致。
-发布候选必须固定 `KSADK_WEB_VERSION` 到具体版本。如需在受限网络环境兜底，请使用
-`KSADK_WEB_RELEASE_URL` 指定一个已审计的 tarball。
+默认来源清单固定 npm 包版本、源码提交和摘要；仅修改 `KSADK_WEB_VERSION` 不会切换审查来源。
+本地联调可显式设置 `KSADK_WEB_TARBALL=/absolute/path/package.tgz`，仍校验包名、完整构建目录和安全解包。
 </Callout>
 
 
@@ -49,7 +49,7 @@ make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.13
 React Studio，再构建 wheel。内部与公开 Git 源码使用同一路径：
 
 ```bash
-make build-wheel KSADK_WEB_VERSION=0.3.13
+make build-wheel KSADK_WEB_VERSION=0.3.18
 ```
 
 安装 wheel 的用户无需构建前端。该通用 wheel 不包含框架依赖和原生工具链；
@@ -59,30 +59,25 @@ make build-wheel KSADK_WEB_VERSION=0.3.13
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `KSADK_WEB_VERSION` | `0.3.13` | 目标 npm 包版本；正式发布必须确认 registry 可见 |
-| `KSADK_WEB_PACKAGE` | `@kingsoftcloud/ksadk-web` | npm 包名 |
-| `KSADK_WEB_TARBALL_NAME` | `kingsoftcloud-ksadk-web-<version>.tgz` | tarball 文件名，由版本推导 |
-| `KSADK_WEB_TARBALL` | 空 | 本地候选使用已审计的 tarball |
-| `KSADK_WEB_RELEASE_URL` | 空 | 显式指定 tarball URL 兜底，优先级高于 npm pack |
-| `KSADK_WEB_CACHE_DIR` | `.cache/ksadk-web` | 本地解包缓存目录 |
-| `KSADK_WEB_REGISTRY` | `https://registry.npmjs.org` | npm registry，仅在无 `npm` CLI 时用于解析 tarball URL |
+| `KSADK_WEB_VERSION` | 来源清单中的 `0.3.18` | 默认构建的版本断言，必须与清单一致；升级正式来源需同步更新清单、Studio 依赖与 lock |
+| `KSADK_WEB_TARBALL` | 空 | 显式本地 npm 归档路径；跳过默认发布来源比对，保留安全检查并记录真实摘要 |
+| `KSADK_WEB_REGISTRY` | `https://registry.npmjs.org` | Studio npm 命令使用的 registry；SDK 默认归档 URL 由清单固定 |
 
-sync 优先级：`KSADK_WEB_TARBALL` > 同版本缓存 tarball >
-`KSADK_WEB_RELEASE_URL` > `npm pack` > registry 解析。
-无论走哪条路径，最终都会校验 `dist-ksadk` 目录存在，再覆盖到 `ksadk/server/static`。
+默认构建从清单中的官方 npm URL 下载并校验 SHA-256、npm integrity、发布来源和两个构建目录摘要，缓存位于 `.cache/ksadk-web`。失败不会回退旧包。
+旧的 `KSADK_WEB_RELEASE_URL`、`KSADK_WEB_TARBALL_NAME` 和 `KSADK_WEB_CACHE_DIR` 不参与当前清单构建流程；本地归档使用 `KSADK_WEB_TARBALL`。
 
 ## 发布记录
 
 每次 `ksadk-python` release note 应记录：
 
-- `ksadk-python` 版本（如 `0.8.6`）。
-- `KSADK_WEB_VERSION` / npm 包版本（如 `0.8.6` 对应 `@kingsoftcloud/ksadk-web@0.3.13`）。
-- 受控构建命令（如 `make build-frontend KSADK_WEB_VERSION=0.3.13`）。
+- `ksadk-python` 版本（如 `0.8.5`）。
+- `KSADK_WEB_VERSION` / npm 包版本（如 `0.8.5` 对应 `@kingsoftcloud/ksadk-web@0.3.12`）。
+- 受控构建命令（如 `make build-frontend KSADK_WEB_VERSION=0.3.12`）。
 - wheel / sdist 审计结果（`make public-build-check` / `twine check dist/*`）。
 
-<Callout type="info" title="0.8.6 候选记录示例">
-- `ksadk-python`: `0.8.6`
-- npm 包: `@kingsoftcloud/ksadk-web@0.3.13`
-- 前端构建: `make build-frontend KSADK_WEB_VERSION=0.3.13`
-- 审计: 验证后填写真实命令结果和制品哈希；示例不是发布通过记录
+<Callout type="info" title="历史 0.8.5 发布记录格式示例">
+- `ksadk-python`: `0.8.5`
+- npm 包: `@kingsoftcloud/ksadk-web@0.3.12`
+- 前端构建: `make build-frontend KSADK_WEB_VERSION=0.3.12`
+- 审计: `make public-build-check` 通过，`twine check dist/*` 通过
 </Callout>

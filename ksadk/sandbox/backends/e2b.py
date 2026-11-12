@@ -16,8 +16,9 @@ from ksadk.sandbox.base import (
     SandboxSession,
     SandboxSpec,
 )
-from ksadk.sandbox.diagnostics import e2b_diagnostic_step
+from ksadk.sandbox.diagnostics import e2b_diagnostic_step, e2b_error_detail
 from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
+from ksadk.sandbox.e2b_errors import is_e2b_unavailable
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +26,6 @@ _TRANSIENT_STARTUP_ERROR_NAMES = {
     "NotFoundException",
     "FileNotFoundException",
     "SandboxNotFoundException",
-    # create 快速返回后 envd RPC 通道可能尚未就绪 (connection refused / unavailable),
-    # SDK 将其包装为 TimeoutException 抛出, 需按瞬时启动错误重试。
-    "TimeoutException",
 }
 
 
@@ -70,10 +68,12 @@ def _startup_retry_delay() -> float:
 
 
 def _is_transient_startup_error(exc: Exception) -> bool:
-    return type(exc).__name__ in _TRANSIENT_STARTUP_ERROR_NAMES
+    return type(exc).__name__ in _TRANSIENT_STARTUP_ERROR_NAMES or is_e2b_unavailable(exc)
 
 
-def _with_startup_retry(operation, *, step: str = "startup", runtime_id: str = ""):
+def _with_startup_retry(
+    operation, *, step: str = "startup", runtime_id: str = "", sensitive_values=(), env=None
+):
     attempts = _startup_retry_attempts()
     delay = _startup_retry_delay()
     last_exc: Exception | None = None
@@ -84,13 +84,14 @@ def _with_startup_retry(operation, *, step: str = "startup", runtime_id: str = "
             retry = _is_transient_startup_error(exc) and attempt < attempts - 1
             logger.warning(
                 "E2B_DIAGNOSTIC step=%s runtime_id=%s attempt=%d max_attempts=%d "
-                "error_type=%s retry=%s",
+                "error_type=%s retry=%s details=%s",
                 step,
                 runtime_id,
                 attempt + 1,
                 attempts,
                 type(exc).__name__,
                 retry,
+                e2b_error_detail(exc, sensitive_values=sensitive_values, env=env),
             )
             if not retry:
                 raise
@@ -241,6 +242,50 @@ class E2BSandboxSession:
             kwargs["timeout"] = timeout
         return E2BCommandHandle(self._sandbox.commands.connect(process_id, **kwargs))
 
+    def start_background_stream(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+        envs: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> Any:
+        """Start a background command and return the raw SDK handle for streaming.
+
+        The host-owned observer iterates this handle's event stream to durably
+        capture output; the wrapped ``E2BCommandHandle`` only exposes wait/kill.
+        """
+        kwargs: dict[str, Any] = {"background": True}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if envs is not None:
+            kwargs["envs"] = envs
+        if cwd is not None:
+            kwargs["cwd"] = cwd
+        return self._sandbox.commands.run(command, **kwargs)
+
+    def connect_background_stream(
+        self,
+        process_id: int,
+        *,
+        timeout: int | None = None,
+    ) -> Any:
+        """Reconnect to a running command, returning the raw SDK handle.
+
+        The new stream only delivers events produced after the connect; E2B does
+        not replay output that was produced while no client was attached.
+        """
+        if process_id <= 0:
+            raise SandboxError("E2B background stream reconnect requires a positive process ID")
+        kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return self._sandbox.commands.connect(process_id, **kwargs)
+
+    def kill_command(self, process_id: int) -> bool:
+        """Send SIGKILL to one remote command without killing the sandbox."""
+        return bool(self._sandbox.commands.kill(process_id))
+
     def list_files(self, root: str, *, recursive: bool = True) -> list[str]:
         """List file paths below ``root`` without exposing sibling paths."""
 
@@ -273,11 +318,23 @@ class E2BSandboxSession:
     def get_host(self, port: int) -> str:
         return str(self._sandbox.get_host(port))
 
-    def kill(self) -> None:
-        self._sandbox.kill()
+    def kill(self) -> bool:
+        return bool(self._sandbox.kill())
 
 
 class E2BSandboxBackend:
+    def _startup_retry(self, operation, *, step: str, runtime_id: str, env=None):
+        credentials = (
+            (self.connection.api_key.get_secret_value(),) if self.connection is not None else ()
+        )
+        return _with_startup_retry(
+            operation,
+            step=step,
+            runtime_id=runtime_id,
+            sensitive_values=credentials,
+            env={**self.spec.env, **(env or {})},
+        )
+
     def _diagnostic_step(self, step: str, *, runtime_id: str = "", env=None):
         credentials = (
             (self.connection.api_key.get_secret_value(),) if self.connection is not None else ()
@@ -432,7 +489,7 @@ class E2BSandboxBackend:
             sandbox = sandbox_cls.connect(locator, timeout=self.spec.timeout, **connection_options)
             session = self._wrap_sandbox(sandbox)
             with self._diagnostic_step("reconnect.ready.command", runtime_id=session.sandbox_id):
-                _with_startup_retry(
+                self._startup_retry(
                     lambda: session.run_command("true"),
                     step="reconnect.ready.command",
                     runtime_id=session.sandbox_id,
@@ -446,16 +503,18 @@ class E2BSandboxBackend:
         self, session: E2BSandboxSession, env: dict[str, str] | None = None
     ) -> None:
         with self._diagnostic_step("ready.command", runtime_id=session.sandbox_id, env=env):
-            _with_startup_retry(
+            self._startup_retry(
                 lambda: session.run_command("true"),
                 step="ready.command",
                 runtime_id=session.sandbox_id,
+                env=env,
             )
         with self._diagnostic_step("ready.file", runtime_id=session.sandbox_id, env=env):
-            _with_startup_retry(
+            self._startup_retry(
                 lambda: session.write_file("/tmp/.ksadk-sandbox-ready", ""),
                 step="ready.file",
                 runtime_id=session.sandbox_id,
+                env=env,
             )
         with self._diagnostic_step("ready.env", runtime_id=session.sandbox_id, env=env):
             self._wait_env_applied(session, env or {})
@@ -470,7 +529,30 @@ class E2BSandboxBackend:
         attempts = _startup_retry_attempts()
         delay = _startup_retry_delay()
         for attempt in range(attempts):
-            result = session.run_command(f"printenv {key} || true")
+            # The env value poll already has a bounded retry budget. Transport
+            # failures share that budget instead of nesting another retry loop.
+            try:
+                result = session.run_command(f"printenv {key} || true")
+            except Exception as exc:
+                if not _is_transient_startup_error(exc) or attempt == attempts - 1:
+                    raise
+                logger.warning(
+                    "E2B_DIAGNOSTIC step=ready.env runtime_id=%s attempt=%d "
+                    "max_attempts=%d error_type=%s retry=True details=%s",
+                    session.sandbox_id,
+                    attempt + 1,
+                    attempts,
+                    type(exc).__name__,
+                    e2b_error_detail(
+                        exc,
+                        sensitive_values=(self.connection.api_key.get_secret_value(),)
+                        if self.connection
+                        else (),
+                        env={**self.spec.env, **env},
+                    ),
+                )
+                time.sleep(min(delay * (2**attempt), 1.0))
+                continue
             if result.stdout.strip() == expected:
                 return
             time.sleep(min(delay * (2**attempt), 1.0))

@@ -37,7 +37,7 @@ from ksadk.resource_runtime.skill_runtime import create_bound_skill_runtime
 from ksadk.resource_runtime.skills import PinnedSkillService
 from ksadk.resource_runtime.snapshots import ConnectionTarget, MemoryRecallPolicy, ResourceSnapshot
 from ksadk.skills.package_store import SkillPackageError
-from ksadk.skills.service_client import SkillServiceClient
+from ksadk.skills.service_client import SkillServiceClient, SkillServiceHTTPError
 
 
 class ExplicitWorkerBinding(PluginContractModel):
@@ -485,6 +485,10 @@ def main() -> int:
                 }
                 try:
                     reply = handlers[request.operation](request.arguments)
+                except SkillServiceHTTPError as error:
+                    if error.status_code in {401, 403}:
+                        raise ResourceUpstreamAuthorizationError() from None
+                    reply = {"status": "failed", "errorCode": "SKILL_RESOURCE_UNAVAILABLE"}
                 except (httpx.HTTPError, RequestException) as error:
                     response = getattr(error, "response", None)
                     if response is not None and response.status_code in {401, 403}:

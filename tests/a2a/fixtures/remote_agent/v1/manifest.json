@@ -1,0 +1,85 @@
+{
+  "fixture_version": 1,
+  "schema_revision": "a2a-remote-agent/v1",
+  "generator_version": "manual-contract-v1",
+  "owner": "ksadk-python",
+  "owner_base_sha": "bae8c886e87ea2f62f440945dd8aa591759cea5d",
+  "a2a_protocol": "1.0",
+  "a2a_sdk": "1.1.0",
+  "runtime_event_schema": 2,
+  "scope_descriptor_schema": "execution.scope/v1",
+  "tool_activity_schema": "ksadk.a2a.tool-activity/v1",
+  "profiles": [
+    "flat-v1",
+    "agent-block-v1"
+  ],
+  "authoritative_lane": "runtime-event-v2",
+  "capabilities": {
+    "input": "ksadk.presentation",
+    "output": "agent.block",
+    "tool_activity_extension": "urn:ksadk:a2a:tool-activity:v1"
+  },
+  "limits": {
+    "tool_activity_event_bytes": 16384,
+    "tool_activity_invocation_bytes": 1048576
+  },
+  "support_matrix": {
+    "google_adk": {
+      "declared_range": ">=1.34.0,<3.0.0",
+      "remote_agent_minimum": "2.5.0",
+      "contract_tested": [
+        "2.5.0"
+      ],
+      "release_test_targets": [
+        "2.5.0",
+        "2.8.x"
+      ]
+    },
+    "framework_exposure": {
+      "adk": "native",
+      "langgraph": "native",
+      "codex": "expert_tool",
+      "unknown": "dynamic_tool"
+    }
+  },
+  "auth_modes": {
+    "wire": [
+      "platform_api_key",
+      "console_session",
+      "workload_permit",
+      "gateway_service"
+    ],
+    "legacy_runtime_mapping": {
+      "api_key": "platform_api_key"
+    },
+    "enabled_in_0_8_5": [
+      "workload_permit",
+      "gateway_service"
+    ]
+  },
+  "scenarios": [
+    "adk_two_llm_outputs",
+    "a2a_stream_tool_terminal",
+    "duplicate_delivery",
+    "equal_text_distinct_items",
+    "out_of_order",
+    "root_continues_after_child",
+    "parallel_native_call_id_collision",
+    "producer_tool_round_trip",
+    "closed_snapshot_conflict",
+    "disconnect_after_tool_result",
+    "input_continue",
+    "cancel_matrix",
+    "terminal_only_peer",
+    "unsafe_tool_payload",
+    "mixed_v1_v2"
+  ],
+  "sha256": {
+    "adk_two_llm_outputs.jsonl": "e0618fe56b22507d65e502154211b57f4ab58b1ed8ce682d391fe4c66ed19169",
+    "a2a_stream_tool_terminal.jsonl": "60e947ec0ba1ce53a0bc33609cf84087130cde41f3def391555b5a3ab17a1449",
+    "a2a_input_continue_cancel.jsonl": "be78ceb42db59131e5a98e6b0ac8cb1c14169000ac66a77d099dfdac1ad64b3b",
+    "expected_runtime_projection.json": "d0463d3e7f2f6c336cc73f42ebd277bba513df2bc920da43695f1774521e3c78",
+    "expected_conversation_projection.json": "4e9f3b4ed4a0a18af8144804dae71f8e1608c4b285c2385898a54e1271539cfa",
+    "expected_v1_projection.json": "58242b51f4976d2ebf0646b0eda6ab3a606120cfbbc8e4ea52db16d8f85b2cf9"
+  }
+}

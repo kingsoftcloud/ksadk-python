@@ -111,6 +111,9 @@ class SessionEvent:
                 raise ValueError("session_event.seq binding requires session_event content")
             envelope = dict(envelope)
             envelope["seq"] = self.seq_id
+            if (envelope.get("family") == "control"
+                    and envelope.get("event_type") == "control.command_accepted"):
+                envelope["payload"] = {**envelope.get("payload", {}), "accepted_seq": self.seq_id}
             self.content = {**self.content, "session_event": envelope}
             return
         if binding != "runtime_event.seq":

@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-from ksadk.common.diagnostics import safe_exception_detail
+from ksadk.common.diagnostics import safe_exception_detail, safe_exception_locations
 from ksadk.conversations.runtime_persistence import append_run_status_event
 from ksadk.server.factory import get_state
 
@@ -145,9 +145,10 @@ class _DetachedSSEStream:
         except Exception as exc:
             terminal_fallback_detail = safe_exception_detail(exc)
             logger.error(
-                "Detached SSE stream error (terminal_sent=%s): %s",
+                "Detached SSE stream error (terminal_sent=%s): %s; locations=%s",
                 self._terminal_event_sent,
                 terminal_fallback_detail,
+                safe_exception_locations(exc),
             )
             # 异常在 runner 层不经过 "error" 事件路径，若不在这里补发，
             # 订阅者只会看到干净的流结束，无法区分失败与正常完成。

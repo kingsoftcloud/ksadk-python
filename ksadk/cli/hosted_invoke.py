@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from contextlib import ExitStack
 
 import click
 import requests
@@ -13,7 +14,7 @@ from ksadk.conversations.message_projection import project_session_messages
 
 def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, insecure):
     """Return False for ordinary OpenAI servers; never bypass hosted admission."""
-    with requests.Session() as transport:
+    with requests.Session() as transport, ExitStack() as subscriptions:
         transport.verify = not insecure
         if api_key:
             transport.headers["Authorization"] = "Bearer " + api_key
@@ -46,9 +47,13 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
             raise click.ClickException("Hosted bootstrap authentication or transport failed") from exc
         if bootstrap is None:
             return False
+        capabilities = bootstrap.get("Capabilities") or {}
+        command_events = capabilities.get("KernelSessionEventsByCommand") is True
         agent_id = (bootstrap.get("Agent") or {}).get("AgentId")
         if (not agent_id or not isinstance(bootstrap.get("HostedRuntime"), dict)
-                or (bootstrap.get("Capabilities") or {}).get("KernelSessionEvents") is not True):
+                or not (command_events or capabilities.get("KernelSessionEvents") is True)):
+            if command_events:
+                raise click.ClickException("Hosted command capability has no runtime identity")
             return False
 
         session_body = {"AgentId": agent_id, "SessionId": session_id}
@@ -69,12 +74,15 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
         receipt = action("RunAgent", body)
         run_id = receipt.get("RunId") or receipt.get("InvocationId")
         command_id, message_id = receipt.get("CommandId"), receipt.get("MessageId")
-        if not run_id and not (command_id and message_id):
+        if command_events and not command_id:
+            raise click.ClickException("Hosted run returned no observable command identity")
+        if not command_events and not run_id and not (command_id and message_id):
             raise click.ClickException("Hosted run returned no observable command identity")
         click.echo(f"Session: {session_id}\nCommand: {command_id or run_id}")
         cursor = 0
         cursor_source = None
         history_epoch = None
+        snapshot_seq = None
         claimed_message = None
         events = {}
         submitted = set()
@@ -82,6 +90,14 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
         pending = {}
         terminal = None
         deadline = time.monotonic() + 900
+        command_reader = None
+        if command_events:
+            from ksadk.cli.hosted_command_events import HostedCommandEvents
+
+            command_reader = subscriptions.enter_context(HostedCommandEvents(
+                transport, endpoint=endpoint, agent_id=agent_id, session_id=session_id,
+                command_id=command_id, deadline=deadline,
+            ))
         read_interrupted = False
         while (remaining := deadline - time.monotonic()) > 0:
             query = {
@@ -90,11 +106,22 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
             }
             if cursor_source:
                 query["CursorSource"] = cursor_source
-            if history_epoch:
+            if history_epoch is not None:
                 query["HistoryEpoch"] = history_epoch
+            if snapshot_seq is not None:
+                query["SnapshotSeqId"] = snapshot_seq
             try:
-                page = action("ListSessionEvents", query, request_timeout=min(45, remaining))
+                page = (command_reader.read(cursor, remaining) if command_reader else
+                        action("ListSessionEvents", query, request_timeout=min(45, remaining)))
             except requests.exceptions.SSLError:
+                raise
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 409:
+                    raise click.ClickException(
+                        "Hosted history changed; reload the session in Dashboard. "
+                        f"Run continues. Session: {session_id}, "
+                        f"Command: {command_id}, Run: {run_id}"
+                    ) from exc
                 raise
             except (requests.ConnectionError, requests.Timeout):
                 # This is an idempotent observation of an already admitted run.
@@ -117,13 +144,16 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
                 )
             if cursor_source and source != cursor_source:
                 raise click.ClickException("Hosted event cursor source changed; inspect the session above")
-            page_epoch = page.get("HistoryEpoch")
-            if page_epoch is not None and (not isinstance(page_epoch, str) or not page_epoch):
-                raise click.ClickException("Hosted Runtime returned an invalid history epoch")
-            if cursor_source and page_epoch != history_epoch:
-                raise click.ClickException("Hosted history epoch changed; inspect the session above")
-            history_epoch = page_epoch
             cursor_source = source
+            epoch = page.get("HistoryEpoch")
+            if history_epoch is not None and epoch != history_epoch:
+                raise click.ClickException(
+                    "Hosted history epoch changed; inspect the session above"
+                )
+            if epoch is not None:
+                if not isinstance(epoch, str) or not epoch:
+                    raise click.ClickException("Hosted Runtime returned an invalid history epoch")
+                history_epoch = epoch
             rows = page.get("Events")
             next_cursor = page.get("NextCursor")
             if (not isinstance(rows, list) or type(next_cursor) is not int
@@ -140,6 +170,15 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
                 content = event.get("Content") or {}
                 fact = content.get("runtime_event") or (content.get("session_event") or {}).get("payload") or {}
                 kind = event.get("EventType")
+                if command_events:
+                    # Server binds this stream to the admitted command, including
+                    # queued receipts that do not carry a RunId or MessageId.
+                    bound_run = fact.get("run_id")
+                    if run_id and bound_run != run_id:
+                        raise click.ClickException("Hosted command stream run identity changed")
+                    if not run_id:
+                        run_id = bound_run
+                        click.echo(f"Run: {run_id}")
                 if not run_id:
                     if kind == "control.command_rejected" and fact.get("command_id") == command_id:
                         raise click.ClickException("Admitted command was rejected by the worker")
@@ -157,16 +196,28 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
                     continue
                 if not fact.get("parent_scope_id"):
                     events[event.get("EventId") or str(event["SeqId"])] = event
-                if kind == "interaction.requested":
+                authoritative_interaction = (
+                    not command_events or fact.get("family") == "interaction"
+                )
+                if kind == "interaction.requested" and authoritative_interaction:
                     pending[(fact.get("interaction_id"), fact.get("revision"))] = fact
-                if kind in ("interaction.resolved", "interaction.expired"):
+                if (kind in ("interaction.resolved", "interaction.expired")
+                        and authoritative_interaction):
                     resolved.add(fact.get("interaction_id"))
                 if kind in ("run.completed", "run.failed", "run.canceled") and not fact.get("parent_scope_id"):
                     terminal = kind
+                if command_events and kind == "control.run_transition":
+                    terminal = {"completed": "run.completed", "failed": "run.failed",
+                                "cancelled": "run.canceled", "canceled": "run.canceled"}.get(
+                                    fact.get("state"), terminal)
             # Decisions require the whole available forward window: resolution
             # or the root terminal may be on a later page than the request.
             if page["HasMore"]:
+                snapshot_seq = page.get("SnapshotSeqId")
                 continue
+            # Freeze only one available window. A later poll must be able to
+            # observe events appended after this window's snapshot watermark.
+            snapshot_seq = None
             for key, fact in pending.items():
                 interaction_id = fact.get("interaction_id")
                 revision = fact.get("revision")
@@ -202,5 +253,6 @@ def try_invoke_hosted_once(*, endpoint, api_key, session_id, message, model, ins
                     raise click.ClickException("Completed run has no text result; inspect the session above")
                 click.echo((answers[-1]["Content"] or {})["text"])
                 return True
-            time.sleep(1)
+            if not command_events or not rows:
+                time.sleep(1)
         raise click.ClickException(f"Waiting timed out; run continues. Session: {session_id}, Command: {command_id}, Run: {run_id}")

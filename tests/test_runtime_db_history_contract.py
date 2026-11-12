@@ -595,36 +595,52 @@ async def test_history_byte_precheck_and_body_share_pg_snapshot(pg_dsn, monkeypa
             nonlocal updated
             if updated or 'required_bytes FROM checked' not in query:
                 return await original_fetch(connection, query, *params, **kwargs)
-            # Suspend the real PG statement after its MVCC snapshot exists;
-            # mutate the row from a separate committed connection meanwhile.
-            query = query.replace('required_bytes FROM checked',
-                                  'required_bytes, pg_sleep(1) FROM checked')
-            reading = asyncio.create_task(original_fetch(connection, query, *params, **kwargs))
+            # The blocking advisory-lock request proves the statement already
+            # owns its MVCC snapshot. pg_locks exposes it on PostgreSQL 9.6
+            # too, where pg_sleep has no PgSleep wait_event instrumentation.
+            barrier = uuid.uuid4().int & ((1 << 63) - 1)
+            query = query.replace(
+                'required_bytes FROM checked',
+                f'required_bytes, pg_advisory_xact_lock(${len(params) + 1}::bigint) FROM checked',
+            )
+            reading = None
             peer = await asyncpg.connect(pg_dsn)
             try:
-                for _ in range(200):
-                    sleeping = await peer.fetchval(
-                        "SELECT wait_event='PgSleep' FROM pg_stat_activity WHERE pid=$1",
-                        connection._connection.get_server_pid(),
+                async with peer.transaction():
+                    await peer.execute('SELECT pg_advisory_xact_lock($1::bigint)', barrier)
+                    reading = asyncio.create_task(
+                        original_fetch(connection, query, *params, barrier, **kwargs)
                     )
-                    if sleeping:
-                        break
-                    assert not reading.done()
-                    await asyncio.sleep(.005)
-                else:
-                    raise AssertionError('PG statement did not enter the snapshot barrier')
-                await peer.execute(
-                    f"UPDATE {KSADK_PG_EVENTS_TABLE} SET content_json=$1::jsonb "
-                    "WHERE namespace=$2 AND session_id=$3 AND id=$4",
-                    json.dumps({"text": "x" * (17 * 1024 * 1024)}),
-                    namespace, "session", "small",
-                )
-                updated = True
+                    for _ in range(200):
+                        blocked = await peer.fetchval(
+                            "SELECT EXISTS (SELECT FROM pg_locks WHERE locktype='advisory' "
+                            "AND pid=$1 AND classid=$2::oid AND objid=$3::oid "
+                            "AND objsubid=1 AND NOT granted)",
+                            connection._connection.get_server_pid(),
+                            barrier >> 32,
+                            barrier & 0xFFFFFFFF,
+                        )
+                        if blocked:
+                            break
+                        assert not reading.done()
+                        await asyncio.sleep(.005)
+                    else:
+                        raise AssertionError('PG statement did not enter the snapshot barrier')
+                    await peer.execute(
+                        f"UPDATE {KSADK_PG_EVENTS_TABLE} SET content_json=$1::jsonb "
+                        "WHERE namespace=$2 AND session_id=$3 AND id=$4",
+                        json.dumps({"text": "x" * (17 * 1024 * 1024)}),
+                        namespace, "session", "small",
+                    )
+                    updated = True
+                # Commit the replacement and release the gate together; the
+                # original statement must still return its prechecked version.
                 return await reading
             finally:
-                if not reading.done():
-                    reading.cancel()
-                await asyncio.gather(reading, return_exceptions=True)
+                if reading is not None:
+                    if not reading.done():
+                        reading.cancel()
+                    await asyncio.gather(reading, return_exceptions=True)
                 await peer.close()
 
         monkeypatch.setattr(_TimedConnection, 'fetch', fetch_during_concurrent_update)
@@ -851,7 +867,7 @@ def test_remaining_header_requires_canonical_decimal():
     assert _remaining_ms("00") == 0
     assert _remaining_ms("01") == 1
     assert _remaining_ms("-1") == 0
-    assert _remaining_ms("1" * 100) == 2600
+    assert __import__("math").isinf(_remaining_ms("1" * 100))
     for invalid in ("", "1.5", "+1", " 1", "1 ",
                     "1e3", "NaN", "inf", "١"):
         assert _remaining_ms(invalid) is None

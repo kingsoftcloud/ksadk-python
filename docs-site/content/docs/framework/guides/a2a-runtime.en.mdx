@@ -100,6 +100,13 @@ interfaces declared by that Card and binds only to `127.0.0.1` locally. A
 managed Runtime's public discovery Card is published by the Gateway; do not use
 a development-machine Card as a production discovery record.
 
+KsADK's own managed ADK A2A adapter follows the SDK's ADK compatibility window
+(`>=1.34.0,<3.0.0`). Projects directly using Google's upstream
+`google.adk.agents.remote_a2a_agent.RemoteA2aAgent` need **ADK 2.5 or later** for
+A2A 1.0 / `a2a-sdk==1.1.0` interoperability: older upstream versions reference an
+incompatible `ClientEvent` API. Public regressions verify the SDK-owned adapter
+and the upstream example separately.
+
 ## Product ownership
 
 AgentEngine creates `AgentEngineA2ABootstrap` when it deploys a managed Runtime.
@@ -136,6 +143,45 @@ standard A2A `1.0` shape shown above. If no Space is configured, the command
 fails explicitly rather than silently falling back to a public direct URL. See
 the [environment-variable reference](/en/docs/references/environment-variables)
 for the complete variable contract.
+
+## Hosted deployment, registration, and caller tools
+
+For LangGraph Code projects, configure model, Kernel, Session, and framework checkpoints using the
+[0.8.7 integration guide](/en/docs/framework/guides/integration-0-8-7/). Bind an existing test runtime to a dedicated Space:
+
+```bash
+agentengine deploy . --agent-id "$AGENT_ID" --region "$KSYUN_REGION" \
+  --artifact-type Code --env-file ./runtime.env \
+  --a2a-space-id "$A2A_SPACE_ID" --a2a-runtime-profile managed-a2a-basic
+```
+
+`managed-a2a-basic` targets LangGraph scenarios without required long-term memory. Choose other
+profiles for actual runtime capabilities. Do not inject platform signing keys, workload tokens,
+or A2A identities manually.
+
+Space binding does not replace A2A registration. A remotely callable callee also needs these platform steps:
+
+| Platform action | Key fields and results |
+| --- | --- |
+| `GetAToARuntimeConfig` | Fetch the current candidate `AgentCard` using your `AgentId`; a locally generated Card does not replace hosted preview. |
+| `CreateAToAAgent` | Submit `Source=hosted`, existing `AgentId`, previewed `AgentCard`, and target `A2ASpaceIds`. Supply Card explicitly instead of depending on platform defaults. |
+| `ListAToASpaceAgents` | Verify registration and `InvocationStatus` are available; retain returned A2A Agent ID and version. Runtime and registration IDs are different identifiers. |
+
+These are platform Action/console operations, not another compute instance. An ordinary caller needs
+Space access and tools; it needs its own registration only when it must also accept remote calls.
+
+Pass tools returned by `get_a2a_tools()` to native `ToolNode` or your existing LangGraph agent factory:
+
+```python
+from ksadk.toolsets.a2a import get_a2a_tools
+
+a2a_tools = get_a2a_tools()
+```
+
+The tools are `list_a2a_agents`, `get_a2a_agent_card`, and `call_a2a_agent`; no bound Space yields an
+empty tool set. Select callees from discovery results rather than hardcoding IDs from another environment.
+Remote calls may require separate execution approval; approval and OAuth are different actions.
+Validate remote terminal task state, results, and audit events rather than trusting caller-generated prose.
 
 ## Outbound access
 

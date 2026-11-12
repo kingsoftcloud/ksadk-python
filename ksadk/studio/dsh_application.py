@@ -7,6 +7,7 @@ plugin protocol, settings store, or module loader.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 from html import escape
@@ -36,12 +37,22 @@ _STUDIO_CORE_BRAND_SCRIPT = (
 )
 
 
-def _core_cookie_header(cookies) -> str:
-    """Forward Core cookies without leaking obsolete Studio-local sessions."""
+def _core_cookie_header(cookies, *, authority: str) -> str:
+    """Forward only the supervised Core's authority-bound auth cookie.
+
+    The pinned DSH client-connection names its cookie with the base64url SHA256
+    of the request Host. Browsers share cookies across ports, so prior Core
+    authorities must not fill this request's header or reach another Core.
+    Values and the browser's cookie store remain untouched.
+    """
+    current_auth = "dsh-auth-" + base64.urlsafe_b64encode(
+        hashlib.sha256(authority.encode()).digest()
+    ).decode().rstrip("=")
     return "; ".join(
         f"{name}={value}"
         for name, value in cookies.items()
         if not name.startswith(_STUDIO_COOKIE_PREFIXES)
+        and (not name.startswith("dsh-auth-") or name == current_auth)
     )
 
 
@@ -207,7 +218,7 @@ def register_dsh_application(
         headers = {
             key: value for key, value in request.headers.items() if key.lower() not in _HOP_HEADERS
         }
-        core_cookie = _core_cookie_header(request.cookies)
+        core_cookie = _core_cookie_header(request.cookies, authority=urlsplit(origin).netloc)
         if core_cookie:
             headers["cookie"] = core_cookie
         else:
@@ -262,7 +273,9 @@ def register_dsh_application(
         async with connect(
             f"ws://127.0.0.1:{endpoint.port}{path}",
             origin=f"http://127.0.0.1:{endpoint.port}",
-            extra_headers={"Cookie": _core_cookie_header(websocket.cookies)},
+            extra_headers={"Cookie": _core_cookie_header(
+                websocket.cookies, authority=f"127.0.0.1:{endpoint.port}"
+            )},
             subprotocols=protocols or None,
             max_size=16 * 1024 * 1024,
         ) as upstream:

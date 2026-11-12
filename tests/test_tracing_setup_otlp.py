@@ -7,7 +7,7 @@ import types
 
 import pytest
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import SpanContext, TraceFlags
 
@@ -109,6 +109,7 @@ def _install_fake_otel(monkeypatch):
         "opentelemetry.sdk.trace",
         types.SimpleNamespace(
             ReadableSpan=ReadableSpan,
+            SpanProcessor=SpanProcessor,
             TracerProvider=_FakeTracerProvider,
         ),
     )

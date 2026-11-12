@@ -8,9 +8,11 @@ import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import uuid4
 
 import pytest
@@ -98,53 +100,64 @@ if os.environ.get("KSADK_TEST_GRANTS_POSTGRES_DSN"):
     BACKENDS.append("postgres")
 
 
+@asynccontextmanager
+async def postgres_grant_sessions():
+    import asyncpg
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    dsn = os.environ["KSADK_TEST_GRANTS_POSTGRES_DSN"]
+    schema = "grant_test_" + uuid4().hex
+    async with AsyncExitStack() as cleanup:
+        admin = await asyncpg.connect(dsn)
+        cleanup.push_async_callback(admin.close)
+        await admin.execute(f'CREATE SCHEMA "{schema}"')
+        cleanup.push_async_callback(admin.execute, f'DROP SCHEMA "{schema}" CASCADE')
+        url = urlsplit(dsn)
+        params = dict(parse_qsl(url.query, keep_blank_values=True))
+        params["search_path"] = schema
+        sessions = PostgresSessionService(
+            dsn=url._replace(query=urlencode(params)).geturl(),
+            namespace=schema,
+            tenant_id=SPEC.tenant_id,
+        )
+        cleanup.push_async_callback(sessions.aclose)
+        yield sessions
+
+
 @pytest.fixture(params=BACKENDS)
 async def harness(request, tmp_path):
-    sessions = InMemorySessionService()
-    await sessions.create_session(
-        agent_id=SPEC.agent_instance_id, user_id=SPEC.tenant_id, session_id=SPEC.session_id
-    )
-    events = SessionServiceEventStore(sessions)
+    backend = request.param
     path = tmp_path / "kernel.sqlite"
-    pg_cleanup = None
-    if request.param == "postgres":
-        import asyncpg
-
-        from ksadk.kernel.postgres_store import PostgresAgentKernelStore
-
-        # An explicitly configured test DSN is used only inside a fresh schema.
-        dsn = os.environ["KSADK_TEST_GRANTS_POSTGRES_DSN"]
-        schema = "grant_test_" + uuid4().hex
-        admin = await asyncpg.connect(dsn)
-        await admin.execute(f'CREATE SCHEMA "{schema}"')
-        pool = await asyncpg.create_pool(dsn, server_settings={"search_path": schema})
-
-        class EventLog:
-            async def append_on(self, connection, envelope, guard):
-                # The test isolates the real PG control transaction. Canonical
-                # runtime events still use the normal SessionServiceEventStore.
-                return envelope
-
-        store = PostgresAgentKernelStore(pool, EventLog(), tenant_id=SPEC.tenant_id)
-        await store.ensure_schema()
-        pg_cleanup = (pool, admin, schema)
-    else:
-        store = (
-            InMemoryAgentKernelStore(events)
-            if request.param == "memory"
-            else SQLiteAgentKernelStore(path, events)
+    owner = (
+        postgres_grant_sessions() if backend == "postgres" else nullcontext(InMemorySessionService())
+    )
+    async with owner as sessions:
+        await sessions.create_session(
+            agent_id=SPEC.agent_instance_id, user_id=SPEC.tenant_id, session_id=SPEC.session_id
         )
-    if request.param == "sqlite":
-        await store.ensure_schema()
-    result = Harness(store, events, sessions, path, request.param)
-    yield result
-    if request.param == "sqlite":
-        await result.store.close()
-    if pg_cleanup:
-        pool, admin, schema = pg_cleanup
-        await pool.close()
-        await admin.execute(f'DROP SCHEMA "{schema}" CASCADE')
-        await admin.close()
+        events = SessionServiceEventStore(sessions)
+        if backend == "postgres":
+            from ksadk.kernel.postgres_store import PostgresAgentKernelStore, PostgresKernelEventLog
+
+            # Admission and its canonical event must receive one sequence in the same transaction.
+            pool = sessions._pool
+            log = PostgresKernelEventLog(
+                pool, namespace=sessions.namespace, tenant_id=sessions.tenant_id
+            )
+            store = PostgresAgentKernelStore(pool, log, tenant_id=sessions.tenant_id)
+        elif backend == "sqlite":
+            store = SQLiteAgentKernelStore(path, events)
+        else:
+            store = InMemoryAgentKernelStore(events)
+        if backend != "memory":
+            await store.ensure_schema()
+        result = Harness(store, events, sessions, path, backend)
+        try:
+            yield result
+        finally:
+            if backend == "sqlite":
+                await result.store.close()
 
 
 class FixtureRuntime(BaseRuntime):
@@ -633,10 +646,11 @@ async def test_later_grant_cannot_skip_suspended_fifo_head(harness):
     later = SPEC.model_copy(update={"grant_id": "later-occurrence"})
     await store.ensure_execution_grant(SPEC)
     await store.ensure_execution_grant(later)
-    await store.accept_command(command("first"), queue_limit=10)
+    first = await store.accept_command(command("first"), queue_limit=10)
     accepted = await store.accept_command(
         command("second", grant_id=later.grant_id), queue_limit=10
     )
+    assert 0 < first.accepted_seq < accepted.accepted_seq
     await store.set_execution_grant_state(
         SPEC, "suspended", expected_revision=1, idempotency_key="pause"
     )

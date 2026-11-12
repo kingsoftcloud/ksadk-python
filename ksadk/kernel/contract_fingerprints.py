@@ -67,6 +67,9 @@ def _required_capability_policy_digest(name: str, required: tuple[str, ...]) -> 
 BASIC_A2A_CAPABILITY_DIGEST = _required_capability_policy_digest(
     "basic-a2a", ("cancel", "submit_interaction")
 )
+BASIC_CODE_CAPABILITY_DIGEST = _required_capability_policy_digest(
+    "basic-code", ("cancel",)
+)
 HARNESS_CANCEL_CAPABILITY_DIGEST = _required_capability_policy_digest(
     "harness-cancel", ("cancel",)
 )
@@ -82,6 +85,7 @@ def runtime_capability_admission_digest(matrix: Any, expected: str) -> str:
 
     required = {
         BASIC_A2A_CAPABILITY_DIGEST: ("cancel", "submit_interaction"),
+        BASIC_CODE_CAPABILITY_DIGEST: ("cancel",),
         HARNESS_CANCEL_CAPABILITY_DIGEST: ("cancel",),
     }.get(expected)
     if required is None:
@@ -101,6 +105,7 @@ __all__ = [
     "runtime_capability_matrix_digest",
     "runtime_capability_admission_digest",
     "BASIC_A2A_CAPABILITY_DIGEST",
+    "BASIC_CODE_CAPABILITY_DIGEST",
     "HARNESS_CANCEL_CAPABILITY_DIGEST",
     "runtime_capability_matrix_wire_value",
 ]

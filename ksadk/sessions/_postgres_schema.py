@@ -21,6 +21,22 @@ from ksadk.sessions._postgres_tables import (
 logger = logging.getLogger(__name__)
 
 
+async def install_kernel_session_delete_trigger(connection) -> None:
+    # Session-only and Kernel-first installations are both supported. Both
+    # migration paths hold the Session schema lock while joining the two.
+    await connection.execute(f"""
+        DO $$ BEGIN
+            IF to_regclass('{KSADK_PG_SESSIONS_TABLE}') IS NOT NULL AND
+               to_regprocedure('ksadk_after_kernel_session_delete()') IS NOT NULL AND
+               NOT EXISTS (SELECT FROM pg_trigger WHERE tgrelid=to_regclass('{KSADK_PG_SESSIONS_TABLE}')
+                           AND tgname='ksadk_retire_deleted_session') THEN
+                CREATE TRIGGER ksadk_retire_deleted_session AFTER DELETE ON {KSADK_PG_SESSIONS_TABLE}
+                FOR EACH ROW EXECUTE PROCEDURE ksadk_after_kernel_session_delete();
+            END IF;
+        END $$;
+    """)
+
+
 class _PostgresSchemaMixin:
     async def _ensure_schema(self) -> None:
         if self._schema_ready:
@@ -50,6 +66,7 @@ class _PostgresSchemaMixin:
                     )
                     if not await self._core_schema_is_current(connection):
                         await self._create_core_schema(connection)
+                        await install_kernel_session_delete_trigger(connection)
                         if not await self._core_schema_is_current(connection):
                             raise RuntimeError(
                                 "Postgres session schema migration did not produce "

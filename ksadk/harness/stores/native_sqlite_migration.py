@@ -13,10 +13,17 @@ from pathlib import Path
 
 from ksadk.harness.native.state import RunScope, RunSnapshot
 
+from .native_commit_history import (
+    CHAIN_USAGE_MIGRATION_ID,
+    HISTORY_MIGRATION_ID,
+    HISTORY_SCHEMA,
+    SCHEMA_VERSION,
+    validate_history_schema,
+)
 from .native_contract import StoreConflict, encode
 
 READER_VERSION = "ksadk.native-local-migration/v1"
-EXPORT_MIGRATION_ID = "native.sqlite.schema2.explicit-session-heads/v1"
+EXPORT_MIGRATION_ID = "native.sqlite.schema3.explicit-session-heads/v1"
 
 
 @dataclass(frozen=True)
@@ -99,7 +106,7 @@ def inspect_native_store(path: str | Path) -> NativeStoreInspection:
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
         connection.execute("BEGIN")
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in {0, 1, 2}:
+        if version not in {0, 1, 2, SCHEMA_VERSION}:
             raise StoreConflict("unsupported native store schema")
         groups, identities, scopes = _legacy_sessions(connection)
         pins = _pins(connection, identities)
@@ -152,7 +159,7 @@ def export_native_store(
             if source_digest != expected_source_digest:
                 raise StoreConflict("native store changed after inspection")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1, 2}:
+            if version not in {0, 1, 2, SCHEMA_VERSION}:
                 raise StoreConflict("unsupported native store schema")
             groups, identities, _ = _legacy_sessions(connection)
             pins = _pins(connection, identities)
@@ -174,12 +181,16 @@ def export_native_store(
                 if key in pins and pins[key] != head.run_id:
                     raise StoreConflict("existing legacy session pin cannot be replaced")
                 chosen[key] = head.run_id
-            # Import at invocation time: SQLiteRunStore imports this module.
+            from .native_commit_history import CHAIN_USAGE_SCHEMA, validate_chain_usage_schema
             from .native_sqlite import _SCHEMA
 
             # executescript commits a pending transaction; restart it in the
             # script before schema/heads are touched. The staged copy is private.
-            connection.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
+            connection.executescript(
+                "BEGIN IMMEDIATE;\n" + _SCHEMA + HISTORY_SCHEMA + CHAIN_USAGE_SCHEMA
+            )
+            validate_history_schema(connection)
+            validate_chain_usage_schema(connection)
             for (scope, session), run_id in chosen.items():
                 if (scope, session) not in pins:
                     connection.execute(
@@ -206,7 +217,23 @@ def export_native_store(
                     ),
                 ),
             )
-            connection.execute("PRAGMA user_version=2")
+            connection.execute(
+                "INSERT OR IGNORE INTO native_store_migrations VALUES (?,?,?,?)",
+                (HISTORY_MIGRATION_ID, READER_VERSION, source_digest, "[]"),
+            )
+            # The export also creates the chain-usage tables, so record that
+            # migration too — otherwise the first open of the exported DB would
+            # see the tables exist but the migration is unrecorded.
+            connection.execute(
+                "INSERT OR IGNORE INTO native_store_migrations VALUES (?,?,?,?)",
+                (
+                    CHAIN_USAGE_MIGRATION_ID,
+                    READER_VERSION,
+                    source_digest,
+                    "[]",
+                ),
+            )
+            connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             connection.commit()
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise StoreConflict("native store export integrity check failed")
@@ -222,7 +249,7 @@ def export_native_store(
             os.fsync(directory)
         finally:
             os.close(directory)
-        return NativeStoreExport(source_digest, 2)
+        return NativeStoreExport(source_digest, SCHEMA_VERSION)
     finally:
         for path in (
             staging,

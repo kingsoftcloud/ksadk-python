@@ -6,16 +6,64 @@ import asyncio
 import hashlib
 import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
-from typing import Any, Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Iterator, Mapping
 
 from ksadk.sessions import resolve_persistence_topology
-from ksadk.sessions.topology import StorageTarget
+from ksadk.sessions.db_budget import _positive_seconds
+from ksadk.sessions.topology import StorageSource, StorageTarget
 
 ConnectCallable = Callable[..., Awaitable[Any]]
 
 _STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = asyncio.Lock()
+
+
+@dataclass
+class _SessionProbeScope:
+    target: StorageTarget
+    status: dict[str, Any] | None = None
+
+
+_SESSION_PROBE_SCOPE: ContextVar[_SessionProbeScope | None] = ContextVar(
+    "ksadk_session_persistence_probe", default=None
+)
+
+
+@contextmanager
+def bind_session_persistence_target(target: StorageTarget) -> Iterator[_SessionProbeScope]:
+    """Keep legacy provider wrappers on one app-owned Session target."""
+    scope = _SessionProbeScope(target)
+    token = _SESSION_PROBE_SCOPE.set(scope)
+    try:
+        yield scope
+    finally:
+        _SESSION_PROBE_SCOPE.reset(token)
+
+
+def session_service_storage_target(service: Any) -> StorageTarget:
+    """Describe known Session services without guessing from arbitrary objects."""
+    from ksadk.sessions.in_memory import InMemorySessionService
+    from ksadk.sessions.local_service import LocalSessionService
+    from ksadk.sessions.postgres_service import PostgresSessionService
+    from ksadk.sessions.resilient import ResilientSessionService
+
+    primary = service.primary if isinstance(service, ResilientSessionService) else service
+    source: StorageSource = "kernel_session_service"
+    if isinstance(primary, PostgresSessionService):
+        return StorageTarget(backend="postgres", dsn=primary.dsn, source=source)
+    if isinstance(primary, LocalSessionService):
+        return StorageTarget(backend="local", source=source, explicit_local=True)
+    if isinstance(primary, InMemorySessionService):
+        return StorageTarget(backend="memory", source=source, explicit_local=True)
+    return StorageTarget(backend="none", source=source)
+
+
+def persistence_probe_timeout() -> float:
+    return _positive_seconds("KSADK_PERSISTENCE_PROBE_TIMEOUT", 5.0)
 
 
 class _NoopAsyncLock:
@@ -32,6 +80,7 @@ def _base_status(*, target: StorageTarget, configured: bool) -> dict[str, Any]:
         "Status": "checking" if configured else "not_configured",
         "Ready": False,
         "Backend": target.backend,
+        "ReadinessScope": "shared_postgres",
         "SharedAcrossPods": False,
         "EffectiveFor": "new_runs_only",
         "Source": target.source,
@@ -122,7 +171,7 @@ async def _probe_postgres_target(
 ) -> dict[str, Any]:
     dsn = _asyncpg_dsn(target.dsn)
 
-    timeout = max(0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2"))
+    timeout = persistence_probe_timeout()
     ttl = max(0.0, float(os.getenv("KSADK_PERSISTENCE_PROBE_CACHE_TTL") or "30"))
     key = _cache_key(target.backend, dsn)
     now = time.monotonic()
@@ -193,9 +242,21 @@ async def get_persistence_status(
     framework: str | None = None,
     connect: ConnectCallable | None = None,
     use_cache: bool = True,
+    session_target: StorageTarget | None = None,
 ) -> dict[str, Any]:
-    """Return independent credential-free Session and Checkpoint readiness."""
-    topology = resolve_persistence_topology(framework=framework)
+    """Return independent, credential-free shared PostgreSQL readiness.
+
+    Local SQLite files are deliberately not marked ready here: their actual
+    native checkpoint capability is reported by the runner, and does not imply
+    shared recovery across Pods.
+    ``session_target`` alone changes only diagnostics. A Kernel app's scoped
+    binding also supplies the native checkpoint fallback, never an explicit
+    checkpoint override. Neither form changes a service's connection.
+    """
+    scope = _SESSION_PROBE_SCOPE.get()
+    override = scope.target if scope is not None else None
+    topology = resolve_persistence_topology(framework=framework, effective_session=override)
+    effective_session = override or session_target or topology.session
     probe_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
     async def probe(target: StorageTarget, *, store: str) -> dict[str, Any]:
@@ -213,9 +274,11 @@ async def get_persistence_status(
         return _status_for_target(await probe_tasks[key], target, store=store)
 
     session_status, checkpoint_status = await asyncio.gather(
-        probe(topology.session, store="SESSION"),
+        probe(effective_session, store="SESSION"),
         probe(topology.checkpoint, store="CHECKPOINT"),
     )
+    if scope is not None:
+        scope.status = deepcopy(session_status)
     return {"Session": session_status, "Checkpoint": checkpoint_status}
 
 
@@ -272,4 +335,7 @@ def gate_runtime_capabilities(
     return gated
 
 
-__all__ = ["gate_runtime_capabilities", "get_persistence_status", "probe_storage_target"]
+__all__ = [
+    "bind_session_persistence_target", "gate_runtime_capabilities", "get_persistence_status",
+    "probe_storage_target", "session_service_storage_target",
+]

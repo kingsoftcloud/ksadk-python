@@ -71,4 +71,5 @@ class Mem0Provider:
             config_patch=config_patch,
             required_env=required_env,
             plugin_ids=["openclaw-mem0"],
+            disabled_plugin_ids=["memory-lancedb", "openclaw-ksmem"],
         )

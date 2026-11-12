@@ -8,6 +8,7 @@ module back into the domain layer.
 from __future__ import annotations
 
 import contextvars
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
@@ -82,6 +83,33 @@ async def get_persistence_status(
     provider = _dependencies.get_persistence_status if _dependencies is not None else None
     if provider is None:
         from ksadk.sessions.persistence import get_persistence_status as provider
+    app = runtime_app() if _dependencies is not None else None
+    kernel_runtime = getattr(getattr(app, "state", None), "agent_kernel_runtime", None)
+    if kernel_runtime is not None:
+        from ksadk.sessions.persistence import (
+            bind_session_persistence_target,
+            probe_storage_target,
+            session_service_storage_target,
+        )
+
+        target = getattr(getattr(kernel_runtime, "config", None), "session_storage_target", None)
+        target = target or session_service_storage_target(resolve_session_service())
+        with bind_session_persistence_target(target) as scope:
+            status = await _call_persistence_provider(provider, framework, use_cache)
+            # A legacy provider can still supply Checkpoint diagnostics. The
+            # Kernel Session log must be probed against its actual authority.
+            actual = scope.status
+            if actual is None:
+                actual = await probe_storage_target(target, use_cache=use_cache, store="SESSION")
+        if isinstance(status.get("Session"), Mapping):
+            return {**status, "Session": actual}
+        return {"Session": actual, "Checkpoint": status}
+    return await _call_persistence_provider(provider, framework, use_cache)
+
+
+async def _call_persistence_provider(
+    provider: Callable[..., Any], framework: str | None, use_cache: bool,
+) -> dict[str, Any]:
     try:
         return dict(await provider(framework=framework, use_cache=use_cache))
     except TypeError as exc:

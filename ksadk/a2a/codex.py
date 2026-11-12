@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ksadk.a2a.timeouts import invocation_seconds
 from ksadk.a2a.exposure import compile_exposure_plan
 from ksadk.a2a.invocation_types import (
     A2AInvocationContext, A2AInvocationHandle, A2AInvocationMessage,
@@ -91,7 +92,7 @@ class CodexInvocationContextProvider:
             spec=spec, handle=handle,
             message=A2AInvocationMessage(message_id=stable_item_id("a2a", handle.scope_id, "initial-message"), text_parts=(message,)),
             context=A2AInvocationContext(caller_agent_id=self.caller, audit_id=stable_item_id("a2a", handle.scope_id, "audit")),
-            deadline_unix_seconds=float(self.clock()) + (spec.timeout_seconds or 300.0),
+            deadline_unix_seconds=float(self.clock()) + invocation_seconds(spec.timeout_seconds),
             idempotency_token=stable_item_id("a2a", handle.scope_id, "initial-send"),
         )
         return CodexExpertInvocation(request, trigger, service)

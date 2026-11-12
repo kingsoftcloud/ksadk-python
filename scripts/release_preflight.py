@@ -121,6 +121,53 @@ assert not any(package_root.rglob("*.tsx")), "React TSX source leaked into insta
 assert not any(package_root.rglob("*.jsx")), "React JSX source leaked into install"
 """
 
+
+DEFAULT_ADK_PERSISTENCE_SMOKE = """
+import asyncio
+import inspect
+import sys
+from pathlib import Path
+
+from ksadk.memory.adk import ShortTermMemory
+
+phase, filename = sys.argv[1:]
+database = Path(filename)
+
+async def main():
+    memory = ShortTermMemory(backend="sqlite", local_database_path=str(database))
+    service = memory.session_service
+    binding = dict(
+        app_name="base-install-smoke", user_id="fixture-user", session_id="durable-session",
+    )
+    try:
+        if phase == "write":
+            await service.create_session(**binding, state={"retained": "fixture-state"})
+            assert database.is_file(), "Configured ADK SQLite silently used memory"
+        elif phase == "read":
+            session = await service.get_session(**binding)
+            assert session is not None and session.state["retained"] == "fixture-state", (
+                "Default ADK session did not survive a separate process"
+            )
+        else:
+            raise AssertionError("Unknown persistence check phase")
+    finally:
+        close = getattr(service, "close", None)
+        if callable(close):
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        # Older supported ADK releases expose the async engine without close().
+        primary = getattr(service, "primary", service)
+        engine = getattr(primary, "db_engine", None)
+        if engine is not None:
+            result = engine.dispose()
+            if inspect.isawaitable(result):
+                await result
+    print("default ADK persistence:", phase, "passed")
+
+asyncio.run(main())
+"""
+
 CommandRunner = Callable[..., None]
 
 
@@ -420,6 +467,15 @@ def _run_clean_install_smoke(
     python = _venv_executable(venv_dir, "python")
     agentengine = _venv_executable(venv_dir, "agentengine")
     runner([str(python), "-c", CLEAN_INSTALL_SMOKE], cwd=cwd, environment=environment)
+    # These processes use only the wheel's default dependencies, without extras.
+    # Reopening the same native SQLite file rejects a silent memory fallback.
+    for phase in ("write", "read"):
+        runner(
+            [str(python), "-I", "-c", DEFAULT_ADK_PERSISTENCE_SMOKE,
+             phase, str(cwd / "default-adk-session.sqlite")],
+            cwd=cwd,
+            environment=environment,
+        )
     runner([str(agentengine), "plugin", "--help"], cwd=cwd, environment=environment)
     runner(
         [str(agentengine), "plugin", "toolchain", "--help"],

@@ -27,7 +27,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.13"
+	@echo "    make sync-ksadk-web-static"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
@@ -110,14 +110,14 @@ build-webui sync-static webui: sync-ksadk-web-static
 # 开发服务器
 # ============================================================
 
-dev:
+dev: build-frontend
 	@echo "🚀 启动开发服务器..."
 	@echo "   后端: http://localhost:8000"
 	@echo ""
 	@echo "使用 Ctrl+C 停止服务"
 	python -m ksadk.cli web .
 
-dev-backend:
+dev-backend: verify-ksadk-web-static
 	@echo "🔧 启动后端开发服务器..."
 	python -m ksadk.cli web .
 
@@ -278,9 +278,12 @@ check-build-deps:
 	@python -c "import build" 2>/dev/null || (echo "📦 安装构建依赖..." && pip install build twine)
 
 build: check-build-deps sync-ksadk-web-static build-studio-static
+	@$(MAKE) --no-print-directory verify-ksadk-web-static
 	@echo "📦 构建 Python 包 v$(VERSION)..."
 	@python scripts/write_build_provenance.py
+	@rm -rf build/
 	python -m build
+	@$(MAKE) --no-print-directory verify-ksadk-web-wheel-static
 	@# 删除 tar.gz 和临时目录，只保留 whl
 	@rm -f dist/*.tar.gz
 	@rm -rf build/ *.egg-info/
@@ -290,13 +293,16 @@ build: check-build-deps sync-ksadk-web-static build-studio-static
 
 # 仅构建 Python 包（跳过 npm 同步，使用现有静态文件）
 build-only: check-build-deps build-studio-static
+	@$(MAKE) --no-print-directory verify-ksadk-web-static
 	@echo "📦 构建 Python 包 v$(VERSION)（使用已同步 Web static）..."
 	@if [ ! -f "ksadk/server/static/index.html" ]; then \
 		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make sync-ksadk-web-static"; \
 		exit 1; \
 	fi
 	@python scripts/write_build_provenance.py
+	@rm -rf build/
 	python -m build
+	@$(MAKE) --no-print-directory verify-ksadk-web-wheel-static
 	@rm -f dist/*.tar.gz
 	@rm -rf build/ *.egg-info/
 	@$(MAKE) --no-print-directory print-build-provenance
@@ -386,6 +392,17 @@ PUBLIC_TEST_TARGETS += tests/a2a/test_public_imports.py tests/studio/test_shared
 PUBLIC_TEST_TARGETS += tests/test_cloud_headers.py
 PUBLIC_TEST_TARGETS += tests/test_prepare_ksadk_python_export.py
 PUBLIC_TEST_TARGETS += tests/packaging/test_alias_distribution.py
+# Public protocol contracts must remain in the local release gate as well as CI.
+PUBLIC_TEST_TARGETS += tests/a2ui/test_official_wire.py
+PUBLIC_TEST_TARGETS += tests/agui/test_protocol_contract.py
+PUBLIC_TEST_TARGETS += tests/agui/test_native_cold_resume.py
+PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_declarations.py
+PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_local.py
+PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_documented_graph.py
+PUBLIC_TEST_TARGETS += tests/a2a/test_workload_token_public_compat.py
+PUBLIC_TEST_TARGETS += tests/runners/test_adk_a2a_stream_review.py
+PUBLIC_TEST_TARGETS += tests/events/adapters/test_adk.py
+PUBLIC_TEST_TARGETS += tests/agui/test_foreground_local_interactions.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -494,7 +511,7 @@ public-test: sync-ksadk-web-static build-studio-static
 	@echo "==> test"
 	@# The SDK compatibility tests explicitly exercise the optional Managed engine.
 	@# Native cold-install tests separately reject all agent-framework imports.
-	@uv sync --extra dev --extra langgraph --extra skills
+	@uv sync --extra dev --extra langgraph --extra skills --extra agui --extra a2a
 	@uv run --no-sync pytest $(PUBLIC_TEST_TARGETS)
 
 public-sync-ksadk-web-static: sync-ksadk-web-static
@@ -563,8 +580,8 @@ public-preflight: public-version-gate public-audit sync-ksadk-web-static public-
 	@echo "✅ public preflight passed"
 
 # Lightweight preflight for the PyPI publish workflow.  The publish job runs
-# alongside the deploy-pages job (which already builds/deploys the docs site),
-# and the heavy Release native/browser E2E gates are already enforced by the
+# independently of documentation deployment in pages.yml. The heavy
+# Release native/browser E2E gates are already enforced by the
 # pull-request release-check workflow before merge.  Re-running the release gate here
 # doubles the work and stalls on the shared CI runner.  So the publish
 # preflight mirrors the 0.8.2 shape: version + audit + ksadk-web sync + test
@@ -726,75 +743,33 @@ openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
-# The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
-# The shared Conversation v1 Web 0.3.13 release; a normal release build must
-# fail rather than silently substituting an older npm package when that release is not
-# visible.  A reviewed local tarball is permitted for a pre-release image
-# build, but remains explicit in the command and provenance output.
-KSADK_WEB_VERSION ?= 0.3.13
+# One reviewed source manifest pins the library and both application bundles.
+ifndef KSADK_WEB_VERSION
+KSADK_WEB_VERSION := $(shell python3 scripts/reviewed_web_assets.py identity --field package_version)
+endif
+ifeq ($(strip $(KSADK_WEB_VERSION)),)
+$(error Cannot resolve the reviewed Web version from the source manifest)
+endif
 export KSADK_WEB_VERSION
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
-KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_TARBALL ?=
-KSADK_WEB_RELEASE_URL ?=
-KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
+export KSADK_WEB_TARBALL
 KSADK_WEB_REGISTRY ?= https://registry.npmjs.org
 KSADK_WEB_NPM := npm --registry="$(KSADK_WEB_REGISTRY)"
 
+# Default builds keep the reviewed source checks. An explicit local npm tarball
+# selects a development build for both applications without changing that pin.
 sync-ksadk-web-static:
-	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
-	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
-	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
-	@if [ -n "$(KSADK_WEB_TARBALL)" ]; then \
-		test -f "$(KSADK_WEB_TARBALL)" || { echo "ERROR: KSADK_WEB_TARBALL does not exist: $(KSADK_WEB_TARBALL)" >&2; exit 1; }; \
-		echo "Using explicit KSADK_WEB_TARBALL=$(KSADK_WEB_TARBALL)"; \
-		cp "$(KSADK_WEB_TARBALL)" "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
-		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	elif [ -f "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" ]; then \
-		echo "Using cached tarball $(KSADK_WEB_TARBALL_NAME)"; \
-		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	elif [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
-		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
-		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
-		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	elif command -v npm >/dev/null 2>&1; then \
-		echo "Using npm pack (npm found in PATH)"; \
-		$(KSADK_WEB_NPM) pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	else \
-		echo "npm not found; resolving tarball from registry $(KSADK_WEB_REGISTRY)"; \
-		REGISTRY_JSON=$$(curl -fsSL "$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)"); \
-		if [ -z "$$REGISTRY_JSON" ]; then echo "ERROR: registry request failed for $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)" && exit 1; fi; \
-		TARBALL_URL=$$(echo "$$REGISTRY_JSON" | grep -o '"tarball":"[^"]*"' | cut -d'"' -f4 | head -1); \
-		RESOLVED_VERSION=$$(echo "$$REGISTRY_JSON" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 | head -1); \
-		if [ -z "$$TARBALL_URL" ]; then echo "ERROR: could not resolve tarball URL from registry response" && exit 1; fi; \
-		echo "Resolved version $$RESOLVED_VERSION: $$TARBALL_URL"; \
-		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$$TARBALL_URL" -o "$(KSADK_WEB_CACHE_DIR)/kingsoftcloud-ksadk-web-$$RESOLVED_VERSION.tgz"; \
-		echo "kingsoftcloud-ksadk-web-$$RESOLVED_VERSION.tgz" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	fi
-	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" -C "$(KSADK_WEB_CACHE_DIR)"
-	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" && exit 1)
-	@rm -rf "$(STATIC_DIR)"
-	@mkdir -p "$(STATIC_DIR)"
-	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
-	@$(MAKE) verify-ksadk-web-static
-	@printf 'KsADK Web static provenance: version=%s, tarball_sha256=%s\n' \
-		"$(patsubst v%,%,$(KSADK_WEB_VERSION))" "$$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")")"
-	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
+	@python3 scripts/reviewed_web_assets.py sync --expected-version "$(KSADK_WEB_VERSION)" $(if $(KSADK_WEB_TARBALL),--artifact "$(KSADK_WEB_TARBALL)")
 
 verify-ksadk-web-static:
-	@python3 scripts/verify_ksadk_web_static.py \
-		--expected "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" \
-		--actual "$(STATIC_DIR)" \
-		--package-root "$(KSADK_WEB_CACHE_DIR)/package" \
-		--expected-version "$(patsubst v%,%,$(KSADK_WEB_VERSION))"
+	@python3 scripts/reviewed_web_assets.py verify --expected-version "$(KSADK_WEB_VERSION)"
 
 verify-ksadk-web-wheel-static:
-	@python3 scripts/verify_ksadk_web_static.py \
-		--expected "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" \
-		--wheel "$$(ls dist/ksadk-*.whl)" \
-		--expected-version "$(patsubst v%,%,$(KSADK_WEB_VERSION))"
+	@python3 scripts/reviewed_web_assets.py verify --expected-version "$(KSADK_WEB_VERSION)" --wheel "$$(ls dist/ksadk-*.whl)"
 
 build-studio-static:
+	@python3 scripts/reviewed_web_assets.py check-archive --expected-version "$(KSADK_WEB_VERSION)" $(if $(KSADK_WEB_TARBALL),--artifact "$(KSADK_WEB_TARBALL)") >/dev/null
 	@if [ -f "$(STUDIO_REACT_DIR)/package.json" ]; then \
 		set -eu; \
 		echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"; \
@@ -803,10 +778,12 @@ build-studio-static:
 			WEB_TARBALL_PATH="$(KSADK_WEB_TARBALL)"; \
 			case "$$WEB_TARBALL_PATH" in /*) ;; *) WEB_TARBALL_PATH="$(CURDIR)/$$WEB_TARBALL_PATH" ;; esac; \
 			test -f "$$WEB_TARBALL_PATH" || { echo "ERROR: KSADK_WEB_TARBALL does not exist: $$WEB_TARBALL_PATH" >&2; exit 1; }; \
-			echo "Install Studio dependencies with the reviewed KsADK Web tarball: $$WEB_TARBALL_PATH"; \
+			export KSADK_WEB_TARBALL="$$WEB_TARBALL_PATH"; \
+			echo "Install Studio dependencies with the local KsADK Web tarball: $$WEB_TARBALL_PATH"; \
 			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" install --no-save --ignore-scripts "$$WEB_TARBALL_PATH"; \
 		fi; \
 		npm --prefix "$(STUDIO_REACT_DIR)" run build; \
+		python3 scripts/reviewed_web_assets.py stamp-studio; \
 	else \
 		echo "React Studio source is intentionally absent; using reviewed compiled assets from $(STUDIO_STATIC_DIR)"; \
 	fi
@@ -817,11 +794,14 @@ sync-hosted-ui: sync-ksadk-web-static
 	@echo "sync-hosted-ui is deprecated; static assets now come from $(KSADK_WEB_PACKAGE)."
 
 build-frontend: sync-ksadk-web-static build-studio-static
+	@$(MAKE) --no-print-directory verify-ksadk-web-static
 	@echo "Frontend static assets prepared for packaging"
 
 build-wheel: build-frontend
 	@uv run python scripts/write_build_provenance.py
+	@rm -rf build/
 	uv build --python 3.13
+	@$(MAKE) --no-print-directory verify-ksadk-web-wheel-static
 	@$(MAKE) --no-print-directory print-build-provenance
 
 build-all: build-wheel

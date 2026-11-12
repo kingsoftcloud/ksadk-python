@@ -1,10 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { ChatMessageList, StatusBanner } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { compactHarnessMessages } from "../compactHarnessMessages";
-import { extractLiveThinking, type LiveThinking as LiveThinkingView } from "../liveThinking";
-import { HarnessActivity, type Activity } from "./HarnessActivity";
+import { ContextActivity, HarnessActivity, type Activity } from "./HarnessActivity";
 import { LiveThinking } from "./LiveThinking";
+import { RunElapsed } from "./RunElapsed";
 import { TimelineTurn } from "./TimelineTurn";
+import { TaskPlan, ToolExecutionCard, type ToolDisplay, type PlanRunState } from "./ToolExecutionCard";
+import { ToolExecutionGroup } from "./ToolExecutionGroup";
+import { buildToolWorkItems, executionFromBlock } from "./toolWorkItems";
 
 type Props = Omit<ComponentProps<typeof ChatMessageList>, "scrollRef" | "contextIndicator" | "onOpenAttachmentPreview"> & {
   sessionId: string | null;
@@ -18,11 +21,17 @@ type Props = Omit<ComponentProps<typeof ChatMessageList>, "scrollRef" | "context
 };
 
 function activityRunId(message: Props["messages"][number]): string | undefined {
-  return [message.invocationId, message.runId, message.id.split(":")[0]].find(id => id && /^run[_-]/.test(id));
+  // The shared live controller can retain the canonical message id while
+  // dropping its run metadata. This is the projector's exact id envelope,
+  // not a run id guessed from message content or the currently active run.
+  const canonicalRun = /^conversation:(run[_-][^:]+):[^:]+$/.exec(message.id)?.[1];
+  return [message.runId, message.invocationId, canonicalRun, message.id.split(":")[0]]
+    .find(id => id && /^run[_-]/.test(id));
 }
 
 function fallbackActivity(message: Props["messages"][number]): Activity[] {
-  return (message.blocks || []).filter(block => block.type === "thinking").flatMap(block =>
+  return (message.blocks || []).filter(block => block.type === "thinking"
+    && block.source !== "public_summary" && block.source !== "provider_reasoning").flatMap(block =>
     ("content" in block ? block.content : "").split("\n").filter(Boolean).map((line, index) => {
       const label = line.replace(/^- /, "");
       return { id: `${block.id}:${index}`, label: label.replace(/ · (已完成|正在运行|执行失败|已取消)$/, ""),
@@ -33,10 +42,27 @@ function fallbackActivity(message: Props["messages"][number]): Activity[] {
 
 function SharedMessage({ message, ...props }: Omit<Props, "messages" | "sessionId" | "onLoadOlderSessionMessages"> & { message: Props["messages"][number] }) {
   const ref = useRef<HTMLDivElement>(null);
-  const content = message.role === "model" ? { ...message, reasoning: undefined, blocks: message.blocks?.filter(block => block.type !== "thinking") } : message;
+  const content = message.role === "model" ? { ...message, reasoning: undefined,
+    blocks: message.blocks?.filter(block => block.type !== "thinking" || block.source === "public_summary" || block.source === "provider_reasoning") } : message;
+  const work = buildToolWorkItems(content.blocks || [], props.isStreaming);
+  if (message.contextActivity) return <ContextActivity activity={{ id: message.id, kind: "step", category: "context",
+    label: message.content, details: [], ...message.contextActivity }} />;
   if (content.role === "model" && !content.blocks?.length && !content.content && !content.attachments?.length
     && !content.a2ui && !content.aguiActivity && !content.aguiActivities?.length && !Object.keys(content.tools || {}).length) return null;
-  return <ChatMessageList {...props} messages={[content]} contextIndicator={null} scrollRef={ref} className="harness-shared-message"
+  return <ChatMessageList {...props} showAgentHeader={false} messages={[content]} contextIndicator={null} scrollRef={ref} className="harness-shared-message"
+    renderProcessingBlock={block => {
+      if (block.type === "thinking" && (block.source === "public_summary" || block.source === "provider_reasoning")) {
+        return <LiveThinking key={block.id} text={block.content}
+          streaming={Boolean(props.isStreaming && block.status === "streaming")} />;
+      }
+      if (work.groupedChildren.has(block.id)) return null;
+      const item = work.first.get(block.id);
+      if (!item) return undefined;
+      if (item.tools[0].display.category === "todo" && item.tools.every(tool => tool.status === "completed")) return null;
+      return item.family
+        ? <ToolExecutionGroup key={item.tools[0].callId} item={item} runId={activityRunId(message)} />
+        : <ToolExecutionCard key={item.tools[0].callId} runId={activityRunId(message)} tool={item.tools[0]} />;
+    }}
     onOpenAttachmentPreview={attachment => {
       const url = new URL(attachment.url, window.location.href);
       if (["http:", "https:", "blob:"].includes(url.protocol)) window.open(url.href, "_blank", "noopener,noreferrer");
@@ -63,32 +89,61 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, reaso
   const follow = useRef(true);
   const heights = useRef(new Map<string, number>());
   const [following, setFollowing] = useState(true);
-  const projected = useMemo(() => compactHarnessMessages(messages), [messages]);
-  // 实时思考只对直播流生效：历史/压缩后（非流式）仍走摘要口径，detailed
-  // reasoning 既不落盘也不在这里回放。运行结束后保留最后一次快照（收起
-  // 状态）直到切换会话或下一轮开始，便于展示本轮思考 token。
-  const liveThinking = useMemo(
-    () => extractLiveThinking(messages, { streaming: Boolean(props.isStreaming) }),
-    [messages, props.isStreaming],
-  );
-  const [pinnedThinking, setPinnedThinking] = useState<{ sessionId: string; view: LiveThinkingView } | null>(null);
-  useEffect(() => {
-    if (!liveThinking || !sessionId) return;
-    setPinnedThinking({ sessionId, view: liveThinking });
-  }, [liveThinking, sessionId]);
-  const shownThinking: LiveThinkingView | null = props.isStreaming
-    ? liveThinking
-    : pinnedThinking && pinnedThinking.sessionId === sessionId
-      ? { ...pinnedThinking.view, streaming: false }
-      : null;
+  const activeSession = useRef(sessionId);
+  activeSession.current = sessionId;
+  const [runRefs, setRunRefs] = useState<{ sessionId: string | null; byRef: Record<string, string> }>({ sessionId, byRef: {} });
+  const receiveRun = useCallback((reference: string, runId: string) => {
+    if (activeSession.current !== sessionId || reference === runId) return;
+    setRunRefs(previous => previous.sessionId === sessionId && previous.byRef[reference] === runId ? previous
+      : { sessionId, byRef: { ...(previous.sessionId === sessionId ? previous.byRef : {}), [reference]: runId } });
+  }, [sessionId]);
+  const projected = useMemo(() => compactHarnessMessages(messages.map(message => {
+    const reference = activityRunId(message);
+    const runId = runRefs.sessionId === sessionId && reference ? runRefs.byRef[reference] : undefined;
+    // Normalize before compaction so adjacent canonical items from separate
+    // runs cannot be merged and inherit one another's clock or activity.
+    return runId || reference ? { ...message, runId: runId || reference } : message;
+  })), [messages, runRefs, sessionId]);
+  const thinkingRuns = new Set(projected.flatMap(message => message.role === "model"
+    && props.isStreaming && message.blocks?.some(block => block.type === "thinking"
+      && block.status === "streaming" && (block.source === "public_summary" || block.source === "provider_reasoning"))
+    ? [activityRunId(message)] : []));
+  const liveRunId = activeRunId && runRefs.sessionId === sessionId ? runRefs.byRef[activeRunId] || activeRunId : activeRunId;
+  const [planFacts, setPlanFacts] = useState<{ sessionId: string | null; byRun: Record<string, NonNullable<ToolDisplay["todos"]>> }>({ sessionId, byRun: {} });
+  const [runStates, setRunStates] = useState<{ sessionId: string | null; byRun: Record<string, PlanRunState> }>({ sessionId, byRun: {} });
+  const receiveRunState = useCallback((runId: string, state: PlanRunState) => {
+    if (activeSession.current !== sessionId) return;
+    setRunStates(previous => {
+      const prior = previous.sessionId === sessionId ? previous.byRun[runId] : undefined;
+      if (prior?.status === state.status && prior?.outcome === state.outcome) return previous;
+      return { sessionId, byRun: { ...(previous.sessionId === sessionId ? previous.byRun : {}), [runId]: state } };
+    });
+  }, [sessionId]);
+  const receivePlan = useCallback((runId: string, items: NonNullable<ToolDisplay["todos"]>) => {
+    if (activeSession.current !== sessionId) return;
+    setPlanFacts(previous => ({ sessionId,
+      byRun: { ...(previous.sessionId === sessionId ? previous.byRun : {}), [runId]: items },
+    }));
+  }, [sessionId]);
+  // A follow-up answer without TodoWrite must not erase the latest session
+  // plan. Order by transcript, not by the arrival order of run fetches. Older
+  // sessions can carry the plan only in curated activity receipts.
+  const latestPlan = projected.flatMap(message => message.role === "model"
+    ? [planFacts.sessionId === sessionId ? planFacts.byRun[activityRunId(message) || ""] : undefined,
+      ...(message.blocks || []).flatMap(block => {
+        const tool = executionFromBlock(block);
+        return tool?.status === "completed" && tool.display.category === "todo" && tool.display.todos?.length
+          ? [tool.display.todos] : [];
+      })].filter((plan): plan is NonNullable<ToolDisplay["todos"]> => Boolean(plan))
+        .map(items => ({ runId: activityRunId(message), items })) : []).at(-1)
+    || (planFacts.sessionId === sessionId && liveRunId && planFacts.byRun[liveRunId]
+      ? { runId: liveRunId, items: planFacts.byRun[liveRunId] } : undefined);
+  // Public segments stay at their canonical position and retain their item id.
+  // Never turn unlabelled reasoning or activity text into an authorized summary.
+  void reasoningTokens;
 
   const displayedRuns = new Set<string>();
   const latestRunId = [...projected].reverse().find(message => message.role === "model");
-  // 思考块挂在最后一个 model turn 之前；若压缩结果里没有 model turn（例如
-  // 运行以交互卡片收尾），退化为独立的一行，避免思考与 token 消失。
-  const liveTurnIndex = projected.reduce((found, message, index) => message.role === "model" ? index : found, -1);
-  const activeSession = useRef(sessionId);
-  activeSession.current = sessionId;
   const [olderBusy, setOlderBusy] = useState(false);
   const [olderError, setOlderError] = useState(false);
   const olderRequest = useRef<symbol | null>(null);
@@ -101,7 +156,7 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, reaso
     const runId = message.role === "model" ? activityRunId(message) : undefined;
     return runId ? [runId] : [];
   }));
-  const liveRunWithoutMessage = props.isStreaming && activeRunId && !projectedRunIds.has(activeRunId);
+  const liveRunWithoutMessage = props.isStreaming && liveRunId && !projectedRunIds.has(liveRunId);
   const waitingForFirstToken = props.isStreaming && !hasVisibleProgress && !activeRunId;
   useEffect(() => {
     const element = scrollRef.current;
@@ -166,7 +221,11 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, reaso
       }
     }
   };
-  return <div ref={scrollRef} className={`harness-timeline${className ? ` ${className}` : ""}`}>
+  return <div className="harness-timeline-shell"><div className="harness-plan-dock" aria-label="任务进度窗口">
+    {latestPlan && <TaskPlan key={`${sessionId}:${latestPlan.runId}`} items={latestPlan.items}
+      runState={runStates.sessionId === sessionId ? runStates.byRun[latestPlan.runId || ""] : undefined}
+      previousRun={Boolean(latestPlan.runId && (props.isStreaming && liveRunId || latestRunId && activityRunId(latestRunId)) !== latestPlan.runId)} />}</div>
+    <div ref={scrollRef} className={`harness-timeline${className ? ` ${className}` : ""}`}><div className="harness-timeline-content">
     {sessionId && onLoadOlderSessionMessages && hasMoreMessages && <div className="harness-history-loader">
       <button className="button tertiary small" type="button" disabled={olderBusy} aria-busy={olderBusy}
         onClick={() => void loadOlder()}>{olderBusy ? "正在加载更早消息…" : "加载更早消息"}</button>
@@ -178,20 +237,30 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, reaso
       const showActivity = message.role === "model"
         && (runId ? !displayedRuns.has(runId) : fallback.length > 0);
       if (showActivity && runId) displayedRuns.add(runId);
-      const liveTurn = Boolean(shownThinking) && index === liveTurnIndex;
       return <TimelineTurn key={`${sessionId}:${message.id}`} id={message.id} root={scrollRef} heights={heights.current}
         live={index >= projected.length - 4} pinned={needsPersistentView(message)
-          || revealedId === message.id || index === liveTurnIndex && Boolean(shownThinking)}
+          || revealedId === message.id}
         follow={follow} revealed={revealedId === message.id}>
-      {showActivity && <HarnessActivity runId={runId}
-        streaming={props.isStreaming && Boolean(latestRunId && activityRunId(latestRunId) === runId)} fallback={fallback} onOpenSession={onOpenSession} />}
-      {liveTurn && shownThinking && <LiveThinking key={shownThinking.runId} text={shownThinking.text} streaming={shownThinking.streaming}
-        reasoningTokens={reasoningTokens} />}
+      {showActivity && runId && <RunElapsed runId={runId} sessionId={sessionId} />}
       <SharedMessage {...props} message={message} isStreaming={props.isStreaming && index === projected.length - 1} />
+      {showActivity && <HarnessActivity runId={runId}
+        showExecutionDetails={false} showPlan={false}
+        onPlan={receivePlan}
+        onRunState={receiveRunState}
+        onResolvedRun={receiveRun}
+        canonicalTimeline
+        visibleThinking={thinkingRuns.has(runId)}
+        streaming={props.isStreaming && Boolean(latestRunId && activityRunId(latestRunId) === runId)} fallback={fallback} onOpenSession={onOpenSession} />}
     </TimelineTurn>; })}
-    {liveRunWithoutMessage && <div className="harness-turn harness-live-run" data-run-id={activeRunId}>
+    {liveRunWithoutMessage && <div className="harness-turn harness-live-run" data-run-id={liveRunId}>
+      <RunElapsed runId={liveRunId} sessionId={sessionId} />
       <HarnessActivity
-        runId={activeRunId}
+        runId={liveRunId}
+        onResolvedRun={receiveRun}
+        canonicalTimeline
+        showExecutionDetails={false} showPlan={false}
+        onPlan={receivePlan}
+        onRunState={receiveRunState}
         streaming
         fallback={[{
           id: `${activeRunId}:starting`,
@@ -203,15 +272,13 @@ export function CompactHarnessTimeline({ messages, sessionId, activeRunId, reaso
         onOpenSession={onOpenSession}
       />
     </div>}
-    {shownThinking && liveTurnIndex < 0 && <div className="harness-turn">
-      <LiveThinking key={shownThinking.runId} text={shownThinking.text} streaming={shownThinking.streaming} reasoningTokens={reasoningTokens} />
-    </div>}
     {waitingForFirstToken && <div className="harness-thinking" role="status">
       <span className="text-shimmer">正在思考…</span>
     </div>}
     <StatusBanner />
+    </div>
   {!following && <button className="harness-return-bottom button secondary small" type="button" onClick={() => {
     follow.current = true; setFollowing(true);
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }}>回到最新消息</button>}</div>;
+  }}>回到最新消息</button>}</div></div>;
 }

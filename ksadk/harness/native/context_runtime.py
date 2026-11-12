@@ -149,8 +149,23 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
         summary_budget_unit: Literal["tokens", "estimated tokens", "UTF-8 bytes"] = "tokens",
         summary_budget_mode: Literal["strict", "context_bounded_estimate"] = "strict",
         summary_completion_policy: Literal["bounded-committed-summary/v1"] | None = None,
+        compaction_message_projection: Literal["current-user-after-summary/v1"] | None = None,
+        session_history_projection: Literal["sealed-session-summary/v1"] | None = None,
+        summary_prompt_policy: Literal[
+            "rolling-work-state/v1", "rolling-work-state/v2", "rolling-work-state/v3",
+        ] | None = None,
         subagent_continuity_policy: Literal["accounted_child_runs/v1"] | None = None,
-        source_progress_policy: Literal["receipt-source-progress/v2"] | None = None,
+        source_progress_policy: Literal[
+            "receipt-source-progress/v2", "receipt-source-progress/v3",
+            "receipt-source-progress/v4", "receipt-source-progress/v5",
+        ] | None = None,
+        execution_budget_policy: Literal["prepared-execution-budget/v1"] | None = None,
+        summary_output_policy: Literal["declared-summary-limit/v1"] | None = None,
+        delivery_feedback_policy: Literal["admitted-delivery-continuation/v1"] | None = None,
+        task_goal_projection_policy: Literal[
+            "retained-user-goal/v1", "retained-user-goal/v2",
+        ] | None = None,
+        search_fragment_policy: Literal["complete-search-fragments/v1"] | None = None,
     ) -> None:
         if (
             not callable(count_tokens)
@@ -186,12 +201,46 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
         if summary_completion_policy not in {None, "bounded-committed-summary/v1"}:
             raise ValueError("unsupported summary completion policy")
         self.summary_completion_policy = summary_completion_policy
+        if compaction_message_projection not in {None, "current-user-after-summary/v1"}:
+            raise ValueError("unsupported compaction message projection")
+        self.compaction_message_projection = compaction_message_projection
+        if session_history_projection not in {None, "sealed-session-summary/v1"} or (
+            session_history_projection is not None
+            and compaction_message_projection != "current-user-after-summary/v1"
+        ):
+            raise ValueError("session summary projection requires current-user projection")
+        self.session_history_projection = session_history_projection
+        if summary_prompt_policy not in {
+            None, "rolling-work-state/v1", "rolling-work-state/v2", "rolling-work-state/v3",
+        }:
+            raise ValueError("unsupported summary prompt policy")
+        self.summary_prompt_policy = summary_prompt_policy
         if subagent_continuity_policy not in {None, "accounted_child_runs/v1"}:
             raise ValueError("unsupported subagent continuity policy")
         self.subagent_continuity_policy = subagent_continuity_policy
-        if source_progress_policy not in {None, "receipt-source-progress/v2"}:
+        if source_progress_policy not in {
+            None, "receipt-source-progress/v2", "receipt-source-progress/v3",
+            "receipt-source-progress/v4", "receipt-source-progress/v5",
+        }:
             raise ValueError("unsupported source progress policy")
         self.source_progress_policy = source_progress_policy
+        if execution_budget_policy not in {None, "prepared-execution-budget/v1"}:
+            raise ValueError("unsupported execution budget policy")
+        self.execution_budget_policy = execution_budget_policy
+        if summary_output_policy not in {None, "declared-summary-limit/v1"}:
+            raise ValueError("unsupported summary output policy")
+        self.summary_output_policy = summary_output_policy
+        if delivery_feedback_policy not in {None, "admitted-delivery-continuation/v1"}:
+            raise ValueError("unsupported delivery feedback policy")
+        self.delivery_feedback_policy = delivery_feedback_policy
+        if task_goal_projection_policy not in {
+            None, "retained-user-goal/v1", "retained-user-goal/v2",
+        }:
+            raise ValueError("unsupported task goal projection policy")
+        self.task_goal_projection_policy = task_goal_projection_policy
+        if search_fragment_policy not in {None, "complete-search-fragments/v1"}:
+            raise ValueError("unsupported search fragment policy")
+        self.search_fragment_policy = search_fragment_policy
         self.policy = policy or CompactionPolicy()
 
     def plan(
@@ -239,7 +288,14 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
         history: CompactionHistory,
     ) -> tuple[tuple[str, ...], Messages, str]:
         refs = _refs(messages)
-        if history.count:
+        if history.has_projection:
+            if (history.inherited_summary_source is not None
+                    and history.inherited_summary_source.policy != self.session_history_projection):
+                raise ContextRuntimeError("context_session_history_projection_changed")
+            if history.compaction_message_projection != self.compaction_message_projection:
+                raise ContextRuntimeError("context_compaction_message_projection_changed")
+            if history.summary_prompt_policy != self.summary_prompt_policy:
+                raise ContextRuntimeError("context_summary_prompt_policy_changed")
             if history.summary_completion_policy != self.summary_completion_policy:
                 raise ContextRuntimeError("context_summary_completion_policy_changed")
             if history.tokenizer_id != self.tokenizer_id:
@@ -317,7 +373,7 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
             messages, profile, instructions, self._host_ledger(continuity, contract),
         )
         if not journaled:
-            instructions = self._host_instructions(instructions, continuity, contract)
+            instructions = self._task_host_instructions(instructions, continuity, contract, messages)
         fixed = self._fixed(instructions, tools, None if journaled else turn_control)
         if fixed + profile.max_output_tokens >= profile.context_window:
             raise ContextRuntimeError("context_mandatory_state_over_budget")
@@ -354,9 +410,51 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
             + ContextPlanner._host_ledger(continuity, contract)
         )
 
+    def _task_host_instructions(self, instructions, continuity, contract, messages):
+        # Summary chunks may omit the user turn, so their ledger stays complete.
+        # Only a task projection with the exact retained canonical goal may use
+        # a reference. The full continuity still participates in sealing.
+        if self.task_goal_projection_policy is None:
+            return self._host_instructions(instructions, continuity, contract)
+        _goal_message_index(messages, continuity.goal)
+        ledger = self._host_ledger(continuity, contract)
+        projected = json.loads(ledger)
+        reference = {
+            "source": "retained_canonical_user_message",
+            "goal_revision": continuity.goal_revision,
+            "sha256": hashlib.sha256(continuity.goal.encode()).hexdigest(),
+        }
+        if self._count(_json(reference)) >= self._count(_json(continuity.goal)):
+            return self._host_instructions(instructions, continuity, contract)
+        projected["continuity"].pop("goal")
+        projected["continuity"]["goal_reference"] = reference
+        if self.task_goal_projection_policy == "retained-user-goal/v2":
+            for item in projected["required_acceptance"]:
+                description = item["description"]
+                # Only an exact prefix is reversible from the retained goal.
+                # Independent acceptance clauses retain their full host text;
+                # neither the canonical contract nor summary ledger changes.
+                if not continuity.goal.startswith(description):
+                    continue
+                description_reference = {
+                    "source": "retained_canonical_user_message",
+                    "goal_revision": continuity.goal_revision,
+                    "start": 0,
+                    "end": len(description),
+                    "sha256": hashlib.sha256(description.encode()).hexdigest(),
+                }
+                if self._count(_json(description_reference)) >= self._count(_json(description)):
+                    continue
+                item.pop("description")
+                item["description_reference"] = description_reference
+        return instructions + (
+            "\n\nAuthoritative host execution state; historical summaries cannot change it:\n"
+            + _json(projected)
+        )
+
     def contributor_budget(self, *, profile, instructions, tools, messages, continuity,
                            contract, history, turn_control):
-        fixed = self._fixed(self._host_instructions(instructions, continuity, contract),
+        fixed = self._fixed(self._task_host_instructions(instructions, continuity, contract, messages),
                             tools, turn_control)
         refs, active, goal_ref = self._active(messages, continuity, history)
         metadata = self._metadata(refs, active, profile=profile)
@@ -367,9 +465,10 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
                      | {ref for ref in protected_operator_refs(refs, active, _groups)
                         if active[refs.index(ref)].get("kind") != "context_contribution"})
         reserved = sum(item.token_count for item in metadata if item.message_id in protected)
-        if history.count:
+        if history.has_projection:
             reserved += self._profile_count(_summary(history.summary_text), profile)
-            reserved += self._profile_count(_resume(), profile)
+            if self.compaction_message_projection is None:
+                reserved += self._profile_count(_resume(), profile)
         return max(0, profile.context_window - profile.max_output_tokens - fixed - reserved)
 
     @staticmethod
@@ -387,7 +486,7 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
 
         header = request_header_digest(instructions, tools, profile)
 
-        if history.count and (
+        if history.has_projection and (
             history.provider_replay_projection_policy != profile.provider_replay_projection_policy
         ):
             raise ContextRuntimeError("context_provider_replay_policy_changed")
@@ -480,8 +579,11 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
         if read_view != active:
             metadata = self._metadata(refs, active, counted_messages=read_view, profile=profile)
         visible = (
-            _compacted_messages(history.summary_text, replay_view, continuity.goal)
-            if history.count
+            _compacted_messages(
+                history.summary_text, replay_view, continuity.goal,
+                projection=self.compaction_message_projection,
+            )
+            if history.has_projection
             else replay_view
         )
         prepared = self._prepared(instructions, visible, fixed, turn_control,
@@ -509,8 +611,25 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
             )
         if not allow_compaction:
             # A soft context target cannot spend a model call reserved for
-            # delivery. Keep the complete currently authorized projection;
-            # never seal a partial summary or drop evidence to make it fit.
+            # delivery. The existing reader view is a deterministic projection,
+            # not a summary call. Apply the same authorized view as ordinary
+            # planning before refusing a complete next request. Call/result
+            # groups, protected reads, search results and receipts stay intact.
+            if (not force_compaction and self.policy.fresh_read_max_chars is not None
+                    and prepared.counted_input_tokens + profile.max_output_tokens
+                    > profile.context_window):
+                observed = self._read_view(visible, reader_names, protected_readers)
+                if observed != visible:
+                    view = self._prepared(
+                        instructions, observed, fixed, turn_control, profile=profile,
+                        goal=continuity.goal, abandoned=history.abandoned_replay_digests,
+                        replay_header_digest=header,
+                    )
+                    if view.counted_input_tokens + profile.max_output_tokens <= profile.context_window:
+                        return ContextPlan(
+                            action="ready", reason="finalization_reader_observations_within_budget",
+                            prepared=view,
+                        )
             if (force_compaction or prepared.counted_input_tokens + profile.max_output_tokens
                     > profile.context_window):
                 raise ContextRuntimeError("context_finalization_budget_unavailable")
@@ -597,14 +716,36 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
         # reduce a complete Reader quote's provider output cap.
         mandatory_cost = sum(m.token_count for m in metadata if m.message_id in mandatory)
         if mandatory_cost + reserved_summary > budget.input_capacity:
-            raise ContextRuntimeError("context_mandatory_state_over_budget")
+            summary_frames = reserved_summary - summary_limit
+            if (self.summary_budget_mode != "context_bounded_estimate"
+                    or mandatory_cost + summary_frames >= budget.input_capacity):
+                raise ContextRuntimeError("context_mandatory_state_over_budget")
+            # An estimated summary target is a ceiling, not a minimum
+            # allocation. Permit reducing history when a smaller nonempty
+            # summary can fit beside all mandatory state. Keep the declared
+            # summary/provider output ceilings; sealing must still admit the
+            # actual complete projection under the original task output cap.
+            reserved_summary = budget.input_capacity - mandatory_cost
+        # A provider-limited summary may exceed an estimated host token ceiling.
+        # Keeping every active message also keeps that existing summary. Account
+        # for its actual projection when choosing the retained working set, so
+        # a fresh complete tool batch can be summarized instead of being kept
+        # beside an oversized summary and misclassified as mandatory state.
+        retention_summary = reserved_summary
+        if history.has_projection:
+            retention_summary = max(
+                retention_summary,
+                self._profile_count(_summary(history.summary_text), profile)
+                + (self._profile_count(_resume(), profile)
+                   if self.compaction_message_projection is None else 0),
+            )
         retained = self._retain(
             metadata,
             groups,
             pending_refs,
             mandatory,
             budget,
-            reserved_summary,
+            retention_summary,
             active=active,
             continuity=continuity,
             history=history,
@@ -644,7 +785,7 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
             and model_turn - history.last_model_turn < self.policy.min_model_turns_between
         ):
             raise ContextRuntimeError("context_rapid_refill")
-        return self._request(
+        result = self._request(
             source_revision,
             model_turn,
             profile,
@@ -669,6 +810,20 @@ class ContextPlanner(ContextRequestProjection, ContextSummaryPlanning):
             replay_header_digest=header,
             fresh_group=fresh_group,
         )
+        if (
+            result.request is not None and not force_compaction
+            and self.summary_budget_mode == "context_bounded_estimate"
+            and self.summary_completion_policy == "bounded-committed-summary/v1"
+        ):
+            candidate = self._post_summary_read_candidate(
+                metadata, active, groups, retained, fresh_group,
+                continuity=continuity, history=history, tools=context_tools,
+            )
+            if candidate:
+                result = result.model_copy(update={"request": result.request.model_copy(
+                    update={"post_summary_read_refs": candidate},
+                )})
+        return result
 
 
 class CompactionController:
@@ -741,15 +896,22 @@ class CompactionController:
                 current_messages=current_messages,
             )
         chunk_limit = _MAX_SUMMARY_CHUNKS
-        if request.summary_partition and request.summary_partition.partitions:
+        if request.summary_partition is not None:
             manifest, raw = source_manifest(
                 current_messages, request.old_messages, request.retained_message_refs,
                 capture_reader_names=request.source_capture_reader_names,
+                search_fragment_policy=request.search_fragment_policy,
+                capture_search_names=request.source_capture_search_names,
                 fresh_tool_observation_policy=request.fresh_tool_observation_policy,
                 fresh_tool_message_refs=request.fresh_tool_message_refs,
                 fresh_text_fragment_policy=request.fresh_text_fragment_policy,
                 fresh_text_excluded_tool_names=request.source_reader_names,
             )
+            # Each acknowledged partition consumes validated original refs.
+            # A long closed history needs more than eight chunks even when
+            # its tools have no reader role. Bound by the finite sealed source;
+            # keep the ordinary Run model budget and partition checks intact.
+            chunk_limit = max(chunk_limit, len(manifest["dropped"]))
             if any(
                 call["function"]["name"] in request.source_reader_names
                 for partition in request.summary_partition.partitions
@@ -784,6 +946,8 @@ class CompactionController:
             manifest, source_messages = source_manifest(
                 current_messages, request.old_messages, request.retained_message_refs,
                 capture_reader_names=request.source_capture_reader_names,
+                search_fragment_policy=request.search_fragment_policy,
+                capture_search_names=request.source_capture_search_names,
                 fresh_tool_observation_policy=request.fresh_tool_observation_policy,
                 fresh_tool_message_refs=request.fresh_tool_message_refs,
                 fresh_text_fragment_policy=request.fresh_text_fragment_policy,
@@ -852,6 +1016,8 @@ class CompactionController:
         manifest, raw = source_manifest(
             messages, request.old_messages, request.retained_message_refs,
             capture_reader_names=request.source_capture_reader_names,
+            search_fragment_policy=request.search_fragment_policy,
+            capture_search_names=request.source_capture_search_names,
             fresh_tool_observation_policy=request.fresh_tool_observation_policy,
             fresh_tool_message_refs=request.fresh_tool_message_refs,
             fresh_text_fragment_policy=request.fresh_text_fragment_policy,
@@ -890,6 +1056,31 @@ class CompactionController:
             raise ContextRuntimeError("context_summary_policy_changed")
         if request.summary_completion_policy != self.planner.summary_completion_policy:
             raise ContextRuntimeError("context_summary_completion_policy_changed")
+        if request.compaction_message_projection != self.planner.compaction_message_projection:
+            raise ContextRuntimeError("context_compaction_message_projection_changed")
+        if request.search_fragment_policy != self.planner.search_fragment_policy:
+            raise ContextRuntimeError("context_search_fragment_policy_changed")
+        if request.summary_prompt_policy != self.planner.summary_prompt_policy:
+            raise ContextRuntimeError("context_summary_prompt_policy_changed")
+        if request.post_summary_read_refs:
+            groups, _, _ = _tool_groups(request.old_messages)
+            candidate = frozenset(request.post_summary_read_refs)
+            cost = sum(m.token_count for m in request.old_messages if m.message_id in candidate)
+            if (
+                request.summary_budget_mode != "context_bounded_estimate"
+                or request.summary_completion_policy != "bounded-committed-summary/v1"
+                or not self.planner.policy.read_working_set_count
+                or not groups or candidate != groups[-1]
+                or candidate != fresh_tool_group_refs(current_messages)
+                or len(candidate) != len(request.post_summary_read_refs)
+                or any(group.intersection(request.retained_message_refs) for group in groups)
+                or cost > self.planner.policy.read_working_set_max_tokens
+                or cost > self.planner.policy.read_working_set_total_max_tokens
+            ):
+                raise ContextRuntimeError("context_post_summary_read_candidate_changed")
+        if (self.planner.summary_prompt_policy in {"rolling-work-state/v2", "rolling-work-state/v3"}
+                and request.summary_messages[1:2] != self.planner._summary_directive(request.profile)):
+            raise ContextRuntimeError("context_summary_output_directive_changed")
         if request.fresh_tool_observation_policy is not None and (
             request.summary_partition is None
             or request.summary_partition_version != "quoted-history-coverage/v1"
@@ -911,6 +1102,8 @@ class CompactionController:
             manifest, raw = source_manifest(
                 current_messages, request.old_messages, request.retained_message_refs,
                 capture_reader_names=request.source_capture_reader_names,
+                search_fragment_policy=request.search_fragment_policy,
+                capture_search_names=request.source_capture_search_names,
                 fresh_tool_observation_policy=request.fresh_tool_observation_policy,
                 fresh_tool_message_refs=request.fresh_tool_message_refs,
                 fresh_text_fragment_policy=request.fresh_text_fragment_policy,
@@ -962,6 +1155,8 @@ class CompactionController:
             manifest, _ = source_manifest(
                 current_messages, request.old_messages, request.retained_message_refs,
                 capture_reader_names=request.source_capture_reader_names,
+                search_fragment_policy=request.search_fragment_policy,
+                capture_search_names=request.source_capture_search_names,
                 fresh_tool_observation_policy=request.fresh_tool_observation_policy,
                 fresh_tool_message_refs=request.fresh_tool_message_refs,
                 fresh_text_fragment_policy=request.fresh_text_fragment_policy,

@@ -17,10 +17,10 @@ from ksadk.builders.base import BaseBuilder, BuildResult
 from ksadk.builders.code_builder import CodeBuilder
 from ksadk.builders.framework_requirements import (
     FASTAPI_REQUIREMENT,
+    LANGGRAPH_REQUIREMENT,
     requirements_for_framework,
 )
 from ksadk.builders.requirements_utils import (
-    exclude_requirement_names,
     merge_requirement_lists,
     parse_requirements_text,
 )
@@ -256,6 +256,7 @@ class ContainerBuilder(BaseBuilder):
                     item,
                     dest,
                     ignore=shutil.ignore_patterns(
+                        ".agentengine",
                         "__pycache__",
                         "*.pyc",
                         "node_modules",
@@ -418,32 +419,50 @@ CMD ["python", "entrypoint.py"]
 
         base_deps = merge_requirement_lists(
             base_deps,
-            CodeBuilder(project_path or self.project_dir)._bundled_runtime_requirements(),
+            CodeBuilder(project_path or self.project_dir)._bundled_runtime_requirements(
+                detection_result,
+            ),
         )
 
         # 合并用户 requirements.txt (如果存在)
+        extra_requirements: tuple[str, ...] = ()
         if project_path:
             user_requirements = project_path / "requirements.txt"
             if user_requirements.exists():
                 user_content = user_requirements.read_text()
                 parsed_user_requirements = parse_requirements_text(user_content)
                 bundled_builder = CodeBuilder(project_path or self.project_dir)
+                extra_requirements = bundled_builder._bundled_ksadk_extra_requirements(
+                    parsed_user_requirements,
+                )
                 base_deps = merge_requirement_lists(
                     base_deps,
-                    bundled_builder._bundled_ksadk_extra_requirements(parsed_user_requirements),
+                    extra_requirements,
                 )
-                user_deps = exclude_requirement_names(
+                user_deps = bundled_builder._without_bundled_ksadk_requirements(
                     parsed_user_requirements,
-                    excluded_names={"ksadk"},
                 )
                 base_deps = merge_requirement_lists(base_deps, user_deps)
+
+        # Keep the upgraded LangGraph/AG-UI contract after user requirements
+        # are merged; other frameworks retain their existing merge behavior.
+        pinned_framework = (
+            (LANGGRAPH_REQUIREMENT,)
+            if LANGGRAPH_REQUIREMENT in requirements_for_framework(framework)
+            else ()
+        )
+        for requirement in (*pinned_framework, *extra_requirements):
+            if requirement not in base_deps:
+                base_deps.append(requirement)
 
         return "\n".join(base_deps)
 
     def _generate_entrypoint(self, detection_result, package_name: str) -> str:
         """生成 entrypoint.py"""
+
         runtime_config_json = json.dumps(
-            self._load_config(), ensure_ascii=False, separators=(",", ":"), default=str
+            self._load_config(),
+            ensure_ascii=False, separators=(",", ":"), default=str
         )
         return f'''"""
 AgentEngine Container 模式入口
@@ -513,6 +532,7 @@ from ksadk.configs import setup_environment
 setup_environment(Path("/app"))
 
 from ksadk.detection import DetectionResult, FrameworkType
+from ksadk.agui.config import agui_config_for_detection
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
 from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
 import uvicorn
@@ -581,6 +601,7 @@ app = create_runtime_app(
         runtime_type=detection_result.type.value,
         runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
         launch_context=runtime_context,
+        agui=agui_config_for_detection(detection_result),
         a2a=_managed_a2a_bootstrap,
         a2a_runtime_adapter=_a2a_adapter,
     ),

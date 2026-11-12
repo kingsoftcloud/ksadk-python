@@ -51,6 +51,24 @@ class RuntimeConversationProjection:
             return conversation_identity(event.run_id, scope, item)
         return item
 
+    def _native_a2ui(self, event: RuntimeEvent, item: ConversationItem) -> bool:
+        if (
+            item.kind != "a2ui"
+            or event.source.protocol != "a2ui"
+            or event.source.framework not in {"langgraph", "adk", "codex"}
+            or event.source.metadata.get(
+                "conversation_visibility", event.source.metadata.get("visibility", "public")
+            ) != "public"
+        ):
+            return False
+        scope, seen = event.scope_id, set()
+        while scope and scope not in seen:
+            if scope in self._descriptors:
+                return False
+            seen.add(scope)
+            scope = self._parents.get(scope)
+        return scope is None
+
     def apply(self, event: RuntimeEvent) -> ConversationItem | None:
         if not self.runtime.apply(event).applied:
             return None
@@ -108,7 +126,11 @@ class RuntimeConversationProjection:
             parent = self._descriptors.get(event.scope_id)
             if parent:
                 fields["parent_item_id"] = self._identity(event, event.scope_id, parent)
-            if self.profile == "flat-v1" or projected.kind == "reasoning":
+            # A native subgraph can publish a UI without becoming a remote
+            # AgentBlock. Keep other child output and remote scope boundaries.
+            if (
+                self.profile == "flat-v1" and not self._native_a2ui(event, projected)
+            ) or projected.kind == "reasoning":
                 fields["visibility"] = "hidden"
         descriptor_data = (
             next(

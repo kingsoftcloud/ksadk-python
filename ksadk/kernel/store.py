@@ -195,6 +195,12 @@ def control_event(
 class AgentKernelStore(Protocol):
     """Durable Inbox / Run / Lease port。PostgreSQL 实现在 Task 4。"""
 
+    async def read_public_interaction(
+        self, interaction_id: str, *, tenant_id: str, agent_instance_id: str, session_id: str
+    ) -> dict | None:
+        """Read an occurrence in an authorized Session without exposing native targets."""
+        ...
+
     async def accept_command(
         self, command: AgentControlCommand, *, queue_limit: int
     ) -> AgentControlReceipt: ...

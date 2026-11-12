@@ -30,6 +30,7 @@ from ksadk.harness.engine.base import (
 )
 from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.native.activation_contract import ActivationResourceRef
+from ksadk.harness.native.background_command_contract import BackgroundCommandPort
 from ksadk.harness.native.child_lifecycle import ChildLifecyclePort
 from ksadk.harness.native.completion import TaskContract
 from ksadk.harness.native.context_contributions import ContextPort
@@ -61,7 +62,12 @@ from ksadk.harness.state import (
     ToolCall,
     WorkingContext,
 )
-from ksadk.harness.stores.native_contract import RestoreAuditStore, RunStore, StoreConflict
+from ksadk.harness.stores.native_contract import (
+    NotificationTurnCreation,
+    RestoreAuditStore,
+    RunStore,
+    StoreConflict,
+)
 from ksadk.runtime import (
     CancelResult,
     PauseResult,
@@ -152,6 +158,7 @@ class NativeHarnessEngine:
         context_port: ContextPort | None = None,
         hook_port: HookPort | None = None,
         child_lifecycle_port: ChildLifecyclePort | None = None,
+        background_command_port: BackgroundCommandPort | None = None,
         workspace_revision: str = "unavailable",
         lease_ttl_seconds: float | None = None,
         browser_recovery: BrowserRecoveryPort | None = None,
@@ -176,6 +183,7 @@ class NativeHarnessEngine:
             context_port=context_port,
             hook_port=hook_port,
             child_lifecycle_port=child_lifecycle_port,
+            background_command_port=background_command_port,
             workspace_revision=workspace_revision,
             lease_ttl_seconds=lease_ttl_seconds,
             activation_resource=activation_resource,
@@ -274,8 +282,62 @@ class NativeHarnessEngine:
         task_contract: TaskContract | None = None,
         expected_parent_run_id: str | None = None,
         pin_parent: bool = False,
+        task_chain_id: str | None = None,
     ) -> RunHandle:
         pinned = self.validate_start_request(request, compiled)
+        # The host may bind a single trusted ``source_run_id`` in the request
+        # metadata for an explicit continuation. validate_start_request admits
+        # only that key; resolve it here so a direct SDK route cannot silently
+        # drop a requested continuation. Load and validate the source run, then
+        # derive the inherited chain/parent identity. Explicitly-passed
+        # continuation kwargs (the adapter validates the source itself before
+        # calling start) must agree with the derived values, so a validated
+        # binding is never contradicted and an unbound direct route never drops.
+        metadata_source_run_id = (
+            request.metadata.get("source_run_id") if request.metadata else None
+        )
+        if metadata_source_run_id is not None:
+            source = self._kernel.store.load(
+                self._kernel.scope, metadata_source_run_id
+            )
+            if source.scope != self._kernel.scope:
+                raise ExecutionEngineError(
+                    "continuation source run scope mismatch"
+                )
+            if source.session_id != request.session_id:
+                raise ExecutionEngineError(
+                    "continuation source run session mismatch"
+                )
+            if not source.phase.terminal:
+                raise ExecutionEngineError(
+                    "continuation source run is not terminal"
+                )
+            if source.phase in {RunPhase.CANCELED, RunPhase.INTERRUPTED, RunPhase.FAILED}:
+                raise ExecutionEngineError(
+                    "continuation source run is canceled or failed"
+                )
+            if not source.task_chain_id:
+                raise ExecutionEngineError(
+                    "continuation source run has no task_chain_id"
+                )
+            if task_chain_id is not None and task_chain_id != source.task_chain_id:
+                raise ExecutionEngineError(
+                    "continuation source_run_id conflicts with task_chain_id"
+                )
+            if (expected_parent_run_id is not None
+                    and expected_parent_run_id != source.run_id):
+                raise ExecutionEngineError(
+                    "continuation source_run_id conflicts with expected_parent_run_id"
+                )
+            task_chain_id = source.task_chain_id
+            expected_parent_run_id = source.run_id
+            pin_parent = True
+        elif task_chain_id is None:
+            # No trusted continuation binding: an ordinary start gets a fresh
+            # unique chain, so the direct SDK route owns chain identity exactly
+            # as the adapter does. A caller that supplies an explicit chain
+            # (the adapter) keeps it unchanged.
+            task_chain_id = f"chain_{uuid4().hex}"
         await self._check_activation_available()
         run_id = None
         user_input = request.input if isinstance(request.input, NativeUserInput) else None
@@ -303,6 +365,7 @@ class NativeHarnessEngine:
             expected_parent_run_id=expected_parent_run_id,
             pin_parent=pin_parent,
             user_input=user_input,
+            task_chain_id=task_chain_id,
         )
         return self._register_started_run(snapshot, compiled, pinned[1])
 
@@ -349,6 +412,61 @@ class NativeHarnessEngine:
             return self._register_started_run(snapshot, compiled, pinned[1], drive=False)
         return self._register_started_run(snapshot, compiled, pinned[1])
 
+    def start_notification_turn(
+        self,
+        *,
+        source_run_id: str,
+        task_id: str,
+        task_contract: TaskContract | None = None,
+    ) -> NotificationTurnCreation:
+        """Admit a background-notification turn from a completed ordinary run.
+
+        Creates a new model-only, background-sourced turn in the source run's
+        session — never a synthesized user goal. Inherits the source's goal (task
+        continuity), background commands and task-chain budget. The kernel's
+        ``command_probe`` delivers the observation at the next model boundary via
+        the existing ``background_command_observation`` protocol. Idempotent: a
+        repeat admission with the same request returns the already-created turn and
+        re-attaches it so it can be driven; a different request for the same task_id
+        is rejected by the store. Pre-checks (source terminal, task exists, not
+        already notified, not canceled) run before creation. Does not revive a
+        terminal run or reuse any unconfirmed effect.
+        """
+        return self._kernel.start_notification_turn(
+            source_run_id=source_run_id, task_id=task_id,
+            task_contract=task_contract,
+        )
+
+    def register_and_drive_notification_turn(
+        self, result: NotificationTurnCreation, *, compiled: CompiledHarness, spec_digest: str,
+    ) -> RunHandle:
+        """Register a created notification turn and start driving it.
+
+        The kernel creates and attaches the run; this registers the facade handle and
+        starts the driver so the kernel advances through PREPARING_CONTEXT (where
+        ``command_probe`` injects the observation) to the model boundary. Works for
+        both a fresh creation and an idempotent repeat (re-attaches and re-drives).
+        """
+        return self._register_started_run(
+            result.snapshot, compiled, spec_digest, drive=True,
+        )
+
+    def notified_task_ids(self, run_id: str) -> set[str]:
+        """Authoritative set of task_ids already delivered in a run's ledger."""
+        return self._kernel.notified_task_ids(run_id)
+
+    def is_run_canceled(self, run_id: str) -> bool:
+        """Authoritative terminal-status query; replaces event-store inference."""
+        return self._kernel.is_run_canceled(run_id)
+
+    def task_chain_remaining_budget(self, run_id: str) -> int | None:
+        """Remaining model-call budget for the run's task chain (None = unbounded)."""
+        return self._kernel.task_chain_remaining_budget(run_id)
+
+    def task_chain_budget_status(self, run_id: str) -> dict:
+        """Remaining budget across model/tool/wall-time (None = unbounded)."""
+        return self._kernel.task_chain_budget_status(run_id)
+
     async def _check_activation_available(self) -> None:
         if self._activation_resource is not None:
             try:
@@ -362,14 +480,14 @@ class NativeHarnessEngine:
         self, snapshot: RunSnapshot, compiled: CompiledHarness, spec_digest: str,
         *, drive: bool = True,
     ) -> RunHandle:
+        self._check_snapshot_binding(snapshot, compiled, spec_digest)
         handle = RunHandle(
             run_id=snapshot.run_id,
             session_id=snapshot.session_id,
             runtime_type="managed-native",
             native_ref={
                 "configuration_digest": snapshot.configuration_digest,
-                "spec_digest": spec_digest,
-                "agent_revision_ref": compiled.spec.agent_revision_ref,
+                **snapshot.origin,
             },
         )
         self._handles[handle.run_id] = handle.model_copy(deep=True)
@@ -378,6 +496,23 @@ class NativeHarnessEngine:
         if drive:
             self._ensure_driver(handle.run_id)
         return handle
+
+    @staticmethod
+    def _check_snapshot_binding(
+        snapshot: RunSnapshot, compiled: CompiledHarness, spec_digest: str,
+    ) -> None:
+        expected = {
+            "spec_digest": spec_digest,
+            "agent_revision_ref": compiled.spec.agent_revision_ref,
+        }
+        if snapshot.notification_command is not None:
+            expected.update({
+                "notification": True,
+                "source_run_id": snapshot.notification_command.source_run_id,
+                "task_id": snapshot.notification_command.task_id,
+            })
+        if snapshot.origin != expected:
+            raise ExecutionEngineError("persisted run specification binding mismatch")
 
     def validate_start_request(
         self, request: StartRequest, compiled: CompiledHarness
@@ -389,7 +524,17 @@ class NativeHarnessEngine:
         scope = self._kernel.scope
         if request.user_id != scope.user_id or request.agent_id not in {None, scope.agent_id}:
             raise ExecutionEngineError("start identity does not match the host-authorized scope")
-        if request.metadata or request.config:
+        # The host may bind a single trusted key ``source_run_id`` into the
+        # request metadata for an explicit continuation. This is NOT an arbitrary
+        # caller metadata override — only this one key is admitted, and the
+        # adapter validates the source run (scope/session/terminal/cancel/chain)
+        # before using it. All other metadata/config remain rejected.
+        _admitted_metadata_keys = frozenset({"source_run_id"})
+        extra_metadata = {
+            key: value for key, value in (request.metadata or {}).items()
+            if key not in _admitted_metadata_keys
+        }
+        if extra_metadata or request.config:
             raise ExecutionEngineError(
                 "native start metadata/config are unsupported; scope comes from the host"
             )
@@ -427,11 +572,7 @@ class NativeHarnessEngine:
         if pinned is None or pinned[0] is not compiled or pinned[1] != compiled.spec.content_hash():
             raise ExecutionEngineError("compiled plan is foreign or changed since compilation")
         snapshot = self._kernel.snapshot(run_id)
-        if snapshot.origin != {
-            "spec_digest": pinned[1],
-            "agent_revision_ref": compiled.spec.agent_revision_ref,
-        }:
-            raise ExecutionEngineError("persisted run specification binding mismatch")
+        self._check_snapshot_binding(snapshot, compiled, pinned[1])
         if type(after_seq) is not int or not 0 <= after_seq <= snapshot.event_seq:
             raise ExecutionEngineError("event cursor must address committed history")
         if run_id in self._handles:
@@ -962,6 +1103,36 @@ class NativeHarnessEngine:
         self._kernel.release(handle.run_id)
         self._closed.add(handle.run_id)
         self._public_output_sinks.pop(handle.run_id, None)
+
+    def release_notification_lease(self, source_run_id: str, task_id: str) -> None:
+        """Release a stale durable lease for an admitted-but-not-driven turn.
+
+        A notification turn admitted via ``start_notification_turn`` attaches the
+        run (acquiring its durable lease) before the driver is scheduled. If the
+        process exits in that crash window, the lease is orphaned and a restart
+        cannot re-drive the turn until the lease TTL elapses. The wakeup
+        coordinator calls this on service shutdown for admitted watches so a
+        restart can re-drive promptly. If the run still has an active driver, it
+        is left untouched — the activation close owns its disposal. Idempotent.
+        """
+        from .native.notification_admission import notification_run_id
+
+        run_id = notification_run_id(self._kernel.scope, source_run_id, task_id)
+        driver = self._drivers.get(run_id)
+        if driver is not None and not driver.done():
+            return  # actively driven; activation close will dispose it
+        # Admission registers a handle before scheduling its first driver.
+        # Sealing that never-started local handle prevents activation disposal
+        # from turning a recoverable durable admission into a cancellation.
+        # A driven turn (including a failed driver) keeps ordinary close rules.
+        unstarted = (
+            run_id in self._handles and driver is None
+            and run_id not in self._ownership
+            and self._kernel.snapshot(run_id).phase == RunPhase.CREATED
+        )
+        self._kernel.release(run_id)
+        if unstarted:
+            self._closed.add(run_id)
 
 
 def _status(phase: RunPhase) -> RunStatus:

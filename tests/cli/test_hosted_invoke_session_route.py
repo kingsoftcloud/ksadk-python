@@ -77,8 +77,6 @@ def test_cli_reads_all_actual_route_pages_before_approval_or_completion(monkeypa
     queries = [body for name, body in calls if name == "ListSessionEvents"]
     assert [query["AfterSeqId"] for query in queries] == [0, 200, 400]
     assert [query.get("CursorSource") for query in queries] == [None, "runtime", "runtime"]
-    assert queries[1]["HistoryEpoch"] == queries[2]["HistoryEpoch"]
-    assert queries[1]["HistoryEpoch"]
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
@@ -89,11 +87,12 @@ def test_actual_route_retains_legacy_tail_and_offset_contract(monkeypatch, tmp_p
     assert [row["SeqId"] for row in tail["Events"]] == [2, 3]
     assert tail["Total"] == 205 and tail["Offset"] == 1 and tail["Limit"] == 2
     assert "EventOrder" not in tail
-    epoch = tail["HistoryEpoch"]
-    forward = read({"SessionId": "session-test", "AfterSeqId": 200, "Limit": 2, "EventOrder": "session_seq", "HistoryEpoch": epoch})
+    initial = read({"SessionId": "session-test", "AfterSeqId": 0, "Limit": 2, "EventOrder": "session_seq"})
+    identity = {key: initial[key] for key in ("HistoryEpoch", "SnapshotSeqId")}
+    forward = read({"SessionId": "session-test", "AfterSeqId": 200, "Limit": 2, "EventOrder": "session_seq", **identity})
     assert [row["SeqId"] for row in forward["Events"]] == [201, 202]
     assert forward["HasMore"] is True and forward["NextCursor"] == 202
-    exhausted = read({"SessionId": "session-test", "AfterSeqId": 205, "EventOrder": "session_seq", "HistoryEpoch": epoch})
+    exhausted = read({"SessionId": "session-test", "AfterSeqId": 205, "EventOrder": "session_seq", **identity})
     assert exhausted["Events"] == [] and exhausted["HasMore"] is False and exhausted["NextCursor"] == 205
 
 

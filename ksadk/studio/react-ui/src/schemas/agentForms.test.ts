@@ -35,6 +35,14 @@ describe("agent authoring schemas", () => {
     expect(agentImportSchema.safeParse({ name: "Imported", slug: "" }).success).toBe(true);
   });
 
+  it("accepts a Native coding template with no overall deadline", () => {
+    expect(quickAgentSchema.safeParse({
+      name: "Native developer", slug: "native-developer", runtimeType: "harness",
+      template: "coding", prompt: "Implement and verify the requested project.",
+      timeoutSeconds: 0,
+    }).success).toBe(true);
+  });
+
   it("requires a target audience only for the research template", () => {
     const result = quickAgentSchema.safeParse({
       name: "Research",

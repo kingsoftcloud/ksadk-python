@@ -175,24 +175,9 @@ class KernelA2AApprovalResolver:
             return None
         if record.status in {"cancelled", "expired"}:
             return "denied"
-        cursor = 0
-        while True:
-            events = await self._events.read(record.session_id, cursor, 256)
-            if not events:
-                raise RuntimeError("A2A_APPROVAL_TERMINAL_FACT_MISSING")
-            for event in events:
-                payload = event.payload
-                if (event.family == "interaction" and event.family_version == 1
-                        and event.event_type == "interaction.resolved"
-                        and event.run_id == record.run_id
-                        and payload.get("interaction_id") == record.interaction_id
-                        and payload.get("tenant_id") == self._tenant
-                        and payload.get("agent_instance_id") == self._agent
-                        and payload.get("session_id") == record.session_id
-                        and payload.get("run_id") == record.run_id
-                        and payload.get("revision") == record.revision):
-                    return "approved" if payload.get("outcome") == "approved" else "denied"
-            next_cursor = max(event.seq for event in events)
-            if next_cursor <= cursor:
-                raise RuntimeError("A2A_APPROVAL_CURSOR_INVALID")
-            cursor = next_cursor
+        from ksadk.interaction.resolution import find_resolution
+
+        event = await find_resolution(self._events, record)
+        if event is None:
+            raise RuntimeError("A2A_APPROVAL_TERMINAL_FACT_MISSING")
+        return "approved" if event.payload.get("outcome") == "approved" else "denied"

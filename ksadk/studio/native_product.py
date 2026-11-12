@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json as json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
 
@@ -59,6 +59,9 @@ from ksadk.studio.contracts import ContextSpec, ExecutionSpec, MemorySpec
 from ksadk.studio.model_client import OpenAICompatibleModelClient
 from ksadk.studio.native_acceptance import StudioNativeAcceptanceExtension, extend_contract
 from ksadk.studio.native_approval import StudioNativeApprovalAuthorizer
+from ksadk.studio.native_background_command_port import StudioBackgroundCommandPort
+from ksadk.studio.native_background_connection import BackgroundHostDeclaration
+from ksadk.studio.native_background_ownership import NativeBackgroundOwnershipVerifier
 from ksadk.studio.native_browser_port import StudioNativeBrowserPort
 from ksadk.studio.native_child_mcp import StudioChildMcp
 from ksadk.studio.native_child_skills import StudioChildSkills
@@ -104,6 +107,9 @@ from ksadk.studio.native_planning import (
     _estimated_token_counter as _estimated_token_counter,
 )
 from ksadk.studio.native_planning import (
+    _locked_background_wait_timeout_seconds as _locked_background_wait_timeout_seconds,
+)
+from ksadk.studio.native_planning import (
     _locked_browser_timeout_seconds as _locked_browser_timeout_seconds,
 )
 from ksadk.studio.native_planning import (
@@ -137,6 +143,38 @@ from ksadk.studio.native_tool_port import build_native_locked_tool_surface
 from ksadk.studio.native_workspace_port import StudioNativeWorkspacePort
 from ksadk.toolsets.workspace_identity import identity_workspace_root
 from ksadk.toolsets.workspace_read_budget import estimated_source_units as estimated_source_units
+
+
+def _build_terminate_kill(
+    declaration: BackgroundHostDeclaration | None,
+) -> Callable[[str], bool] | None:
+    """Build a bounded kill callback for owner termination from a host declaration.
+
+    The declaration's typed target + resolved key construct the backend that
+    reconnects and kills the sandbox. Authority is NOT checked here: the
+    ``E2BCommandStore.terminate`` method compares the frozen sandbox.json
+    typed target against the declaration in full before this callback is ever
+    invoked, so the kill only runs against an authority the host has proven it
+    owns. Returns None when no declaration is available (terminate then reports
+    ``unknown`` without a backend call).
+    """
+    if declaration is None:
+        return None
+    try:
+        from ksadk.sandbox.backends.e2b import E2BSandboxBackend
+        from ksadk.sandbox.factory import sandbox_spec_from_env
+        from ksadk.studio.native_background_connection import make_explicit_connection
+
+        connection = make_explicit_connection(declaration)
+        backend = E2BSandboxBackend(spec=sandbox_spec_from_env(), connection=connection)
+    except Exception:
+        return None
+
+    def kill(sandbox_id: str) -> bool:
+        session = backend.reconnect_session(session_locator=sandbox_id)
+        return bool(session.kill())
+
+    return kill
 
 
 class _ToolMux:
@@ -280,10 +318,30 @@ def _activation_contract(activation_key: str, *, browser_available: bool) -> Tas
     )
 
 
+def _wall_delivery_seconds(execution: ExecutionSpec, *, effect_timeout_seconds: float) -> int:
+    """Reserve two model attempts inside the existing deadline, never extend it.
+
+    v1 remains byte-compatible for already sealed Builds. v2 allows time for
+    planning a write and answering after its receipt; slow tools or providers
+    can still exhaust the hard deadline. At least half remains for research.
+    """
+    if execution.native_wall_delivery_policy == "deadline-delivery/v1":
+        return min(60, execution.timeout_seconds // 10)
+    if execution.native_wall_delivery_policy in {"deadline-delivery/v2", "deadline-delivery/v3", "deadline-delivery/v4", "deadline-delivery/v5", "deadline-delivery/v6", "deadline-delivery/v7"}:
+        return min(240, execution.timeout_seconds // 2, math.ceil(2 * effect_timeout_seconds))
+    return 0
+
+
 def _studio_context_planner(
     profile: ModelProfile, *, context: ContextSpec | None = None,
+    summary_output_policy=None,
+    delivery_feedback_policy=None,
 ) -> ContextPlanner:
-    return build_studio_context_planner(profile, context=context, planner_factory=ContextPlanner)
+    return build_studio_context_planner(
+        profile, context=context, planner_factory=ContextPlanner,
+        summary_output_policy=summary_output_policy,
+        delivery_feedback_policy=delivery_feedback_policy,
+    )
 
 
 class StudioNativeProductComposer:
@@ -307,10 +365,14 @@ class StudioNativeProductComposer:
         diagnostic_profiles: Mapping[str, tuple[LanguageServerProfile, ...]] | None = None,
         model_recovery_policy: str | None = None,
         model_recovery_host: StudioModelTakeoverDeclaration | None = None,
+        project_instruction_trust=None,
+        background_host_declaration: BackgroundHostDeclaration | None = None,
+        ownership_verifier: NativeBackgroundOwnershipVerifier | None = None,
     ) -> None:
         validate_hook_authorization_policy(hook_authorizer, hook_authorization_version)
         self._model_client = model_client
         self._workspace_root = workspace_root.resolve()
+        self._project_instruction_trust = project_instruction_trust
         self._acceptance_extension = acceptance_extension
         self._delivery_review_policy = delivery_review_policy
         self._hook_authorizer = hook_authorizer
@@ -370,12 +432,117 @@ class StudioNativeProductComposer:
         artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         artifact_root.chmod(0o700)
         self._artifact_store = ArtifactStore(artifact_root)
+        # Host-declared typed E2B background connection (target + credential
+        # resolver). None means the E2B background capability is not declared
+        # for this workspace: launch/query/stop/cold/delete all report unknown
+        # with zero backend calls rather than resolving an env-ambient identity.
+        # The host (Studio service) constructs this from a declared resource
+        # connection; tests inject a fake declaration directly.
+        self._background_declaration = background_host_declaration
+        # Canonical Native ownership verifier: proves a frozen sandbox_id was
+        # launched by a canonical Native run owned by the session (via the
+        # committed launch receipt + sealed BackgroundCommandRef), reusing the
+        # trusted path BackgroundCommandLocator traverses. None means the
+        # verifier is not supplied — terminate_owner then cannot prove canonical
+        # Native ownership and returns unknown for any existing sandbox (zero
+        # backend calls). The Studio service constructs the concrete verifier
+        # from event_store + session_service + this Composer's durable RunStore;
+        # the Composer alone has no trusted session/run input.
+        self._ownership_verifier = ownership_verifier
 
     async def aclose(self) -> None:
         try:
             self.store.close()
         finally:
             self._artifact_store.close()
+
+    async def terminate_owner(self, session_id: str) -> str:
+        """Explicitly terminate the persistent background sandbox for one owner.
+
+        Returns: "terminated", "confirmed_absent", "not_e2b", "no_owner",
+        "unknown", "failed", "timeout".
+        Not called on ordinary aclose; only on explicit owner termination.
+
+        ``session_id`` is the canonical Studio session id, sourced by the host
+        (StudioService.delete_session) from the trusted session service. It binds
+        to the durable owner key ``sha256([workspace, "e2b", "ksadk-session:{id}])``
+        via ``tool_execution_scope`` + ``_background_session_key``, so terminate
+        targets exactly the owner that launched. The store's ownership checks
+        (rec.owner / sandbox_data.owner / sandbox_id↔command linkage) prove the
+        frozen sandbox belongs to this session's owner; the typed declaration
+        proves account authority.
+
+        **Canonical Native ownership** — in addition to the session-durable-state
+        checks, the frozen ``sandbox_id`` must be proven to have been launched by
+        a canonical Native run owned by this session. This reuses the trusted path
+        ``BackgroundCommandLocator`` traverses (RunHandle/scope/native_ref →
+        committed source-run receipt → sealed BackgroundCommandRef → task_id →
+        record sandbox_id). A sandbox with matching session metadata but zero
+        canonical Native runs (planted metadata) is ``unknown`` with zero backend
+        calls. The verifier is a host-supplied port; without it, any existing
+        sandbox is ``unknown`` (the Composer alone has no trusted session/run
+        input). ``no_owner``/``not_e2b`` (no target sandbox to prove) bypass the
+        canonical check and are returned by the store directly. A
+        damaged/foreign/missing-evidence state is ``unknown`` (metadata retained),
+        never ``confirmed_absent``; only a provably valid canonical owner is
+        cleaned up. typed account/session JSON is NOT canonical RunHandle/receipt.
+        """
+        from ksadk.runtime_context import tool_execution_scope
+        from ksadk.sandbox.e2b_background import E2BCommandStore, _json
+        from ksadk.toolsets.sandbox import _background_session_key
+
+        state_root = self._workspace_root / ".harness-tools" / "background"
+        with tool_execution_scope(session_id=session_id):
+            store = E2BCommandStore(
+                state_root=state_root,
+                workspace_root=identity_workspace_root(
+                    self._workspace_root / ".harness-tools" / "workspace"
+                ),
+                session_id=_background_session_key(),
+                source_config={"source_kind": "e2b"},
+                kill_sandbox=_build_terminate_kill(self._background_declaration),
+                declaration=self._background_declaration,
+            )
+        # Canonical Native ownership: before the store's kill RPC, prove the
+        # frozen sandbox_id was launched by a canonical Native run owned by this
+        # session. Only an existing e2b sandbox with a provable sandbox_id
+        # requires this check; no_owner/not_e2b have no target to prove.
+        sandbox_file = store._sandbox_root / "sandbox.json"
+        if sandbox_file.is_file() and not sandbox_file.is_symlink():
+            try:
+                sandbox_data = _json(sandbox_file)
+            except Exception:
+                return "unknown"
+            sandbox_id = sandbox_data.get("sandbox_id", "")
+            if sandbox_id and sandbox_data.get("owner") == store.owner:
+                if self._ownership_verifier is None:
+                    return "unknown"
+                proven = await self._ownership_verifier.verify_sandbox_launched_by_session(
+                    session_id=session_id, sandbox_id=sandbox_id,
+                )
+                if not proven:
+                    return "unknown"
+        return store.terminate()
+
+    def _make_background_session(self, workspace_root: Path, command_state_root: Path):
+        """Factory for the Native background observer, backend-aware.
+
+        Returns a callable that builds a durable background session for the
+        given backend (taken from the canonical launch receipt) or the current
+        backend. It carries this Composer's host-declared typed connection so
+        the observer reads/stops under the same authority as launch. It must
+        be invoked inside the owning session's ``tool_execution_scope`` so the
+        session id resolves correctly.
+        """
+        from ksadk.toolsets.sandbox import make_background_session
+
+        root = identity_workspace_root(workspace_root)
+        state_root = command_state_root
+        declaration = self._background_declaration
+        return lambda backend=None: make_background_session(
+            workspace_root=root, state_root=state_root, backend=backend,
+            declaration=declaration,
+        )
 
     async def __call__(self, context: HarnessEngineActivationContext) -> NativeRuntimeAdapter:
         claims = dict(context.activation_claims)
@@ -479,10 +646,21 @@ class StudioNativeProductComposer:
         ) if diagnostic_profiles else None
         context_planner = _studio_context_planner(
             profile, context=ContextSpec.model_validate(build["context"]),
+            delivery_feedback_policy=(
+                "admitted-delivery-continuation/v1"
+                if build["execution"].get("nativeWallDeliveryPolicy") == "deadline-delivery/v7"
+                else None
+            ),
+            summary_output_policy=(
+                "declared-summary-limit/v1"
+                if build["execution"].get("nativeWallDeliveryPolicy") in {"deadline-delivery/v3", "deadline-delivery/v4", "deadline-delivery/v5", "deadline-delivery/v6", "deadline-delivery/v7"}
+                else None
+            ),
         )
         context_port = StudioNativeContextPort(
             context, scope, self.store, planner=context_planner,
             workspace_root=identity_workspace_root(workspace / ".harness-tools" / "workspace"),
+            project_root=workspace, project_instruction_trust=self._project_instruction_trust,
         )
         hook_port = StudioNativeHookPort(
             context, scope, self.store, authorize=self._hook_authorizer,
@@ -496,6 +674,7 @@ class StudioNativeProductComposer:
             profile,
             vision_profile,
             browser_tool_seconds=_locked_browser_timeout_seconds(build),
+            owned_wait_tool_seconds=_locked_background_wait_timeout_seconds(build),
         )
         effect_timeout_seconds = max(
             effect_timeout_seconds, required_subagent_effect_timeout(build)
@@ -543,6 +722,7 @@ class StudioNativeProductComposer:
             mcp_server_names=frozenset(item.name for item in context.config.mcp_tools),
             source_read_policy=source_read_policy,
             language_diagnostics=language_diagnostics,
+            background_declaration=self._background_declaration,
         )
         authorize.require_approval(builtins.approval_required)
         browser_verifier = (
@@ -694,6 +874,15 @@ class StudioNativeProductComposer:
                     "</runtime_skill_bindings>"
                 )
             execution = ExecutionSpec.model_validate(build.get("execution") or {})
+            # Missing only in legacy sealed Builds. New Builds carry an
+            # explicit object even when neither count is bounded.
+            native_limits = execution.native_limits
+            model_call_budget = (native_limits.max_model_calls if native_limits is not None
+                                 else min(100, execution.max_steps))
+            tool_call_budget = (native_limits.max_tool_calls if native_limits is not None
+                                else min(400, max(4, execution.max_steps * 4)))
+            reserve_basis = (model_call_budget if native_limits is not None
+                             else execution.max_steps)
             workspace_port = StudioNativeWorkspacePort(
                 root=identity_workspace_root(workspace / ".harness-tools" / "workspace"),
                 scope=scope,
@@ -714,12 +903,14 @@ class StudioNativeProductComposer:
                     self._artifact_store, scope=child_scope
                 ),
                 artifact_search=True,
+                artifact_catalog=True,
                 artifact_page_policy=artifact_page_policy,
                 source_read_policy=source_read_policy,
                 max_tool_result_bytes=tool_result_max_bytes,
                 has_bound_skills=bool(context.skills),
                 child_skills=(StudioChildSkills(
                     scope=scope, store=self.store, source=source, authorize=authorize,
+                    metadata_policy=execution.native_skill_metadata_policy,
                     activation_binding_digest=studio_mapping_digest({
                         "activation_claims": claims,
                         "profile_digest": context.bundle.composition.profile_digest,
@@ -737,6 +928,11 @@ class StudioNativeProductComposer:
                     ),
                     scope=scope, store=self.store, authorize=authorize,
                     tool_names=builtins.child_file_tool_names,
+                ),
+                model_client=self._model_client,
+                build_id=claims["build_id"],
+                streaming_support=lambda selected: native_studio_streaming_support(
+                    self._model_client, selected
                 ),
             )
             if delegation is not None:
@@ -776,6 +972,9 @@ class StudioNativeProductComposer:
                 definitions.append(tasks_definition)
             configuration = RunConfiguration(
                 guidance_policy="boundary-guide/v1",
+                tool_error_recovery_policy=execution.tool_error_recovery_policy,
+                tool_error_recovery_model_calls=execution.tool_error_recovery_model_calls,
+                background_notification_policy=execution.native_background_notification_policy,
                 output_recovery_policy="task-or-delivery/v1",
                 child_lifecycle_policy="owned-background/v2" if delegation is not None else None,
                 child_promotion_policy=("owned-child-promotion/v1"
@@ -846,11 +1045,23 @@ class StudioNativeProductComposer:
                 instructions=instructions,
                 limits=RunLimits(
                     max_tool_result_bytes=tool_result_max_bytes,
-                    max_wall_seconds=execution.timeout_seconds,
-                    max_model_calls=min(100, execution.max_steps),
-                    max_tool_calls=min(400, max(4, execution.max_steps * 4)),
+                    max_wall_seconds=execution.timeout_seconds or None,
+                    finalization_reserve_wall_seconds=(
+                        _wall_delivery_seconds(
+                            execution, effect_timeout_seconds=RunLimits().effect_timeout_seconds,
+                        )
+                    ),
+                    delivery_context_recovery_policy=(
+                        "delivery-window-summary/v2"
+                        if execution.native_wall_delivery_policy in {"deadline-delivery/v4", "deadline-delivery/v5", "deadline-delivery/v6", "deadline-delivery/v7"}
+                        else "committed-write-summary/v1"
+                        if execution.native_wall_delivery_policy == "deadline-delivery/v3"
+                        else None
+                    ),
+                    max_model_calls=model_call_budget,
+                    max_tool_calls=tool_call_budget,
                     verification_reserve_model_calls=(
-                        min(6, max(1, execution.max_steps // 5))
+                        (6 if reserve_basis is None else min(6, max(1, reserve_basis // 5)))
                         if browser_verifier is not None
                         else 0
                     ),
@@ -858,11 +1069,14 @@ class StudioNativeProductComposer:
                     browser_observation_interval_tool_calls=(
                         12 if browser_verifier is not None else 0
                     ),
-                    finalization_reserve_model_calls=min(
-                        2 if vision_profile is not None else 1,
-                        execution.max_steps,
+                    finalization_reserve_model_calls=(
+                        2 if vision_profile is not None else 1
+                    ) if reserve_basis is None else min(
+                        2 if vision_profile is not None else 1, reserve_basis,
                     ),
-                    max_output_restarts=1 if execution.max_steps >= 20 else 0,
+                    max_output_restarts=(
+                        1 if reserve_basis is None or reserve_basis >= 20 else 0
+                    ),
                     effect_timeout_seconds=effect_timeout_seconds,
                 ),
             )
@@ -877,6 +1091,7 @@ class StudioNativeProductComposer:
                     skill_refs=source.refs,
                     authorize=authorize,
                     store=self.store,
+                    metadata_policy=execution.native_skill_metadata_policy,
                 )
             if "run_command" in builtins.approval_required:
                 authorize.require_approval((TEST_ACTION_TOOL_NAME,))
@@ -891,7 +1106,7 @@ class StudioNativeProductComposer:
             )
             artifacts = NativeArtifactStorePort(self._artifact_store, scope=scope)
             configuration, tools = install_artifact_tool(
-                configuration, tools, artifacts, enable_search=True,
+                configuration, tools, artifacts, enable_search=True, enable_catalog=True,
                 page_policy=artifact_page_policy,
                 search_policy=source_read_policy.artifact_search_policy(
                     self.store, workspace_revision="unavailable", workspace_tracking=True,
@@ -948,6 +1163,17 @@ class StudioNativeProductComposer:
                 hook_port=hook_port,
                 child_lifecycle_port=(delegation.background_port
                                       if delegation is not None else None),
+                background_command_port=(StudioBackgroundCommandPort(
+                    scope=scope, store=self.store,
+                    workspace_root=identity_workspace_root(
+                        workspace / ".harness-tools" / "workspace"
+                    ),
+                    command_state_root=workspace / ".harness-tools" / "background",
+                    make_background_session=self._make_background_session(
+                        identity_workspace_root(workspace / ".harness-tools" / "workspace"),
+                        workspace / ".harness-tools" / "background",
+                    ),
+                ) if execution.native_background_notification_policy is not None else None),
                 lease_ttl_seconds=30 if self._durable else None,
                 browser_recovery=persistent_browser,
                 activation_resource=activation_resource,
@@ -960,7 +1186,7 @@ class StudioNativeProductComposer:
                 model=ModelBinding(
                     profile_ref=f"model-profile://{profile.profile_id}@{profile.profile_version}"
                 ),
-                prompt=PromptSpec(instructions=instructions),
+                prompt=PromptSpec(instructions=configuration.instructions),
             )
             admission = StudioAdmission(
                 build_id=claims["build_id"],

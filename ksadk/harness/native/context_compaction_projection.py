@@ -32,6 +32,36 @@ def seal_compaction_projection(
     current_messages: Messages,
 ) -> CompactionResult:
     """Validate an authorized retained projection; callers prove coverage first."""
+    original = _seal_retained_projection(
+        planner, request, summary_text, current_continuity, current_messages,
+    )
+    if not request.post_summary_read_refs:
+        return original
+    # Coverage was proved with the original retained set. The source batch is
+    # still summarized in full; retaining it as well never acknowledges missing
+    # partitions or changes the immutable summary request/its source manifest.
+    selected = set(request.retained_message_refs) | set(request.post_summary_read_refs)
+    refs = _refs(current_messages)
+    extended = request.model_copy(update={
+        "retained_message_refs": tuple(ref for ref in refs if ref in selected),
+        "retained_messages": tuple(
+            raw for ref, raw in zip(refs, current_messages) if ref in selected
+        ),
+    })
+    try:
+        return _seal_retained_projection(
+            planner, extended, summary_text, current_continuity, current_messages,
+        )
+    except CompactionProjectionOverflow:
+        # The declared reserve was conservative, not free capacity. Keep the
+        # original validated result whenever the actual complete batch cannot
+        # fit; never shrink output, rewrite a receipt, or request another summary.
+        return original
+
+
+def _seal_retained_projection(
+    planner, request, summary_text, current_continuity, current_messages,
+) -> CompactionResult:
     raw_by_ref = dict(zip(_refs(current_messages), current_messages))
     retained = tuple(raw_by_ref[ref] for ref in request.retained_message_refs)
     if retained != request.retained_messages:
@@ -59,7 +89,8 @@ def seal_compaction_projection(
         summary_text=summary_text,
         summary_token_count=(
             planner._count_message(_summary(summary_text))
-            + planner._count_message(_resume())
+            + (planner._count_message(_resume())
+               if planner.compaction_message_projection is None else 0)
         ),
         preserved_message_refs=request.retained_message_refs,
     )
@@ -85,7 +116,10 @@ def seal_compaction_projection(
     )
     prepared = planner._prepared(
         request.instructions,
-        _compacted_messages(summary_text, read_view, current_continuity.goal),
+        _compacted_messages(
+            summary_text, read_view, current_continuity.goal,
+            projection=planner.compaction_message_projection,
+        ),
         request.budget.fixed_tokens,
         request.turn_control,
         profile=request.profile,
@@ -126,6 +160,8 @@ def seal_compaction_projection(
         tokenizer_id=planner.tokenizer_id,
         provider_replay_projection_policy=request.profile.provider_replay_projection_policy,
         summary_completion_policy=request.summary_completion_policy,
+        compaction_message_projection=request.compaction_message_projection,
+        summary_prompt_policy=request.summary_prompt_policy,
         summary_output_limited=request.summary_output_limited,
     )
     return CompactionResult(projection=projection, prepared=prepared, history=history)

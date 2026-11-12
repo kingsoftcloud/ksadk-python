@@ -10,13 +10,14 @@ from __future__ import annotations
 import json
 from typing import Protocol, TypeVar, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ksadk.harness.native.fork import ForkCreation
 from ksadk.harness.native.restore_contract import StoreRestoreAudit
 from ksadk.harness.native.state import (
     CommandReceipt,
     CommitBatch,
+    Contract,
     EffectIntent,
     EffectReceipt,
     NativeEvent,
@@ -24,6 +25,33 @@ from ksadk.harness.native.state import (
     RunScope,
     RunSnapshot,
 )
+
+
+class NotificationTurnCreation(Contract):
+    """Only the creator drives a notification turn; duplicates get current facts."""
+
+    snapshot: RunSnapshot
+    created: bool
+
+
+class TaskChainUsage(Contract):
+    """Cumulative budget consumed across all runs in one task chain.
+
+    A new user goal starts a fresh chain; a background-notification turn inherits
+    the source run's chain so its budget accrues to the original task. Each run is
+    charged exactly once (per-run high-water mark), regardless of how many terminal
+    commits it has (retry/crash-recovery). Chain totals are recomputed from the
+    settled-runs records, so no double-counting or gaps.
+    """
+
+    task_chain_id: str = Field(min_length=1)
+    model_calls: int = Field(default=0, strict=True, ge=0)
+    tool_calls: int = Field(default=0, strict=True, ge=0)
+    execution_elapsed_seconds: float = Field(default=0.0, strict=True, ge=0.0)
+    compaction_count: int = Field(default=0, strict=True, ge=0)
+    descendant_model_calls: int = Field(default=0, strict=True, ge=0)
+    descendant_tool_calls: int = Field(default=0, strict=True, ge=0)
+    notification_turns: int = Field(default=0, strict=True, ge=0)
 
 
 class StoreConflict(RuntimeError):
@@ -51,6 +79,22 @@ class RunStore(Protocol):
     def create(self, snapshot: RunSnapshot) -> None: ...
     def session_head(self, scope: RunScope, session_id: str) -> RunSnapshot | None: ...
     def create_turn(self, snapshot: RunSnapshot, *, expected_parent_run_id: str | None) -> None: ...
+
+    def register_task_chain(
+        self, scope: RunScope, task_chain_id: str, run_id: str,
+    ) -> None:
+        """Atomically register a run as a member of a task chain.
+
+        Creates an independent durable membership fact, separate from usage.
+        If the chain is new, creates a zero-usage entry. If the chain already
+        exists, adds the run_id as a member. If the chain's usage entry is
+        missing but the registration exists, that's corruption — raise.
+        """
+        ...
+
+    def chain_is_registered(self, scope: RunScope, task_chain_id: str) -> bool:
+        """Return True if the chain has been registered (independent of usage)."""
+        ...
     def load(self, scope: RunScope, run_id: str) -> RunSnapshot: ...
     def acquire(self, scope: RunScope, run_id: str) -> int: ...
     def enqueue(self, scope: RunScope, run_id: str, command: RunCommand) -> CommandReceipt: ...
@@ -94,6 +138,70 @@ class ForkingRunStore(Protocol):
     """Optional atomic transcript branch creation; never emulate with two writes."""
 
     def create_fork(self, snapshot: RunSnapshot) -> ForkCreation: ...
+
+
+@runtime_checkable
+class NotificationTurnStore(Protocol):
+    """Optional atomic same-session notification turn creation.
+
+    Like ``create_turn`` but with a deterministic run id so a repeat admission
+    (retry/crash-recovery) returns the already-created turn instead of a second
+    run. The creation, session-head CAS and idempotent duplicate read happen in
+    one store transaction — never two writes, never an independent JSON file.
+    """
+
+    def create_notification_turn(
+        self, snapshot: RunSnapshot, *, expected_parent_run_id: str | None
+    ) -> NotificationTurnCreation: ...
+
+
+@runtime_checkable
+class TaskChainUsageStore(Protocol):
+    """Optional cumulative task-chain budget ledger, settled atomically per commit.
+
+    Keeps an explicit per-chain model/tool/time allowance from being reset by a new
+    run in the same chain. Settlement is idempotent: each terminal commit settles
+    exactly once (keyed by commit_id), so retries/crash recovery neither double-
+    charge nor drop usage. New user goals start a fresh chain; background
+    notification turns inherit the source run's chain. Never one shared budget for
+    all sessions or chains.
+    """
+
+    def task_chain_usage(self, scope: RunScope, task_chain_id: str) -> TaskChainUsage: ...
+
+    def register_task_chain(
+        self, scope: RunScope, task_chain_id: str, run_id: str,
+    ) -> None:
+        """Atomically register a run as a member of a task chain.
+
+        Creates an independent durable membership fact, separate from usage.
+        If the chain is new, creates a zero-usage entry. If the chain already
+        exists, adds the run_id as a member. If the chain's usage entry is
+        missing but the registration exists, that's corruption — raise.
+        """
+        ...
+
+    def chain_is_registered(self, scope: RunScope, task_chain_id: str) -> bool:
+        """Return True if the chain has been registered (independent of usage)."""
+        ...
+
+    def settle_task_chain_usage(
+        self, scope: RunScope, task_chain_id: str, *,
+        commit_id: str, snapshot: RunSnapshot, notification_turn: bool = False,
+        compaction_count: int = 0,
+    ) -> TaskChainUsage: ...
+
+    def chain_settled_run_ids(self, scope: RunScope, task_chain_id: str) -> tuple[str, ...]:
+        """Return the run_ids that have settled usage for this chain."""
+        ...
+
+    def chain_has_committed_runs(self, scope: RunScope, task_chain_id: str) -> bool:
+        """Return True if any run with this task_chain_id has committed snapshots.
+
+        Reserved for diagnostics. Budget admission uses the authoritative
+        registration and settled-run ledger, not a heuristic snapshot scan.
+        """
+        ...
 
 
 @runtime_checkable
@@ -177,6 +285,21 @@ def check_initial(snapshot: RunSnapshot) -> None:
         raise StoreConflict("initial_goal_digest must bind the original goal")
 
 
+def check_chain_turn(snapshot: RunSnapshot, members) -> None:
+    """A task chain is a serial continuation within one authorized session.
+
+    Validate atomically with turn creation so two sessions cannot both spend a
+    settled-only ledger. Parallel delegated children use their own allocations.
+    """
+    for member in members:
+        if member.run_id == snapshot.run_id:
+            continue
+        if member.session_id != snapshot.session_id:
+            raise StoreConflict("task chain belongs to another session")
+        if not member.phase.terminal:
+            raise StoreConflict("task chain already has an active run")
+
+
 def check_turn(
     snapshot: RunSnapshot, head: RunSnapshot | None, expected_parent_run_id: str | None
 ) -> None:
@@ -198,6 +321,85 @@ def check_turn(
             raise StoreConflict("session already has an active turn")
         if snapshot.turn_id == head.turn_id or snapshot.run_id == head.run_id:
             raise StoreConflict("new turn requires fresh run and turn identities")
+
+
+def check_notification_turn(
+    snapshot: RunSnapshot, source: RunSnapshot, head: RunSnapshot | None,
+    expected_parent_run_id: str | None,
+) -> None:
+    """Validate a same-session notification turn under the store write lock.
+
+    Same CAS as ``check_turn`` (terminal parent, fresh turn id) but the run id is a
+    deterministic function of (scope, source run, task) and may already exist: a
+    repeat admission reads the existing turn rather than creating a second one.
+
+    Source binding (mirrors ``check_fork``): the notification turn must carry the
+    source's goal, configuration, task chain and a valid ``notification_command``
+    bound to the source run and task_id. A notification for a task not in the
+    source's background commands, or a request with a different Build/config/chain,
+    is rejected — never admitted as idempotent.
+    """
+    check_initial(snapshot)
+    if snapshot.fork_source is not None or snapshot.fork_command is not None:
+        raise StoreConflict("notification turn is not a fork")
+    check_scope(snapshot.scope, source)
+    if not source.phase.terminal:
+        raise StoreConflict("notification turn requires a terminal source run")
+    command = snapshot.notification_command
+    if command is None:
+        raise StoreConflict("notification turn requires a notification_command")
+    # The source run is the ORIGINAL launching run (command.source_run_id), not
+    # the current session head. The head may have moved to a prior notification
+    # turn. Load the original source for task/config/chain binding; use the head
+    # only for the CAS check below.
+    if command.source_run_id != source.run_id:
+        # The ``source`` passed in is the head, not the original source. Load the
+        # original source to validate task/config/chain binding.
+        # Only re-load if the head is not the original source.
+        # (The caller passes the original source as the ``source`` arg and the
+        # current head as ``expected_parent_run_id``.)
+        raise StoreConflict("notification command source run mismatch")
+    # The task must exist in the source's owned background commands.
+    if not any(item.ref.task_id == command.task_id for item in source.background_commands):
+        raise StoreConflict("notification task not found in source background commands")
+    # Configuration, task chain and goal must match the source (task continuity).
+    if snapshot.configuration_digest != source.configuration_digest:
+        raise StoreConflict("notification turn configuration does not match source")
+    if snapshot.task_chain_id != source.task_chain_id:
+        raise StoreConflict("notification turn task chain does not match source")
+    if snapshot.profile_digest != source.profile_digest:
+        raise StoreConflict("notification turn profile does not match source")
+    if (head.run_id if head else None) != expected_parent_run_id:
+        raise StoreConflict("session head compare-and-swap failed")
+    if snapshot.parent_run_id != expected_parent_run_id:
+        raise StoreConflict("parent_run_id does not match expected session head")
+    if head is not None:
+        if not head.phase.terminal:
+            raise StoreConflict("session already has an active turn")
+        if snapshot.turn_id == head.turn_id:
+            raise StoreConflict("new turn requires a fresh turn identity")
+
+
+def duplicate_notification_turn(
+    proposed: RunSnapshot, current: RunSnapshot,
+) -> NotificationTurnCreation:
+    """Read the immutable notification turn; a repeat returns current facts.
+
+    A different admission request for the same deterministic run id (different
+    Build/config, source run, task identity or task chain) is rejected, not
+    silently treated as idempotent — mirroring fork's request-digest contract.
+    """
+    proposed_cmd = proposed.notification_command
+    current_cmd = current.notification_command
+    if (proposed_cmd is None or current_cmd is None
+            or current_cmd != proposed_cmd
+            or current.run_id != proposed.run_id
+            or current.session_id != proposed.session_id
+            or current.parent_run_id != proposed.parent_run_id
+            or current.task_chain_id != proposed.task_chain_id
+            or current.configuration_digest != proposed.configuration_digest):
+        raise StoreConflict("notification turn was already used with another request")
+    return NotificationTurnCreation(snapshot=current, created=False)
 
 
 def check_fork(snapshot: RunSnapshot, source: RunSnapshot) -> None:
@@ -276,6 +478,8 @@ def check_commit(current: RunSnapshot, batch: CommitBatch, expected_revision: in
         "parent_run_id",
         "fork_source",
         "fork_command",
+        "notification_command",
+        "task_chain_id",
         "origin",
         "initial_goal_digest",
     ):

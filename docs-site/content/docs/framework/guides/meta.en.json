@@ -16,6 +16,8 @@
     "attachments-multimodal",
     "workspace-files",
     "---[Network]Events and Interoperability---",
+    "agui-a2ui",
+    "mcp-oauth",
     "hosted-ui-events",
     "channel-connector",
     "a2a-runtime",
@@ -25,8 +27,10 @@
     "cloud-deployment",
     "runtime-products",
     "---[Wrench]Operations and Maintenance---",
-    "upgrade-0-8-6",
     "observability-tracing",
-    "web-ui-source"
+    "web-ui-source",
+    "integration-0-8-7",
+    "upgrade-0-8-7",
+    "upgrade-0-8-6"
   ]
 }

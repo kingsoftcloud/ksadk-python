@@ -28,6 +28,7 @@ from urllib.request import Request, urlopen
 
 import click
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 
 from ksadk.builders.base import BaseBuilder, BuildResult
 from ksadk.builders.framework_requirements import (
@@ -36,16 +37,9 @@ from ksadk.builders.framework_requirements import (
     code_requirements_for_framework,
 )
 from ksadk.builders.requirements_utils import (
-    exclude_requirement_names,
     merge_requirement_lists,
     parse_requirements_text,
 )
-
-from ksadk.builders.source_provenance import _git_provenance, _package_provenance as _read_package_provenance
-
-
-def _package_provenance(package_name: str, package_root: Path) -> dict:
-    return _read_package_provenance(package_name, package_root, git_reader=_git_provenance)
 
 BUILD_INFO_SCHEMA = "ksadk-build-info/v1"
 BUILD_INFO_ARCNAME = "ksadk/BUILD-INFO.json"
@@ -106,6 +100,84 @@ def _bundled_content_fingerprint(files: List[Any]) -> str:
         digest.update(_sha256_file(file_path).encode("ascii"))
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _git_provenance(start: Path) -> Optional[dict]:
+    """返回 start 所在 git 仓库的提交信息;非 git 目录返回 None。"""
+
+    def _git(*args: str) -> Optional[str]:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(start), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.strip()
+
+    toplevel = _git("rev-parse", "--show-toplevel")
+    if not toplevel:
+        return None
+    commit = _git("rev-parse", "HEAD")
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    status = _git("status", "--porcelain")
+    return {
+        "repo_root": toplevel,
+        "commit": commit,
+        "branch": branch or None,
+        "dirty": bool(status),
+    }
+
+
+def _package_provenance(package_name: str, package_root: Path) -> dict:
+    """采集被 vendored 包的安装来源:dist 元信息 / 本地路径 / git 提交。"""
+
+    info: dict[str, Any] = {
+        "source_dir": str(package_root),
+        "dist_version": None,
+        "installer": None,
+        "direct_url": None,
+        "source_type": "unknown",
+        "git": None,
+    }
+    try:
+        dist = importlib_metadata.distribution(package_name)
+    except Exception:
+        dist = None
+    if dist is not None:
+        info["dist_version"] = dist.version
+        installer = (dist.read_text("INSTALLER") or "").strip()
+        info["installer"] = installer or None
+        raw_direct_url = dist.read_text("direct_url.json")
+        if raw_direct_url:
+            try:
+                direct_url = json.loads(raw_direct_url)
+            except ValueError:
+                direct_url = None
+            if isinstance(direct_url, dict):
+                info["direct_url"] = direct_url.get("url")
+                url = str(direct_url.get("url") or "")
+                dir_info = direct_url.get("dir_info") or {}
+                archive_info = direct_url.get("archive_info") or {}
+                if url.startswith("file://"):
+                    if dir_info.get("editable"):
+                        info["source_type"] = "editable-install"
+                    elif url.endswith(".whl"):
+                        info["source_type"] = "local-wheel"
+                    else:
+                        info["source_type"] = "local-path"
+                elif archive_info:
+                    info["source_type"] = "remote-dist"
+    if info["direct_url"] is None and info["dist_version"] is not None:
+        # pip 从 index 安装的常规 dist 通常不写 direct_url.json
+        info["source_type"] = "installed-dist"
+    if info["source_type"] in {"editable-install", "local-path", "unknown"}:
+        info["git"] = _git_provenance(package_root)
+    return info
 
 
 def build_bundled_source_manifest(
@@ -181,6 +253,7 @@ class CodeBuilder(BaseBuilder):
         "lib64",
     }
     IGNORED_DIR_NAMES = {
+        ".agentengine",
         "__pycache__",
         "node_modules",
         ".git",
@@ -230,7 +303,10 @@ class CodeBuilder(BaseBuilder):
         ".map",
     }
     BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS = (
-        "a2a-sdk>=0.3.22",
+        "a2a-sdk[fastapi]==1.1.0",
+        # Shared Runtime imports the official validator even for non-UI Agents.
+        # Code and image builds vendor SDK source without installing its metadata.
+        "a2ui-core==0.3.0",
         # Code archives run `ksadk web` in the plain Runtime image as well as
         # the Kernel Host image.  ksadk.cli imports rich during startup.
         "rich>=13.0.0",
@@ -269,9 +345,10 @@ class CodeBuilder(BaseBuilder):
     )
     BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS = ("rapidocr-onnxruntime>=1.2.0",)
     BUNDLED_AGUI_RUNTIME_REQUIREMENTS = (
-        "ag-ui-protocol==0.1.19",
-        "ag-ui-langgraph[fastapi]==0.0.42",
-        "copilotkit==0.1.94",
+        "ag-ui-protocol==1.0.0",
+        "ag-ui-langgraph[fastapi]==0.0.47",
+        "ag-ui-a2ui-toolkit==0.0.4",
+        "copilotkit==0.1.96",
     )
     BUNDLED_KSADK_RUNTIME_REQUIREMENTS = (
         *BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS,
@@ -582,13 +659,23 @@ class CodeBuilder(BaseBuilder):
             requirements.extend(self.BUNDLED_KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS)
         if self._attachment_ocr_runtime_enabled():
             requirements.extend(self.BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS)
-        if self._mcp_runtime_enabled():
+        if framework == "langgraph" or self._mcp_runtime_enabled():
             requirements.extend(self.BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS)
-        if self._postgres_session_runtime_enabled():
+        # A managed LangGraph runtime receives its Session store at deployment,
+        # including when the developer builds a standalone ZIP or image offline.
+        if framework == "langgraph" or self._postgres_session_runtime_enabled():
             requirements.extend(self.BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS)
         return tuple(requirements)
 
     def _mcp_runtime_enabled(self) -> bool:
+        # OAuth projects call the SDK helper instead of importing `mcp`
+        # directly. Both Code and Container builds consume this declaration.
+        servers = self._load_config().get("mcp_servers")
+        if isinstance(servers, list) and any(
+            isinstance(server, dict) and server.get("auth_mode") == "oauth"
+            for server in servers
+        ):
+            return True
         if self._env_flag_enabled("KSADK_BUILD_ENABLE_MCP"):
             return True
         if self._project_env_has_configured_value("KSADK_MCP_SERVERS"):
@@ -764,6 +851,7 @@ class CodeBuilder(BaseBuilder):
         return True, "requirements 未变化，跳过依赖重装"
 
     def _build_input_fingerprint(self, detection_result) -> dict:
+
         digest = hashlib.sha256()
         files = []
         file_digests = {}
@@ -772,7 +860,6 @@ class CodeBuilder(BaseBuilder):
         digest.update(f"framework:{detection_result.type.value}\n".encode("utf-8"))
         digest.update(f"entry:{getattr(detection_result, 'entry_point', '')}\n".encode("utf-8"))
         digest.update(f"target-python:{self.TARGET_PYTHON_VERSION}\n".encode("utf-8"))
-
         for dep in self._build_requirements_list(detection_result):
             digest.update(dep.encode("utf-8"))
             digest.update(b"\n")
@@ -973,42 +1060,66 @@ class CodeBuilder(BaseBuilder):
             self._bundled_runtime_requirements(detection_result),
         )
 
+        extra_requirements: tuple[str, ...] = ()
         user_requirements = self.project_dir / "requirements.txt"
         if user_requirements.exists():
             user_content = user_requirements.read_text(encoding="utf-8")
             parsed_user_requirements = parse_requirements_text(user_content)
+            extra_requirements = self._bundled_ksadk_extra_requirements(parsed_user_requirements)
             final_deps = merge_requirement_lists(
                 final_deps,
-                self._bundled_ksadk_extra_requirements(parsed_user_requirements),
+                extra_requirements,
             )
-            user_deps = exclude_requirement_names(
-                parsed_user_requirements,
-                excluded_names={"ksadk"},
-            )
+            user_deps = self._without_bundled_ksadk_requirements(parsed_user_requirements)
             final_deps = merge_requirement_lists(final_deps, user_deps)
 
         # User pins may narrow the supported framework window, but an unpinned
         # template dependency must not erase it. Keeping both requirements lets
         # pip intersect constraints and reject incompatible pins at build time.
-        for requirement in code_requirements_for_framework(detection_result.type.value):
+        for requirement in (
+            *code_requirements_for_framework(detection_result.type.value),
+            *extra_requirements,
+        ):
             if requirement not in final_deps:
                 final_deps.append(requirement)
 
         return final_deps
 
+    @staticmethod
+    def _parse_bundled_ksadk_requirement(raw_requirement: str) -> Requirement | None:
+        try:
+            parsed = Requirement(raw_requirement)
+        except InvalidRequirement:
+            # pip accepts local wheel paths with extras; PEP 508's parser does
+            # not. Identify only valid KsADK wheel names, without opening them.
+            wheel = re.fullmatch(r"(.+\.whl)(\[[^\]]*\])?(?:\s*;\s*(.+))?", raw_requirement)
+            if wheel is None:
+                return None
+            filename = re.split(r"[/\\]", urlparse(wheel[1]).path)[-1]
+            try:
+                name, _, _, _ = parse_wheel_filename(filename)
+                if name != "ksadk":
+                    return None
+                marker = f"; {wheel[3]}" if wheel[3] else ""
+                parsed = Requirement(f"ksadk{wheel[2] or ''}{marker}")
+            except (InvalidWheelFilename, InvalidRequirement):
+                return None
+        return parsed if parsed.name.lower().replace("_", "-") == "ksadk" else None
+
+    def _without_bundled_ksadk_requirements(self, requirements: List[str]) -> List[str]:
+        return [raw for raw in requirements if self._parse_bundled_ksadk_requirement(raw) is None]
+
     def _bundled_ksadk_extra_requirements(self, requirements: List[str]) -> tuple[str, ...]:
         extras: set[str] = set()
         for raw_requirement in requirements:
-            try:
-                parsed = Requirement(raw_requirement)
-            except InvalidRequirement:
-                continue
-            if parsed.name.lower().replace("_", "-") != "ksadk":
-                continue
-            extras.update(extra.lower() for extra in parsed.extras)
+            parsed = self._parse_bundled_ksadk_requirement(raw_requirement)
+            if parsed is not None:
+                extras.update(extra.lower() for extra in parsed.extras)
 
         bundled: list[str] = []
-        if "agui" in extras:
+        # Only carry the runtime AG-UI dependencies from ``all``; development,
+        # evaluation and platform-specific extras are not portable Code deps.
+        if extras & {"agui", "all"}:
             bundled.extend(self.BUNDLED_AGUI_RUNTIME_REQUIREMENTS)
         return tuple(bundled)
 
@@ -2056,9 +2167,11 @@ class CodeBuilder(BaseBuilder):
 
     def _generate_entrypoint(self, detection_result) -> str:
         """生成 entrypoint.py"""
+
         package_name = Path(detection_result.package_path).name
         runtime_config_json = json.dumps(
-            self._load_config(), ensure_ascii=False, separators=(",", ":"), default=str
+            self._load_config(),
+            ensure_ascii=False, separators=(",", ":"), default=str
         )
         return f'''"""
 AgentEngine Code 模式入口
@@ -2156,6 +2269,7 @@ from ksadk.configs import setup_environment
 setup_environment(Path(CODE_ROOT))
 
 from ksadk.detection import DetectionResult, FrameworkType
+from ksadk.agui.config import agui_config_for_detection
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
 from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
 import uvicorn
@@ -2225,6 +2339,7 @@ app = create_runtime_app(
         runtime_type=detection_result.type.value,
         runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
         launch_context=runtime_context,
+        agui=agui_config_for_detection(detection_result),
         a2a=_managed_a2a_bootstrap,
         a2a_runtime_adapter=_a2a_adapter,
     ),

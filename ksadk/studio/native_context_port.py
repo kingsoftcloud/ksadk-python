@@ -35,7 +35,9 @@ from ksadk.plugins.host import PluginHostError
 from ksadk.plugins.providers.harness import HarnessEngineActivationContext, HarnessTurnRequest
 from ksadk.plugins.providers.harness_context import HarnessContextContributorConfiguration
 from ksadk.plugins.resolver import composition_profile_digest
+from ksadk.studio.contracts import ContextSpec
 from ksadk.studio.native_memory_context import bind_native_memory_context
+from ksadk.studio.native_project_instructions import bind_project_instructions
 
 
 @dataclass(frozen=True)
@@ -47,7 +49,8 @@ class _BoundSource:
 
 class StudioNativeContextPort:
     def __init__(self, context: HarnessEngineActivationContext, scope: RunScope, store: RunStore,
-                 *, planner: ContextPlanner | None = None, workspace_root: Path | None = None):
+                 *, planner: ContextPlanner | None = None, workspace_root: Path | None = None,
+                 project_root: Path | None = None, project_instruction_trust=None):
         if (
             scope.agent_id != context.agent_name
             or scope.agent_id != context.bundle.manifest.agent_id
@@ -61,7 +64,9 @@ class StudioNativeContextPort:
         self._pending: set[asyncio.Task] = set()
         self._closed = False
         self._planner = planner
-        if context.context_sources or context.memory_sources:
+        if (context.context_sources or context.memory_sources or ContextSpec.model_validate(
+            context.bundle.resolved_agent_spec.get("context") or {},
+        ).contributors.project_instructions):
             # The source name alone cannot borrow authority from a different
             # activation graph. Recompute the admitted graph, including nested
             # containers that frozen contracts still allow callers to mutate.
@@ -164,6 +169,12 @@ class StudioNativeContextPort:
             bound.append(_BoundSource(definition, read))
         bound.extend(_BoundSource(*item) for item in
                      bind_native_memory_context(context, scope, planner))
+        bound.extend(_BoundSource(*item) for item in bind_project_instructions(
+            context, scope, planner, store,
+            project_root or context.user_workspace_root or context.workspace_root,
+            workspace_root or context.user_workspace_root or context.workspace_root,
+            project_instruction_trust,
+        ))
         self._bound = tuple(bound)
 
     @property

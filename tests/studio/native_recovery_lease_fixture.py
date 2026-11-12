@@ -16,7 +16,7 @@ from pathlib import Path
 from ksadk.harness.native import effect_control, effect_runtime
 from ksadk.harness.native.state import RunScope
 from ksadk.harness.stores.native_contract import LeaseBusy, encode
-from ksadk.harness.native_facade import NativeHarnessEngine
+from ksadk.studio.native_product import NativeHarnessEngine
 
 MODE_VARIABLE = "KSADK_NATIVE_RECOVERY_LEASE_MODE"
 
@@ -244,7 +244,7 @@ class RecoveryLeaseAudit:
         }
 
     def validate(self, *, no_dispatch_reason=None):
-        if no_dispatch_reason not in {None, "mcp_outcome_unknown"}:
+        if no_dispatch_reason not in {None, "mcp_outcome_unknown", "model_outcome_unknown"}:
             raise ValueError("unsupported no-dispatch recovery reason")
         self.validated = False
         self.no_dispatch_reason = no_dispatch_reason

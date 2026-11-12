@@ -468,6 +468,11 @@ async def _deploy_async(
         },
     )
 
+    from ksadk.deployment.mcp import project_mcp_declarations
+    mcp_declarations = project_mcp_declarations(config, project_dir=agent_path, environment=explicit_env_vars)
+    if mcp_declarations is not None:
+        deploy_target.extra["mcp_servers"] = mcp_declarations
+
     artifact_plan = plan_artifact_build(
         target=target,
         artifact_type=effective_artifact_type,

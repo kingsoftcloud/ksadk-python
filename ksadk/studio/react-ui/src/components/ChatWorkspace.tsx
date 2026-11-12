@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, useSyncExternalStore, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Ref } from "react";
 import { Bot, MessageSquarePlus, PanelLeftOpen, Search, Trash2, X } from "lucide-react";
 import { AgentConversationTimeline } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { AgentConversationComposer } from "@kingsoftcloud/ksadk-web/chat/composer";
@@ -98,10 +98,8 @@ export function ChatWorkspace({
   // Recreating the controller is intentional: its persisted stores restore
   // when the user returns to this Agent while in-flight engines remain owned
   // by the previous hook instance.
-  const conversationController = useMemo(
-    () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspaceId || workspacePath)}:${encodeURIComponent(credentialScope)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
-    [agentId, credentialScope, targetId, workspaceId, workspacePath],
-  );
+  const controllerKey = `ksadk.studio:${encodeURIComponent(workspaceId || workspacePath)}:${encodeURIComponent(credentialScope)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`;
+  const conversationController = useMemo(() => new ConversationController(controllerKey), [controllerKey]);
   // The published Web 0.3.x uses the Actions-compatible timeline. Keep
   // this route until a matching canonical renderer package is published.
   const conversationClient = null;
@@ -117,6 +115,7 @@ export function ChatWorkspace({
   const Timeline = compactTimeline ? CompactHarnessTimeline : AgentConversationTimeline;
   const startedNewChatRequest = useRef(0);
   const initialSelectionHandled = useRef(false);
+  const [initialOwner, setInitialOwner] = useState<ConversationController | null>(null);
   // facade 的 createNewSession 没有在途去重：连点"新对话"会连发
   // CreateSession 产生多条空会话。这里统一加互斥，创建完成后才允许下一次。
   const creatingSession = useRef(false);
@@ -124,8 +123,11 @@ export function ChatWorkspace({
   // 一旦在其中发了消息或切到其他会话，即恢复正常新建。
   const autoCreatedEmptySessionId = useRef<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
-  const openedRequest = useRef("");
-  const currentRequest = useRef("");
+  const requestedSelection = useMemo(() => ({ sessionId: requestedSessionId }), [conversationController, requestedSessionId]);
+  const openedRequest = useRef<typeof requestedSelection | null>(null);
+  const currentRequest = useRef<typeof requestedSelection | null>(null);
+  const [confirmedSelection, setConfirmedSelection] = useState<typeof requestedSelection | null>(null);
+  const requestedSelectionReady = !requestedSessionId || confirmedSelection === requestedSelection;
   const conversationIdFor = useCallback((sessionId: string | null) => {
     return chat.conversationId || conversationController.getOrCreate(agentId, sessionId, targetId);
   }, [agentId, chat.conversationId, conversationController, targetId]);
@@ -148,14 +150,14 @@ export function ChatWorkspace({
     setDraftConflict(store.getConflict(draftKey));
   }, [chat.conversationDrafts, draftKey]);
   useEffect(() => { currentSessionIdRef.current = chat.currentSessionId; }, [chat.currentSessionId]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     // A target change invalidates pending reads, while the runtime task keeps
     // running in the broker. This is intentionally separate from aborting the
     // execution subscription.
     conversationController.navigate();
     initialSelectionHandled.current = false;
-    openedRequest.current = "";
-  }, [agentId]);
+    openedRequest.current = null;
+  }, [agentId, conversationController]);
   useEffect(() => {
     if (chat.messages?.length) autoCreatedEmptySessionId.current = null;
   }, [chat.messages]);
@@ -180,25 +182,31 @@ export function ChatWorkspace({
       creatingSession.current = false;
     }
   }, [chat.startNewConversation, chat.createNewSession]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!newChatRequest) { startedNewChatRequest.current = 0; return; }
-    if (!active || chat.agentId !== agentId || startedNewChatRequest.current === newChatRequest) return;
+    // Bootstrap resets the shared session owner. Consume a cold request only
+    // after that reset, so an existing session cannot replace this new draft.
+    if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId
+      || startedNewChatRequest.current === newChatRequest) return;
     startedNewChatRequest.current = newChatRequest;
     void guardedCreateNewSession().finally(() => onNewChatStarted?.());
-  }, [active, agentId, newChatRequest, onNewChatStarted, chat.agentId, guardedCreateNewSession]);
-  currentRequest.current = active && requestedSessionId ? `${agentId}:${requestedSessionId}` : "";
+  }, [active, agentId, newChatRequest, onNewChatStarted, chat.agentId, chat.bootstrapStatus, guardedCreateNewSession]);
+  currentRequest.current = active && requestedSessionId ? requestedSelection : null;
   useEffect(() => {
-    if (!requestedSessionId) { openedRequest.current = ""; return; }
-    const request = `${agentId}:${requestedSessionId}`;
+    if (!requestedSessionId) { openedRequest.current = null; return; }
+    const request = requestedSelection;
     if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId || chat.isLoadingSessions || openedRequest.current === request) return;
     openedRequest.current = request;
     const requestEpoch = conversationController.navigate();
     void (async () => {
       await chat.refresh();
       if (currentRequest.current === request
-        && conversationController.navigationEpoch === requestEpoch) chat.selectSession(requestedSessionId);
+        && conversationController.navigationEpoch === requestEpoch) {
+        chat.selectSession(requestedSessionId);
+        setConfirmedSelection(request);
+      } else if (openedRequest.current === request) openedRequest.current = null;
     })();
-  }, [active, agentId, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
+  }, [active, agentId, conversationController, requestedSelection, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
   const [query, setQuery] = useState("");
   const [welcomeCopy, setWelcomeCopy] = useState(() => pickStudioWelcome());
   const [outboxRevision, setOutboxRevision] = useState(0);
@@ -263,10 +271,11 @@ export function ChatWorkspace({
   }, [submitPending]);
 
   useEffect(() => {
-    if (!active || chat.agentId !== agentId || !initialSelectionHandled.current) return;
+    if (!active || chat.agentId !== agentId || initialOwner !== conversationController || !requestedSelectionReady
+      || !initialSelectionHandled.current) return;
     onSessionChanged?.(chat.currentSessionId || "", agentId);
     return () => onSessionChanged?.("", agentId, "cleanup");
-  }, [active, agentId, chat.agentId, chat.currentSessionId, draftKey, onSessionChanged]);
+  }, [active, agentId, chat.agentId, chat.currentSessionId, conversationController, draftKey, initialOwner, onSessionChanged, requestedSelectionReady]);
 
   useEffect(() => {
     onStreamingChange?.(chat.isStreaming);
@@ -294,15 +303,22 @@ export function ChatWorkspace({
   // facade bootstrap 会自动 adopt 最近会话；切 Agent 应回到初始对话框，
   // 仅当路由显式要求打开某会话时才保留。用户先行创建 draft 或提交的
   // turn 已经决定会话归属，迟到的 bootstrap 不能清空它或脱离当前流。
-  useEffect(() => {
-    if (chat.bootstrapStatus !== "ready" || chat.agentId !== agentId || initialSelectionHandled.current) return;
-    initialSelectionHandled.current = true;
-    if (requestedSessionId) return;
-    // 标记本地草稿归属，同时使已在途的列表/历史恢复失效。仅设 session=null
-    // 不会阻止 ListSessions 迟到后重新 adopt 旧会话并覆盖刚输入的草稿。
-    if (chat.startNewConversation) chat.startNewConversation();
-    else chat.selectSession(null);
-  }, [agentId, chat.agentId, chat.bootstrapStatus, requestedSessionId, chat.startNewConversation, chat.selectSession]);
+  useLayoutEffect(() => {
+    if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId) return;
+    if (!initialSelectionHandled.current) {
+      initialSelectionHandled.current = true;
+      if (!requestedSessionId) {
+        // 标记本地草稿归属，同时使已在途的列表/历史恢复失效。仅设 session=null
+        // 不会阻止 ListSessions 迟到后重新 adopt 旧会话并覆盖刚输入的草稿。
+        if (chat.startNewConversation) chat.startNewConversation();
+        else chat.selectSession(null);
+      }
+    }
+    // The shared composer hydrates input when draftKey changes. Establish its
+    // owner before exposing an editable frame, including the loading -> ready
+    // transition; otherwise initialization can erase input before submission.
+    setInitialOwner(conversationController);
+  }, [active, agentId, chat.agentId, chat.bootstrapStatus, conversationController, requestedSessionId, chat.startNewConversation, chat.selectSession]);
 
   useImperativeHandle(ref, () => ({ startNewChat() {
     void guardedCreateNewSession();
@@ -468,7 +484,13 @@ export function ChatWorkspace({
                   className="chat-session-main"
                   type="button"
                   aria-current={chat.currentSessionId === session.SessionId ? "true" : undefined}
-                  onClick={() => { chat.selectSession(session.SessionId); onSelectConversation?.(session.SessionId); if (sessionPanelOpen) closeSessionPanel(); }}
+                  onClick={() => {
+                    if (chat.agentId !== agentId) return;
+                    initialSelectionHandled.current = true;
+                    chat.selectSession(session.SessionId);
+                    onSelectConversation?.(session.SessionId);
+                    if (sessionPanelOpen) closeSessionPanel();
+                  }}
                   title={`${displayTitle} · ${formatSessionTime(String(session.UpdatedAt || ""))}`}
                 >
                   <strong>{shortText(displayTitle)}</strong>
@@ -599,6 +621,7 @@ export function ChatWorkspace({
               </div>
             </div>
           ) : null}
+          {initialOwner === conversationController && chat.agentId === agentId && requestedSelectionReady && (
           <AgentConversationComposer
             headerSlot={active && chat.isStreaming && controlRun ? (
               <>
@@ -632,9 +655,11 @@ export function ChatWorkspace({
             thinkingEnabled={Boolean(chat.uiCapabilities.Thinking)}
             runtimeCapabilityMatrix={chat.uiCapabilities.RuntimeCapabilityMatrix}
             pendingInteractions={chat.pendingInteractions}
+            mcpAuthorization={api.mcpAuthorization}
             onRespondInteraction={input => { void chat.respondInteraction(input); }}
             localCatalog={chat.localCatalog}
           />
+          )}
         </div>
       </section>
 

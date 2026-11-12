@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ksadk.conversations.projector import project_conversation_item
-from ksadk.events.canonical import parse_runtime_event
+from ksadk.events.canonical import UsageReported, parse_runtime_event
+from ksadk.events.usage import apply_usage_count, usage_mode
 from ksadk.harness.execution_policy import ExecutionPolicy
 from ksadk.kernel.contracts import AgentControlCommand, AgentControlPermit
 from ksadk.kernel.execution_grants import execution_grant_run_id
@@ -988,8 +989,10 @@ class KernelTeamsExecutionHost:
                     or event.parent_scope_id is not None
                 ):
                     continue
-                if event.event_type == "usage.reported":
-                    total_tokens += event.total_tokens
+                if isinstance(event, UsageReported):
+                    total_tokens = apply_usage_count(
+                        total_tokens, event.total_tokens, usage_mode(event),
+                    )
                 elif event.event_type == "item.started":
                     phases[(event.scope_id, event.item_id)] = event.phase
                 elif event.event_type == "item.completed":

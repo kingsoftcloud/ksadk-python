@@ -1,5 +1,6 @@
 """Preserve native LangChain tool identity while routing managed A2A calls."""
 
+import json
 from contextvars import ContextVar
 
 from langchain_core.runnables import RunnableConfig
@@ -23,7 +24,18 @@ class ManagedLangGraphTool(StructuredTool):
             # StructuredTool sends sync-only discovery straight to invoke in
             # an executor, bypassing our managed _arun. BaseTool keeps the
             # async dispatch; the fallback _arun still offloads sync work.
-            return await BaseTool.ainvoke(self, input, config, **kwargs)
+            output = await BaseTool.ainvoke(self, input, config, **kwargs)
+            from langchain_core.messages import ToolMessage
+
+            if isinstance(output, ToolMessage) and isinstance(output.content, str):
+                try:
+                    result = json.loads(output.content)
+                except ValueError:
+                    result = None
+                if (isinstance(result, dict) and result.get("ok") is False
+                        and result.get("error_type")):
+                    output = output.model_copy(update={"status": "error"})
+            return output
         finally:
             _native_call.reset(token)
 

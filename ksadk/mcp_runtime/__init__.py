@@ -4,17 +4,17 @@ import inspect
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Coroutine, Sequence, cast
+from typing import TYPE_CHECKING, Any, Coroutine, Sequence, cast
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import Field
 
-from ksadk.compat.adk_compat import (
-    CheckableMcpHttpClientFactory,
-    McpToolset,
-    StreamableHTTPConnectionParams,
-)
+if TYPE_CHECKING:
+    from ksadk.compat.adk_compat import (
+        CheckableMcpHttpClientFactory,
+        McpToolset,
+        StreamableHTTPConnectionParams,
+    )
 
 MCP_TOOLSET_KEY_ATTR = "_ksadk_mcp_toolset_key"
 
@@ -26,6 +26,21 @@ class MCPServerConfig:
     api_key: str | None = field(default=None, repr=False)
     tool_filter: tuple[str, ...] = ()
     tool_name_prefix: str | None = None
+    auth_mode: str | None = None
+    oauth_config_id: str | None = None
+    oauth: dict | None = field(default=None, repr=False)
+    tool_policies: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.auth_mode == "oauth":
+            if self.api_key or not (self.oauth_config_id or self.oauth):
+                raise ValueError("OAuth requires a declaration or oauth_config_id, without api_key")
+            if self.oauth:
+                from .oauth.declarations import McpServerDeclaration
+
+                McpServerDeclaration.model_validate({"name": self.name, "url": self.url,
+                    "auth_mode": "oauth", "oauth": self.oauth,
+                    "tool_filter": list(self.tool_filter), "tool_policies": self.tool_policies})
 
     @property
     def dedupe_key(self) -> str:
@@ -65,6 +80,10 @@ def build_connection_params(
     *,
     httpx_client_factory: CheckableMcpHttpClientFactory | None = None,
 ) -> StreamableHTTPConnectionParams:
+    if config.auth_mode == "oauth":
+        raise ValueError("OAuth MCP requires the explicit LangGraph call_mcp_tool helper")
+    from ._adk import _RedactedStreamableHTTPConnectionParams
+
     kwargs: dict[str, Any] = {"url": config.url, "headers": config.headers}
     kwargs["httpx_client_factory"] = httpx_client_factory or _default_httpx_client_factory(
         config.url
@@ -72,18 +91,13 @@ def build_connection_params(
     return _RedactedStreamableHTTPConnectionParams(**kwargs)
 
 
-class _RedactedStreamableHTTPConnectionParams(StreamableHTTPConnectionParams):
-    """Keep process-scoped MCP connection material out of debug reprs."""
-
-    url: str = Field(repr=False)
-    headers: dict[str, Any] | None = Field(default=None, repr=False)
-
-
 def build_mcp_toolset(
     config: MCPServerConfig,
     *,
     httpx_client_factory: CheckableMcpHttpClientFactory | None = None,
 ) -> McpToolset:
+    from ksadk.compat.adk_compat import McpToolset
+
     toolset = McpToolset(
         connection_params=build_connection_params(
             config,
@@ -98,7 +112,8 @@ def build_mcp_toolset(
 
 
 def load_mcp_toolsets_from_env() -> list[McpToolset]:
-    return [build_mcp_toolset(config) for config in load_mcp_server_configs()]
+    # OAuth descriptors are lazy: startup discovery must not ask for consent.
+    return [build_mcp_toolset(config) for config in load_mcp_server_configs() if config.auth_mode != "oauth"]
 
 
 def register_mcp_toolset_descriptors(toolset: Any) -> list[str]:
@@ -193,6 +208,10 @@ def _parse_server_config(item: Any, index: int) -> MCPServerConfig:
         api_key=api_key,
         tool_filter=tool_filter,
         tool_name_prefix=tool_name_prefix,
+        auth_mode="oauth" if item.get("auth_mode") == "oauth" else None,
+        oauth_config_id=_optional_string(item.get("oauth_config_id")),
+        oauth=item.get("oauth"),
+        tool_policies=item.get("tool_policies") or {},
     )
 
 

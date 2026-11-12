@@ -26,6 +26,7 @@ import zipfile
 from importlib.metadata import version
 from pathlib import Path
 
+from packaging.version import Version
 import pytest
 
 from ksadk.kernel import ingress
@@ -231,16 +232,6 @@ def _response_text(payload: dict) -> str:
     return "".join(texts)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "0.154 升级（bf092d52）后的 launch 路径回归：KSADK_CODEX_USE_PROXY=0 "
-        "时 _inject_direct_provider 经 CLI 覆盖 model_provider，压过冻结 "
-        "manifest 的 config.toml provider（release_082_stub），真实 turn 请求"
-        "从未到达 stub（model upstream rejected 来自 model_proxy 兜底）。"
-        "需 codex launch 路径对 pinned-config 资产做适配后移除 xfail。"
-    ),
-    strict=True,
-)
 def test_release_082_managed_runtime_runs_real_codex_binary_without_pluginhost(
     tmp_path: Path,
 ) -> None:
@@ -255,20 +246,18 @@ def test_release_082_managed_runtime_runs_real_codex_binary_without_pluginhost(
     assert hashlib.sha256(manifest).hexdigest() == provenance["fixtureSha256"]
     assert provenance["sourceTag"] == "v0.8.2"
     assert provenance["sourceCommit"] == "c8c9be629f4cb054ec4d8818cf0596ef42377671"
-    # 兼容语义：frozen v0.8.2 资产必须在**当前**原生二进制上可运行。
-    # openaiCodexVersion 记录的是 v0.8.2 的构建工具链（0.147.0）；有意升级
-    # （bf092d52 → 0.154.0）不回改冻结 fixture，只要求当前安装不早于记录值。
-    assert version("openai-codex") >= provenance["openaiCodexVersion"]
-
-    # 冻结 manifest pin 的是 v0.8.2 构建工具链（0.147.0）；产品侧
-    # validate_installed_runtime 按配置严格匹配是正确行为。本测试验证的是
-    # 旧 YAML 的**执行语义**在当前二进制上可用，因此在临时副本上把版本
-    # pin 重写为当前安装版本——fixture 本体保持冻结。
+    recorded_codex = provenance["openaiCodexVersion"]
     installed_codex = version("openai-codex")
-    manifest_text = manifest.decode("utf-8").replace(
-        "version: 0.147.0", f"version: {installed_codex}"
+    assert Version(installed_codex) >= Version(recorded_codex)
+
+    # Keep the historical asset byte-for-byte. Adapt only its runtime pin in
+    # the temporary launch copy; installed-runtime validation remains strict.
+    recorded_pin = f"  version: {recorded_codex}\n"
+    manifest_text = manifest.decode("utf-8")
+    assert manifest_text.count(recorded_pin) == 1
+    manifest_text = manifest_text.replace(
+        recorded_pin, f"  version: {installed_codex}\n", 1
     )
-    assert manifest_text != manifest.decode("utf-8"), "fixture 版本 pin 预期为 0.147.0"
     (tmp_path / "agentengine.yaml").write_text(manifest_text, encoding="utf-8")
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
@@ -289,26 +278,13 @@ def test_release_082_managed_runtime_runs_real_codex_binary_without_pluginhost(
         env.update(
             {
                 "KSADK_CODEX_USE_PROXY": "0",
+                "KSADK_PROXY_UPSTREAM_BASE": responses.base_url,
+                "KSADK_PROXY_UPSTREAM_KEY": "release-082-local-stub",
                 "OPENAI_API_BASE": responses.base_url,
                 "OPENAI_API_KEY": "release-082-local-stub",
                 "OPENAI_BASE_URL": responses.base_url,
                 "OPENAI_MODEL_NAME": "fixture-codex-model",
             }
-        )
-        (codex_home / "config.toml").write_text(
-            f'''model_provider = "release_082_stub"
-approval_policy = "never"
-sandbox_mode = "read-only"
-
-[model_providers.release_082_stub]
-name = "Release 0.8.2 deterministic compatibility"
-base_url = "{responses.base_url}"
-wire_api = "responses"
-request_max_retries = 0
-stream_max_retries = 0
-requires_openai_auth = false
-''',
-            encoding="utf-8",
         )
         process = subprocess.Popen(
             [

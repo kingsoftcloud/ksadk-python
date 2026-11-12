@@ -397,7 +397,13 @@ def test_clean_install_gate_installs_wheel_and_rebuilt_sdist_wheel_separately(
     assert sdist_build < rebuilt_install
     assert sum(command[-3:] == ("plugin", "toolchain", "--help") for command in commands) == 2
     smoke_calls = [command for command in commands if "-c" in command]
-    assert len(smoke_calls) == 2
+    assert len(smoke_calls) == 6
+    persistence_calls = [command for command in smoke_calls if "-I" in command]
+    assert [command[-2] for command in persistence_calls] == ["write", "read", "write", "read"]
+    for write, read in (persistence_calls[:2], persistence_calls[2:]):
+        assert write[0] == read[0]
+        assert write[-1] == read[-1]
+    assert persistence_calls[0][-1] != persistence_calls[2][-1]
     assert len({cwd for _command, cwd in calls if cwd is not None}) >= 2
 
 

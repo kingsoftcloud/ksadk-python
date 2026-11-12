@@ -12,7 +12,13 @@ from ksadk.runtime.framework_adapters import LangGraphRuntimeAdapter
 
 @pytest.mark.parametrize("result_wire", ["typed", "values"])
 @pytest.mark.parametrize("history_scope", [None, "live-scope", "other-scope"])
-def test_replayed_tool_result_does_not_reopen_historical_approval(result_wire, history_scope):
+@pytest.mark.parametrize("history_channel", ["values", "updates"])
+@pytest.mark.parametrize("history_message_identity", [
+    {"id": "different-message-id"}, {"id": None}, {},
+], ids=["identified", "null-id", "missing-id"])
+def test_replayed_tool_result_does_not_reopen_historical_approval(
+    result_wire, history_scope, history_channel, history_message_identity,
+):
     adapter = LangGraphRuntimeAdapter(SimpleNamespace())
     handle = RunHandle(run_id="run", session_id="session", runtime_type="langgraph", native_ref={})
     result = {
@@ -40,26 +46,28 @@ def test_replayed_tool_result_does_not_reopen_historical_approval(result_wire, h
             snapshot=ContentSnapshot(parts=(part,)),
         )
 
-    def snapshot():
+    def snapshot(*, history=False):
+        identity = history_message_identity if history else {"id": "different-message-id"}
+        data = {
+            "messages": [{
+                "type": "tool",
+                **identity,
+                "tool_call_id": "native-write",
+                "content": result,
+            }],
+        }
+        if history and history_channel == "updates":
+            data = {"tools": data}
         return DataContent(
             part_id="state",
-            data={
-                "messages": [
-                    {
-                        "type": "tool",
-                        "id": "different-message-id",
-                        "tool_call_id": "native-write",
-                        "content": result,
-                    }
-                ]
-            },
+            data=data,
         )
 
     if history_scope:
         assert not any(
             isinstance(e, InteractionRequested)
             for e in adapter._chunk_to_event(
-                handle, None, event(snapshot(), history_scope, "values")
+                handle, None, event(snapshot(history=True), history_scope, history_channel)
             )
         )
     call = ToolCallContent(
@@ -75,7 +83,10 @@ def test_replayed_tool_result_does_not_reopen_historical_approval(result_wire, h
     )
     mapped = adapter._chunk_to_event(handle, None, result_event)
     approvals = [e for e in mapped if isinstance(e, InteractionRequested)]
-    assert len(approvals) == (0 if history_scope == "live-scope" else 1)
+    fenced = history_scope == "live-scope" and (
+        history_channel == "values" or bool(history_message_identity.get("id"))
+    )
+    assert len(approvals) == (0 if fenced else 1)
     if approvals:
         assert approvals[0].request.call_id == "native-write"
         assert approvals[0].request.detail["arguments"] == {"path": "hello.md"}

@@ -29,7 +29,7 @@ def stream(*calls):
     "snapshot_truncate", "snapshot_empty", "post_finish_delta", "post_snapshot_delta",
     "changed_snapshot", "late_new_call", "missing_name", "missing_id", "missing_arguments",
     "empty_arguments", "legacy_call", "object_snapshot_rewrite", "object_alias_conflict",
-    "duplicate_snapshot", "missing_finish", "empty_then_missing_id", "empty_then_missing_name",
+    "duplicate_snapshot", "missing_finish",
 ])
 async def test_ambiguous_tool_input_cannot_become_an_executable_batch(monkeypatch, case):
     values = stream()
@@ -86,14 +86,6 @@ async def test_ambiguous_tool_input_cannot_become_an_executable_batch(monkeypatc
             tool["function"].pop(field)
     elif case == "missing_id":
         tool.pop("id")
-    elif case in {"empty_then_missing_id", "empty_then_missing_name"}:
-        tool["function"]["arguments"] = ""
-        malformed = call(index=1, identity="call-two")
-        if case == "empty_then_missing_id":
-            malformed.pop("id")
-        else:
-            malformed["function"].pop("name")
-        tools.append(malformed)
     elif case in {"object_snapshot_rewrite", "object_alias_conflict"}:
         tool["function"]["arguments"] = '{"key":1}'
         full = call(arguments={"key": True} if case == "object_snapshot_rewrite" else {"key": 1})
@@ -107,12 +99,50 @@ async def test_ambiguous_tool_input_cannot_become_an_executable_batch(monkeypatc
     else:
         values[0]["choices"][0]["delta"] = {"function_call": tool["function"]}
     result = await collect(monkeypatch, "chat", values)
-    incomplete = case in {"missing_arguments", "empty_arguments", "missing_finish"}
-    assert result.failure_kind == ("incomplete_response" if incomplete else "invalid_response"), result
-    assert result.response_kind == ("provider_retryable_error" if incomplete else "provider_terminal_error")
-    assert not result.tool_calls
+    # An unfilled tool call under a success finish is incomplete safe inference
+    # (zero tool effects), not a hostile frame. model_client.py documents that
+    # such a call "falls through to tool_stream.finish() and surfaces as a
+    # provider_retryable_error" (see the _INCOMPLETE_CALL_NON_SUCCESS short-
+    # circuit). Only empty_arguments/missing_arguments land on that retryable
+    # path; every other case here is a genuine identity/shape/late-mutation
+    # rejection that stays terminal. The "cannot become executable" guarantee
+    # (no tool_calls) holds for both.
+    expected_failure = (
+        "incomplete_response"
+        if case in {"empty_arguments", "missing_arguments"}
+        else "invalid_response"
+    )
+    assert result.failure_kind == expected_failure and not result.tool_calls, result
     assert (result.usage.input_tokens, result.usage.output_tokens) == (12, 4)
     assert "PRIVATE_CHANGED" not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_field", ["name", "id"])
+@pytest.mark.parametrize("invalid_first", [False, True])
+async def test_incomplete_call_cannot_mask_other_invalid_identity(
+    monkeypatch, bad_field, invalid_first,
+):
+    # An unfilled (valid-identity) call must not mask another call's invalid
+    # identity in the same batch. Identity is validated batch-wide before any
+    # incomplete classification, so a genuinely invalid tool stays terminal
+    # regardless of call order. Zero executable tools either way.
+    values = stream()
+    good = {"index": 0, "id": "valid-0", "type": "function",
+            "function": {"name": "read_value", "arguments": ""}}
+    bad = {"index": 1, "id": "invalid-1", "type": "function",
+           "function": {"name": "read_value", "arguments": "{}"}}
+    if bad_field == "name":
+        bad["function"].pop("name")
+    else:
+        bad.pop("id")
+    if invalid_first:
+        good["index"], bad["index"] = 1, 0
+    values[0]["choices"][0]["delta"]["tool_calls"] = [good, bad]
+    result = await collect(monkeypatch, "chat", values)
+    assert result.response_kind == "provider_terminal_error", result
+    assert result.failure_kind == "invalid_response", result
+    assert not result.tool_calls, result
 
 
 @pytest.mark.asyncio

@@ -265,14 +265,18 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             "KSADK_SESSION_DSN",
             "KSADK_CHECKPOINT_DSN",
         )
-        if not any(str(os.environ.get(name, "")).strip() for name in configured_names):
+        if self._effective_session_target is None and not any(
+            str(os.environ.get(name, "")).strip() for name in configured_names
+        ):
             return None
 
         try:
             from ksadk.memory.adk import ShortTermMemory
             from ksadk.sessions import resolve_persistence_topology
 
-            topology = resolve_persistence_topology(framework="adk")
+            topology = resolve_persistence_topology(
+                framework="adk", effective_session=self._effective_session_target,
+            )
             self._checkpoint_storage_source = topology.checkpoint.source
             if topology.checkpoint.backend == "postgres" and topology.checkpoint.dsn:
                 stm = ShortTermMemory.from_persistence_target(topology.checkpoint)
@@ -287,6 +291,11 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             )
             return stm
         except Exception as e:
+            if self._effective_session_target is not None:
+                raise RuntimeError(
+                    "ADK_CHECKPOINT_INITIALIZATION_FAILED: managed Kernel native storage "
+                    "could not be initialized"
+                ) from None
             logger.warning(f"Failed to init ShortTermMemory: {e}. Using default.")
             return None
 
@@ -672,7 +681,8 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
 
             kb = KnowledgeBaseClient.from_env()
             logger.info(
-                f"KnowledgeBase initialized: dataset_id={kb.dataset_id}, region={kb.region}"
+                f"KnowledgeBase initialized: dataset_id={kb.dataset_id}, "
+                f"dataset_ids={kb.active_dataset_ids}, region={kb.region}"
             )
             return kb
         except ImportError:

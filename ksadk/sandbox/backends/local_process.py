@@ -16,13 +16,65 @@ from ksadk.sandbox.local_controls import (
 
 class LocalProcessSandboxSession:
     def __init__(
-        self, *, session_id: str, workspace_root: Path, backend_name: str = "local_process"
+        self,
+        *,
+        session_id: str,
+        workspace_root: Path,
+        backend_name: str = "local_process",
+        command_state_root: Path | None = None,
     ):
         self._session_id = session_id
         self._workspace_root = workspace_root.expanduser().resolve()
         self._workspace_root.mkdir(parents=True, exist_ok=True)
         self._backend_name = backend_name
         self._controls = LocalControlSettings.from_trusted_host_env()
+        self._command_state_root = command_state_root
+
+    def _command_store(self):
+        from ksadk.sandbox.base import SandboxError
+        from ksadk.sandbox.local_background import LocalCommandStore
+
+        if self._command_state_root is None:
+            raise SandboxError("Background commands require a host-owned command state root")
+        return LocalCommandStore(
+            state_root=self._command_state_root,
+            workspace_root=self._workspace_root,
+            session_id=self._session_id,
+            backend_name=self._backend_name,
+        )
+
+    def start_command(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        operation_key: str | None = None,
+    ):
+        from ksadk.sandbox.base import SandboxError
+
+        resolved_cwd = self._resolve_cwd(cwd or (env or {}).get("KSADK_COMMAND_CWD"))
+        finding = check_command(command, cwd=resolved_cwd, allowed_roots=(self._workspace_root,))
+        if finding is not None:
+            raise SandboxError(f"blocked by local-process policy: {finding.reason()}")
+        if timeout is not None and (type(timeout) is not int or timeout < 1):
+            raise SandboxError("Background process timeout must be a positive integer")
+        process_env = build_script_environment(
+            dict(os.environ, **(env or {})),
+            settings=self._controls,
+        )
+        return self._command_store().start(
+            command=command,
+            cwd=resolved_cwd,
+            env=process_env,
+            timeout=min(timeout or self._controls.wall_seconds, self._controls.wall_seconds),
+            settings=self._controls,
+            operation_key=operation_key,
+        )
+
+    def connect_background_command(self, command_id: str):
+        return self._command_store().connect(command_id)
 
     @property
     def sandbox_id(self) -> str:
@@ -114,8 +166,12 @@ class LocalProcessSandboxSession:
         return SandboxCommandResult(stdout=executed.stdout, stderr=stderr, exit_code=exit_code)
 
     def run_command_observed(
-        self, command: str, *, on_output: Callable[[str, str], None],
-        timeout: int | None = None, env: dict[str, str] | None = None,
+        self,
+        command: str,
+        *,
+        on_output: Callable[[str, str], None],
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> SandboxCommandResult:
         return self.run_command(command, timeout=timeout, env=env, cwd=cwd, on_output=on_output)
@@ -161,9 +217,16 @@ class LocalProcessSandboxSession:
 class LocalProcessSandboxBackend:
     isolated = False
 
-    def __init__(self, *, workspace_root: Path, backend_name: str = "local_process"):
+    def __init__(
+        self,
+        *,
+        workspace_root: Path,
+        backend_name: str = "local_process",
+        command_state_root: Path | None = None,
+    ):
         self.workspace_root = workspace_root
         self.backend_name = backend_name
+        self.command_state_root = command_state_root
 
     def create_session(
         self,
@@ -176,6 +239,7 @@ class LocalProcessSandboxBackend:
             session_id=session_id,
             workspace_root=self.workspace_root,
             backend_name=self.backend_name,
+            command_state_root=self.command_state_root,
         )
         for item in input_files or []:
             session.write_file(item.target_path, item.source.read_bytes())

@@ -1,7 +1,5 @@
 <h1 align="center">Kingsoft Cloud Agent Development Kit</h1>
 
-新版本要求 Python 3.12 或以上；已有 Agent 可保留原 SDK 和运行镜像，旧 Runtime 的会话读取与订阅协议继续兼容。
-
 <p align="center"><strong>金山云智能体开发套件</strong></p>
 
 <p align="center">
@@ -24,7 +22,7 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -U "ksadk[langgraph]"
+pip install -U "ksadk[all]"
 
 agentengine init demo-agent -f langgraph
 cd demo-agent
@@ -32,15 +30,29 @@ agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
 agentengine run -i
 ```
 
-示例按需安装 LangGraph extra；只使用 Native Studio 可以安装 `ksadk`。`ksadk[all]` 还会安装其他可选框架与开发工具。
-
 启动本地调试 Web UI：
 
 ```bash
 agentengine web . --no-open
 ```
 
-升级前请查看文档站的快速开始与升级说明；本地 Studio 默认使用 Native Harness 和持久化执行账本。
+## 0.8.7 候选：能力与接入
+
+0.8.7 尚未正式发布，要求 Python 3.12+，内置 Web companion 为 `0.3.18`。
+下表介绍候选能力；线上文档站以已部署版本为准，候选手册随本仓库 PR 一同审核。
+
+| 能力 | 如何接入 |
+| --- | --- |
+| AG-UI / A2UI | 安装 `agui` extra，在自有图中接入结构化输入、业务 Schema 与持久化 checkpoint。 |
+| OAuth MCP / API Key MCP | OAuth 使用 `McpOAuthTools` 与本地 Web/托管 Broker；原 API Key 客户端继续使用。 |
+| A2A | 绑定 Space、注册 callee，再通过发现工具调用；注册与 Gateway 属于配套平台。 |
+| 会话与恢复 | 分别配置 Session 和框架 checkpoint；托管模式显式请求 Kernel 准入。 |
+
+详见[功能接入与配置](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/integration-0-8-7/)、
+[AG-UI/A2UI 示例](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agui-a2ui/)、
+[OAuth MCP](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/mcp-oauth/) 和
+[A2A](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/a2a-runtime/)。
+模型生成的 A2UI 仍需通过注册目录校验，复杂样式可能失败；不把生成失败包装为业务成功。
 
 ## 运行时架构
 

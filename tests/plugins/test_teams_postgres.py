@@ -1,6 +1,7 @@
 """Run against a real disposable PostgreSQL server (optional test dependency)."""
 
 import multiprocessing
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -19,18 +20,40 @@ from ksadk.plugins.teams.store import QuotaScope, TeamsStore
 
 @pytest.fixture
 def stores(tmp_path, monkeypatch):
-    pgserver = pytest.importorskip("pgserver")
-    pytest.importorskip("psycopg")
+    psycopg = pytest.importorskip("psycopg")
     monkeypatch.setenv("LC_ALL", "C")
     monkeypatch.setenv("LANG", "C")
-    server = pgserver.get_server(tmp_path / "postgres", cleanup_mode="stop")
-    values = [PostgresTeamsStore(server.get_uri(), authority_ref="test") for _ in range(2)]
+    configured = os.getenv("KSADK_TEST_TEAMS_POSTGRES_DSN")
+    server = admin = None
+    if configured:
+        from psycopg import sql
+        from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+        assert conninfo_to_dict(configured).get("host") in {"localhost", "127.0.0.1", "::1"}
+        admin = psycopg.connect(configured, autocommit=True)
+        database = "teams_test_" + uuid4().hex
+        admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
+        dsn = make_conninfo(configured, dbname=database)
+    else:
+        pgserver = pytest.importorskip("pgserver")
+        server = pgserver.get_server(tmp_path / "postgres", cleanup_mode="stop")
+        dsn = server.get_uri()
+    values = []
     try:
+        values = [PostgresTeamsStore(dsn, authority_ref="test") for _ in range(2)]
         yield values
     finally:
         for value in values:
             value.close()
-        server.cleanup()
+        if server is not None:
+            server.cleanup()
+        if admin is not None:
+            admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=%s",
+                (database,),
+            )
+            admin.execute(sql.SQL("DROP DATABASE {}").format(sql.Identifier(database)))
+            admin.close()
 
 
 def test_postgres_shared_transaction_lock_and_monotonic_events(stores):
@@ -102,10 +125,11 @@ def test_postgres_reconnects_after_connection_loss_without_replaying_transaction
 
 @pytest.fixture
 def shared_pool(stores):
+    from psycopg.conninfo import make_conninfo
     from psycopg_pool import ConnectionPool
 
     with stores[0]._pool.connection() as connection:
-        dsn = connection.info.dsn
+        dsn = make_conninfo(connection.info.dsn, password=connection.info.password)
     with ConnectionPool(dsn, min_size=1, max_size=2, kwargs={"autocommit": True}) as pool:
         yield pool
 
@@ -143,7 +167,9 @@ def test_runtime_role_uses_existing_schema_without_ddl(shared_pool):
     schema, _ = authority_schema(authority)
     role = "teams_test_" + uuid4().hex[:12]
     with shared_pool.connection() as connection:
-        connection.execute(sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(role)))
+        password = "test-only-" + uuid4().hex
+        connection.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+            sql.Identifier(role), sql.Literal(password)))
         connection.execute(
             sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(
                 sql.Identifier(schema), sql.Identifier(role)
@@ -159,7 +185,7 @@ def test_runtime_role_uses_existing_schema_without_ddl(shared_pool):
                 sql.Identifier(schema), sql.Identifier(role)
             )
         )
-        dsn = make_conninfo(connection.info.dsn, user=role)
+        dsn = make_conninfo(connection.info.dsn, user=role, password=password)
     with ConnectionPool(dsn, min_size=0, max_size=1, kwargs={"autocommit": True}) as restricted:
         store = PostgresTeamsStore(pool=restricted, authority_ref=authority, initialize=False)
         with store.transaction() as tx:
@@ -338,9 +364,10 @@ def _process_write(dsn, authority, count):
 
 
 def test_real_processes_share_authority_lock(shared_pool):
+    from psycopg.conninfo import make_conninfo
     initialize_schema(shared_pool, authority_ref="processes")
     with shared_pool.connection() as connection:
-        dsn = connection.info.dsn
+        dsn = make_conninfo(connection.info.dsn, password=connection.info.password)
     context = multiprocessing.get_context("spawn")
     processes = [
         context.Process(target=_process_write, args=(dsn, "processes", 8)) for _ in range(2)

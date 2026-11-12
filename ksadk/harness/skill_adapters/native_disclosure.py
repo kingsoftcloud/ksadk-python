@@ -17,6 +17,10 @@ from ksadk.harness.native.ports import (
     ToolResult,
 )
 from ksadk.harness.native.state import RunScope
+from ksadk.harness.skill_adapters.native_metadata import (
+    SKILL_METADATA_POLICY,
+    skill_metadata_instructions,
+)
 from ksadk.harness.skill_runtime import (
     SKILL_CATALOG_TOOL,
     SKILL_INSTRUCTIONS_TOOL,
@@ -287,7 +291,10 @@ def install_native_skill_tools(
     skill_refs: tuple[str, ...],
     authorize: ToolAuthorizer,
     store: RunStore | None = None,
+    metadata_policy: str | None = None,
 ) -> tuple[RunConfiguration, NativeSkillDisclosurePort]:
+    if metadata_policy not in (None, SKILL_METADATA_POLICY):
+        raise ValueError("native_skill_metadata_policy_invalid")
     conflicts = {item.name for item in configuration.tools}.intersection(_BY_NAME)
     if conflicts:
         raise ValueError("reserved_native_skill_tool_conflict")
@@ -303,4 +310,9 @@ def install_native_skill_tools(
     # not advertise read tools that can only return skill_not_bound; policy
     # checks in the port still reject a forged call to them.
     definitions = DEFINITIONS if skill_refs else (_CATALOG,)
-    return configuration.model_copy(update={"tools": (*configuration.tools, *definitions)}), tools
+    update = {"tools": (*configuration.tools, *definitions)}
+    if metadata_policy is not None and skill_refs:
+        update["instructions"] = configuration.instructions + skill_metadata_instructions(
+            tools.runtime, skill_refs,
+        )
+    return configuration.model_copy(update=update), tools

@@ -334,8 +334,11 @@ def build_managed_a2a_bootstrap_from_env() -> AgentEngineA2ABootstrap:
         skills=(),
     )
     verifier = JWTGatewayIdentityVerifier(gateway_key)
+    from ksadk.a2a.timeouts import seconds
+
+    control_seconds = seconds("KSADK_A2A_CONTROL_SECONDS", 25.0)
     control_http_client = httpx.AsyncClient(
-        verify=_managed_http_verify(), trust_env=False, timeout=15.0
+        verify=_managed_http_verify(), trust_env=False, timeout=control_seconds
     )
     control_plane = InternalA2AControlPlaneClient(
         _required_env("KSADK_A2A_CONTROL_PLANE_URL"), httpx_client=control_http_client
@@ -347,7 +350,10 @@ def build_managed_a2a_bootstrap_from_env() -> AgentEngineA2ABootstrap:
         # Model execution can legitimately outlast the control RPC budget.
         # Managed invocations enforce their own first-event/idle/overall
         # deadlines; keep a finite transport ceiling for direct Space clients.
-        timeout=httpx.Timeout(15.0, read=MANAGED_MODEL_READ_TIMEOUT_SECONDS)
+        timeout=httpx.Timeout(
+            seconds("KSADK_A2A_CONNECT_SECONDS", 30.0),
+            read=seconds("KSADK_A2A_TRANSPORT_READ_SECONDS", MANAGED_MODEL_READ_TIMEOUT_SECONDS),
+        )
     )
     return AgentEngineA2ABootstrap.from_platform(
         runtime_metadata=metadata,

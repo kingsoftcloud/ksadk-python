@@ -25,11 +25,20 @@ KsADK Tracing - 可观测性模块 (OpenTelemetry)
 Agent / session / user 等业务维度建议作为 span attributes 写入。
 """
 
+from ksadk.tracing.routed import bind_observability_route
 from ksadk.tracing.setup import (
     get_memory_exporter,
     get_tracer,
+    setup_routed_tracing,
     setup_tracing,
     shutdown_tracing,
 )
 
-__all__ = ["setup_tracing", "shutdown_tracing", "get_memory_exporter", "get_tracer"]
+__all__ = [
+    "setup_routed_tracing",
+    "bind_observability_route",
+    "setup_tracing",
+    "shutdown_tracing",
+    "get_memory_exporter",
+    "get_tracer",
+]

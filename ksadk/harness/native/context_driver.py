@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from .artifact_catalog_contract import ARTIFACT_CATALOG_POLICY, ARTIFACT_LIST_DEFINITION
+from .call_budget import call_room
 from .completion import VerificationReport
 from .context import (
     AcceptanceProgress,
@@ -13,9 +15,11 @@ from .context import (
     VerificationProgress,
 )
 from .context_contributor_contract import contributor_expired
+from .context_directory_progress import directory_listing_progress
 from .context_fresh_tools import FRESH_TOOL_OBSERVATION_POLICY
 from .context_partial_summary import PARTIAL_SUMMARY_POLICY, commit_completed_prefix
 from .context_reduction import SUMMARY_REDUCTION_POLICY, replan_summary_projection
+from .context_request_projection import FINALIZATION_READER_PROJECTION_POLICY
 from .context_runtime import (
     READER_SUMMARY_POLICY_VERSION,
     CompactionController,
@@ -25,8 +29,11 @@ from .context_runtime import (
     ContextPlanner,
     ContextRuntimeError,
 )
-from .context_source_progress import source_read_progress
+from .context_runtime_contracts import PARTITION_CHUNK_BOUND_POLICY
+from .context_source_progress import source_read_history, source_read_pages, source_read_progress
 from .context_summary_recovery import SUMMARY_RETRY_POLICY, repartition_failed_summary
+from .delivery_context import delivery_summary_allowed
+from .delivery_feedback import DELIVERY_FEEDBACK_POLICY, delivery_feedback_messages
 from .delivery_review import delivery_review_messages, review_pending, unavailable_review
 from .machine import host_resolved_candidate
 from .model import ModelTurnResult
@@ -45,7 +52,9 @@ from .tool_budget import (
     model_instructions,
     model_tool_catalog,
     model_turn_control,
+    wall_delivery_only,
 )
+from .tool_error_recovery import recovery_boundary, recovery_continuity
 from .tool_hook_runtime import pending_hook_operation_keys, tool_hook_feedback_messages
 from .transitions import commit_transition, effect_operation_key, finish, prepare_effect
 from .verification_binding import verification_subject_context_digest
@@ -70,7 +79,23 @@ class ContextDriver:
                 json.dumps(
                     {
                         "tokenizer": planner.tokenizer_id,
+                        **({"compaction_message_projection": planner.compaction_message_projection}
+                           if planner.compaction_message_projection is not None else {}),
+                        **({"session_history_projection": planner.session_history_projection}
+                           if planner.session_history_projection is not None else {}),
+                        **({"search_fragment_policy": planner.search_fragment_policy}
+                           if planner.search_fragment_policy is not None else {}),
+                        **({"task_goal_projection_policy": planner.task_goal_projection_policy}
+                           if planner.task_goal_projection_policy is not None else {}),
+                        **({"execution_budget_policy": planner.execution_budget_policy}
+                           if planner.execution_budget_policy is not None else {}),
                         "summary_budget_unit": planner.summary_budget_unit,
+                        **({"summary_output_policy": planner.summary_output_policy}
+                           if planner.summary_output_policy is not None else {}),
+                        **({"delivery_feedback_policy": planner.delivery_feedback_policy}
+                           if planner.delivery_feedback_policy is not None else {}),
+                        **({"summary_prompt_policy": planner.summary_prompt_policy}
+                           if planner.summary_prompt_policy is not None else {}),
                         **(
                             {"summary_budget_mode": planner.summary_budget_mode}
                             if planner.summary_budget_mode != "strict"
@@ -80,8 +105,11 @@ class ContextDriver:
                         "workspace_revision": workspace_revision,
                         "workspace_tracking": workspace_tracking,
                         "request_projection": "ksadk.native.turn-control/v2",
-                        "source_capacity_projection": "sealed-artifact-batch/v1",
+                        "source_capacity_projection": "durable-artifact-batch/v2",
                         "compaction_admission": "finalization-reserve/v1",
+                        "no_summary_reader_projection": FINALIZATION_READER_PROJECTION_POLICY,
+                        "artifact_inventory_projection": ARTIFACT_CATALOG_POLICY,
+                        "partition_chunk_bound": PARTITION_CHUNK_BOUND_POLICY,
                         "compaction_accounting": "closed-contract-roots/v1",
                         "message_replay_context": "native-anthropic-input-prefix/v2",
                         "fresh_tool_observation": FRESH_TOOL_OBSERVATION_POLICY,
@@ -268,8 +296,16 @@ class ContextDriver:
             workspace_state = "initial" if workspace_revision is not None else "unavailable"
             workspace_changed_paths = ()
             workspace_reason = None
+        if guard := recovery_continuity(snapshot, config):
+            next_action = "\n".join(part for part in (next_action, guard) if part)
         artifacts = tuple(ArtifactRef.model_validate(ref) for ref in snapshot.artifact_refs)
         return ExecutionContinuityState(
+            execution_budget=(
+                snapshot.execution_budget_observation
+                if self.planner is not None
+                and self.planner.execution_budget_policy is not None
+                else None
+            ),
             goal=snapshot.goal,
             goal_revision=snapshot.goal_revision,
             pending_hook_operation_keys=(
@@ -280,7 +316,11 @@ class ContextDriver:
             pending_work=pending,
             pending_verification=pending_verification,
             failure_fingerprints=tuple(
-                value for value in (snapshot.failure_fingerprint, unresolved_ref) if value
+                value for value in (
+                    snapshot.failure_fingerprint, unresolved_ref,
+                    snapshot.tool_error_recovery.failure_fingerprint
+                    if snapshot.tool_error_recovery is not None else None,
+                ) if value
             ),
             evidence_refs=tuple(
                 dict.fromkeys(
@@ -291,6 +331,7 @@ class ContextDriver:
                 )
             ),
             artifact_refs=tuple(ref.uri for ref in artifacts),
+            artifact_catalog=(ARTIFACT_CATALOG_POLICY if ARTIFACT_LIST_DEFINITION in config.tools else None),
             next_action=next_action,
             # Dynamic observations are host effects. Without that port, a
             # pinned initial binding cannot attest to code after tool effects.
@@ -348,13 +389,49 @@ class ContextDriver:
                 source_read_progress(snapshot, config.tools,
                                      max_chars=self.planner.policy.fresh_read_max_chars)
                 if self.planner is not None
-                and self.planner.source_progress_policy == "receipt-source-progress/v2"
+                and self.planner.source_progress_policy in {
+                    "receipt-source-progress/v2", "receipt-source-progress/v3",
+                    "receipt-source-progress/v4", "receipt-source-progress/v5",
+                }
                 else ()
+            ),
+            source_read_history=(
+                source_read_history(snapshot, config.tools,
+                                    max_chars=self.planner.policy.fresh_read_max_chars)
+                if self.planner is not None
+                and self.planner.source_progress_policy == "receipt-source-progress/v4"
+                else ()
+            ),
+            source_read_pages=(
+                source_read_pages(snapshot, config.tools,
+                                  max_chars=self.planner.policy.fresh_read_max_chars)
+                if self.planner is not None
+                and self.planner.source_progress_policy == "receipt-source-progress/v5"
+                else ()
+            ),
+            directory_listing_progress=(
+                directory_listing_progress(snapshot, config.tools)
+                if self.planner is not None
+                and self.planner.source_progress_policy in {
+                    "receipt-source-progress/v2", "receipt-source-progress/v3",
+                    "receipt-source-progress/v4", "receipt-source-progress/v5",
+                }
+                else ()
+            ),
+            source_path_projection=(
+                "canonical-source-paths/v1"
+                if self.planner is not None
+                and self.planner.source_progress_policy in {
+                    "receipt-source-progress/v3", "receipt-source-progress/v4", "receipt-source-progress/v5",
+                }
+                else None
             ),
         )
 
     def prepare(self, snapshot: RunSnapshot, config: RunConfiguration) -> CommitBatch:
-        if snapshot.model_budget_claimed >= config.limits.max_model_calls:
+        if recovery := recovery_boundary(snapshot, config):
+            return recovery
+        if not call_room(config.limits.max_model_calls, snapshot.model_budget_claimed):
             return commit_transition(
                 snapshot,
                 finish(snapshot, "budget_exhausted", "model_budget_exhausted"),
@@ -400,6 +477,7 @@ class ContextDriver:
         idle = config.limits.verification_idle_tool_calls
         budget_boundary = bool(
             reserve
+            and config.limits.max_model_calls is not None
             and snapshot.model_budget_claimed
             >= config.limits.max_model_calls - reserve
         )
@@ -475,7 +553,7 @@ class ContextDriver:
             return commit_transition(
                 snapshot, move(snapshot, RunPhase.REQUESTING_MODEL), "run.phase_changed"
             )
-        plan = self.planner.plan(
+        planning = dict(
             source_revision=snapshot.revision,
             model_turn=snapshot.model_calls,
             profile=config.profile,
@@ -492,8 +570,16 @@ class ContextDriver:
             history=CompactionHistory.model_validate(snapshot.compaction_history),
             force_compaction=snapshot.force_compaction,
             turn_control=model_turn_control(snapshot, config),
-            allow_compaction=not finalization_only(snapshot, config),
+            allow_compaction=not (finalization_only(snapshot, config) or wall_delivery_only(snapshot, config)),
         )
+        plan = self.planner.plan(**planning)
+        if (plan.action == "blocked"
+                and plan.reason == "context_finalization_budget_unavailable"
+                and delivery_summary_allowed(snapshot, config)):
+            # A completed batch can overflow the next delivery input.
+            # Summarize its canonical history; retain writer-only admission,
+            # finite call reserves, ordinary seals and the original deadline.
+            plan = self.planner.plan(**{**planning, "allow_compaction": True})
         if review_pending(snapshot) and plan.action in {"blocked", "compact"}:
             # Never compact a review projection into the implementation
             # transcript. An oversized diagnostic is unavailable, not passed.
@@ -544,6 +630,37 @@ class ContextDriver:
                     "trigger_ratio": self.planner.policy.trigger_ratio,
                 },
             )
+        if self.planner.delivery_feedback_policy == DELIVERY_FEEDBACK_POLICY:
+            feedback = delivery_feedback_messages(plan.prepared.messages, snapshot, config)
+            if feedback is not None:
+                original = plan.prepared
+                try:
+                    revised = self.planner._prepared(
+                        original.instructions, feedback,
+                        self.planner._fixed(original.instructions, planning["tools"],
+                                            original.turn_control),
+                        original.turn_control, profile=config.profile, goal=snapshot.goal,
+                        abandoned=original.abandoned_replay_digests,
+                        replay_header_digest=original.replay_header_digest,
+                    )
+                except (ContextRuntimeError, ValueError, KeyError, TypeError) as exc:
+                    reason = str(exc) if isinstance(exc, ContextRuntimeError) else "context_protocol_invalid"
+                    return commit_transition(
+                        snapshot, finish(snapshot, "blocked", reason),
+                        "context.blocked", {"reason": reason},
+                    )
+                if revised.counted_input_tokens + config.profile.max_output_tokens > config.profile.context_window:
+                    return commit_transition(
+                        snapshot, finish(snapshot, "blocked", "context_delivery_feedback_over_budget"),
+                        "context.blocked", {"reason": "context_delivery_feedback_over_budget"},
+                    )
+                # Pruning records the earlier pruning stage. The subsequent
+                # feedback view has its own freshly counted request cost; do
+                # not invent savings (or negative pruning) from this edit.
+                pruning = original.tool_result_pruning
+                plan = plan.model_copy(update={
+                    "prepared": revised.model_copy(update={"tool_result_pruning": pruning}),
+                })
         updated = move(snapshot, RunPhase.REQUESTING_MODEL).model_copy(
             update={
                 "prepared_context": plan.prepared.model_dump(mode="json"),
@@ -581,19 +698,27 @@ class ContextDriver:
         )
 
     def begin_summary(self, snapshot: RunSnapshot, config: RunConfiguration) -> CommitBatch:
+        if recovery := recovery_boundary(snapshot, config):
+            return recovery
         if self.planner is None or snapshot.compaction_request is None:
             return commit_transition(
                 snapshot,
                 finish(snapshot, "blocked", "context_compaction_unavailable"),
                 "context.blocked",
             )
-        if snapshot.model_budget_claimed >= config.limits.max_model_calls:
+        if not call_room(config.limits.max_model_calls, snapshot.model_budget_claimed):
             return commit_transition(
                 snapshot,
                 finish(snapshot, "budget_exhausted", "model_budget_exhausted"),
                 "budget.exhausted",
             )
-        if finalization_only(snapshot, config):
+        if finalization_only(snapshot, config) or (
+            wall_delivery_only(snapshot, config) and not delivery_summary_allowed(snapshot, config)
+        ):
+            reserve_reason = (
+                "model_budget_reserved" if finalization_only(snapshot, config)
+                else "wall_delivery_reserved"
+            )
             try:
                 compacted = commit_completed_prefix(
                     CompactionController(self.planner),
@@ -613,7 +738,7 @@ class ContextDriver:
                         "force_compaction": False, "model_errors": 0, "provider_errors": 0,
                     }),
                     "context.compaction_partial_sealed",
-                    {"reason": "model_budget_reserved", "policy": PARTIAL_SUMMARY_POLICY,
+                    {"reason": reserve_reason, "policy": PARTIAL_SUMMARY_POLICY,
                      "retained_message_count": len(compacted.history.retained_message_refs)},
                 )
             # A retry/continuation or restored checkpoint can reach the
@@ -628,7 +753,7 @@ class ContextDriver:
                     "provider_errors": 0,
                 }),
                 "context.compaction_deferred",
-                {"reason": "model_budget_reserved"},
+                {"reason": reserve_reason},
             )
         if snapshot.compaction_request.get("fresh_tool_observation_policy") is not None:
             try:

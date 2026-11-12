@@ -30,6 +30,7 @@ from ksadk.interaction.provider import (
     RUNTIME_INTERACTION_UNAVAILABLE,
     InteractionResolveContext,
 )
+from ksadk.interaction.submission import normalized_submission
 from ksadk.kernel.contracts import (
     ActivationLease,
     ActivationWriteGuard,
@@ -76,6 +77,35 @@ logger = logging.getLogger(__name__)
 class WorkerControlMixin:
     """Control admission and durable interaction responses for active runs."""
 
+    async def _interaction_rejection_run_id(self, command: AgentControlCommand) -> str | None:
+        """Attribute an answer rejection only through the active, scoped ledger.
+
+        A submitted RunId/InteractionId is not proof of ownership. Re-read both
+        persisted records before making the diagnostic visible to a run stream.
+        """
+        if command.command_type != "submit_interaction":
+            return None
+        active = await self._store.find_active_run(command.agent_instance_id, command.session_id)
+        target = command.payload.get("run_id")
+        if (
+            active is None
+            or (target is not None and target != active.run_id)
+            or active.agent_instance_id != command.agent_instance_id
+            or active.session_id != command.session_id
+            or active.metadata.get("tenant_id") != command.tenant_id
+        ):
+            return None
+        record = await self._store.get(
+            command.payload.get("interaction_id"), tenant_id=command.tenant_id,
+            agent_instance_id=command.agent_instance_id, session_id=command.session_id,
+            run_id=active.run_id,
+        )
+        if record is None or (
+            record.tenant_id, record.agent_instance_id, record.session_id, record.run_id
+        ) != (command.tenant_id, command.agent_instance_id, command.session_id, active.run_id):
+            return None
+        return record.run_id
+
     async def _control_active_run(
         self, command: AgentControlCommand, activation: ActivationLease
     ) -> str | None:
@@ -116,6 +146,15 @@ class WorkerControlMixin:
                 details={"command_type": command.command_type},
             )
         execution = self._executions.get(active.run_id)
+        if self._mcp_authorization is not None:
+            oauth_waits = await self._mcp_authorization.pending(active.run_id)
+            if oauth_waits and (command.command_type == "resume" or (
+                    command.command_type == "submit_interaction" and any(
+                        command.payload.get("interaction_id") in {r["interaction_id"], r["wait_id"]} for r in oauth_waits))):
+                raise InvalidCommandError("OAuth waits require an internal authorization completion")
+            if oauth_waits and command.command_type == "interrupt" and not command.payload.get("scope_id"):
+                await self._mcp_authorization.cancel_run(self, active, ActivationWriteGuard(
+                    activation_id=activation.activation_id, fencing_token=fence))
         a2a_origin = command.payload.get("a2a_origin_command_id")
         if a2a_origin is not None and (
             not isinstance(a2a_origin, str) or not a2a_origin
@@ -314,23 +353,24 @@ class WorkerControlMixin:
             allowed = {"approve", "reject"} if record.kind == "approval" else {"submit", "reject"}
             if payload.action not in allowed:
                 raise InvalidCommandError("invalid managed A2A interaction action")
+            submission = InteractionSubmission(
+                interaction_id=record.interaction_id,
+                expected_revision=(payload.expected_revision
+                                   if payload.expected_revision is not None
+                                   else record.revision),
+                action=payload.action,
+                response=payload.response,
+                idempotency_key=payload.idempotency_key or command.idempotency_key,
+            )
+            delivery = normalized_submission(record, submission)
             receipt = await self._store.resolve(
-                InteractionSubmission(
-                    interaction_id=record.interaction_id,
-                    expected_revision=(payload.expected_revision
-                                       if payload.expected_revision is not None
-                                       else record.revision),
-                    action=payload.action,
-                    response=payload.response,
-                    idempotency_key=payload.idempotency_key or command.idempotency_key,
-                ),
-                guard=ActivationWriteGuard(
+                submission, guard=ActivationWriteGuard(
                     activation_id=activation.activation_id, fencing_token=fence
                 ),
             )
             if active.state is not RunState.RUNNING:
                 await self._transition_run(active, RunState.RUNNING, fence)
-            waiter.deliver(receipt, payload.response)
+            waiter.deliver(receipt, delivery.response)
             execution.managed_interaction_waiters.pop(record.interaction_id, None)
             return
         provider = execution.interaction_provider
@@ -359,6 +399,7 @@ class WorkerControlMixin:
             response=payload.response,
             idempotency_key=payload.idempotency_key or command.idempotency_key,
         )
+        delivery = normalized_submission(record, submission)
         context = InteractionResolveContext(
             adapter=execution.adapter,
             handle=execution.handle,
@@ -366,14 +407,51 @@ class WorkerControlMixin:
             activation_id=activation.activation_id,
             fencing_token=fence,
         )
-        # provider 接受（typed 异常原样上抛 -> command_rejected，不标 resolved）。
-        resumed = await provider.resolve(context, record, submission)
+        guard = ActivationWriteGuard(activation_id=activation.activation_id, fencing_token=fence)
+        deferred = bool(record.provider_id == "langgraph" and (record.native_target or {}).get("task_id")
+                        and getattr(execution.adapter, "confirms_native_submissions", False))
+        if deferred:
+            task = execution.stream_task
+            if task is not None and not task.done():
+                # A request fact is durable before its stream reaches EOF.
+                # Never register a resume while the prior stream's finally
+                # block can still discard the same Adapter invocation.
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=5)
+                except TimeoutError as error:
+                    raise AgentKernelError(
+                        RUNTIME_INTERACTION_UNAVAILABLE,
+                        "Native wait is still being finalized", retryable=True,
+                    ) from error
+            if submission.action == "cancel":
+                if record.status != "pending" or record.revision != submission.expected_revision:
+                    raise InvalidCommandError("Interaction is no longer cancellable at this revision")
+                if not await self._cancel_suspended_langgraph(execution, active, activation):
+                    raise InvalidCommandError("Native wait cannot be cancelled in its current state")
+                return
+            remember = getattr(execution.adapter, "remember_native_interactions", None)
+            if callable(remember):
+                pending = await self._store.list_pending_interactions(command.tenant_id, command.session_id)
+                remember(execution.handle, [item for item in pending
+                         if item.run_id == active.run_id
+                         and item.agent_instance_id == command.agent_instance_id])
+            reserve = getattr(self._store, "reserve_submission", None)
+            if not callable(reserve):
+                raise InvalidCommandError("This store does not support native submission reservations")
+            reservation = await reserve(submission, guard=guard, command_id=str(command.command_id))
+            if not reservation.acquired:
+                return
+        try:
+            resumed = await provider.resolve(context, record, delivery)
+        except Exception:
+            # resume() only registers an invocation. No graph has run yet;
+            # releasing this reservation is therefore safe and correctable.
+            if deferred:
+                await self._store.release_submission(submission, guard=guard)
+            raise
         execution = self._replace_handle(execution, resumed)
-        # provider 已接受，才在 ledger 收口 InteractionResolved（同一 fence）。
-        await self._store.resolve(  # type: ignore[attr-defined]
-            submission,
-            guard=ActivationWriteGuard(activation_id=activation.activation_id, fencing_token=fence),
-        )
+        if not deferred:
+            await self._store.resolve(submission, guard=guard)  # type: ignore[attr-defined]
         # A durable response returns a waiting run to execution.  The old live
         # stream usually remains open (Codex); checkpoint providers normally
         # returned a fresh handle and need a new background stream.  RUNNING is
@@ -418,14 +496,13 @@ class WorkerControlMixin:
         records = [record for record in await self._store.list_pending_interactions(
             str(active.metadata.get("tenant_id") or ""), active.session_id
         ) if record.run_id == active.run_id and record.agent_instance_id == active.agent_instance_id]
-        if existing is None and (not records or any(
-            record.provider_id != "langgraph"
-            or not isinstance(record.native_target, dict)
-            or any(not record.native_target.get(key)
-                   or record.native_target[key] != execution.handle.native_ref.get(key)
-                   for key in ("thread_id", "checkpoint_id"))
-            for record in records
-        )):
+        oauth_targets = (await self._mcp_authorization.cancellation_targets(active.run_id)
+                         if self._mcp_authorization is not None else [])
+        targets = [record.native_target for record in records] + oauth_targets
+        if existing is None and (not targets or any(record.provider_id != "langgraph" for record in records)
+                or any(not isinstance(target, dict) or any(
+                    not target.get(key) or target[key] != execution.handle.native_ref.get(key)
+                    for key in ("thread_id", "checkpoint_id")) for target in targets)):
             return False
         guard = ActivationWriteGuard(
             activation_id=activation.activation_id, fencing_token=activation.fencing_token
@@ -433,13 +510,21 @@ class WorkerControlMixin:
         # Write the stable terminal identity first so reclaiming this command
         # can finish ledger cleanup even if the previous worker stopped midway.
         if existing is None:
+            started = next((event for event in await events.list(
+                active.session_id, run_id=active.run_id, event_types=["run.started"]
+            ) if event.parent_scope_id is None), None)
+            if started is None:
+                raise RuntimeError("Native checkpoint cancellation requires the original run scope")
             await events.append(RunCanceled(
                 schema_version=2, event_id=event_id, seq=0,
                 timestamp=datetime.now(timezone.utc).timestamp(), run_id=active.run_id,
-                scope_id=f"run:{active.run_id}",
+                scope_id=started.scope_id,
                 source=SourceRef(framework="ksadk", native_run_id=execution.runtime_run_id),
                 status="canceled", reason="native_checkpoint_wait_cancelled",
             ), guard=guard)
+        retire_wait = getattr(execution.adapter, "retire_cancelled_wait", None)
+        if callable(retire_wait):
+            await retire_wait(execution.handle)
         for record in records:
             await self._store.cancel(record.interaction_id, record.revision, guard=guard)
         await self._transition_run(active, RunState.CANCELLED, activation.fencing_token)

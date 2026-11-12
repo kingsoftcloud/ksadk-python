@@ -20,10 +20,14 @@ import os
 from importlib import import_module
 from typing import Any
 
+from ksadk.a2ui.catalog import catalog_document, catalog_manifest
+from ksadk.a2ui.generation import finalize_registered_envelope, generation_registry, registered_generation_state
+
 try:
     from copilotkit import CopilotKitMiddleware, copilotkit_lg_middleware
     from langchain.tools import ToolRuntime, tool
     from langchain_core.messages import SystemMessage
+    from langchain_core.runnables import RunnableLambda
 except ImportError as exc:  # The module itself belongs to the optional AG-UI feature.
     raise ImportError(
         "CopilotKit A2UI requires ksadk[agui] with copilotkit and ag-ui-langgraph installed."
@@ -40,13 +44,18 @@ _DEFAULT_GENERATION_TIMEOUT_SECONDS = 20.0
 _KSADK_HOSTED_UI_GUIDELINES = {
     "generation_guidelines": """\
 Return exactly one render_a2ui tool call. Use A2UI v0.9 flat components: every
-component has an id and a component field. The root id is root. Use only Text,
-Column, Row, Card, List, Button, ChoicePicker, Divider, TextField, CheckBox,
-or Slider. Put properties directly on each component, never under type or
+component has an id and a component field. The root id is root. Use only
+components and functions in the supplied registered catalog. Put properties
+directly on each component, never under type or
 properties. Use child for one component id and children for an array of ids.
 For example: [{\"id\":\"root\",\"component\":\"Card\",\"child\":\"content\"},
 {\"id\":\"content\",\"component\":\"Column\",\"children\":[\"title\"]},
 {\"id\":\"title\",\"component\":\"Text\",\"variant\":\"h2\",\"text\":\"Status\"}].
+For editable values use a binding object such as {"path":"/answer"}, never
+a literal path string. Initialize its data model. A submit Button needs a child
+Text and action.event containing name and context; bind context.payload to
+the answer path so it sends the current JSON value. Preserve input bindings
+on updates. Business schemas and approval rules remain authoritative.
 Use only facts present in the conversation and tool results. Do not return
 Markdown or prose instead of the tool call.""",
     "design_guidelines": """\
@@ -123,18 +132,49 @@ async def _invoke_a2ui_subagent(
     timeout_seconds: float,
 ) -> dict[str, Any] | None:
     """Ask the structured-output model on the same loop as the parent run."""
+    # The nested model emits a structured-output call whose arguments we
+    # validate below; it does not execute a business tool. Scope visibility to
+    # this model invocation, leaving the public generator and final UI intact.
+    # This structured-output invocation is consumed inside the tool, including
+    # handled timeout/cancellation. LangGraph's public nostream tag keeps it out
+    # of the parent message/tool stream instead of leaving an orphaned LLM item.
+    invoke_config = {"tags": ["nostream"], "metadata": {
+        "conversation_visibility": "internal",
+        "ksadk_output_visibility": "internal",
+        "ksadk_internal_operation": "a2ui_generation",
+    }}
+    model_messages = [SystemMessage(content=prompt), *messages]
 
-    async def invoke() -> Any:
+    def accepts_config(method: Any) -> bool:
+        try:
+            parameters = inspect.signature(method).parameters
+        except (TypeError, ValueError):
+            return True  # Standard opaque Runnable methods accept config.
+        return any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+        ) or (
+            "config" in parameters
+            and parameters["config"].kind is not inspect.Parameter.POSITIONAL_ONLY
+        )
+
+    async def invoke(values: list[Any]) -> Any:
         ainvoke = getattr(model_with_tool, "ainvoke", None)
         if callable(ainvoke):
-            result = ainvoke([SystemMessage(content=prompt), *messages])
+            kwargs = {"config": invoke_config} if accepts_config(ainvoke) else {}
+            result = ainvoke(values, **kwargs)
             return await result if inspect.isawaitable(result) else result
         invoke_sync = getattr(model_with_tool, "invoke", None)
         if not callable(invoke_sync):
             raise TypeError("A2UI model must expose ainvoke() or invoke()")
-        return await asyncio.to_thread(invoke_sync, [SystemMessage(content=prompt), *messages])
+        kwargs = {"config": invoke_config} if accepts_config(invoke_sync) else {}
+        return await asyncio.to_thread(invoke_sync, values, **kwargs)
 
-    response = await asyncio.wait_for(invoke(), timeout=timeout_seconds)
+    # The public Runnable boundary also scopes wrappers that do not forward
+    # config; delegated models inherit it without mutating the parent run.
+    response = await asyncio.wait_for(
+        RunnableLambda(invoke).ainvoke(model_messages, config=invoke_config),
+        timeout=timeout_seconds,
+    )
     return _tool_call_args(response)
 
 
@@ -159,12 +199,19 @@ async def _generate_a2ui_envelope(
 ) -> str:
     """Run the official validate/retry contract without crossing event loops."""
 
+    try:
+        catalog = config.get("catalog")
+        if catalog is None:
+            catalog = (state.get("ag-ui") or {}).get("a2ui_schema")
+        registry = generation_registry(config["default_catalog_id"], catalog)
+    except (ValueError, TypeError) as exc:
+        return str(_wrap_error_envelope(str(exc)))
     prep = _prepare_a2ui_request(
         intent=intent,
         target_surface_id=target_surface_id,
         changes=changes,
         messages=messages,
-        state=state,
+        state=registered_generation_state(state, config["default_catalog_id"], registry=registry),
         guidelines=config["guidelines"],
     )
     if prep.get("error"):
@@ -245,26 +292,35 @@ async def _generate_a2ui_envelope(
             validation = _validate_a2ui_components(
                 components=components if isinstance(components, list) else [],
                 data=data if isinstance(data, dict) else {},
-                catalog=config.get("catalog"),
+                catalog=registry.document(config["default_catalog_id"]),
             )
             record = {
                 "attempt": attempt,
                 "ok": bool(validation["valid"]),
                 "errors": list(validation["errors"]),
             }
+            if record["ok"]:
+                try:
+                    envelope = finalize_registered_envelope(
+                        _build_a2ui_envelope(
+                            args=args, is_update=prep["is_update"],
+                            target_surface_id=target_surface_id, prior=prep["prior"],
+                            default_surface_id=config["default_surface_id"],
+                            default_catalog_id=config["default_catalog_id"],
+                        ), catalog_id=config["default_catalog_id"],
+                        prior=prep["prior"] if prep["is_update"] else None,
+                        surface_id=target_surface_id, registry=registry,
+                    )
+                except Exception:
+                    record["ok"] = False
+                    record["errors"] = [{
+                        "code": "registered_catalog_validation_failed", "path": "components",
+                        "message": "Generated UI does not satisfy the registered protocol/catalog",
+                    }]
         attempts.append(record)
         _attempt_callback(config.get("on_a2ui_attempt"), record)
         if record["ok"]:
-            return str(
-                _build_a2ui_envelope(
-                    args=args,
-                    is_update=prep["is_update"],
-                    target_surface_id=target_surface_id,
-                    prior=prep["prior"],
-                    default_surface_id=config["default_surface_id"],
-                    default_catalog_id=config["default_catalog_id"],
-                )
-            )
+            return envelope
         last_errors = record["errors"]
 
     return str(
@@ -276,6 +332,9 @@ def build_ksadk_a2ui_tool(params: dict[str, Any]) -> Any:
     """Build the dynamic LangChain A2UI tool used by the CopilotKit shim."""
 
     resolved_params = dict(params)
+    resolved_params.setdefault("default_catalog_id", catalog_manifest()["catalog_id"])
+    if resolved_params["default_catalog_id"] == catalog_manifest()["catalog_id"]:
+        resolved_params.setdefault("catalog", catalog_document())
     resolved_params.setdefault("guidelines", _KSADK_HOSTED_UI_GUIDELINES)
     config = _resolve_a2ui_tool_params(resolved_params)
 
@@ -309,10 +368,15 @@ class KsadkCopilotKitMiddleware(CopilotKitMiddleware):
             return None
 
         resolved = self._resolve_a2ui_catalog(state)
-        _component_schema, catalog_id = resolved if resolved else (None, None)
+        component_schema, catalog_id = resolved if resolved else (None, None)
+        # The upstream native resolver intentionally returns (None, id): its
+        # executor reads state later. Our executor must carry that Schema too.
+        component_schema = (state.get("ag-ui") or {}).get("a2ui_schema") or component_schema
         params: dict[str, Any] = {"model": request.model}
         if catalog_id:
             params["default_catalog_id"] = catalog_id
+        if component_schema:
+            params["catalog"] = component_schema
 
         tool = build_ksadk_a2ui_tool(params)
         existing_names = {getattr(item, "name", None) for item in (request.tools or [])}

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
 from ksadk.sessions.continuity import RunnerSessionAdapter, TranscriptReplayAdapter
+from ksadk.sessions.topology import StorageTarget
 
 
 class BaseRunner(ABC):
@@ -21,6 +22,25 @@ class BaseRunner(ABC):
         self.project_dir = project_dir
         # Framework runners populate this with SDK-specific agent/graph objects.
         self._agent: Any = None
+        self._effective_session_target: StorageTarget | None = None
+
+    def bind_effective_session_target(self, target: StorageTarget) -> None:
+        """Pin a Kernel app's Session fallback before native storage is prepared."""
+        existing = getattr(self, "_effective_session_target", None)
+        if existing is not None and (existing.backend, existing.dsn) != (
+            target.backend, target.dsn,
+        ):
+            raise RuntimeError(
+                "RUNTIME_SESSION_CONFLICT: runner already belongs to another Session store"
+            )
+        if existing is None and (
+            getattr(self, "_managed_checkpoint_pool", None) is not None
+            or getattr(self, "_sdk_checkpoint_bound", False)
+        ):
+            raise RuntimeError(
+                "RUNTIME_SESSION_ALREADY_PREPARED: bind Session storage before managed checkpoints"
+            )
+        self._effective_session_target = target
 
     @abstractmethod
     def load_agent(self) -> None:
@@ -216,6 +236,7 @@ class BaseRunner(ABC):
             if platform_context.get(key) is not None
         }
         from typing import get_args, get_type_hints
+
         from ksadk.session_context import SessionContext
 
         try:

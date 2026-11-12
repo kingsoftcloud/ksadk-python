@@ -2,14 +2,14 @@
 title: "Hosted UI and Event Replay"
 ---
 
-KsADK 0.8.5 separates Hosted UI transport, interactive presentation,
+KsADK 0.8.7 separates Hosted UI transport, interactive presentation,
 and runtime audit. OpenAI Responses remains the compatibility baseline, AG-UI
 is an optional transport, A2UI represents structured activities, and
 `RuntimeEvent` is the sole persistence and replay boundary. UI evolution does
 not change the original model-call protocol.
 
 <Callout type="warning" title="Release boundary">
-This page describes interfaces and boundaries in the 0.8.5 candidate source. It does not claim that this candidate has completed npm/PyPI publication. A real hosted deployment must still validate its gateway, authentication, runner, database, and provider credentials.
+This page describes interfaces and boundaries in the 0.8.7 candidate source. It does not claim that this candidate has completed npm/PyPI publication. A real hosted deployment must still validate its gateway, authentication, runner, database, and provider credentials.
 </Callout>
 
 ## Protocol Selection
@@ -67,3 +67,6 @@ that was rejected or consumed.
 4. For LangGraph/ADK interrupt or resume, then validate the framework-native checkpoint configuration. New integrations must not depend on legacy LangChain continuity.
 
 For browser debugging, see [Local Web UI](./local-web-ui.mdx). For session and checkpoint semantics, see [Sessions, Runtime, and Files](../../references/runtime-sessions-files.mdx).
+
+
+See [AG-UI and A2UI Integration](/en/docs/framework/guides/agui-a2ui/) for a runnable form and dependency versions, and the [0.8.7 integration guide](/en/docs/framework/guides/integration-0-8-7/) for deployment settings.

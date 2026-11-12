@@ -5,6 +5,7 @@ import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { showToast } from "../components/Toast";
 import { ModelCredentialDrawer, type ResItem } from "./ResourcesPage";
 import { ModelSetupForm } from "../components/ModelSetupForm";
+import { ProjectInstructionSettings } from "../components/ProjectInstructionSettings";
 import { apiFetch } from "../api";
 import type { StudioThemePreference } from "../studioTheme";
 import { FormField } from "../components/ui/FormField";
@@ -323,6 +324,7 @@ export function SettingsPage({ themePreference, onThemePreferenceChange, initial
 
       <section id="settings-runtime" hidden={activeSection !== "runtime"} className="settings-group" tabIndex={-1}>
         <h3>执行与沙箱</h3>
+        <ProjectInstructionSettings />
         <FormField label="默认执行权限（Codex）" requirement="required" htmlFor="settingSandbox" hint="新 Agent 默认值；会话页可单次覆盖，下一轮对话生效。" error={settingsForm.formState.errors.sandbox?.message}>
           <StudioSelect
             id="settingSandbox"

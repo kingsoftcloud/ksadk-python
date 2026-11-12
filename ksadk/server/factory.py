@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import os
 import sqlite3
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
 DATA_PLANE_GROUPS: frozenset[str] = frozenset(
     {
         "health_meta",
+        "database_access",
         "sessions",
         "sessions_adk_compat",
         "run",
@@ -119,6 +121,7 @@ class RuntimeAppState:
         self.stream_registry = StreamRegistry()
         self.sandbox_registry = SandboxRegistry()
         self.session_service: Any = None
+        self._owns_session_service = True
         self._session_services_by_loop: dict[asyncio.AbstractEventLoop, Any] = {}
         self._sync_session_service: Any = None
         # The legacy ``server.app`` facade exposes monkeypatchable providers.
@@ -133,6 +136,7 @@ class RuntimeAppState:
         # AG-UI endpoint 及其 app-owned RuntimeAdapter handle registry。
         self.agui_agent: Any = None
         self.agui_config: Any = None
+        self.local_interactions: Any = None
         self.persistence_capability = PersistenceCapabilityCoordinator()
 
     def resolve_session_service(self) -> Any:
@@ -160,7 +164,7 @@ class RuntimeAppState:
     def session_services(self) -> list[Any]:
         """Return all unique services owned by this app for shutdown."""
         candidates = [
-            self.session_service,
+            self.session_service if self._owns_session_service else None,
             self._sync_session_service,
             *self._session_services_by_loop.values(),
         ]
@@ -171,6 +175,37 @@ class RuntimeAppState:
         return services
 
     def describe_session_backend(self) -> dict[str, Any]:
+        if (
+            self.app is not None
+            and getattr(self.app.state, "agent_kernel_runtime", None) is not None
+        ):
+            from ksadk.sessions import describe_session_backend
+            from ksadk.sessions.persistence import session_service_storage_target
+            from ksadk.sessions.resilient import ResilientSessionService
+
+            service = self.resolve_session_service()
+            target = session_service_storage_target(service)
+            declared = dict(self._session_backend_provider()) if self._session_backend_provider else {}
+            storage_keys = {
+                "Backend", "Shared", "ProductionSafe", "ContinuityDefault", "FailureMode",
+                "FallbackBackend", "Path", "Dsn", "Namespace", "TenantId", "WorkspaceId",
+            }
+            declared = {key: value for key, value in declared.items() if key not in storage_keys}
+            actual = (
+                dict(describe_session_backend(backend=target.backend))
+                if target.backend in {"postgres", "local", "memory"}
+                else {
+                    "Backend": "none", "Shared": False, "ProductionSafe": False,
+                    "ContinuityDefault": "local_only",
+                }
+            )
+            if target.backend == "postgres":
+                if isinstance(service, ResilientSessionService):
+                    actual.update(FailureMode="fail_open", FallbackBackend="memory")
+                else:
+                    actual["FailureMode"] = "fail_closed"
+                    actual.pop("FallbackBackend", None)
+            return {**declared, **actual}
         if self._session_backend_provider is not None:
             return dict(self._session_backend_provider())
         from ksadk.sessions import describe_session_backend
@@ -202,6 +237,8 @@ class RuntimeAppConfig:
         session_service_provider: Callable[[], Any] | None = None,
         session_backend_provider: Callable[[], dict[str, Any]] | None = None,
         teams_host_factory: Any | None = None,
+        a2ui_catalog_registry: Any | None = None,
+        local_mcp_oauth: bool = False,
     ) -> None:
         self.runtime_type = runtime_type
         self.route_groups: set[str] = (
@@ -220,6 +257,9 @@ class RuntimeAppConfig:
         self.session_service_provider = session_service_provider
         self.session_backend_provider = session_backend_provider
         self.teams_host_factory = teams_host_factory
+        self.a2ui_catalog_registry = a2ui_catalog_registry
+        # Composition-only switch. Never populated from Agent YAML or env.
+        self.local_mcp_oauth = local_mcp_oauth
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +343,9 @@ async def shutdown_runtime_resources(state: RuntimeAppState) -> None:
         except Exception:
             logger.exception("failed to close runtime adapters on shutdown")
 
+    if state.local_interactions is not None:
+        await state.local_interactions.close()
+
     for service in state.session_services():
         close = getattr(service, "aclose", None)
         if callable(close):
@@ -356,6 +399,16 @@ def create_runtime_app(
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import Response
 
+    if config.a2ui_catalog_registry is not None:
+        from ksadk.a2ui.registry import A2uiCatalogRegistry
+
+        if not isinstance(config.a2ui_catalog_registry, A2uiCatalogRegistry):
+            raise TypeError("a2ui_catalog_registry must be an A2uiCatalogRegistry")
+        if config.runtime_executor is not None:
+            config.runtime_executor.configure_a2ui_catalog_registry(config.a2ui_catalog_registry)
+        configure_catalogs = getattr(config.a2a_runtime_adapter, "configure_a2ui_catalog_registry", None)
+        if callable(configure_catalogs):
+            configure_catalogs(config.a2ui_catalog_registry)
     state = RuntimeAppState(
         executor=config.runtime_executor,
         launch_context=config.launch_context,
@@ -378,6 +431,7 @@ def create_runtime_app(
         from ksadk.runtime.factory import kernel_start_request_defaults
 
         adapter_provider = _kernel_adapter_provider(config)
+        from ksadk.kernel.session_storage import postgres_kernel_enabled
         if teams_host is not None:
             adapter_provider = teams_host.wrap_adapter_provider(adapter_provider)
         request_defaults = (
@@ -391,7 +445,13 @@ def create_runtime_app(
                 runtime_executor=config.runtime_executor,
                 launch_context=config.launch_context,
                 start_request_defaults=request_defaults,
-                session_service=state.resolve_session_service(),
+                session_service=(
+                    None if postgres_kernel_enabled()
+                    and config.session_service_provider is None
+                    else state.resolve_session_service()
+                ),
+                session_service_explicit=config.session_service_provider is not None,
+                storage_owner=state,
                 **({"before_start": teams_host.before_start} if teams_host is not None else {}),
             )
         except BaseException:
@@ -409,6 +469,9 @@ def create_runtime_app(
             await teams_host.close()
             raise RuntimeError("Teams Host requires an enabled durable Kernel")
         if kernel_runtime is not None:
+            if kernel_runtime.worker._mcp_authorization is not None:
+                from ksadk.mcp_runtime.oauth.kernel import install_routes
+                install_routes(app, kernel_runtime.worker._mcp_authorization)
             # Kernel canonical events are the replay authority for the normal
             # Session APIs as well.  In memory/ephemeral mode bootstrap reuses
             # the app-owned service above; in PostgreSQL mode it owns the
@@ -419,6 +482,9 @@ def create_runtime_app(
             if kernel_session_service is None:  # pragma: no cover - defensive
                 raise RuntimeError("agent kernel runtime has no Session service")
             state.session_service = kernel_session_service
+            if getattr(kernel_runtime.config, "session_storage_target", None) is not None:
+                state._owns_session_service = False  # owned by Kernel or its caller
+            state.persistence_capability.invalidate()
         try:
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.start()
@@ -426,6 +492,8 @@ def create_runtime_app(
         finally:
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.stop()
+            if state.local_interactions is not None:
+                await state.local_interactions.stop()
             if kernel_runtime is not None:
                 await kernel_runtime.close()
             if teams_host is not None:
@@ -656,7 +724,13 @@ def _kernel_adapter_provider(
     """
 
     if config.kernel_adapter_provider is not None:
-        return config.kernel_adapter_provider
+        def configured_adapter():
+            adapter = config.kernel_adapter_provider()
+            configure = getattr(adapter, "configure_a2ui_catalog_registry", None)
+            if config.a2ui_catalog_registry is not None and callable(configure):
+                configure(config.a2ui_catalog_registry)
+            return adapter
+        return configured_adapter
     if config.a2a_runtime_adapter is not None:
         adopt_app_lifetime = getattr(config.a2a_runtime_adapter, "adopt_app_lifetime", None)
         if callable(adopt_app_lifetime):
@@ -728,6 +802,19 @@ def _wire_a2a_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeAp
 def _wire_agui_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeAppConfig) -> None:
     """Mount the optional official AG-UI endpoint before the static catch-all."""
     agui_cfg = config.agui
+    from ksadk.agui.config import hosted_agui_requested
+    if not hosted_agui_requested(getattr(agui_cfg, "runtime_type", "")):
+        return
+    if (os.getenv("AGENT_RUNTIME_ID") and getattr(agui_cfg, "runtime_type", None) == "langgraph"
+            and "agui" in config.route_groups):
+        from ksadk.agui.config import agui_dependency_errors
+        if agui_dependency_errors():
+            from fastapi.responses import JSONResponse
+
+            @app.post(agui_cfg.path, include_in_schema=False)
+            async def agui_dependency_missing():
+                return JSONResponse({"detail": "AGUI_DEPENDENCY_MISSING: install ksadk[agui] in the deployed artifact"}, status_code=503)
+            return
     if (
         agui_cfg is None
         or not getattr(agui_cfg, "enabled", False)
@@ -813,6 +900,40 @@ def _wire_agui_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeA
         async def list(self, session_id: str, **kwargs: Any) -> Any:
             return await self._store.list(session_id, **kwargs)
 
+    if getattr(agui_cfg, "auto_local_interactions", True) and "control" in config.route_groups:
+        from ksadk.kernel.local_interactions import LocalInteractionRuntime
+
+        state.local_interactions = LocalInteractionRuntime(
+            provider=(
+                _kernel_adapter_provider(config)
+                if config.kernel_adapter_provider is not None or config.a2a_runtime_adapter is not None
+                else lambda: state.executor.capability_adapter(state.launch_context)
+            ), launch_context=state.launch_context,
+            session_service=route_dependencies.resolve_session_service,
+            agent_name=agui_cfg.agent_name,
+            on_ready=state.persistence_capability.invalidate,
+            adapter_owned=(config.kernel_adapter_provider is not None
+                           and config.a2a_runtime_adapter is None),
+        )
+        # Local OAuth is an app-owned optional module. Platform bootstrap never
+        # imports it, starts a listener, or reads a developer's local vault.
+        launch = state.launch_context
+        if (
+            config.local_mcp_oauth
+            and launch.deployment_mode == "local"
+            and launch.runtime_type == "langgraph"
+            and not any(os.getenv(key, "").strip() for key in (
+                "AGENTENGINE_MANAGED_RUNTIME", "AGENT_CONTROL_JWKS_URL",
+                "KSADK_MCP_OAUTH_PROJECTION", "AGENT_RUNTIME_ID",
+                "AGENT_KERNEL_ENABLED", "KSADK_AGENT_KERNEL",
+            ))
+            and os.getenv("AGENT_KERNEL_AUTHORITY_MODE", "local") == "local"
+        ):
+            from ksadk.mcp_runtime.oauth.local.runtime import LocalOAuthRuntime
+
+            local = state.local_interactions
+            local.oauth = LocalOAuthRuntime(local)
+            local.oauth.install_routes(app)
     agent = add_ksadk_agui_endpoint(
         app,
         state.executor,
@@ -822,6 +943,7 @@ def _wire_agui_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeA
             route_dependencies.resolve_session_service()
         ),
         session_service_factory=route_dependencies.resolve_session_service,
+        local_kernel_provider=(state.local_interactions.ensure if state.local_interactions else None),
     )
     state.agui_agent = agent
     state.agui_config = agui_cfg
