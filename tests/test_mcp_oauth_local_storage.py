@@ -89,14 +89,19 @@ def test_existing_windows_vault_protects_key_and_files(locations):
         foreach ($path in $paths) {
             $acl = Get-Acl -LiteralPath $path
             if (-not $acl.AreAccessRulesProtected) { throw 'Vault ACL inherits parent access' }
-            $sids = @($acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier]) |
-                ForEach-Object { $_.IdentityReference.Value })
+            $sids = @(
+                $acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier]) |
+                    ForEach-Object { $_.IdentityReference.Value }
+            )
             ConvertTo-Json -Compress -InputObject $sids
         }
     """
+    # A pwsh -> Python -> Windows PowerShell hop inherits PS7's module path.
+    # Let powershell.exe rebuild its own path so Get-Acl loads its native module.
+    environment = {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
     checked = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        env={**os.environ, "TEST_VAULT": str(current)}, check=True, capture_output=True, text=True,
+        env={**environment, "TEST_VAULT": str(current)}, check=True, capture_output=True, text=True,
     )
     rules = [set(json.loads(line)) for line in checked.stdout.splitlines()]
     assert len(rules) >= 4

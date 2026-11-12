@@ -53,7 +53,7 @@ describe("expandable human-friendly activity", () => {
     render(<HarnessActivity runId="run-unaccepted" streaming={false} fallback={[]} onRunState={onRunState} />);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("不能视为完整任务验收通过"));
     expect(screen.getByRole("status")).not.toHaveClass("harness-run-stopped");
-    expect(onRunState).toHaveBeenCalledWith("run-unaccepted", { status: "completed", outcome });
+    await waitFor(() => expect(onRunState).toHaveBeenCalledWith("run-unaccepted", { status: "completed", outcome }));
   });
   it("keeps progress in the side dock and routine execution details out of the conversation", async () => {
     const dock = document.createElement("div"); document.body.append(dock);

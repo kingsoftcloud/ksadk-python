@@ -48,7 +48,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: uv sync --extra dev --extra langgraph --extra a2a --extra agui
+        run: uv sync --extra dev --extra langgraph --extra a2a --extra agui --extra codex
 
       - name: Run live PostgreSQL persistence tests
         run: |
@@ -84,6 +84,8 @@ jobs:
             tests/a2a/test_langgraph_kernel_process_recovery.py \
             tests/a2a/test_langgraph_process_recovery.py \
             tests/a2a/test_native_process_recovery.py \
+            tests/codex/test_managed_process_recovery.py \
+            tests/codex/test_managed_checkpoint_real.py \
             'tests/server/test_app_factory_agui.py::test_factory_agui_resilient_cold_miss_race_skips_full_hydration[postgres]' \
             -q --junitxml="$RUNNER_TEMP/postgres-junit.xml"
           test_code=$?
