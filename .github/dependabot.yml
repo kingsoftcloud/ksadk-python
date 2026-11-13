@@ -11,3 +11,23 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # 以下依赖的版本窗口由 ADK 兼容矩阵和 Hosted runtime 协议基线决定，
+    # 见 pyproject.toml 中对应 pin 的注释。跨 minor/major 的升级需要人工
+    # 评估后统一放开窗口，因此不再由 Dependabot 自动提交越界版本。
+    # patch 级更新仍然放行，用于接收缺陷修复和安全修复。
+    ignore:
+      # OTLP 三件套（api / sdk / exporter-otlp）由 google-adk 1.34.x 与
+      # 2.x 的 otel 版本交集决定，当前窗口为 >=1.39.0,<=1.41.1。
+      - dependency-name: "opentelemetry-*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
+      # 上限 <16.0 受 Hosted runtime 协议兼容约束。
+      - dependency-name: "websockets"
+        update-types:
+          - "version-update:semver-major"
+      # AG-UI 传输为可选 extra，按 wire 1.0 基线精确锁定 1.0.0。
+      - dependency-name: "ag-ui-protocol"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
