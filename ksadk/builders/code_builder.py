@@ -36,6 +36,7 @@ from ksadk.builders.framework_requirements import (
     STARLETTE_REQUIREMENT,
     code_requirements_for_framework,
 )
+from ksadk.builders.project_imports import project_imports_any
 from ksadk.builders.requirements_utils import (
     merge_requirement_lists,
     parse_requirements_text,
@@ -763,34 +764,11 @@ class CodeBuilder(BaseBuilder):
         return normalized.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://"))
 
     def _project_imports_any(self, module_names: set[str]) -> bool:
-        def matches(import_name: str) -> bool:
-            return any(
-                import_name == name or import_name.startswith(f"{name}.")
-                for name in module_names
-            )
-
-        for py_file in self._iter_project_py_files():
-            if self._should_skip_project_file(py_file):
-                continue
-            try:
-                tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-            except (OSError, SyntaxError, UnicodeDecodeError):
-                continue
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if matches(alias.name):
-                            return True
-                elif isinstance(node, ast.ImportFrom) and node.module:
-                    if matches(node.module):
-                        return True
-                    if (
-                        node.module == "ksadk"
-                        and "ksadk.tunnel" in module_names
-                        and any(alias.name == "tunnel" for alias in node.names)
-                    ):
-                        return True
-        return False
+        files = (
+            path for path in self._iter_project_py_files()
+            if not self._should_skip_project_file(path)
+        )
+        return project_imports_any(files, module_names)
 
     def _iter_project_py_files(self):
         for path in self._iter_project_files():

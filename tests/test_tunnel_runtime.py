@@ -308,10 +308,26 @@ def test_tunnel_routes_precede_hosted_ui_catchall(monkeypatch, tmp_path):
         configure_runtime_app,
     )
 
-    paths = [route.path for route in app.routes]
-    assert "/tunnel/connect" in paths
-    assert "/tunnel/servers" in paths
-    assert paths.index("/tunnel/servers") < paths.index("/{requested_path:path}")
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/tunnel/servers",
+            params={"agent": "demo_agent"},
+            headers={"Authorization": "Bearer fake-tunnel-token"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"agent": "demo_agent", "servers": []}
+        response = client.get("/tunnel/servers", params={"agent": "demo_agent"})
+        assert response.status_code == 403
+        assert response.json() == {"error": "tunnel authentication failed"}
+        with client.websocket_connect("/tunnel/connect?token=fake-tunnel-token") as websocket:
+            websocket.send_json({
+                "type": "register",
+                "agent": "demo_agent",
+                "servers": [{"name": "inventory", "protocol": "mcp"}],
+            })
+            assert websocket.receive_json()["ok"] is True
 
 
 def test_code_builder_tunnel_enables_mcp_runtime_requirements(monkeypatch, tmp_path):
