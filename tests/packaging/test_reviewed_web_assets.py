@@ -270,7 +270,7 @@ def test_ci_uses_the_manifest_archive_and_export_includes_its_verifier():
     action = (ROOT / ".github/actions/prepare-web-candidate/action.yml").read_text()
     assert "check-archive" in action
     assert "npm pack" not in action
-    for name in ("ci.yml", "release-check.yml", "release-studio-app.yml", "publish-pypi.yml"):
+    for name in ("ci.yml", "release-check.yml", "publish-pypi.yml"):
         workflow = (ROOT / ".github/workflows" / name).read_text()
         assert "0.3.12" not in workflow
         assert version in workflow

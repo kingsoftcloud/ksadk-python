@@ -36,9 +36,6 @@ CURATED_REFERENCE_DOCS: set[str] = {"docs/reference/ksadk环境变量参考.md"}
 
 ROOT_EXPORT_FILES = {
     # Preserve already-reviewed public main inputs in subsequent clean exports.
-    '.github/workflows/migrate-studio-signing.yml',
-    '.github/workflows/migrate-studio-windows-signing.yml',
-
     ".github/actions/prepare-web-candidate/action.yml",
     ".dockerignore",
     ".gitattributes",
@@ -51,13 +48,6 @@ ROOT_EXPORT_FILES = {
     ".github/codeql/codeql-config.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
-    ".github/workflows/release-agentkit-studio.yml",
-    ".github/workflows/release-studio-app.yml",
-    "electron-main.js",
-    "preload.js",
-    "desktop-runtime.js",
-    "electron-builder.config.cjs",
-    "package.json",
     ".github/workflows/pages.yml",
     ".github/workflows/publish-pypi.yml",
     ".github/workflows/release-check.yml",
@@ -124,18 +114,7 @@ SCRIPT_EXPORT_FILES = {
     "scripts/verify_ksadk_web_static.py",
     "scripts/reviewed_web_assets.py",
     "scripts/write_build_provenance.py",
-    "scripts/package_studio_app.sh",
-    "scripts/package_studio_app_windows.sh",
-    "scripts/prepare_studio_assets.sh",
-    "scripts/prepare_studio_assets_windows.sh",
-    "scripts/patch_isbinaryfile.py",
-    "scripts/after-sign.cjs",
-    "scripts/after-sign.sh",
     "scripts/verify_native_studio_install.py",
-    "scripts/create_studio_icon.py",
-    "scripts/studio.entitlements",
-    "scripts/node.entitlements",
-    "scripts/write_studio_update_manifest.py",
 }
 
 PUBLIC_TEST_FILES = {
@@ -255,7 +234,6 @@ PUBLIC_TEST_FILES = {
     'tests/kernel/test_teams_sqlite_concurrency.py',
     'tests/kernel/test_teams_tool_runtime.py',
     'tests/kernel/test_teams_workspace.py',
-    'tests/packaging/test_studio_dmg.py',
     'tests/plugins/test_teams_build_artifacts.py',
     'tests/plugins/test_teams_execution_completion.py',
     'tests/plugins/test_teams_runtime.py',

@@ -103,26 +103,6 @@ def test_export_plan_keeps_build_inputs_and_excludes_generated_assets():
                    for p in plan.export_paths)
 
 
-def test_clean_export_contains_actual_desktop_build_dependencies(tmp_path):
-    module = _load_module()
-    root = SCRIPT_PATH.parents[1]
-    plan = module.build_export_plan(root)
-    output = tmp_path / "public"
-    module.copy_export(plan, output)
-    workflow = (output / ".github/workflows/release-studio-app.yml").read_text()
-    dependencies = set(re.findall(r"scripts/[\w./-]+\.(?:py|sh|cjs)", workflow))
-    dependencies.update(re.findall(r"--config\s+([\w.-]+\.cjs)", workflow))
-    dependencies.add("package.json")
-    for config in tuple(path for path in dependencies if path.endswith(".cjs")):
-        assert (output / config).is_file(), f"workflow build input excluded: {config}"
-        dependencies.update(re.findall(r"scripts/[\w./-]+\.(?:cjs|sh|entitlements)",
-                                      (output / config).read_text()))
-    for path in dependencies:
-        assert (output / path).is_file(), f"desktop build input excluded: {path}"
-    assert (output / "scripts/prepare_studio_assets.sh").is_file()
-    assert (output / "scripts/verify_native_studio_install.py").is_file()
-
-
 def test_export_contains_ci_tests_and_their_local_imports():
     module = _load_module()
     root = SCRIPT_PATH.parents[1]
