@@ -124,3 +124,175 @@ def test_build_openclaw_env_vars_does_not_forward_unrelated(monkeypatch):
 
     assert "AWS_ACCESS_KEY_ID" not in env
     assert "KSADK_UPDATED_AT" not in env
+
+
+_TUNNEL_ENV = {
+    "KSADK_ENABLE_TUNNEL": "1",
+    "KSADK_TUNNEL_TOKEN": "fixture-tunnel-token",
+    "KSADK_TUNNEL_SELF_URL": "http://127.0.0.1:8080",
+}
+
+
+def _clear_tunnel_process_env(monkeypatch):
+    for name in _TUNNEL_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _disable_global_deploy_env(monkeypatch):
+    monkeypatch.setattr(
+        "ksadk.deployment.providers.serverless.get_env_from_global_config",
+        lambda: {},
+    )
+
+
+def test_tunnel_process_env_prefixes_are_forwarded():
+    for name in _TUNNEL_ENV:
+        assert should_forward_process_env(name)
+
+
+def test_tunnel_project_dotenv_enters_deploy_env(monkeypatch, tmp_path):
+    from ksadk.deployment.providers.serverless import ServerlessProvider
+
+    _disable_global_deploy_env(monkeypatch)
+    _clear_tunnel_process_env(monkeypatch)
+    (tmp_path / ".env").write_text(
+        "".join(f"{key}={value}\n" for key, value in _TUNNEL_ENV.items()),
+        encoding="utf-8",
+    )
+
+    env, env_file_exists, project_env_count = ServerlessProvider._load_deploy_env_vars(tmp_path)
+
+    assert env_file_exists is True
+    assert project_env_count == len(_TUNNEL_ENV)
+    for key, value in _TUNNEL_ENV.items():
+        assert env[key] == value
+
+
+def test_tunnel_deploy_env_precedence_and_no_generated_self_url(monkeypatch, tmp_path):
+    from ksadk.deployment.providers.serverless import ServerlessProvider
+
+    _disable_global_deploy_env(monkeypatch)
+    _clear_tunnel_process_env(monkeypatch)
+    (tmp_path / ".env").write_text(
+        "KSADK_ENABLE_TUNNEL=0\n"
+        "KSADK_TUNNEL_TOKEN=fixture-project-token\n"
+        "KSADK_TUNNEL_SELF_URL=http://127.0.0.1:7000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KSADK_ENABLE_TUNNEL", "1")
+    monkeypatch.setenv("KSADK_TUNNEL_TOKEN", "fixture-shell-token")
+    monkeypatch.setenv("KSADK_TUNNEL_SELF_URL", "http://127.0.0.1:9000")
+
+    env, _, _ = ServerlessProvider._load_deploy_env_vars(
+        tmp_path,
+        {"KSADK_TUNNEL_TOKEN": "fixture-explicit-token"},
+    )
+
+    assert env["KSADK_ENABLE_TUNNEL"] == "1"
+    assert env["KSADK_TUNNEL_TOKEN"] == "fixture-explicit-token"
+    assert env["KSADK_TUNNEL_SELF_URL"] == "http://127.0.0.1:9000"
+
+    monkeypatch.delenv("KSADK_TUNNEL_SELF_URL")
+    (tmp_path / ".env").write_text(
+        "KSADK_ENABLE_TUNNEL=1\nKSADK_TUNNEL_TOKEN=fixture-project-token\n",
+        encoding="utf-8",
+    )
+    env_without_self_url, _, _ = ServerlessProvider._load_deploy_env_vars(tmp_path)
+    assert "KSADK_TUNNEL_SELF_URL" not in env_without_self_url
+
+
+def test_tunnel_env_payload_marks_only_token_as_sensitive():
+    from ksadk.api.environment import environment_variables_payload
+
+    payload = environment_variables_payload(_TUNNEL_ENV)
+    sensitivity = {item["Key"]: item["IsSensitive"] for item in payload}
+
+    assert sensitivity == {
+        "KSADK_ENABLE_TUNNEL": False,
+        "KSADK_TUNNEL_TOKEN": True,
+        "KSADK_TUNNEL_SELF_URL": False,
+    }
+
+
+def test_tunnel_token_is_masked_in_dry_run_output():
+    import json
+
+    from ksadk.api.environment import environment_variables_payload
+    from ksadk.cli.dry_run import sanitize_dry_run_request
+
+    payload = sanitize_dry_run_request(
+        {
+            "method": "POST",
+            "url": "https://agentengine.example.com/CreateAgentProduct",
+            "body": {
+                "Advanced": {
+                    "EnvironmentVariables": environment_variables_payload(_TUNNEL_ENV),
+                },
+            },
+        }
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert _TUNNEL_ENV["KSADK_TUNNEL_TOKEN"] not in rendered
+    env_items = payload["body"]["Advanced"]["EnvironmentVariables"]
+    token_item = next(item for item in env_items if item["Key"] == "KSADK_TUNNEL_TOKEN")
+    assert token_item["Value"] == "***"
+
+
+@pytest.mark.asyncio
+async def test_tunnel_env_create_and_update_agent_api_payloads(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    from ksadk.api.client import AgentEngineClient
+
+    client = AgentEngineClient(
+        base_url="https://agentengine.example.com",
+        access_key="fixture-access-key",
+        secret_key="fixture-secret-key",
+        region="cn-beijing-6",
+        allow_env_fallback=False,
+    )
+    create_action = Mock(return_value={})
+    monkeypatch.setattr(client, "_action", create_action)
+
+    await client.create_agent(
+        {
+            "name": "fixture-agent",
+            "framework": "adk",
+            "artifact_type": "Code",
+            "artifact_path": "ks3://fixture-bucket/fixture-agent.zip",
+            "region": "cn-beijing-6",
+            "env_vars": _TUNNEL_ENV,
+        }
+    )
+
+    assert create_action.call_count == 1
+    action, params = create_action.call_args.args
+    assert action == "CreateAgentProduct"
+    created_env = params["Advanced"]["EnvironmentVariables"]
+    assert {item["Key"] for item in created_env} == set(_TUNNEL_ENV)
+    assert all(
+        item["Value"] != _TUNNEL_ENV["KSADK_TUNNEL_TOKEN"] or item["IsSensitive"]
+        for item in created_env
+    )
+
+    update_action = AsyncMock(return_value={})
+    monkeypatch.setattr(client, "_action_async", update_action)
+    await client.update_agent(
+        "fixture-agent-id",
+        {
+            "artifact_type": "Code",
+            "artifact_path": "ks3://fixture-bucket/fixture-agent-v2.zip",
+            "env_vars": _TUNNEL_ENV,
+            "environment_variables_is_patch": True,
+        },
+    )
+
+    assert update_action.call_count == 1
+    action, params = update_action.call_args.args
+    assert action == "UpdateAgent"
+    patch = params["EnvironmentVariablePatch"]
+    assert patch["Delete"] == []
+    assert {item["Key"] for item in patch["Upsert"]} == set(_TUNNEL_ENV)
+    token_item = next(item for item in patch["Upsert"] if item["Key"] == "KSADK_TUNNEL_TOKEN")
+    assert token_item["IsSensitive"] is True

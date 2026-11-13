@@ -59,6 +59,10 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
         self._knowledge_base: Any = None
         # Keep runtime toolsets alive for the lifetime of the runner.
         self._runtime_toolsets: list[Any] = []
+        # Optional process-owned Tunnel dependencies supplied by Runtime factory.
+        self._tunnel_config: Any = None
+        self._tunnel_registry: Any = None
+        self._owns_tunnel_registry = False
         # ADK resumability state
         self._resumable: bool = False
         self._resume_disabled_reason: Optional[str] = None
@@ -99,6 +103,16 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
                     await result
             except Exception as exc:
                 logger.warning("Failed to close runtime toolset %r: %s", toolset, exc)
+
+        if self._owns_tunnel_registry:
+            registry = self._tunnel_registry
+            self._tunnel_registry = None
+            self._owns_tunnel_registry = False
+            if registry is not None:
+                try:
+                    await registry.close()
+                except Exception as exc:
+                    logger.warning("Failed to close runner-owned Tunnel registry: %s", exc)
 
     def _apply_json_patch(self):
         """Patch ADK LiteLlm to handle malformed JSON in tool-call arguments.
@@ -862,6 +876,59 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             return False
         return any(path.is_dir() and (path / "SKILL.md").exists() for path in skills_dir.iterdir())
 
+    def _inject_tunnel_toolset(self) -> None:
+        """Inject the per-app dynamic Tunnel toolset when explicitly enabled."""
+        from ksadk.tunnel.config import tunnel_config_for_detection
+
+        config = self._tunnel_config or tunnel_config_for_detection(
+            self.detection_result,
+            runtime_type="adk",
+        )
+        if config is None:
+            return
+
+        from ksadk.tunnel import TunnelRegistry, TunnelToolset
+
+        registry = self._tunnel_registry
+        if registry is None:
+            registry = TunnelRegistry()
+            registry.self_url = config.self_url
+            self._tunnel_registry = registry
+            self._owns_tunnel_registry = True
+
+        candidate = TunnelToolset(
+            agent_name=config.agent_name,
+            registry=registry,
+        )
+        toolset = registry.claim_tunnel_toolset(candidate)
+        if toolset.closed:
+            raise RuntimeError("Cannot attach a closed app-owned TunnelToolset")
+
+        tools = getattr(self._agent, "tools", None)
+        if tools is None:
+            tools = []
+            self._agent.tools = tools
+        for existing in list(tools):
+            if not isinstance(existing, TunnelToolset) or existing.agent_name != config.agent_name:
+                continue
+            if existing is toolset:
+                continue
+            if existing.closed:
+                # A previous app in this interpreter was already shut down. Its
+                # closed Toolset has no live handlers and can be detached safely.
+                tools.remove(existing)
+                continue
+            raise ValueError(
+                "Agent already contains a different active TunnelToolset for "
+                f"{config.agent_name!r}; manual and app-owned registries must not be mixed"
+            )
+
+        if not any(existing is toolset for existing in tools):
+            tools.append(toolset)
+        # Deliberately not in _runtime_toolsets: per-run Runner.close() must not
+        # close this shared resource. RuntimeApp shutdown closes the registry.
+        logger.info("Attached app-owned Tunnel toolset to agent %s", config.agent_name)
+
     def _inject_mcp_toolsets(self):
         """默认注入远端 MCP toolset。"""
         try:
@@ -1092,6 +1159,7 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
         self._inject_skill_runtime_tools()
         self._inject_builtin_tools()
         self._inject_mcp_toolsets()
+        self._inject_tunnel_toolset()
 
         # 初始化 Runner (使用 _build_runner 以支持 ResumabilityConfig)
         self._build_runner()

@@ -195,6 +195,7 @@ PUBLIC_TEST_FILES = {
     "tests/studio/test_model_wire_identity.py",
     "tests/studio/test_model_wire_usage.py",
     "tests/studio/test_native_artifact_context_capacity.py",
+    "tests/cli/test_cmd_config_tunnel.py",
     "tests/studio/test_native_default_install.py",
     "tests/studio/test_native_model_port.py",
     "tests/test_canonical_write_budget_postgres.py",
@@ -378,6 +379,15 @@ PUBLIC_TEST_FILES = {
     "tests/a2a/test_public_imports.py",
     "tests/studio/test_shared_web_final_snapshot.py",
     "tests/studio/response_projection_fixtures.py",
+    # On-prem MCP Tunnel runtime, protocol, and local end-to-end coverage.
+    "tests/tunnel/__init__.py",
+    "tests/tunnel/conftest.py",
+    "tests/tunnel/test_connector.py",
+    "tests/tunnel/test_registry.py",
+    "tests/tunnel/test_server.py",
+    "tests/tunnel/test_toolset.py",
+    "tests/test_tunnel_runtime.py",
+    "tests/test_tunnel_e2e.py",
 }
 
 # Reviewed public protocol regressions and their complete local dependency closure.

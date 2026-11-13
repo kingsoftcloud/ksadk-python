@@ -439,6 +439,32 @@ def test_makefile_delegates_runtime_image_builds_to_agentengine_images_repo():
     assert "-f deploy/hermes/Dockerfile" not in makefile
 
 
+def test_runtime_templates_share_optional_tunnel_startup_port(tmp_path: Path):
+    from ksadk.deployment.manager import K8sDeployer
+
+    detection_result = DetectionResult(
+        type=FrameworkType.ADK,
+        name="demo_agent",
+        entry_point="demo_agent/agent.py",
+        package_path=str(tmp_path / "demo_agent"),
+        agent_variable="root_agent",
+    )
+    code_source = CodeBuilder(tmp_path)._generate_entrypoint(detection_result)
+    container_source = ContainerBuilder(tmp_path)._generate_entrypoint(
+        detection_result, "demo_agent"
+    )
+    deployment_source = K8sDeployer()._generate_entrypoint(detection_result)
+
+    for source in (code_source, container_source, deployment_source):
+        compile(source, "entrypoint.py", "exec")
+        assert "from ksadk.tunnel.config import tunnel_self_url_for_start" in source
+        assert "tunnel_self_url=tunnel_self_url_for_start(" in source
+
+    assert 'os.environ.get("PORT", 8080)' in code_source
+    assert 'os.environ.get("PORT", 8080)' in container_source
+    assert "tunnel_self_url_for_start(8000)" in deployment_source
+
+
 def test_runtime_templates_initialize_tracing_for_otlp_envs(tmp_path: Path):
     detection_result = DetectionResult(
         type=FrameworkType.LANGGRAPH,

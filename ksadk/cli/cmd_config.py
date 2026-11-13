@@ -176,6 +176,47 @@ def _parse_set_items(set_items: tuple) -> tuple[dict, dict, list[str]]:
     return updates_yaml, updates_env, invalid_items
 
 
+def _global_unsupported_env_keys(env_vars: dict) -> list[str]:
+    """Return keys that cannot be consumed from the shared global config."""
+    from ksadk.configs.global_config import CONFIG_GROUPS
+
+    supported = {
+        key
+        for group_keys in CONFIG_GROUPS.values()
+        for key in group_keys
+        if key != "IDENTITY_CACHE"
+    }
+    return sorted(key for key in env_vars if key not in supported)
+
+
+def _warn_global_unsupported_env_keys(keys: list[str]) -> None:
+    if keys:
+        print_warn(f"以下环境变量仅写入当前项目 .env，不支持全局配置: {', '.join(keys)}")
+
+
+def _tunnel_env_enabled(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_tunnel_wizard_config(
+    new_env: dict,
+    existing_env: dict,
+    *,
+    enabled: bool,
+    token: str | None,
+) -> None:
+    if enabled:
+        resolved_token = str(token or "").strip()
+        if not resolved_token:
+            raise usage_error("开启 Tunnel 时必须提供非空 KSADK_TUNNEL_TOKEN。")
+        new_env["KSADK_ENABLE_TUNNEL"] = "1"
+        new_env["KSADK_TUNNEL_TOKEN"] = resolved_token
+    elif _tunnel_env_enabled(existing_env.get("KSADK_ENABLE_TUNNEL")):
+        # Preserve the token for a later re-enable, but make disable explicit so
+        # hot updates do not leave the hosted Tunnel active.
+        new_env["KSADK_ENABLE_TUNNEL"] = "0"
+
+
 def _apply_set_command(
     set_items: tuple, output_path: Path, env_path: Path, is_global: bool
 ) -> dict:
@@ -184,7 +225,10 @@ def _apply_set_command(
     if not updates_yaml and not updates_env and invalid_items:
         raise usage_error(
             "至少提供一个有效的 KEY=VALUE 配置项。",
-            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=deepseek-v4.1-flash`"],
+            hints=[
+                "示例: `agentengine config set region=cn-beijing-6 "
+                "OPENAI_MODEL_NAME=deepseek-v4.1-flash`"
+            ],
         )
 
     result = {
@@ -195,6 +239,9 @@ def _apply_set_command(
         "invalid_items": invalid_items,
         "global_updated": False,
         "global_config_path": None,
+        "global_unsupported_env_keys": (
+            _global_unsupported_env_keys(updates_env) if is_global else []
+        ),
     }
 
     if updates_env:
@@ -315,6 +362,7 @@ def _render_config_set_result_pretty(result: dict) -> None:
         print_warn(f"已忽略无效配置项: {', '.join(result['invalid_items'])}")
     if result["global_updated"]:
         print_kv("全局配置", result["global_config_path"] or "~/.agentengine/settings.json")
+    _warn_global_unsupported_env_keys(result.get("global_unsupported_env_keys", []))
 
 
 def _run_config_set_command(
@@ -323,7 +371,10 @@ def _run_config_set_command(
     if not set_items:
         raise usage_error(
             "请至少提供一个 KEY=VALUE 配置项。",
-            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=deepseek-v4.1-flash`"],
+            hints=[
+                "示例: `agentengine config set region=cn-beijing-6 "
+                "OPENAI_MODEL_NAME=deepseek-v4.1-flash`"
+            ],
         )
     return _apply_set_command(set_items, output_path, env_path, is_global)
 
@@ -335,6 +386,7 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
     1. 配置 Agent 基础信息 (名称、框架等)
     2. 配置 模型服务 (API Key, Base URL)
     3. 配置 云厂商凭证 (KSYUN AK/SK)
+    4. 为 ADK 项目配置可选的内网 MCP Tunnel
 
     参数:
         --set: 非交互式设置配置项 (如 --set name=MyAgent --set KSYUN_REGION=cn-beijing-6)
@@ -605,6 +657,36 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
         print_info("企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD")
         print_info("KCR 访问凭证获取: https://kcr.console.ksyun.com/ → 访问凭证")
 
+    if new_config["framework"] == "adk":
+        print_rule()
+        print_rule("内网 MCP Tunnel (可选)")
+        print_info("Tunnel 仅保存到当前项目；标准入口会自动推导 self URL。")
+        enable_tunnel = _ask_or_exit(
+            questionary.confirm(
+                "是否启用内网 MCP Tunnel?",
+                default=_tunnel_env_enabled(existing_env.get("KSADK_ENABLE_TUNNEL")),
+                style=_questionary_style(),
+            )
+        )
+        tunnel_token = None
+        if enable_tunnel:
+            tunnel_token = _ask_or_exit(
+                questionary.password(
+                    "Tunnel Token (KSADK_TUNNEL_TOKEN):",
+                    default=existing_env.get("KSADK_TUNNEL_TOKEN") or "",
+                    style=_questionary_style(),
+                    validate=lambda value: (
+                        bool(str(value).strip()) or "开启 Tunnel 时必须提供非空 KSADK_TUNNEL_TOKEN"
+                    ),
+                )
+            )
+        _apply_tunnel_wizard_config(
+            new_env,
+            existing_env,
+            enabled=enable_tunnel,
+            token=tunnel_token,
+        )
+
     print_rule()
 
     # === 5. 写入文件 ===
@@ -686,6 +768,7 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
         should_save_global = False
 
     if should_save_global:
+        _warn_global_unsupported_env_keys(_global_unsupported_env_keys(new_env))
         global_config = build_global_config_from_env(new_env)
         if save_global_config(global_config):
             print_success(f"已保存到全局配置: {get_global_config_path()}")

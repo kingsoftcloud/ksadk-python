@@ -180,7 +180,17 @@ def _create_framework_runner(context: RuntimeLaunchContext, runtime_type: str) -
 
 
 def _create_adk(context: RuntimeLaunchContext) -> RuntimeAdapter:
-    return ADKRuntimeAdapter(_create_framework_runner(context, "adk"))
+    runner = _create_framework_runner(context, "adk")
+    from ksadk.tunnel.config import tunnel_config_from_context
+
+    tunnel = tunnel_config_from_context(context)
+    if tunnel is not None:
+        # BaseRunner owns the native agent lifetime. These attributes are
+        # process-only and never enter the serialized launch manifest.
+        runner._tunnel_config = tunnel
+        runner._tunnel_registry = context.services.tunnel_registry
+        runner._owns_tunnel_registry = False
+    return ADKRuntimeAdapter(runner)
 
 
 def _create_langgraph(context: RuntimeLaunchContext) -> RuntimeAdapter:

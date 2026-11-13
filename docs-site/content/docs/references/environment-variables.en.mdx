@@ -308,6 +308,23 @@ KSADK_ENABLE_MCP_TOOLS=1
 KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 ```
 
+## On-prem MCP Tunnel
+
+| Variable | Purpose |
+| --- | --- |
+| `KSADK_ENABLE_TUNNEL` | enable the on-prem MCP Tunnel for the ADK Runtime; defaults to `0` |
+| `KSADK_TUNNEL_TOKEN` | connector registration token; required when Tunnel is enabled and sensitive |
+| `KSADK_TUNNEL_SELF_URL` | loopback base URL through which TunnelToolset reaches the in-process proxy; standard entrypoints derive it from the actual port |
+
+These variables are project-scoped Runtime configuration and cannot be saved to the global configuration with `agentengine config set --global`. Generate `KSADK_TUNNEL_TOKEN` independently for each project or environment. `KSADK_TUNNEL_SELF_URL` is an optional override for special deployments and normally should not be written to a project or deployment environment file; standard entrypoints derive it from the actual port.
+
+```bash title="bash"
+KSADK_ENABLE_TUNNEL=1
+KSADK_TUNNEL_TOKEN=<tunnel-token>
+# Set only when the standard entrypoint cannot derive the port correctly:
+# KSADK_TUNNEL_SELF_URL=http://127.0.0.1:8080
+```
+
 ## Build And Packaging
 
 | Variable | Purpose |

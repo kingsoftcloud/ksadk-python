@@ -26,6 +26,9 @@ class RuntimeServices:
     runner_factory: Callable[[Any, str], Any] | None = None
     # Process-owned dependency; never serialized into user/runtime config.
     managed_a2a_bootstrap: Any | None = None
+    # Tunnel state is app-owned and shared by the FastAPI mount and ADKRunner.
+    # It is deliberately outside the immutable user config mapping.
+    tunnel_registry: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,21 @@ class RuntimeLaunchContext:
         if deployment not in ("local", "ksadk_managed_cloud", "external_managed"):
             deployment = "local"
         object.__setattr__(self, "deployment_mode", deployment)
+
+        # Prepare process-owned Tunnel state before any early A2A adapter can be
+        # created. The app factory may later refine registry.self_url with the
+        # actual Uvicorn port; the registry identity remains shared.
+        from ksadk.tunnel.config import prepare_tunnel_services
+
+        object.__setattr__(
+            self,
+            "services",
+            prepare_tunnel_services(
+                self.services,
+                runtime_type=self.runtime_type,
+                detection=self.detection,
+            ),
+        )
 
 
 __all__ = ["RuntimeLaunchContext", "RuntimeServices"]

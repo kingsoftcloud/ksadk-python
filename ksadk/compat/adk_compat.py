@@ -76,10 +76,13 @@ _LAZY_SYMBOLS: dict[str, str] = {
     "Session": "google.adk.sessions",
     "DatabaseSessionService": "google.adk.sessions",
     "InvocationContext": "google.adk.agents",
+    "ReadonlyContext": "google.adk.agents.readonly_context",
     "ToolContext": "google.adk.tools",
     "GetSessionConfig": "google.adk.sessions.base_session_service",
     "ListSessionsResponse": "google.adk.sessions.base_session_service",
     # tools
+    "BaseTool": "google.adk.tools.base_tool",
+    "BaseToolset": "google.adk.tools.base_toolset",
     "FunctionTool": "google.adk.tools",
     "load_memory": "google.adk.tools",
     "McpTool": "google.adk.tools.mcp_tool.mcp_tool",

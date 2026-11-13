@@ -8,9 +8,11 @@ from typing import Any, Dict, Literal
 
 from ksadk.builders.framework_requirements import (
     FASTAPI_REQUIREMENT,
+    TUNNEL_MCP_REQUIREMENT,
     minimal_requirements_for_framework,
 )
 from ksadk.builders.requirements_utils import merge_requirement_lists
+from ksadk.tunnel.config import tunnel_enabled
 
 
 class BaseDeployer(ABC):
@@ -152,6 +154,8 @@ CMD ["python", "entrypoint.py"]
 
         framework = detection_result.type.value
         base_deps += minimal_requirements_for_framework(framework)
+        if tunnel_enabled():
+            base_deps.append(TUNNEL_MCP_REQUIREMENT)
 
         return "\n".join(merge_requirement_lists(base_deps))
 
@@ -227,6 +231,7 @@ except ImportError:
 from ksadk.detection import DetectionResult, FrameworkType
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
 from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
+from ksadk.tunnel.config import tunnel_self_url_for_start
 import uvicorn
 
 # 检测结果 (部署时固化)
@@ -266,6 +271,7 @@ app = create_runtime_app(
         launch_context=runtime_context,
         a2a=_managed_a2a_bootstrap,
         a2a_runtime_adapter=_a2a_adapter,
+        tunnel_self_url=tunnel_self_url_for_start(8000),
     ),
     configure_runtime_app,
 )

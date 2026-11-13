@@ -212,7 +212,7 @@ def _run_custom(
         raise SystemExit(2)
 
     try:
-        runtime_app = create_runtime_web_app(result, agent_path)
+        runtime_app = create_runtime_web_app(result, agent_path, port=port)
     except Exception as e:
         print_exception("RuntimeAdapter 初始化失败", e)
         raise SystemExit(1)

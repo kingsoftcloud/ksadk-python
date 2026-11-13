@@ -11,6 +11,18 @@ def configure_runtime_app(app: FastAPI, state: RuntimeAppState, groups: set[str]
     """Attach integrated resources and the selected route groups to one app."""
     load_route_modules()
     _configure_route_dependencies()
+
+    # Tunnel routes must precede integrated resources and the Hosted UI catch-all.
+    if state.tunnel is not None:
+        from ksadk.tunnel import mount_tunnel
+
+        mount_tunnel(
+            app,
+            token=state.tunnel.token,
+            allowed_agents=[state.tunnel.agent_name],
+            registry=state.launch_context.services.tunnel_registry,
+        )
+
     _register_integrated_routers(app, state)
 
     # Agent Kernel canonical ingress（/agent-kernel/v1/*）必须先于 route group
