@@ -28,10 +28,13 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   build-macos:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'windows' }}
-    runs-on: macos-14
+    runs-on: macos-15
     environment: studio-signing
     timeout-minutes: 45
     steps:
+      - name: Verify arm64 runner
+        run: test "$(uname -m)" = arm64
+
       - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v7

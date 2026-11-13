@@ -2,6 +2,8 @@
 import os
 import re
 import subprocess
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -86,6 +88,43 @@ def test_macos_runtime_relocates_python_framework_and_checks_startup():
     assert "otool -L" in makefile
     assert '$(STUDIO_APP_RUNTIME)"/bin/python*' in makefile
     macos_job = workflow.split("# Windows x64:", 1)[0]
+    assert "runs-on: macos-15" in macos_job
+    assert 'test "$(uname -m)" = arm64' in macos_job
     assert '"$app/Contents/Resources/runtime/bin/python3"' in macos_job
     assert "AgentKitStudio-macos-arm64.zip" not in macos_job
     assert "Save verified DMG for manual validation" in macos_job
+
+
+def test_windows_packager_generates_ico_before_downloading_runtime(tmp_path):
+    """A clean CI checkout must create its icon before staging the Windows app."""
+    from PIL import Image
+
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in ("package_studio_app_windows.sh", "create_studio_icon.py"):
+        (scripts / name).write_bytes((ROOT / "scripts" / name).read_bytes())
+    # The reviewed wheel validation is covered separately; stop this packaging
+    # smoke before network/native runtimes and exercise the real icon generator.
+    (scripts / "reviewed_web_assets.py").write_text("raise SystemExit(0)\n")
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist/ksadk-0.8.7-py3-none-any.whl").write_bytes(b"fixture")
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    python = commands / "python3"
+    python.write_text("#!/bin/sh\nexec " + shlex.quote(Path(sys.executable).as_posix()) + ' "$@"\n')
+    python.chmod(0o755)
+    curl = commands / "curl"
+    curl.write_text('#!/bin/sh\ntest -s scripts/studio_icon.ico || exit 99\n'
+                    'printf "icon-ready\n"\nexit 73\n')
+    curl.chmod(0o755)
+    result = subprocess.run(
+        ["sh", "scripts/package_studio_app_windows.sh"], cwd=tmp_path,
+        env={**os.environ, "PATH": f"{commands}{os.pathsep}{os.environ['PATH']}",
+             "STUDIO_APP_DIR": str(tmp_path / "bundle"), "STUDIO_APP_VERSION": "0.8.7"},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 73, result.stdout + result.stderr
+    assert "icon-ready" in result.stdout
+    with Image.open(scripts / "studio_icon.ico") as icon:
+        assert icon.format == "ICO"
+        assert {(16, 16), (32, 32), (256, 256)} <= icon.ico.sizes()

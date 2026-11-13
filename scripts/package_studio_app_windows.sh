@@ -29,6 +29,9 @@ rm -rf "$STUDIO_APP_DIR"
 mkdir -p "$bundle" "$resources/runtime" "$app_dir" "$resources/node" \
   "$resources/plugin-toolchains/dsh"
 
+# Generate ignored build assets on a clean checkout, as the macOS packager does.
+python3 scripts/create_studio_icon.py
+
 # ── Python 3.13 embeddable (self-contained, relocatable) ──────────────
 # The embeddable zip is the Windows equivalent of the macOS copy-python-stdlib
 # step: it ships python.exe + python313.dll + Lib/ and is designed to be moved.
