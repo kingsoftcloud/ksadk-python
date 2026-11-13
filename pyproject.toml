@@ -166,7 +166,7 @@ codex = [
 agui = [
     "ag-ui-protocol==1.0.0",
     "ag-ui-langgraph[fastapi]==0.0.47",
-    "ag-ui-a2ui-toolkit==0.0.4",
+    "ag-ui-a2ui-toolkit==0.0.6",
     "copilotkit==0.1.96",
 ]
 # 开发依赖
