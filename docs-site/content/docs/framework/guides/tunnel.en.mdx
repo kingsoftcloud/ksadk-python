@@ -1,13 +1,13 @@
 ---
 title: "On-prem MCP Tunnel"
-description: "Let a cloud ADK Agent call on-prem Streamable HTTP MCP tools through an outbound WebSocket tunnel established by the enterprise side."
+description: "Let a cloud ADK Agent or custom LangGraph StateGraph call on-prem Streamable HTTP MCP tools through an outbound WebSocket tunnel established by the enterprise side."
 status: new
 ---
 
-KsADK Tunnel connects MCP Servers inside an enterprise network to a cloud ADK Agent through an **outbound** WebSocket. The enterprise side does not need to open an inbound port, and the Agent can discover and call tunneled tools on subsequent turns.
+KsADK Tunnel connects MCP Servers inside an enterprise network to a cloud ADK Agent or custom LangGraph StateGraph through an **outbound** WebSocket. The enterprise side does not need to open an inbound port, and the Agent can discover and call tunneled tools according to the services online during execution.
 
 <Callout type="warning" title="First-version boundaries">
-The first version supports only the root ADK Agent and Streamable HTTP MCP. The registry lives in one Runtime process, so deployment requires one worker and one replica, or a verified sticky-routing topology. WS/WSS forwarding through the actual gateway requires separate acceptance testing.
+The first version supports automatic injection into the root ADK Agent and explicit integration with a custom LangGraph StateGraph; the only supported protocol is Streamable HTTP MCP. The registry lives in one Runtime process, so deployment requires one worker and one replica, or a verified sticky-routing topology. WS/WSS forwarding through the actual gateway requires separate acceptance testing.
 </Callout>
 
 ## How it works
@@ -22,7 +22,7 @@ flowchart LR
     subgraph cloud["Cloud Runtime: one process"]
         W["/tunnel/connect"]
         R["Per-app TunnelRegistry"]
-        T["ADKRunner + TunnelToolset"]
+        T["ADKRunner / LangGraphTunnelTools"]
         P["/tunnel/mcp/*"]
         W --> R --> T --> P
     end
@@ -30,15 +30,15 @@ flowchart LR
     P -- "Forwarded over WebSocket" --> C
 ```
 
-1. The cloud ADK Runtime mounts Tunnel routes from environment configuration.
+1. The cloud KsADK Runtime mounts Tunnel routes from environment configuration.
 2. The enterprise connector registers one or more MCP Servers, sending only names, protocols, and tool filters.
-3. ADKRunner injects `TunnelToolset` when it first loads the root Agent, without importing the user's `root_agent` during app bootstrap.
-4. Each subsequent tool enumeration reads the currently online services. New services appear on the next turn, and offline services are removed.
+3. ADKRunner automatically injects `TunnelToolset` when it first loads the root ADK Agent, without importing the user's `root_agent` during app bootstrap. A custom LangGraph StateGraph instead calls `LangGraphTunnelTools` explicitly from its nodes.
+4. ADK reads the currently online services during each subsequent tool enumeration; LangGraph reads them when its model and tool nodes execute. New services subsequently appear, and offline services are removed.
 5. MCP requests travel through the in-process proxy and WebSocket to the connector, which calls the real on-prem service.
 
 ## Enable the cloud side
 
-Tunnel is disabled by default, and the first version only supports the ADK Runtime. `KSADK_TUNNEL_TOKEN` is required when Tunnel is enabled; other Runtimes must not set the enable flag.
+Tunnel is disabled by default. The first version supports the ADK Runtime and explicit custom StateGraph integration in the LangGraph Runtime. `KSADK_TUNNEL_TOKEN` is required when Tunnel is enabled; other Runtimes must not set the enable flag.
 
 ### Project-scoped configuration
 
@@ -52,7 +52,7 @@ agentengine config set \
 agentengine run . --port 8080
 ```
 
-For an ADK project, you can also run `agentengine config` and enable Tunnel in the interactive wizard. The wizard reads the token through a password prompt and does not generate `KSADK_TUNNEL_SELF_URL`. Tunnel is project-scoped and cannot be saved to the global configuration. Even with `--global`, these variables are only written to the current project and a notice is displayed.
+For an ADK or LangGraph project, you can also run `agentengine config` and enable Tunnel in the interactive wizard. The wizard reads the token through a password prompt and does not generate `KSADK_TUNNEL_SELF_URL`; for LangGraph, it also reminds you to integrate explicitly in a custom StateGraph. Tunnel is project-scoped and cannot be saved to the global configuration. Even with `--global`, these variables are only written to the current project and a notice is displayed.
 
 For temporary local debugging, you can still use the shell directly:
 
@@ -97,7 +97,7 @@ This must be the loopback HTTP(S) base URL of the FastAPI app in the same proces
 
 ### Ingress gateway and connection URL
 
-For cloud deployment, the outer ingress gateway must forward `/tunnel/connect` to the FastAPI instance running the ADK Runtime and allow WebSocket Upgrade. Allowing ordinary Agent HTTP requests is not sufficient for Tunnel. If this path is not configured, is rejected by the gateway, or is handled as ordinary HTTP, the connector cannot reach the Agent and complete registration.
+For cloud deployment, the outer ingress gateway must forward `/tunnel/connect` to the FastAPI instance running the KsADK Runtime and allow WebSocket Upgrade. Allowing ordinary Agent HTTP requests is not sufficient for Tunnel. If this path is not configured, is rejected by the gateway, or is handled as ordinary HTTP, the connector cannot reach the Agent and complete registration.
 
 Without a path prefix, the complete cloud connection URL is:
 
@@ -133,9 +133,102 @@ The `agent` value used during connector registration is the Agent name detected 
 
 - Prefer `name` from `agentengine.yaml` when explicitly configured.
 - Otherwise, use the name shown in detection output.
-- It can differ from `root_agent.name` in code; use the CLI detection result as the reference.
+- It can differ from `root_agent.name` in ADK code; use the CLI detection result as the reference.
+- In a custom LangGraph StateGraph, `LangGraphTunnelTools(agent_name=...)` must match the name detected for the current app.
 
 The cloud side only allows registration to an Agent name allowed for the current app.
+
+## Explicit integration for custom LangGraph StateGraphs
+
+The public import is `from ksadk.tunnel.langgraph import LangGraphTunnelTools`; `from ksadk.tunnel import LangGraphTunnelTools` is also supported. During graph execution, the standard KsADK Runtime automatically supplies the current app's registry, self URL, and internal proxy credential. You do not need to call `mount_tunnel`, create a registry, or handle the proxy token yourself.
+
+`await tunnel.get_tools(tools=BUSINESS_TOOLS)` returns the business tools plus the currently online Tunnel tools. When Tunnel is disabled and no registry was explicitly supplied, it returns only the business tools. Tools are discovered independently for each online server; a discovery failure for one server does not hide tools from the others. Model-visible tool names are stable as `<server-alias>__<tool>`, such as `calculator__add`. `LocalServer.tool_filter` always uses original MCP tool names, such as `add`, rather than names with the namespace prefix.
+
+<Callout type="warning" title="LangGraph first-version boundaries">
+This phase supports only explicit integration from nodes in a custom `StateGraph`. It does not support `create_agent`, DeepAgents, or the legacy `create_react_agent`, and it does not automatically inject tools into arbitrary compiled graphs. `create_agent` and DeepAgents integration is left for a later phase; ADK retains automatic injection.
+</Callout>
+
+### Complete example
+
+The following example can serve as the entry module for a custom LangGraph project. Configure the environment variables required by your model provider and replace `BUSINESS_TOOLS` with your existing business tools. The example contains no real credentials.
+
+```python title="agent.py"
+import os
+
+from langchain_openai import ChatOpenAI
+from langgraph.graph import MessagesState, StateGraph, START
+from langgraph.prebuilt import ToolNode, tools_condition
+
+from ksadk.tunnel.langgraph import LangGraphTunnelTools
+
+
+# Replace with your existing LangChain business tools.
+BUSINESS_TOOLS = []
+
+model = ChatOpenAI(
+    model=os.environ.get("OPENAI_MODEL_NAME", "my-model"),
+    base_url=os.environ.get("OPENAI_BASE_URL"),
+    api_key=os.environ.get("OPENAI_API_KEY"),
+)
+tunnel = LangGraphTunnelTools(agent_name="ops_agent")
+
+
+async def current_tools():
+    return await tunnel.get_tools(tools=BUSINESS_TOOLS)
+
+
+async def model_node(state: MessagesState, config):
+    reply = await model.bind_tools(await current_tools()).ainvoke(
+        state["messages"], config=config
+    )
+    return {"messages": [reply]}
+
+
+async def tools_node(state: MessagesState, config):
+    return await ToolNode(await current_tools()).ainvoke(state, config=config)
+
+
+def build_graph(*, checkpointer=None):
+    graph = StateGraph(MessagesState)
+    graph.add_node("model", model_node)
+    graph.add_node("tools", tools_node)
+    graph.add_edge(START, "model")
+    graph.add_conditional_edges("model", tools_condition)
+    graph.add_edge("tools", "model")
+    return graph.compile(checkpointer=checkpointer)
+
+
+def ksadk_graph_factory(*, checkpointer):
+    return build_graph(checkpointer=checkpointer)
+
+
+root_agent = build_graph()
+```
+
+Keep `agent_name` consistent with `name` in `agentengine.yaml`:
+
+```yaml title="agentengine.yaml"
+name: ops_agent
+framework: langgraph
+entry_point: agent.py
+agent_variable: root_agent
+```
+
+Both the model node and the tool node call the same `current_tools()`: the model obtains the tools currently available for model binding through `model.bind_tools(await current_tools())`, and the tool node obtains the currently executable tools through `ToolNode(await current_tools())`. Both nodes are async. The graph's nodes and edges keep a fixed topology; Tunnel tools are not expanded statically when the graph is compiled.
+
+Do not run `get_tools()` during module import or inside `build_graph()`, and do not cache the tool list across executions. The standard Runtime provides the app-owned binding only in the graph execution context. Calling too early would lack that context and would freeze a tool catalog that is meant to reflect online changes.
+
+### Configuration and startup order
+
+1. Install `ksadk[langgraph]` and `langchain-openai`; the `langgraph` extra already includes the required `langchain-mcp-adapters`. Configure the model provider environment variables and create the `agent.py` and `agentengine.yaml` files above.
+2. Enable Tunnel and configure its token as described in “Project-scoped configuration” or “Code/Container deployment”, then start or restart the Runtime. The standard entrypoint mounts the routes and provides the binding during graph execution; deployment must still follow the single-worker, single-replica, or sticky-routing limits at the end of this guide.
+3. After the Runtime is ready, start the connector and confirm that the required servers have registered. The first-version connector does not promise automatic reconnection. Restart the connector and register again after a Runtime restart or a disconnected connection.
+4. Send a request that needs Tunnel tools. Each node execution enumerates the currently online services again without recompiling the graph. If no servers have registered when the model request starts, the model sees only the business tools available at that time.
+
+### Migrate an existing LangGraph graph
+
+- **Existing custom ReAct StateGraph**: preserve the graph topology and replace static model tool binding and `ToolNode` construction with the async `model_node` and `tools_node` wrappers from the example. Both nodes call the same `current_tools()`, and existing business tools are passed through `BUSINESS_TOOLS`.
+- **Chat-node-only graph**: the current LangGraph project template has only a `chat` node and no `ToolNode`. Adding `bind_tools` to `chat` alone is insufficient. Follow the complete example to add an async tool node, a `tools_condition` conditional edge, and an edge from `tools` back to `model`, forming a complete tool-calling loop.
 
 ## Enterprise connector
 
@@ -178,7 +271,7 @@ The first-version `start()` does not promise automatic reconnection. When the pr
 | Credential | Purpose | Location |
 | --- | --- | --- |
 | Tunnel token | Authenticate connector registration at `/tunnel/connect` | Cloud Secret and connector configuration |
-| Internal proxy credential | Authenticate `TunnelToolset` calls to `/tunnel/mcp/*` in the same process | Randomly generated by Runtime and held only in per-app tunnel state |
+| Internal proxy credential | Authenticate `TunnelToolset` or `LangGraphTunnelTools` calls to `/tunnel/mcp/*` in the same process | Randomly generated by Runtime and held only in per-app tunnel state |
 | Local MCP credential | Authenticate the connector to the real on-prem MCP Server | Only `LocalServer.headers` or `query` on the enterprise side |
 
 The internal proxy credential requires no user configuration. The cloud side removes it after verification and never sends it to the connector or the on-prem MCP Server.
@@ -213,14 +306,16 @@ Never put real credentials in source code, documentation, logs, or deployment ar
 - `/tunnel/mcp/*` and `/tunnel/servers` are authenticated and cannot be used as anonymous public proxies.
 - A response-head timeout returns 504, a disconnected server returns 503, and a connector-side local request failure returns 502 if the response has not started.
 - Cancellation and connector disconnects clean up pending requests. A mid-stream failure is not treated as a successful EOF.
+- The `content` of ordinary tool results continues through the existing event stream; the first version does not promise complete projection of MCP `structuredContent`.
+- The first version does not promise cold recovery of executions containing unfinished Tunnel ToolCalls. Ordinary MCP calls proxied through Tunnel do not guarantee exactly-once semantics. Reconcile external side effects before retrying or recovering, and make business tools idempotent or deduplicated as required.
 
 ## Deployment limits
 
 1. **One process**: the process owning the WebSocket and the process executing the Agent must share the same per-app registry.
 2. **One replica or sticky routing**: randomly load-balanced multi-replica deployment is unsupported.
 3. **WebSocket gateway**: production acceptance must cover WS/WSS, custom headers, idle timeouts, and maximum frame sizes.
-4. **Dynamic behavior**: tool changes apply to subsequent turns and do not modify a turn that has already started.
-5. **Protocol scope**: stdio MCP, generic non-MCP binary proxying, and automatic tool injection for other Runtimes are unsupported.
+4. **Dynamic behavior**: ADK tool changes apply to subsequent turns and do not modify a turn that has already started. LangGraph enumerates again whenever a node calls `current_tools()` and does not rewrite a model response that has already been generated.
+5. **Protocol and integration scope**: stdio MCP, generic non-MCP binary proxying, and automatic tool injection other than into the root ADK Agent are unsupported. LangGraph supports only the explicit custom StateGraph integration described above.
 6. **State recovery**: the registry does not survive process restart, so connectors must register again.
 
 Passing a local MCP smoke test is not proof of cloud E2E success. Before release, use an isolated environment to verify the actual gateway, WSS, both authentication layers, tool invocation, and disconnect behavior.

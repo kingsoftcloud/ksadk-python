@@ -8,6 +8,8 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import Any
 
+from ksadk.tunnel.langgraph import langgraph_tunnel_execution
+
 # This applies only to the first latest-root checkpoint read of a new input.
 # Explicit checkpoint/approval resumes and ordinary history reads see the exact
 # original checkpoint. Context variables isolate concurrent sessions and tasks.
@@ -32,29 +34,32 @@ def fresh_user_checkpoint(function):
                 while True:
                     # Some adapters drive each anext in a different Task.
                     # Never carry a ContextVar token across a public yield.
-                    token = _FRESH_READ.set(context)
-                    try:
-                        item = await results.__anext__()
-                    except StopAsyncIteration:
-                        return
-                    finally:
-                        _FRESH_READ.reset(token)
+                    with langgraph_tunnel_execution(self):
+                        token = _FRESH_READ.set(context)
+                        try:
+                            item = await results.__anext__()
+                        except StopAsyncIteration:
+                            return
+                        finally:
+                            _FRESH_READ.reset(token)
                     yield item
             finally:
-                token = _FRESH_READ.set(context)
-                try:
-                    await results.aclose()
-                finally:
-                    _FRESH_READ.reset(token)
+                with langgraph_tunnel_execution(self):
+                    token = _FRESH_READ.set(context)
+                    try:
+                        await results.aclose()
+                    finally:
+                        _FRESH_READ.reset(token)
         return generate
 
     @wraps(function)
     async def invoke(self, input_data):
-        token = _FRESH_READ.set({"used": False} if fresh(input_data) else None)
-        try:
-            return await function(self, input_data)
-        finally:
-            _FRESH_READ.reset(token)
+        with langgraph_tunnel_execution(self):
+            token = _FRESH_READ.set({"used": False} if fresh(input_data) else None)
+            try:
+                return await function(self, input_data)
+            finally:
+                _FRESH_READ.reset(token)
     return invoke
 
 

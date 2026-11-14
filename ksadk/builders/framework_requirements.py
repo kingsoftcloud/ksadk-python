@@ -26,8 +26,9 @@ LANGCHAIN_ECOSYSTEM_REQUIREMENTS = (
 
 DEEPAGENTS_REQUIREMENTS = ("deepagents>=0.6.2,<1.0.0",)
 
-# Runtime-only dependency used by ADK Tunnel's Streamable HTTP MCP handler.
+# Runtime-only dependencies used by Tunnel's Streamable HTTP MCP handlers.
 TUNNEL_MCP_REQUIREMENT = "mcp>=1.26.0,<2.0.0"
+TUNNEL_LANGGRAPH_REQUIREMENT = "langchain-mcp-adapters>=0.3.2"
 
 # codex runtime:openai-codex SDK(自带 codex CLI 二进制,见 PyPI cli-bin wheel)。
 # 版本必须与 pyproject.toml 的 ksadk[codex] extra 保持一致:适配层

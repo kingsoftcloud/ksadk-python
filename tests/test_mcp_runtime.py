@@ -148,6 +148,27 @@ def test_build_connection_params_disables_proxy_for_loopback_urls(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_build_langchain_connection_preserves_loopback_auth_and_proxy_boundary():
+    from ksadk.mcp_runtime import MCPServerConfig, build_langchain_connection
+
+    descriptor = MCPServerConfig(
+        name="local",
+        url="http://127.0.0.1:8899/mcp",
+        api_key="fixture-proxy-token",
+    )
+
+    connection = build_langchain_connection(descriptor)
+    assert connection["transport"] == "streamable_http"
+    assert connection["url"] == descriptor.url
+    assert connection["headers"] == {"Authorization": "Bearer fixture-proxy-token"}
+    client = connection["httpx_client_factory"]()
+    try:
+        assert client._trust_env is False
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_build_mcp_toolset_roundtrip_lists_and_calls_remote_tools(weather_mcp_server):
     from ksadk.mcp_runtime import MCPServerConfig, build_mcp_toolset
 

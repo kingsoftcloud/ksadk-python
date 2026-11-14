@@ -369,6 +369,7 @@ def test_pyproject_declares_validated_framework_dependency_windows():
     assert "langgraph==1.2.15" in dependencies
     for extra in ("langgraph", "deepagents"):
         assert "langgraph==1.2.15" in optional_dependencies[extra]
+    assert "langchain-mcp-adapters>=0.3.2" in optional_dependencies["langgraph"]
     assert (
         "deepagents>=0.6.2,<1.0.0; python_version >= '3.11'" in optional_dependencies["deepagents"]
     )

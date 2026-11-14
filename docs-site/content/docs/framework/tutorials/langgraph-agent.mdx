@@ -203,8 +203,22 @@ dist/
 build/
 ```
 
+## 8. 接入内网 MCP Tunnel（可选）
+
+如果云端 Agent 需要调用企业内网的 Streamable HTTP MCP，可以使用 Tunnel。ADKRunner 会自动注入 Tunnel 工具，LangGraph 则需要在业务图中显式接入，不能只设置 `KSADK_ENABLE_TUNNEL=1`。
+
+本教程的示例只有一个同步 `chat` 节点，没有 ToolNode。接入时需要：
+
+1. 把模型节点改为异步调用，并增加 `ToolNode`、`tools_condition` 和 tools→model 回边，形成工具调用循环。
+2. 创建 `LangGraphTunnelTools(agent_name="weather-agent")`，其中名称与 `agentengine.yaml` 的 `name` 一致。
+3. 在 model 节点使用 `model.bind_tools(await tunnel.get_tools(tools=BUSINESS_TOOLS))`，在 tools 节点把同一动态工具集合交给 `ToolNode`。
+4. 按标准方式配置 Tunnel token、启动 Runtime 和企业侧 Connector；不需要手工创建 registry、调用 `mount_tunnel` 或处理内部代理凭证。
+
+完整的 `agent.py`、已有 ReAct 图的简化改法，以及 checkpoint、断连和部署限制见[内网 MCP Tunnel](../guides/tunnel.mdx)。新版 `create_agent`、DeepAgents 和不可修改的 compiled graph 不属于当前 LangGraph 显式接入范围。
+
 ## 后续阅读
 
+- 阅读 [内网 MCP Tunnel](../guides/tunnel.mdx)，获取完整的 LangGraph Tunnel 接入示例。
 - 阅读 [框架接入](../guides/frameworks.mdx)，了解框架适配和 runner 加载边界。
 - 阅读 [会话与文件](/cn/docs/references/runtime-sessions-files)，了解 session、上传和工作区文件。
 - 阅读 [构建与打包](../guides/build-and-package.mdx)，了解本地构建和公开 artifact 规则。

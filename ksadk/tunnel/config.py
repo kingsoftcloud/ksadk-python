@@ -1,4 +1,4 @@
-"""Environment and composition helpers for the optional ADK Tunnel."""
+"""Environment and composition helpers for the optional MCP Tunnel."""
 
 from __future__ import annotations
 
@@ -56,8 +56,14 @@ def tunnel_config_for_detection(
 
     detection_type = getattr(getattr(detection, "type", None), "value", None)
     selected_runtime = str(runtime_type or detection_type or "").strip().lower()
-    if selected_runtime != "adk":
-        raise ValueError("KSADK_ENABLE_TUNNEL currently requires the ADK runtime")
+    supported_types = {"adk", "langgraph"}
+    if selected_runtime not in supported_types or (
+        detection_type and detection_type not in supported_types
+    ):
+        raise ValueError(
+            "KSADK_ENABLE_TUNNEL currently supports only ADK and custom LangGraph "
+            "StateGraph runtimes"
+        )
 
     agent_name = str(getattr(detection, "name", "") or "").strip()
     if not agent_name:

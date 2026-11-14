@@ -383,6 +383,7 @@ PUBLIC_TEST_FILES = {
     "tests/tunnel/__init__.py",
     "tests/tunnel/conftest.py",
     "tests/tunnel/test_connector.py",
+    "tests/tunnel/test_langgraph.py",
     "tests/tunnel/test_registry.py",
     "tests/tunnel/test_server.py",
     "tests/tunnel/test_toolset.py",

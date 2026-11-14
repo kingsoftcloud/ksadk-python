@@ -170,7 +170,7 @@ def test_adk_wizard_disable_preserves_token_and_self_url(monkeypatch, tmp_path):
 
 def test_non_adk_wizard_does_not_touch_tunnel_env(monkeypatch, tmp_path):
     (tmp_path / "agentengine.yaml").write_text(
-        "name: fixture_agent\nframework: langgraph\n",
+        "name: fixture_agent\nframework: langchain\n",
         encoding="utf-8",
     )
     (tmp_path / ".env").write_text(
@@ -180,7 +180,7 @@ def test_non_adk_wizard_does_not_touch_tunnel_env(monkeypatch, tmp_path):
     questions, _ = _install_wizard_answers(
         monkeypatch,
         tmp_path,
-        framework="langgraph",
+        framework="langchain",
     )
 
     _run_wizard(tmp_path)
@@ -189,6 +189,24 @@ def test_non_adk_wizard_does_not_touch_tunnel_env(monkeypatch, tmp_path):
     assert env["KSADK_ENABLE_TUNNEL"] == "1"
     assert env["KSADK_TUNNEL_TOKEN"] == _FAKE_TUNNEL_TOKEN
     assert not any("Tunnel" in message for _, message in questions)
+
+
+def test_langgraph_wizard_enables_tunnel_and_requires_explicit_helper(monkeypatch, tmp_path):
+    questions, _ = _install_wizard_answers(
+        monkeypatch,
+        tmp_path,
+        framework="langgraph",
+    )
+    messages: list[str] = []
+    monkeypatch.setattr(cmd_config, "print_info", messages.append)
+
+    _run_wizard(tmp_path)
+
+    env = _project_env(tmp_path)
+    assert env["KSADK_ENABLE_TUNNEL"] == "1"
+    assert env["KSADK_TUNNEL_TOKEN"] == _FAKE_TUNNEL_TOKEN
+    assert any(kind == "confirm" and "Tunnel" in message for kind, message in questions)
+    assert any("LangGraphTunnelTools" in message for message in messages)
 
 
 def test_adk_wizard_requires_non_empty_tunnel_token(monkeypatch, tmp_path):

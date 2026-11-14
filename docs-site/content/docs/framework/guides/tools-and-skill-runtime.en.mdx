@@ -33,6 +33,8 @@ human confirms.
 | Common AgentEngine built-ins | the `ksadk.toolsets` focused profile |
 | Infrequent or higher-risk built-ins | `agentengine_tool_dispatcher` list/describe/call |
 
+Tunnel automatically injects tools into a top-level ADK Agent. A custom LangGraph StateGraph explicitly calls `LangGraphTunnelTools.get_tools()` in both its model and tools nodes. See [On-prem MCP Tunnel](/en/docs/framework/guides/tunnel) for the complete integration and migration examples.
+
 <Callout type="info">
 Use the simplest path that gives the agent enough capability. Do not route a plain deterministic helper through a remote runtime just to make it look like a tool.
 </Callout>

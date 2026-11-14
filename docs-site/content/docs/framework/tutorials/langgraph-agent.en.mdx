@@ -209,8 +209,22 @@ dist/
 build/
 ```
 
+## 8. Connect To On-prem MCP With Tunnel (Optional)
+
+Use Tunnel when a cloud Agent needs to call a Streamable HTTP MCP Server inside an enterprise network. ADKRunner injects Tunnel tools automatically; LangGraph requires explicit integration in the business graph, so setting `KSADK_ENABLE_TUNNEL=1` alone is not enough.
+
+The tutorial above has only a synchronous `chat` node and no ToolNode. To add Tunnel tools:
+
+1. Make the model node async and add a `ToolNode`, `tools_condition`, and a tools→model edge to form the tool-calling loop.
+2. Create `LangGraphTunnelTools(agent_name="weather-agent")`, matching `name` in `agentengine.yaml`.
+3. Use `model.bind_tools(await tunnel.get_tools(tools=BUSINESS_TOOLS))` in the model node and pass the same current tool set to `ToolNode` in the tools node.
+4. Configure the Tunnel token, start the Runtime, and run the enterprise Connector as usual. Do not manually create a registry, call `mount_tunnel`, or handle the internal proxy credential.
+
+See [On-prem MCP Tunnel](../guides/tunnel.mdx) for a complete `agent.py`, the smaller migration for an existing ReAct graph, and the checkpoint, disconnect, and deployment limits. New `create_agent`, DeepAgents, and immutable compiled-graph auto-injection are outside the current explicit LangGraph integration scope.
+
 ## Next Steps
 
+- Follow the complete example in [On-prem MCP Tunnel](../guides/tunnel.mdx).
 - Add framework-specific patterns from [Frameworks](../guides/frameworks.mdx).
 - Add session or file handling from [Runtime Sessions And Files](/en/docs/references/runtime-sessions-files).
 - Package the project with [Build And Package](../guides/build-and-package.mdx).

@@ -262,7 +262,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Internal bundled core requirement constant.",
     ),
     EnvVarSpec("KSADK_ENABLE_MCP_TOOLS", "mcp_runtime", "Enable ADK MCP tool injection.", "1"),
-    EnvVarSpec("KSADK_ENABLE_TUNNEL", "tunnel", "Enable ADK on-prem MCP Tunnel.", "0"),
+    EnvVarSpec(
+        "KSADK_ENABLE_TUNNEL",
+        "tunnel",
+        "Enable on-prem MCP Tunnel for ADK or explicit LangGraph StateGraph tools.",
+        "0",
+    ),
     EnvVarSpec("KSADK_EVENTS_TABLE", "sessions", "Internal SQLite events table constant."),
     EnvVarSpec("KSADK_FEISHU_APP_ID", "cli", "Feishu helper app id used by OpenClaw diagnostics."),
     EnvVarSpec("KSADK_FEISHU_RESULT_PATH", "cli", "Feishu helper result file path."),

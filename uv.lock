@@ -1933,6 +1933,7 @@ langchain = [
 ]
 langgraph = [
     { name = "langchain" },
+    { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-postgres" },
@@ -1986,6 +1987,7 @@ requires-dist = [
     { name = "langchain", marker = "extra == 'langgraph'", specifier = ">=1.3.14,<2.0.0" },
     { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=1.5.0,<2.0.0" },
     { name = "langchain-mcp-adapters", marker = "extra == 'langchain'", specifier = ">=0.3.2" },
+    { name = "langchain-mcp-adapters", marker = "extra == 'langgraph'", specifier = ">=0.3.2" },
     { name = "langchain-openai", marker = "extra == 'deepagents'", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-openai", marker = "extra == 'langchain'", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-openai", marker = "extra == 'langgraph'", specifier = ">=1.4.0,<2.0.0" },

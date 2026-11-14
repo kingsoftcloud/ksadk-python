@@ -18,15 +18,19 @@ import sys
 import ksadk.tunnel as tunnel
 assert set(tunnel.__all__) == {
     'LocalServer', 'TunnelConnector', 'ServerDescriptor', 'TunnelRegistry',
-    'TunnelToolset', 'mount_tunnel', 'get_registry'
+    'TunnelToolset', 'LangGraphTunnelTools', 'mount_tunnel', 'get_registry'
 }
 assert 'ksadk.tunnel.connector' not in sys.modules
 assert 'ksadk.tunnel.toolset' not in sys.modules
+assert 'ksadk.tunnel.langgraph' not in sys.modules
 assert not any(name == 'google.adk' or name.startswith('google.adk.') for name in sys.modules)
 import ksadk.tunnel.config
 assert not any(name == 'google.adk' or name.startswith('google.adk.') for name in sys.modules)
 from ksadk.tunnel import TunnelRegistry
 assert TunnelRegistry().self_url is None
+from ksadk.tunnel import LangGraphTunnelTools
+assert LangGraphTunnelTools.__name__ == 'LangGraphTunnelTools'
+assert 'langchain_mcp_adapters' not in sys.modules
 assert not any(name == 'google.adk' or name.startswith('google.adk.') for name in sys.modules)
 """
     result = subprocess.run(

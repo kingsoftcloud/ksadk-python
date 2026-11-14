@@ -132,6 +132,8 @@ entry_point: agent.py
 agent_variable: root_agent
 ```
 
+自定义 LangGraph StateGraph 可以通过 `LangGraphTunnelTools` 显式调用内网 MCP 工具。工具需要在 model 节点和 ToolNode 执行节点中动态获取，不能像 ADK 一样依赖 Runner 自动注入；完整示例见[内网 MCP Tunnel](./tunnel.mdx)。
+
 ## LangChain
 
 ```python title="agent.py"

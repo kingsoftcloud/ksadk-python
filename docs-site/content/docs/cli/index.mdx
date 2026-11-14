@@ -91,7 +91,7 @@ agentengine config set OPENAI_MODEL_NAME=my-model
 agentengine config model
 ```
 
-`config set` 写入当前项目的 `.env`。`--global` 只适用于支持全局共享的配置组；Tunnel 等项目级能力即使搭配 `--global` 也只写入项目，并会显示提示。ADK 项目的交互向导支持可选的内网 MCP Tunnel 配置，详见[内网 MCP Tunnel](../framework/guides/tunnel.mdx)。
+`config set` 写入当前项目的 `.env`。`--global` 只适用于支持全局共享的配置组；Tunnel 等项目级能力即使搭配 `--global` 也只写入项目，并会显示提示。ADK 和 LangGraph 项目的交互向导支持可选的内网 MCP Tunnel 配置；LangGraph 还需在自定义 StateGraph 中显式接入，详见[内网 MCP Tunnel](../framework/guides/tunnel.mdx)。
 
 ### `agentengine run`
 

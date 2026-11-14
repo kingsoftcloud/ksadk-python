@@ -61,17 +61,33 @@ def test_tunnel_enabled_requires_token(monkeypatch, tmp_path):
         )
 
 
-def test_tunnel_enabled_rejects_non_adk_runtime(monkeypatch, tmp_path):
+@pytest.mark.parametrize("runtime_type", ["codex", "langchain", "deepagents"])
+def test_tunnel_enabled_rejects_unsupported_runtime(monkeypatch, tmp_path, runtime_type):
     _clear_tunnel_env(monkeypatch)
     monkeypatch.setenv("KSADK_ENABLE_TUNNEL", "1")
     monkeypatch.setenv("KSADK_TUNNEL_TOKEN", "fake-tunnel-token")
 
-    with pytest.raises(ValueError, match="requires the ADK runtime"):
+    with pytest.raises(ValueError, match="only ADK and custom LangGraph"):
         RuntimeLaunchContext(
-            runtime_type="langgraph",
+            runtime_type=runtime_type,
             project_dir=tmp_path,
-            detection=_detection("langgraph"),
+            detection=_detection(runtime_type),
         )
+
+
+def test_tunnel_enabled_accepts_langgraph_runtime(monkeypatch, tmp_path):
+    _clear_tunnel_env(monkeypatch)
+    monkeypatch.setenv("KSADK_ENABLE_TUNNEL", "1")
+    monkeypatch.setenv("KSADK_TUNNEL_TOKEN", "fake-tunnel-token")
+
+    context = RuntimeLaunchContext(
+        runtime_type="langgraph",
+        project_dir=tmp_path,
+        detection=_detection("langgraph"),
+    )
+
+    assert context.services.tunnel_registry is not None
+    assert context.services.tunnel_registry.self_url == "http://127.0.0.1:8000"
 
 
 def test_tunnel_registry_is_shared_and_start_port_refines_same_instance(monkeypatch, tmp_path):
@@ -263,7 +279,47 @@ async def test_early_adapter_shares_registry_with_later_app_port(monkeypatch, tm
     await registry.close()
 
 
-def test_runtime_web_app_uses_actual_cli_port(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_early_langgraph_adapter_shares_registry_and_latest_self_url(monkeypatch, tmp_path):
+    _clear_tunnel_env(monkeypatch)
+    monkeypatch.setenv("KSADK_ENABLE_TUNNEL", "1")
+    monkeypatch.setenv("KSADK_TUNNEL_TOKEN", "fake-tunnel-token")
+
+    from ksadk.runners._langgraph_fresh_turn import fresh_user_checkpoint
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+    from ksadk.runtime.factory import build_default_runtime_registry
+    from ksadk.runtime.launch import RuntimeServices
+    from ksadk.tunnel.langgraph import LangGraphTunnelTools
+
+    detection = _detection("langgraph")
+    runner = LangGraphRunner(detection, str(tmp_path))
+    context = RuntimeLaunchContext(
+        runtime_type="langgraph",
+        project_dir=tmp_path,
+        detection=detection,
+        services=RuntimeServices(runner_factory=lambda *_: runner),
+    )
+    build_default_runtime_registry().create(context)
+    registry = context.services.tunnel_registry
+    assert runner._tunnel_registry is registry
+
+    prepare_tunnel_context(context, self_url="http://127.0.0.1:18080")
+
+    class BoundRunner:
+        _tunnel_config = runner._tunnel_config
+        _tunnel_registry = runner._tunnel_registry
+
+        @fresh_user_checkpoint
+        async def invoke(self, input_data):
+            return LangGraphTunnelTools("demo_agent")._resolve()
+
+    _, self_url = await BoundRunner().invoke({})
+    assert self_url == "http://127.0.0.1:18080"
+    await registry.close()
+
+
+@pytest.mark.parametrize("framework_type", ["adk", "langgraph"])
+def test_runtime_web_app_uses_actual_cli_port(monkeypatch, tmp_path, framework_type):
     _clear_tunnel_env(monkeypatch)
     monkeypatch.setenv("KSADK_ENABLE_TUNNEL", "1")
     monkeypatch.setenv("KSADK_TUNNEL_TOKEN", "fake-tunnel-token")
@@ -274,7 +330,7 @@ def test_runtime_web_app_uses_actual_cli_port(monkeypatch, tmp_path):
     from ksadk.detection.detector import DetectionResult, FrameworkType
 
     detection = DetectionResult(
-        type=FrameworkType.ADK,
+        type=FrameworkType(framework_type),
         name="demo_agent",
         entry_point="agent.py",
         package_path=str(tmp_path),
@@ -286,7 +342,8 @@ def test_runtime_web_app_uses_actual_cli_port(monkeypatch, tmp_path):
     assert state.launch_context.services.tunnel_registry.self_url == state.tunnel.self_url
 
 
-def test_tunnel_routes_precede_hosted_ui_catchall(monkeypatch, tmp_path):
+@pytest.mark.parametrize("runtime_type", ["adk", "langgraph"])
+def test_tunnel_routes_precede_hosted_ui_catchall(monkeypatch, tmp_path, runtime_type):
     _clear_tunnel_env(monkeypatch)
     monkeypatch.setenv("KSADK_ENABLE_TUNNEL", "1")
     monkeypatch.setenv("KSADK_TUNNEL_TOKEN", "fake-tunnel-token")
@@ -295,9 +352,9 @@ def test_tunnel_routes_precede_hosted_ui_catchall(monkeypatch, tmp_path):
     from ksadk.server.factory import create_runtime_app
 
     context = RuntimeLaunchContext(
-        runtime_type="adk",
+        runtime_type=runtime_type,
         project_dir=tmp_path,
-        detection=_detection(),
+        detection=_detection(runtime_type),
     )
     app = create_runtime_app(
         RuntimeAppConfig(
@@ -338,9 +395,9 @@ def test_code_builder_tunnel_enables_mcp_runtime_requirements(monkeypatch, tmp_p
 
     builder = CodeBuilder(tmp_path)
     assert builder._mcp_runtime_enabled() is True
-    assert any(
-        requirement.startswith("mcp") for requirement in builder._bundled_runtime_requirements()
-    )
+    requirements = builder._bundled_runtime_requirements()
+    assert any(requirement.startswith("mcp") for requirement in requirements)
+    assert "langchain-mcp-adapters>=0.3.2" in requirements
 
 
 def test_code_builder_detects_embedded_tunnel_import(monkeypatch, tmp_path):
@@ -364,3 +421,15 @@ def test_deployment_manager_adds_tunnel_mcp_requirement(monkeypatch, tmp_path):
 
     requirements = K8sDeployer()._generate_requirements(_detection())
     assert "mcp>=1.26.0,<2.0.0" in requirements
+    assert "langchain-mcp-adapters" not in requirements
+
+
+def test_deployment_manager_adds_langgraph_tunnel_requirements(monkeypatch, tmp_path):
+    _clear_tunnel_env(monkeypatch)
+    monkeypatch.setenv("KSADK_ENABLE_TUNNEL", "1")
+
+    from ksadk.deployment.manager import K8sDeployer
+
+    requirements = K8sDeployer()._generate_requirements(_detection("langgraph"))
+    assert "mcp>=1.26.0,<2.0.0" in requirements
+    assert "langchain-mcp-adapters>=0.3.2" in requirements
