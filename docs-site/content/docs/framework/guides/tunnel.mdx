@@ -309,6 +309,12 @@ connector = TunnelConnector(
 - 普通工具结果的 `content` 继续通过现有事件流传递；首版不承诺完整投影 MCP `structuredContent`。
 - 首版不承诺对包含未完成 Tunnel ToolCall 的执行进行冷恢复。Tunnel 代理的普通 MCP 调用不保证 exactly-once；重试或恢复前应核对外部副作用，业务工具需要提供所需的幂等或去重。
 
+## MCP 清理日志
+
+部分 MCP SDK 版本在 Session 或 standalone SSE 关闭时，会在 `standalone_sse_writer` 中记录 `anyio.ClosedResourceError`。LangGraph 使用短生命周期 Session 进行工具发现和调用，因此这类清理日志可能重复出现。
+
+如果 Agent 已收到正确结果，且 MCP 有对应的实际工具调用日志，这通常不是工具执行失败。若 Agent 没有收到结果、发生超时或 Connector 断连，则仍需排查响应中断，不能仅凭该异常判断整个调用成功或失败，也不应为了掩盖问题而关闭整个 `mcp.server.streamable_http` 日志。
+
 ## 部署限制
 
 1. **单进程**：WebSocket 所属进程和 Agent 执行进程必须共享同一个 per-app registry。

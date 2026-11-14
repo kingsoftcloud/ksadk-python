@@ -309,6 +309,12 @@ Never put real credentials in source code, documentation, logs, or deployment ar
 - The `content` of ordinary tool results continues through the existing event stream; the first version does not promise complete projection of MCP `structuredContent`.
 - The first version does not promise cold recovery of executions containing unfinished Tunnel ToolCalls. Ordinary MCP calls proxied through Tunnel do not guarantee exactly-once semantics. Reconcile external side effects before retrying or recovering, and make business tools idempotent or deduplicated as required.
 
+## MCP cleanup logging
+
+Some MCP SDK versions log `anyio.ClosedResourceError` from `standalone_sse_writer` when a Session or standalone SSE stream closes. LangGraph uses short-lived Sessions for tool discovery and invocation, so this cleanup message may appear repeatedly.
+
+When the Agent has received the correct result and the MCP Server has the corresponding actual tool-call log, this message usually does not indicate a tool execution failure. If the Agent did not receive a result, timed out, or lost the Connector connection, investigate the interrupted response instead. Do not use this exception alone to decide whether the whole call succeeded or failed, and do not disable all `mcp.server.streamable_http` logging merely to hide it.
+
 ## Deployment limits
 
 1. **One process**: the process owning the WebSocket and the process executing the Agent must share the same per-app registry.
