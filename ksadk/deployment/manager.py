@@ -8,6 +8,7 @@ from typing import Any, Dict, Literal
 
 from ksadk.builders.framework_requirements import (
     FASTAPI_REQUIREMENT,
+    TUNNEL_LANGGRAPH_REQUIREMENT,
     TUNNEL_MCP_REQUIREMENT,
     minimal_requirements_for_framework,
 )
@@ -156,6 +157,8 @@ CMD ["python", "entrypoint.py"]
         base_deps += minimal_requirements_for_framework(framework)
         if tunnel_enabled():
             base_deps.append(TUNNEL_MCP_REQUIREMENT)
+            if framework == "langgraph":
+                base_deps.append(TUNNEL_LANGGRAPH_REQUIREMENT)
 
         return "\n".join(merge_requirement_lists(base_deps))
 

@@ -33,6 +33,8 @@ KsADK 可以通过框架原生工具、MCP/A2A 集成和可选的 Skill Runtime 
 | AgentEngine 常用内置能力 | `ksadk.toolsets` 的 focused profile |
 | 低频或高风险内置能力 | `agentengine_tool_dispatcher` 按需列出、描述和调用 |
 
+Tunnel 对顶层 ADK Agent 使用自动注入；自定义 LangGraph StateGraph 需要在 model/tools 节点中显式调用 `LangGraphTunnelTools.get_tools()`。完整接入代码和现有图改造方式见[内网 MCP Tunnel](/cn/docs/framework/guides/tunnel)。
+
 ## AgentEngine 内置工具
 
 ![KsADK Toolsets 层次结构](/assets/ksadk-toolsets-layers.svg)

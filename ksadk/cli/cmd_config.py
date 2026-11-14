@@ -386,7 +386,7 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
     1. 配置 Agent 基础信息 (名称、框架等)
     2. 配置 模型服务 (API Key, Base URL)
     3. 配置 云厂商凭证 (KSYUN AK/SK)
-    4. 为 ADK 项目配置可选的内网 MCP Tunnel
+    4. 为 ADK / LangGraph 项目配置可选的内网 MCP Tunnel
 
     参数:
         --set: 非交互式设置配置项 (如 --set name=MyAgent --set KSYUN_REGION=cn-beijing-6)
@@ -657,10 +657,15 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
         print_info("企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD")
         print_info("KCR 访问凭证获取: https://kcr.console.ksyun.com/ → 访问凭证")
 
-    if new_config["framework"] == "adk":
+    if new_config["framework"] in {"adk", "langgraph"}:
         print_rule()
         print_rule("内网 MCP Tunnel (可选)")
         print_info("Tunnel 仅保存到当前项目；标准入口会自动推导 self URL。")
+        if new_config["framework"] == "langgraph":
+            print_info(
+                "LangGraph 还需在自定义 StateGraph 的 model/tools 节点中显式使用 "
+                "LangGraphTunnelTools。"
+            )
         enable_tunnel = _ask_or_exit(
             questionary.confirm(
                 "是否启用内网 MCP Tunnel?",

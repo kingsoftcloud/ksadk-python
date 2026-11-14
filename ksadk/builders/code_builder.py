@@ -329,7 +329,7 @@ class CodeBuilder(BaseBuilder):
     )
     BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS = (
         "mcp>=1.1.0",
-        "langchain-mcp-adapters>=0.0.1",
+        "langchain-mcp-adapters>=0.3.2",
     )
     BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS = (
         "asyncpg>=0.30.0,<1.0.0",

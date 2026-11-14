@@ -91,6 +91,18 @@ def build_connection_params(
     return _RedactedStreamableHTTPConnectionParams(**kwargs)
 
 
+def build_langchain_connection(config: MCPServerConfig) -> dict[str, Any]:
+    """Build the equivalent Streamable HTTP connection for LangChain MCP tools."""
+    if config.auth_mode == "oauth":
+        raise ValueError("OAuth MCP requires the explicit LangGraph call_mcp_tool helper")
+    return {
+        "transport": "streamable_http",
+        "url": config.url,
+        "headers": config.headers,
+        "httpx_client_factory": _default_httpx_client_factory(config.url),
+    }
+
+
 def build_mcp_toolset(
     config: MCPServerConfig,
     *,
@@ -253,6 +265,7 @@ __all__ = [
     "MCPServerConfig",
     "MCP_TOOLSET_KEY_ATTR",
     "build_connection_params",
+    "build_langchain_connection",
     "build_mcp_toolset",
     "load_mcp_server_configs",
     "load_mcp_toolsets_from_env",

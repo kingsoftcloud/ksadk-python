@@ -150,6 +150,8 @@ entry_point: agent.py
 agent_variable: root_agent
 ```
 
+A custom LangGraph StateGraph can explicitly call on-prem MCP tools with `LangGraphTunnelTools`. Fetch current tools in both the model node and the ToolNode execution node instead of relying on Runner auto-injection as used by ADK. See [On-prem MCP Tunnel](./tunnel.mdx) for the complete integration.
+
 ## LangChain
 
 ```python title="agent.py"

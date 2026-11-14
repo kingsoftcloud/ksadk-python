@@ -15,6 +15,7 @@ _EXPORTS = {
     "ServerDescriptor": "ksadk.tunnel.registry",
     "TunnelRegistry": "ksadk.tunnel.registry",
     "get_registry": "ksadk.tunnel.registry",
+    "LangGraphTunnelTools": "ksadk.tunnel.langgraph",
     "mount_tunnel": "ksadk.tunnel.server",
     "TunnelToolset": "ksadk.tunnel.toolset",
 }

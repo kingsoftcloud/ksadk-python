@@ -194,7 +194,16 @@ def _create_adk(context: RuntimeLaunchContext) -> RuntimeAdapter:
 
 
 def _create_langgraph(context: RuntimeLaunchContext) -> RuntimeAdapter:
-    return LangGraphRuntimeAdapter(_create_framework_runner(context, "langgraph"))
+    runner = _create_framework_runner(context, "langgraph")
+    from ksadk.tunnel.config import tunnel_config_from_context
+
+    tunnel = tunnel_config_from_context(context)
+    if tunnel is not None:
+        # The graph resolves these process-only dependencies only during execution.
+        runner._tunnel_config = tunnel
+        runner._tunnel_registry = context.services.tunnel_registry
+        runner._owns_tunnel_registry = False
+    return LangGraphRuntimeAdapter(runner)
 
 
 def build_default_runtime_registry(

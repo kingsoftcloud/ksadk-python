@@ -92,7 +92,7 @@ agentengine config set OPENAI_MODEL_NAME=my-model
 agentengine config model
 ```
 
-`config set` writes to the current project's `.env`. `--global` only applies to configuration groups that support shared global values. Project-scoped capabilities such as Tunnel are still written only to the project even when `--global` is present, and a notice is displayed. The interactive wizard for ADK projects supports optional on-prem MCP Tunnel configuration; see [On-prem MCP Tunnel](../framework/guides/tunnel.mdx).
+`config set` writes to the current project's `.env`. `--global` only applies to configuration groups that support shared global values. Project-scoped capabilities such as Tunnel are still written only to the project even when `--global` is present, and a notice is displayed. The interactive wizard for ADK and LangGraph projects supports optional on-prem MCP Tunnel configuration; LangGraph also requires explicit integration in a custom StateGraph. See [On-prem MCP Tunnel](../framework/guides/tunnel.mdx).
 
 ### `agentengine run`
 

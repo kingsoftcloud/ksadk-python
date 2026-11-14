@@ -309,11 +309,13 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | 变量 | 用途 |
 | --- | --- |
-| `KSADK_ENABLE_TUNNEL` | 为 ADK Runtime 开启内网 MCP Tunnel，默认 `0` |
+| `KSADK_ENABLE_TUNNEL` | 为 ADK 或自定义 LangGraph StateGraph 开启内网 MCP Tunnel，默认 `0` |
 | `KSADK_TUNNEL_TOKEN` | connector 注册鉴权 token；开启 Tunnel 时必传且属于敏感信息 |
-| `KSADK_TUNNEL_SELF_URL` | TunnelToolset 访问本进程代理的 loopback base URL；标准入口按实际端口生成 |
+| `KSADK_TUNNEL_SELF_URL` | Tunnel 工具访问本进程代理的 loopback base URL；标准入口按实际端口生成 |
 
 这些变量是项目级 Runtime 配置，不支持通过 `agentengine config set --global` 保存到全局配置。`KSADK_TUNNEL_TOKEN` 应按项目或环境独立生成。`KSADK_TUNNEL_SELF_URL` 是特殊部署使用的可选覆盖项，通常不要写入项目或部署环境文件；标准启动入口会按实际端口推导。
+
+ADKRunner 会自动注入 Tunnel 工具；自定义 LangGraph StateGraph 还需要在 model/tools 节点中显式使用 `LangGraphTunnelTools`，不能只设置开启开关。完整接入示例和限制见[内网 MCP Tunnel](/cn/docs/framework/guides/tunnel)。
 
 ```bash title="bash"
 KSADK_ENABLE_TUNNEL=1

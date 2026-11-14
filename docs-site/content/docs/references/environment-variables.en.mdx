@@ -312,11 +312,13 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_ENABLE_TUNNEL` | enable the on-prem MCP Tunnel for the ADK Runtime; defaults to `0` |
+| `KSADK_ENABLE_TUNNEL` | enable the on-prem MCP Tunnel for ADK or an explicit custom LangGraph StateGraph; defaults to `0` |
 | `KSADK_TUNNEL_TOKEN` | connector registration token; required when Tunnel is enabled and sensitive |
-| `KSADK_TUNNEL_SELF_URL` | loopback base URL through which TunnelToolset reaches the in-process proxy; standard entrypoints derive it from the actual port |
+| `KSADK_TUNNEL_SELF_URL` | loopback base URL through which Tunnel tools reach the in-process proxy; standard entrypoints derive it from the actual port |
 
 These variables are project-scoped Runtime configuration and cannot be saved to the global configuration with `agentengine config set --global`. Generate `KSADK_TUNNEL_TOKEN` independently for each project or environment. `KSADK_TUNNEL_SELF_URL` is an optional override for special deployments and normally should not be written to a project or deployment environment file; standard entrypoints derive it from the actual port.
+
+ADKRunner injects Tunnel tools automatically. A custom LangGraph StateGraph must explicitly use `LangGraphTunnelTools` in both its model and tools nodes; setting the flag alone does not expose tools to the graph. See [On-prem MCP Tunnel](/en/docs/framework/guides/tunnel) for the complete integration and its limits.
 
 ```bash title="bash"
 KSADK_ENABLE_TUNNEL=1

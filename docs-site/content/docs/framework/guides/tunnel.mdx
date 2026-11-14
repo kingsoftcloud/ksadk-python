@@ -1,13 +1,13 @@
 ---
 title: "内网 MCP Tunnel"
-description: "通过企业侧主动建立的 WebSocket 隧道，让云端 ADK Agent 调用内网 Streamable HTTP MCP 工具。"
+description: "通过企业侧主动建立的 WebSocket 隧道，让云端 ADK Agent 或自定义 LangGraph StateGraph 调用内网 Streamable HTTP MCP 工具。"
 status: new
 ---
 
-KsADK Tunnel 让企业内网的 MCP Server 通过**出站** WebSocket 连接到云端 ADK Agent。企业侧无需开放入站端口，Agent 可以在后续轮次发现 Tunnel 中的工具并发起调用。
+KsADK Tunnel 让企业内网的 MCP Server 通过**出站** WebSocket 连接到云端 ADK Agent 或自定义 LangGraph StateGraph。企业侧无需开放入站端口，Agent 可以按执行时的在线状态发现 Tunnel 中的工具并发起调用。
 
 <Callout type="warning" title="首版边界">
-首版仅支持根 ADK Agent 和 Streamable HTTP MCP。Registry 位于单个 Runtime 进程内，因此部署必须使用单 worker、单副本，或经过验证的 sticky 路由。真实网关的 WS/WSS 转发能力需要单独验收。
+首版支持根 ADK Agent 自动注入和自定义 LangGraph StateGraph 显式接入，协议仅支持 Streamable HTTP MCP。Registry 位于单个 Runtime 进程内，因此部署必须使用单 worker、单副本，或经过验证的 sticky 路由。真实网关的 WS/WSS 转发能力需要单独验收。
 </Callout>
 
 ## 工作原理
@@ -22,7 +22,7 @@ flowchart LR
     subgraph cloud["云端单进程 Runtime"]
         W["/tunnel/connect"]
         R["Per-app TunnelRegistry"]
-        T["ADKRunner + TunnelToolset"]
+        T["ADKRunner / LangGraphTunnelTools"]
         P["/tunnel/mcp/*"]
         W --> R --> T --> P
     end
@@ -30,15 +30,15 @@ flowchart LR
     P -- "WebSocket 转发" --> C
 ```
 
-1. 云端 ADK Runtime 根据环境变量挂载 Tunnel 路由。
+1. 云端 KsADK Runtime 根据环境变量挂载 Tunnel 路由。
 2. 企业侧 connector 注册一个或多个 MCP Server，只发送名称、协议和工具过滤条件。
-3. ADKRunner 首次加载根 Agent 时注入 `TunnelToolset`，不提前导入用户的 `root_agent`。
-4. 后续每轮工具枚举读取当前在线服务；新服务在下一轮出现，离线服务在下一轮移除。
+3. ADKRunner 首次加载根 ADK Agent 时自动注入 `TunnelToolset`，不提前导入用户的 `root_agent`；自定义 LangGraph StateGraph 则在节点中显式调用 `LangGraphTunnelTools`。
+4. ADK 在后续每轮工具枚举时读取当前在线服务；LangGraph 在模型和工具节点执行时读取。新服务随后出现，离线服务随后移除。
 5. MCP 请求经本进程代理和 WebSocket 到达 connector，再由 connector 调用真实内网服务。
 
 ## 云端开启
 
-Tunnel 默认关闭，首版仅支持 ADK Runtime。开启时必须提供 `KSADK_TUNNEL_TOKEN`，其他 Runtime 不应设置开启开关。
+Tunnel 默认关闭，首版支持 ADK Runtime，以及 LangGraph Runtime 中的自定义 StateGraph 显式接入。开启时必须提供 `KSADK_TUNNEL_TOKEN`，其他 Runtime 不应设置开启开关。
 
 ### 项目级配置
 
@@ -52,7 +52,7 @@ agentengine config set \
 agentengine run . --port 8080
 ```
 
-ADK 项目也可以运行 `agentengine config`，在交互向导中启用 Tunnel。向导使用密码输入读取 token，不会生成 `KSADK_TUNNEL_SELF_URL`。Tunnel 是项目级能力，不支持保存到全局配置；即使搭配 `--global`，这些变量也只写入当前项目并显示提示。
+ADK 和 LangGraph 项目也可以运行 `agentengine config`，在交互向导中启用 Tunnel。向导使用密码输入读取 token，不会生成 `KSADK_TUNNEL_SELF_URL`；选择 LangGraph 时会提示还需在自定义 StateGraph 中显式接入。Tunnel 是项目级能力，不支持保存到全局配置；即使搭配 `--global`，这些变量也只写入当前项目并显示提示。
 
 临时本地调试仍可直接使用 shell：
 
@@ -97,7 +97,7 @@ export KSADK_TUNNEL_SELF_URL=http://127.0.0.1:8080
 
 ### 外层入口网关与建联 URL
 
-云端部署时，外层入口网关必须把 `/tunnel/connect` 转发到运行 ADK Runtime 的 FastAPI 实例，并允许 WebSocket Upgrade。只放行普通 Agent HTTP 请求并不代表 Tunnel 可用；该路径未配置、被网关拒绝或被当作普通 HTTP 处理时，connector 无法连接到 Agent 并完成注册。
+云端部署时，外层入口网关必须把 `/tunnel/connect` 转发到运行 KsADK Runtime 的 FastAPI 实例，并允许 WebSocket Upgrade。只放行普通 Agent HTTP 请求并不代表 Tunnel 可用；该路径未配置、被网关拒绝或被当作普通 HTTP 处理时，connector 无法连接到 Agent 并完成注册。
 
 无路径前缀时，完整云端建联 URL 为：
 
@@ -133,9 +133,102 @@ connector 注册时使用的 `agent` 是 KsADK 检测到的 Agent 名称：
 
 - 优先使用 `agentengine.yaml` 中的 `name`。
 - 没有显式配置时，使用检测结果显示的名称。
-- 它可能与代码中的 `root_agent.name` 不同，以 CLI 的检测结果为准。
+- 它可能与 ADK 代码中的 `root_agent.name` 不同，以 CLI 的检测结果为准。
+- 自定义 LangGraph StateGraph 中，`LangGraphTunnelTools(agent_name=...)` 必须与当前应用检测到的名称一致。
 
 云端只允许 connector 注册到当前应用允许的 Agent 名称。
+
+## 自定义 LangGraph StateGraph 显式接入
+
+公开入口为 `from ksadk.tunnel.langgraph import LangGraphTunnelTools`，也可以使用 `from ksadk.tunnel import LangGraphTunnelTools`。标准 KsADK Runtime 会在图执行期间自动提供当前应用的 registry、self URL 和内部代理凭证；用户不需要手动调用 `mount_tunnel`、创建 registry 或处理 proxy token。
+
+`await tunnel.get_tools(tools=BUSINESS_TOOLS)` 返回业务工具和当前在线的 Tunnel 工具。Tunnel 未开启且没有显式传入 registry 时，只返回业务工具。每个在线 server 独立发现工具；一个 server 发现失败不会隐藏其他 server 的工具。模型看到的工具名稳定为 `<server-alias>__<tool>`，例如 `calculator__add`；`LocalServer.tool_filter` 始终使用原始 MCP 工具名，例如 `add`，而不是命名空间后的名称。
+
+<Callout type="warning" title="LangGraph 首版边界">
+本阶段只支持自定义 `StateGraph` 在节点中显式接入；不支持 `create_agent`、DeepAgents 或旧 `create_react_agent`，也不支持向任意 compiled graph 自动注入。`create_agent` 与 DeepAgents 的接入留待后续，ADK 保持自动注入。
+</Callout>
+
+### 完整示例
+
+以下示例可作为自定义 LangGraph 项目的入口。按模型供应商的要求配置环境变量，并将 `BUSINESS_TOOLS` 替换为现有业务工具；示例不包含真实凭证。
+
+```python title="agent.py"
+import os
+
+from langchain_openai import ChatOpenAI
+from langgraph.graph import MessagesState, StateGraph, START
+from langgraph.prebuilt import ToolNode, tools_condition
+
+from ksadk.tunnel.langgraph import LangGraphTunnelTools
+
+
+# Replace with your existing LangChain business tools.
+BUSINESS_TOOLS = []
+
+model = ChatOpenAI(
+    model=os.environ.get("OPENAI_MODEL_NAME", "my-model"),
+    base_url=os.environ.get("OPENAI_BASE_URL"),
+    api_key=os.environ.get("OPENAI_API_KEY"),
+)
+tunnel = LangGraphTunnelTools(agent_name="ops_agent")
+
+
+async def current_tools():
+    return await tunnel.get_tools(tools=BUSINESS_TOOLS)
+
+
+async def model_node(state: MessagesState, config):
+    reply = await model.bind_tools(await current_tools()).ainvoke(
+        state["messages"], config=config
+    )
+    return {"messages": [reply]}
+
+
+async def tools_node(state: MessagesState, config):
+    return await ToolNode(await current_tools()).ainvoke(state, config=config)
+
+
+def build_graph(*, checkpointer=None):
+    graph = StateGraph(MessagesState)
+    graph.add_node("model", model_node)
+    graph.add_node("tools", tools_node)
+    graph.add_edge(START, "model")
+    graph.add_conditional_edges("model", tools_condition)
+    graph.add_edge("tools", "model")
+    return graph.compile(checkpointer=checkpointer)
+
+
+def ksadk_graph_factory(*, checkpointer):
+    return build_graph(checkpointer=checkpointer)
+
+
+root_agent = build_graph()
+```
+
+`agent_name` 与 `agentengine.yaml` 的 `name` 保持一致：
+
+```yaml title="agentengine.yaml"
+name: ops_agent
+framework: langgraph
+entry_point: agent.py
+agent_variable: root_agent
+```
+
+模型节点和工具节点都调用同一个 `current_tools()`：模型通过 `model.bind_tools(await current_tools())` 获取当前可提供给模型的工具，工具节点通过 `ToolNode(await current_tools())` 获取当前可执行的工具。两个节点均为 async，图节点和边的拓扑保持固定，不在编译图时静态展开 Tunnel 工具。
+
+不要在模块导入或 `build_graph()` 中提前执行 `get_tools()`，也不要跨执行缓存工具列表。标准 Runtime 只在图执行上下文提供 app-owned 绑定，提前调用既不能获得该上下文，也会冻结本可动态变化的在线工具目录。
+
+### 配置与启动顺序
+
+1. 安装 `ksadk[langgraph]` 和 `langchain-openai`；`langgraph` extra 已包含所需的 `langchain-mcp-adapters`。配置模型供应商环境变量，并完成上述 `agent.py` 与 `agentengine.yaml`。
+2. 按“项目级配置”或“Code/Container 部署”开启 Tunnel 并配置 token，然后启动或重新启动 Runtime。标准入口会挂载路由，并在图执行时提供绑定；部署仍须遵守文末的单 worker、单副本或 sticky 路由限制。
+3. Runtime 就绪后再启动 connector，确认所需 server 已注册。首版 connector 不承诺断线自动重连；Runtime 重启或连接断开后，需要重新启动 connector 并注册。
+4. 发起需要 Tunnel 工具的请求。每次节点执行都会重新枚举当前在线服务，无需重新编译图；如果发起模型请求时尚未注册，模型只能看到当时的业务工具。
+
+### 从现有 LangGraph 图迁移
+
+- **已有自定义 ReAct StateGraph**：保留现有图拓扑，将静态的模型工具绑定和 `ToolNode` 改为示例中的异步 `model_node`、`tools_node` 包装。两处都调用同一个 `current_tools()`，现有业务工具通过 `BUSINESS_TOOLS` 传入。
+- **只有 chat 节点**：当前 LangGraph 项目模板只有 `chat` 节点，没有 `ToolNode`。不能只给 `chat` 增加 `bind_tools`；应按完整示例增加异步工具节点、`tools_condition` 条件边和 `tools` 回到 `model` 的边，形成完整的工具调用循环。
 
 ## 企业侧 connector
 
@@ -178,7 +271,7 @@ asyncio.run(main())
 | 凭证 | 用途 | 保存位置 |
 | --- | --- | --- |
 | Tunnel token | connector 注册到 `/tunnel/connect` | 云端 Secret 和 connector 配置 |
-| 内部代理凭证 | `TunnelToolset` 调用本进程 `/tunnel/mcp/*` | 由 Runtime 随机生成，仅保存在 per-app tunnel state |
+| 内部代理凭证 | `TunnelToolset` 或 `LangGraphTunnelTools` 调用本进程 `/tunnel/mcp/*` | 由 Runtime 随机生成，仅保存在 per-app tunnel state |
 | 本地 MCP 凭证 | connector 调用真实内网 MCP Server | 仅企业侧 `LocalServer.headers` 或 `query` |
 
 内部代理凭证不需要用户配置。云端验证后会将其从转发请求中移除，不会发送给 connector 或内网 MCP Server。
@@ -213,14 +306,22 @@ connector = TunnelConnector(
 - `/tunnel/mcp/*` 和 `/tunnel/servers` 都有鉴权，不能作为匿名公网代理使用。
 - 等待响应头超时返回 504；服务未连接返回 503；connector 本地请求失败在未开始响应时返回 502。
 - 请求取消和 connector 断开会清理 pending 请求。流式响应中途失败不会被当作成功结束。
+- 普通工具结果的 `content` 继续通过现有事件流传递；首版不承诺完整投影 MCP `structuredContent`。
+- 首版不承诺对包含未完成 Tunnel ToolCall 的执行进行冷恢复。Tunnel 代理的普通 MCP 调用不保证 exactly-once；重试或恢复前应核对外部副作用，业务工具需要提供所需的幂等或去重。
+
+## MCP 清理日志
+
+部分 MCP SDK 版本在 Session 或 standalone SSE 关闭时，会在 `standalone_sse_writer` 中记录 `anyio.ClosedResourceError`。LangGraph 使用短生命周期 Session 进行工具发现和调用，因此这类清理日志可能重复出现。
+
+如果 Agent 已收到正确结果，且 MCP 有对应的实际工具调用日志，这通常不是工具执行失败。若 Agent 没有收到结果、发生超时或 Connector 断连，则仍需排查响应中断，不能仅凭该异常判断整个调用成功或失败，也不应为了掩盖问题而关闭整个 `mcp.server.streamable_http` 日志。
 
 ## 部署限制
 
 1. **单进程**：WebSocket 所属进程和 Agent 执行进程必须共享同一个 per-app registry。
 2. **单副本或 sticky 路由**：普通随机负载均衡的多副本部署不受支持。
 3. **WebSocket 网关**：生产环境必须验证 WS/WSS、自定义 header、idle timeout 和最大帧大小。
-4. **动态生效**：工具变化在后续轮次生效，不会修改已经开始的当前轮次。
-5. **协议范围**：不支持 stdio MCP、非 MCP 通用二进制代理或其他 Runtime 的自动工具注入。
+4. **动态生效**：ADK 的工具变化在后续轮次生效，不会修改已经开始的当前轮次；LangGraph 在节点每次调用 `current_tools()` 时重新枚举，不会改写已经生成的模型响应。
+5. **协议与接入范围**：不支持 stdio MCP、非 MCP 通用二进制代理，或除根 ADK Agent 之外的自动工具注入；LangGraph 仅支持上述自定义 StateGraph 显式接入。
 6. **状态恢复**：进程重启后 registry 不保留，connector 需要重新注册。
 
 本地 MCP smoke 通过不等同于真实云端 E2E 通过。发布前还需在隔离环境验证实际网关、WSS、双层鉴权、工具调用和断连行为。
