@@ -118,6 +118,11 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    "tests/cli/test_web_tracing.py",
+    "tests/runtime/test_harness_service_runtime.py",
+    "tests/server/test_runtime_tracing_bootstrap.py",
+    "tests/test_mcp_detector_entry.py",
+    "tests/test_tracing_session_identity.py",
     "tests/mcp_http_fixture.py",
     "tests/studio_fixtures/runtime_adapter_fixtures.py",
     "tests/studio_fixtures/test_api.py",
