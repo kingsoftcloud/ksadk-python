@@ -289,6 +289,7 @@ class CodeBuilder(BaseBuilder):
         ".md",
         ".html",
         ".js",
+        ".mjs",
         ".css",
         ".svg",
         ".ico",

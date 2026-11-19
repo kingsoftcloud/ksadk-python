@@ -15,6 +15,7 @@
 - 统一社区 Tunnel 与内部工具隧道：同一 Connector 支持 MCP 和自定义 HTTP API、ADK 与 LangGraph，并补齐多 Pod 路由、弹性 peer 发现、断线与在途调用恢复。失败或结果不确定的业务调用不自动重放。
 - 隧道通过导出 Agent 的 `enable_tunnel=True` 启用；企业 Connector 与云端使用同版 SDK。旧 YAML/CLI 配置和旧协议包迁移到统一入口，原文档 URL 保留迁移说明。
 - 修复 Code/Container 构建器为 Tunnel 强制追加旧 MCP `<2` 上限的问题；保留 MCP 1.26 支持，并允许使用 SDK 已验证的 MCP 2.3 依赖组合。
+- Code 包保留 Node 插件的 `.mjs` 入口及相对导入资产，避免从 wheel 打包托管运行时时遗漏插件文件。
 - 构建时通过真实 MCP `list_tools()` 探测工具；修复 OAuth 授权后等待恢复、原生 ToolNode 绑定及 MCP 1.x/2.x HTTP 客户端选择和字段差异。
 - 修复 MCP 2 的 OAuth HTTP 403 分类和工具结果字段别名；隔离后台 GET 拒绝与业务 POST 结果，保留调用结果不确定时禁止自动重放的边界。
 - 修复 AG-UI 原生 session 身份、恢复与 Hosted admission 归属校验，支持配置首选聊天传输。
