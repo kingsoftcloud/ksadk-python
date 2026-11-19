@@ -12,7 +12,7 @@ from ksadk.runtime.launch import RuntimeLaunchContext
 
 def test_default_harness_registry_uses_service_binding(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("KSADK_HARNESS_SERVICE_URL", "http://127.0.0.1:8787")
-    monkeypatch.setenv("KSADK_HARNESS_SERVICE_TOKEN", "fixture-harness-service-token")
+    monkeypatch.setenv("KSADK_HARNESS_SERVICE_TOKEN", "test-harness-service-token")
     context = RuntimeLaunchContext(runtime_type="harness", project_dir=tmp_path)
     adapter = create_runtime_adapter(context)
     assert isinstance(adapter, HarnessServiceRuntimeAdapter)
@@ -66,7 +66,7 @@ async def test_service_start_only_sends_images_with_negotiated_support(monkeypat
 
     adapter = HarnessServiceRuntimeAdapter(
         endpoint="http://127.0.0.1:8787",
-        token="fixture-harness-service-token",
+        token="test-harness-service-token",
     )
     url = "data:image/png;base64,AAAA"
     request = StartRequest(
@@ -116,7 +116,7 @@ async def test_service_host_callback_requires_original_run_and_activation():
     from ksadk.runtime.adapter import RunHandle
 
     adapter = HarnessServiceRuntimeAdapter(
-        endpoint="http://127.0.0.1:8787", token="fixture-harness-service-token",
+        endpoint="http://127.0.0.1:8787", token="test-harness-service-token",
     )
     calls = []
 
@@ -163,7 +163,7 @@ async def test_service_binding_rejects_another_actor_or_session_before_rpc(monke
     from ksadk.runtime.adapter import RunHandle, StartRequest
 
     adapter = HarnessServiceRuntimeAdapter(
-        endpoint="http://127.0.0.1:8787", token="fixture-harness-service-token",
+        endpoint="http://127.0.0.1:8787", token="test-harness-service-token",
     )
 
     async def no_network(*args, **kwargs):
@@ -193,7 +193,7 @@ async def test_service_hook_keeps_the_original_bound_tool_identity():
     from ksadk.runtime.adapter import RunHandle
 
     adapter = HarnessServiceRuntimeAdapter(
-        endpoint="http://127.0.0.1:8787", token="fixture-harness-service-token",
+        endpoint="http://127.0.0.1:8787", token="test-harness-service-token",
     )
     admitted = []
 
