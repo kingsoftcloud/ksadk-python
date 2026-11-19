@@ -15,12 +15,14 @@
 - 统一社区 Tunnel 与内部工具隧道：同一 Connector 支持 MCP 和自定义 HTTP API、ADK 与 LangGraph，并补齐多 Pod 路由、弹性 peer 发现、断线与在途调用恢复。失败或结果不确定的业务调用不自动重放。
 - 隧道通过导出 Agent 的 `enable_tunnel=True` 启用；企业 Connector 与云端使用同版 SDK。旧 YAML/CLI 配置和旧协议包迁移到统一入口，原文档 URL 保留迁移说明。
 - 构建时通过真实 MCP `list_tools()` 探测工具；修复 OAuth 授权后等待恢复、原生 ToolNode 绑定及 MCP 1.x/2.x HTTP 客户端选择和字段差异。
+- 修复 MCP 2 的 OAuth HTTP 403 分类和工具结果字段别名；隔离后台 GET 拒绝与业务 POST 结果，保留调用结果不确定时禁止自动重放的边界。
 - 修复 AG-UI 原生 session 身份、恢复与 Hosted admission 归属校验，支持配置首选聊天传输。
 - 同步 Harness 服务装配、平台资源、历史与 Memory 上下文支持；保留既有 A2A、AG-UI、A2UI、OAuth 与 API key MCP 能力。
 
 ### 依赖、构建与验证
 
 - MCP 核心兼容窗口为 `>=1.26.0`；开发测试使用 FastMCP 4.x 与 MCP 2.x，独立矩阵验证 MCP 1.26/2.3。OpenTelemetry 组件随所选 ADK/FastMCP 成组解析，保留旧 ADK 的兼容安装窗口。
+- 旧 ADK 1.34.3 / 2.5.0 明确搭配 MCP 1.x（最低 1.26）；ADK 2.14.x 与 MCP 2.3 独立验证，避免上游遗漏版本上限导致安装成功但工具导入失败。
 - 不再依赖不兼容 MCP 2.x 的 `langchain-mcp-adapters`，原生 MCP ToolNode 使用 SDK 适配。
 - 保留社区 Dependabot 的受控依赖升级策略；公开导出补齐新回归和共享 fixture，排除旧 Tunnel 重复协议与退休的 Studio 测试。
 - SDK 本地发布证据升级为 schema v3，移除已迁出的 Studio 浏览器状态，避免空测试列表误报通过。该变化不代表独立 Studio 已完成浏览器验收。

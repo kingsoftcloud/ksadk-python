@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,7 +65,13 @@ def test_adk_converts_complete_function_calls(module, kind):
     for call in calls:
         if kind is not None:
             call["type"] = kind
-    message = litellm_types.Message(role="assistant", content="checking", tool_calls=calls)
+    if kind == "custom":
+        # This case exercises the converter's unsupported-type boundary, not
+        # LiteLLM's changing function/custom union parser.
+        message = litellm_types.Message(role="assistant", content="checking", tool_calls=[])
+        message.tool_calls = [SimpleNamespace(id="custom", type="custom", custom={"name": "native", "input": "q"})]
+    else:
+        message = litellm_types.Message(role="assistant", content="checking", tool_calls=calls)
     result = module._message_to_generate_content_response(message)
     assert result.content.parts[0].text == "checking"
     functions = [p.function_call for p in result.content.parts if p.function_call]

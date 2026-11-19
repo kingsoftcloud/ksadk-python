@@ -405,6 +405,7 @@ PUBLIC_TEST_TARGETS += tests/agui/test_protocol_contract.py
 PUBLIC_TEST_TARGETS += tests/agui/test_native_cold_resume.py
 PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_declarations.py
 PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_local.py
+PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_catalog.py tests/test_mcp_oauth_extension.py tests/test_mcp_oauth_transport.py
 PUBLIC_TEST_TARGETS += tests/test_mcp_oauth_documented_graph.py
 PUBLIC_TEST_TARGETS += tests/a2a/test_workload_token_public_compat.py
 PUBLIC_TEST_TARGETS += tests/runners/test_adk_a2a_stream_review.py

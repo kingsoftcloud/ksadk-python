@@ -901,3 +901,14 @@ Kernel 续聊只查询 continuation 元数据；managed A2A 的根事件按当�
 `KSADK_A2A_CHECKPOINT_READY_SECONDS` 默认 45 秒。在发布 A2A 审批/输入等待前，等同一次 native checkpoint 后台写入完成并出现可恢复的 pending state，只读轮询、不执行图或工具；不可恢复错误立即失败，取消传播。到期仍明确拒绝，不凭空宣称持久化成功。
 
 `KSADK_A2A_INVOCATION_SECONDS` 默认 600 秒，统一用于 LangGraph、ADK 与 Codex 托管调用的整次 invocation；显式 RemoteAgentSpec.timeout_seconds 优先。准入、检查点准备及网络各阶段消耗同一次剩余时间，恢复旧调用不会刷新原 deadline。首事件/空闲仍默认 300 秒，不修改授权 TTL。该总期限适用于长工具研究，不用于历史 HTTP 读取。
+
+## 0.8.8 Harness 服务与聊天传输
+
+| 变量 | 说明 |
+| --- | --- |
+| `KSADK_CHAT_PREFERRED_TRANSPORT` | `ag-ui` / `responses`：优先选择可用的聊天传输，其他端点继续可用。 |
+| `KSADK_HARNESS_SERVICE_URL` | 显式指定外部 Harness 服务地址；不设置时沿用现有运行路径。 |
+| `KSADK_HARNESS_SERVICE_TOKEN` | 服务访问凭据，必须通过私密环境注入。 |
+| `KSADK_HARNESS_SERVICE_WORKSPACE` | 已存在的本地工作区绝对路径，用于服务适配器挂载。 |
+| `KSADK_HARNESS_SERVICE_CA_FILE` | 验证服务 TLS 证书所需的可信 CA 文件。 |
+| `KSADK_HARNESS_SERVICE_DURABLE_APPROVALS` | 仅服务支持持久化审批协议时设置 `1`，默认关闭。 |

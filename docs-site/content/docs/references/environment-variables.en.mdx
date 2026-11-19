@@ -424,3 +424,15 @@ Current Hosted UI static asset version: `0.3.18`.
 
 
 See the [0.8.7 integration guide](/en/docs/framework/guides/integration-0-8-7/) for deployment credentials, application settings, and platform-projected values.
+
+
+## 0.8.8 Harness service and chat transport
+
+| Variable | Meaning |
+| --- | --- |
+| `KSADK_CHAT_PREFERRED_TRANSPORT` | `ag-ui` / `responses`: prefer an available chat transport; other endpoints remain available. |
+| `KSADK_HARNESS_SERVICE_URL` | Explicit external Harness service URL; unset keeps the existing runtime path. |
+| `KSADK_HARNESS_SERVICE_TOKEN` | Service credential; inject privately and never commit it. |
+| `KSADK_HARNESS_SERVICE_WORKSPACE` | Existing absolute local workspace mount. |
+| `KSADK_HARNESS_SERVICE_CA_FILE` | Trusted CA file for the service TLS connection. |
+| `KSADK_HARNESS_SERVICE_DURABLE_APPROVALS` | Set `1` only if the service supports the durable approval contract; default off. |

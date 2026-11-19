@@ -183,7 +183,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-xdist>=3.0.0",
-    # 当前锁使用 4.2.1/MCP 2.3；旧 ADK 环境允许求解到兼容的
+    # 当前锁使用 4.2.2/MCP 2.3；旧 ADK 环境允许求解到兼容的
     # FastMCP 2.x/3.x 与 MCP 1.26，协议差异集中在 _mcp_compat。
     "fastmcp>=2.14.7",
     "build>=1.0.0",

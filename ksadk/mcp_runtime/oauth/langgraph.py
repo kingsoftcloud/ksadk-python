@@ -94,13 +94,14 @@ def classify_mcp_error(error):
     if isinstance(error, BrokerError):
         return error.code
     import httpx
+    from ksadk._mcp_compat import httpx_module
 
     children = getattr(error, "exceptions", ())
     for child in children:
         code = classify_mcp_error(child)
         if code != "CONNECTION_FAILED":
             return code
-    if isinstance(error, httpx.HTTPStatusError):
+    if isinstance(error, (httpx.HTTPStatusError, httpx_module().HTTPStatusError)):
         challenge = error.response.headers.get("WWW-Authenticate", "")
         if error.response.status_code == 403:
             return (
@@ -117,17 +118,42 @@ def classify_mcp_error(error):
 async def connect(credential):
     from mcp import ClientSession
 
-    from ksadk._mcp_compat import list_tools_page, streamable_http
+    from ksadk._mcp_compat import streamable_http
     from .transport import http_client_factory
 
-    async with streamable_http(
-        credential["resource"],
-        headers={"Authorization": "Bearer " + credential["access_token"]},
-        httpx_client_factory=http_client_factory(credential),
-    ) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            yield session
+    authorization_error = None
+
+    async def remember_authorization_error(response):
+        nonlocal authorization_error
+        # MCP 2 replaces non-JSON-RPC HTTP errors with a generic MCPError.
+        # Retain only the safe authorization category, never the token/body/URL.
+        # A background GET/DELETE denial is not proof a business POST declined.
+        if response.request.method != "POST":
+            return
+        if response.status_code == 401:
+            authorization_error = "REAUTHORIZATION_REQUIRED"
+        elif response.status_code == 403:
+            authorization_error = (
+                "INSUFFICIENT_SCOPE"
+                if "insufficient_scope" in response.headers.get("WWW-Authenticate", "")
+                else "BUSINESS_PERMISSION_DENIED"
+            )
+
+    async with http_client_factory(credential)(
+        headers={"Authorization": "Bearer " + credential["access_token"]}, timeout=30,
+    ) as http_client:
+        http_client.event_hooks["response"].append(remember_authorization_error)
+        try:
+            async with streamable_http(
+                credential["resource"], http_client=http_client,
+            ) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    yield session
+        except Exception:
+            if authorization_error is not None:
+                raise BrokerError(authorization_error) from None
+            raise
 
 
 async def prepare_connection(client, wait_id):
@@ -329,7 +355,7 @@ async def call_mcp_tool(
                 result = await extension.claim_dispatch(run_id, request_key, call_digest)
                 if result is None:
                     dispatched = True
-                    result = (await session.call_tool(tool, arguments)).model_dump(mode="json")
+                    result = (await session.call_tool(tool, arguments)).model_dump(mode="json", by_alias=True)
                     await extension.finish_dispatch(run_id, request_key, call_digest, result)
         except BrokerError as exc:
             if not dispatched:

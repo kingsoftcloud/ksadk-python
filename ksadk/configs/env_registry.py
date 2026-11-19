@@ -6,6 +6,12 @@ from ksadk.configs.env_registry_studio import STUDIO_ENV_VAR_REGISTRY_ITEMS
 from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+    EnvVarSpec("KSADK_CHAT_PREFERRED_TRANSPORT", "agui", "Preferred available chat transport: ag-ui or responses; existing endpoints remain available."),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_URL", "harness", "Opt-in external Harness service base URL."),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_TOKEN", "harness", "External Harness service access credential.", sensitive=True),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_WORKSPACE", "harness", "Existing absolute local workspace mount for the Harness service adapter."),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_CA_FILE", "harness", "CA file used to verify the Harness service TLS certificate."),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_DURABLE_APPROVALS", "harness", "Enable the external service durable approval contract only when supported.", "0"),
     EnvVarSpec(
         "KSADK_TRAFFIC_SOURCE",
         "cloud",

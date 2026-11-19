@@ -421,3 +421,15 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 
 按用途区分部署凭据、应用变量和平台注入值的完整示例见[0.8.7 接入手册](/cn/docs/framework/guides/integration-0-8-7/)。
+
+
+## 0.8.8 Harness 服务与聊天传输
+
+| 变量 | 说明 |
+| --- | --- |
+| `KSADK_CHAT_PREFERRED_TRANSPORT` | `ag-ui` / `responses`：优先选择可用的聊天传输，其他端点继续可用。 |
+| `KSADK_HARNESS_SERVICE_URL` | 显式指定外部 Harness 服务地址；不设置时沿用现有运行路径。 |
+| `KSADK_HARNESS_SERVICE_TOKEN` | 服务访问凭据，必须通过私密环境注入。 |
+| `KSADK_HARNESS_SERVICE_WORKSPACE` | 已存在的本地工作区绝对路径，用于服务适配器挂载。 |
+| `KSADK_HARNESS_SERVICE_CA_FILE` | 验证服务 TLS 证书所需的可信 CA 文件。 |
+| `KSADK_HARNESS_SERVICE_DURABLE_APPROVALS` | 仅服务支持持久化审批协议时设置 `1`，默认关闭。 |

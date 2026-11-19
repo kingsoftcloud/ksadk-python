@@ -13,7 +13,7 @@ import httpx
 import pytest
 from jsonschema import Draft202012Validator
 from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
+from ksadk._mcp_compat import field, httpx_module, streamable_http
 
 from ksadk.plugins.bridges.dsh import DshProfileProjection
 from ksadk.plugins.host import PluginHostError
@@ -435,22 +435,22 @@ async def test_profile_host_exposes_authenticated_standard_mcp_and_cancels(
                 )
             ).status_code == 401
 
-        async with httpx.AsyncClient(
+        async with httpx_module().AsyncClient(
             headers=lease.headers(), timeout=3, trust_env=False
         ) as mcp_client:
-            async with streamable_http_client(
+            async with streamable_http(
                 lease.endpoint,
                 http_client=mcp_client,
-            ) as (read_stream, write_stream, _session_id):
+            ) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     initialized = await session.initialize()
-                    assert initialized.protocolVersion == "2025-06-18"
+                    assert field(initialized, "protocol_version", "protocolVersion") == "2025-06-18"
                     listed = await session.list_tools()
                     assert [tool.name for tool in listed.tools] == ["fixture_echo"]
                     called = await session.call_tool("fixture_echo", {"message": "through-mcp"})
-                    assert called.isError is False
+                    assert field(called, "is_error", "isError") is False
                     assert called.content[0].text == "through-mcp"
-                    assert called.structuredContent["message"] == "through-mcp"
+                    assert field(called, "structured_content", "structuredContent")["message"] == "through-mcp"
 
         headers = {**lease.headers(), "Content-Type": "application/json"}
         async with httpx.AsyncClient(headers=headers, timeout=3, trust_env=False) as client:

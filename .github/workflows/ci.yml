@@ -296,6 +296,8 @@ jobs:
           --health-retries 5
     env:
       KSADK_TEST_EXPECTED_ADK_VERSION: ${{ matrix.google-adk }}
+      # Older ADK imports MCP 1.x private modules; its 2.5 metadata omits this upper bound.
+      MCP_REQUIREMENT: ${{ matrix.google-adk == '2.14.0' && 'mcp>=2.3.0' || 'mcp>=1.26.0,<2' }}
       KSADK_WEB_VERSION: "0.3.18"
       KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
@@ -351,7 +353,7 @@ jobs:
       # 常规测试用 xdist 并行；真实进程测试在下方独立 job 中执行，
       # 避免进程表和内存累积，两个分组都必须通过。
       - name: Pin google-adk for this matrix leg
-        run: uv pip install ".[all,dev]" "google-adk==${{ matrix.google-adk }}"
+        run: uv pip install ".[all,dev]" "google-adk==${{ matrix.google-adk }}" "$MCP_REQUIREMENT"
 
       - name: Install disposable PostgreSQL test server
         run: uv pip install "pgserver==0.1.4"
@@ -360,7 +362,7 @@ jobs:
         env:
           EXPECTED_GOOGLE_ADK: ${{ matrix.google-adk }}
         run: |
-          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "mcp", "fastmcp", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
           uv run --no-sync pytest tests/ -q -m "not local_process_heavy" -n auto
 
   # MCP SDK 版本兼容性。
@@ -423,6 +425,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       KSADK_TEST_EXPECTED_ADK_VERSION: ${{ matrix.google-adk }}
+      # Older ADK imports MCP 1.x private modules; its 2.5 metadata omits this upper bound.
+      MCP_REQUIREMENT: ${{ matrix.google-adk == '2.14.0' && 'mcp>=2.3.0' || 'mcp>=1.26.0,<2' }}
       KSADK_WEB_VERSION: "0.3.18"
     strategy:
       fail-fast: false
@@ -468,7 +472,7 @@ jobs:
         run: uv pip install --upgrade ".[all,dev]"
 
       - name: Pin google-adk for this matrix leg
-        run: uv pip install ".[all,dev]" "google-adk==${{ matrix.google-adk }}"
+        run: uv pip install ".[all,dev]" "google-adk==${{ matrix.google-adk }}" "$MCP_REQUIREMENT"
 
       # Default resolution can upgrade Playwright, so install its matching browser
       # afterward and keep the verified ADK pin with --no-sync.
@@ -481,7 +485,7 @@ jobs:
         # Native recovery regressions must remain in the public candidate.
         # Missing tests and zero collection must fail this gate.
         run: |
-          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "mcp", "fastmcp", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
           test -f tests/harness/native/test_partial_summary_process.py
           test -f tests/harness/native/test_summary_recovery_process.py
           test -f tests/harness/native/test_compaction_reserve_process_recovery.py

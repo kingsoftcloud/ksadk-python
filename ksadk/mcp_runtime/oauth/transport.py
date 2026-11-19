@@ -17,12 +17,13 @@ import ssl
 #
 # `httpx2` / `httpcore2` 与旧版签名逐字兼容（`connect_tcp`、
 # `AsyncConnectionPool.__init__` 实测一致），所以只需换导入。
-try:  # mcp >= 2.3
+from ksadk._mcp_compat import httpx_module
+
+httpx = httpx_module()
+if httpx.__name__ == "httpx2":
     import httpcore2 as httpcore
-    import httpx2 as httpx
-except ImportError:  # pragma: no cover - mcp 1.x
+else:
     import httpcore  # type: ignore[no-redef]
-    import httpx  # type: ignore[no-redef]
 
 
 class MCPNetworkBackend(httpcore.AsyncNetworkBackend):

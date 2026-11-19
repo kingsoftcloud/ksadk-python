@@ -15,8 +15,10 @@ Upgrade the cloud SDK and enterprise Connector together. The previous YAML/CLI c
 
 ## MCP and persistence
 
-The core supports MCP 1.26+ through the compatibility layer. Development tests use MCP 2.3 and FastMCP 4.2.1; optional applications must resolve a compatible dependency set. OpenTelemetry components must stay aligned. Do not keep an adapter that pins `mcp<2` in an MCP 2 environment.
+The core supports MCP 1.26+ through the compatibility layer. Development tests use MCP 2.3 and FastMCP 4.2.2; optional applications must resolve a compatible dependency set. OpenTelemetry components must stay aligned. Do not keep an adapter that pins `mcp<2` in an MCP 2 environment.
 
 Back up session/checkpoint data before migration. Existing agents remain on their current SDK and images until explicitly rebuilt; new Hosted admission checks require matching agent and session ownership. Web stays at the published 0.3.18 version. This candidate does not publish a new npm package or retire existing agents.
 
 For rollback, restore the previous environment and connector version together. Keep database backups and the previous wheel; do not delete existing session tables.
+
+Projects retaining ADK 1.34.3 or 2.5.0 must also constrain `mcp>=1.26.0,<2`: those releases use MCP 1.x internals. ADK 2.14.x supports MCP 2.3. Resolve the complete environment together instead of replacing ADK alone.

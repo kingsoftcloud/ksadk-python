@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
+from ksadk._mcp_compat import field, httpx_module, streamable_http
 
 from ksadk.plugins.bridges.dsh import DshProfilePluginBridge, dsh_subprocess_environment
 from ksadk.plugins.dsh_home import studio_dsh_home
@@ -101,19 +101,19 @@ async def test_ordinary_cordis_tool_bundle_runs_through_profile_mcp(
             core = await browser.get(f"http://127.0.0.1:{handoff.url.port}/")
             assert core.status_code == 200
             assert "<!doctype html" in core.text.lower()
-        async with httpx.AsyncClient(
+        async with httpx_module().AsyncClient(
             headers=lease.headers(), timeout=10, trust_env=False
         ) as mcp_client:
-            async with streamable_http_client(
+            async with streamable_http(
                 lease.endpoint,
                 http_client=mcp_client,
-            ) as (read_stream, write_stream, _session_id):
+            ) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     tools = await session.list_tools()
                     assert "fixture_echo" in {tool.name for tool in tools.tools}
                     result = await session.call_tool("fixture_echo", {"message": "real-cordis"})
-                    assert result.isError is False
+                    assert field(result, "is_error", "isError") is False
                     assert result.content[0].text == "real-cordis"
     finally:
         if host is not None:

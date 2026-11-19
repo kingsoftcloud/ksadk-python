@@ -15,8 +15,10 @@ description: "0.8.8 candidate migration and compatibility"
 
 ## MCP 与持久化
 
-核心通过兼容层支持 MCP 1.26+；开发测试使用 MCP 2.3、FastMCP 4.2.1。应用中的其它依赖仍须求解为兼容组合，OpenTelemetry 组件应保持一致。MCP 2 环境不要继续安装要求 `mcp<2` 的旧适配器。
+核心通过兼容层支持 MCP 1.26+；开发测试使用 MCP 2.3、FastMCP 4.2.2。应用中的其它依赖仍须求解为兼容组合，OpenTelemetry 组件应保持一致。MCP 2 环境不要继续安装要求 `mcp<2` 的旧适配器。
 
 迁移前备份 session/checkpoint。存量 Agent 在显式重建前保留原 SDK 和镜像；新增 Hosted admission 校验要求 Agent 和 session 归属一致。Web 继续使用官方 0.3.18，本候选不发布新 npm 包，也不清理既有 Agent。
 
 回滚时同时恢复原 SDK 环境和 Connector 版本，保留数据库备份与旧 wheel，不删除原有 session 表。
+
+保留 ADK 1.34.3 或 2.5.0 的项目须同时约束 `mcp>=1.26.0,<2`；旧 ADK 依赖 MCP 1.x 的内部接口。ADK 2.14.x 可使用 MCP 2.3。请在同一次安装中求解全部依赖，不能仅替换 ADK。
