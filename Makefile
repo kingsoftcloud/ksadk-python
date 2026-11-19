@@ -519,7 +519,7 @@ public-test: sync-ksadk-web-static build-studio-static
 	@echo "==> test"
 	@# The SDK compatibility tests explicitly exercise the optional Managed engine.
 	@# Native cold-install tests separately reject all agent-framework imports.
-	@uv sync --extra dev --extra langgraph --extra skills --extra agui --extra a2a
+	@uv sync --extra dev --extra adk --extra langgraph --extra skills --extra agui --extra a2a
 	@uv run --no-sync pytest $(PUBLIC_TEST_TARGETS)
 
 public-sync-ksadk-web-static: sync-ksadk-web-static
