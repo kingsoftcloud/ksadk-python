@@ -9,7 +9,7 @@ from scripts.release_candidate_gate import (
     ReleaseCandidateGateError,
     build_release_candidate_report,
 )
-from scripts.release_preflight import RELEASE_E2E_STATUS_KEYS
+from scripts.release_preflight import RELEASE_E2E_STATUS_KEYS, RELEASE_EVIDENCE_SCHEMA_VERSION
 
 COMMIT = "a" * 40
 WEB_COMMIT = "b" * 40
@@ -24,7 +24,7 @@ def _write(path: Path, payload: dict) -> Path:
 
 def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     local = {
-        "schemaVersion": 2,
+        "schemaVersion": RELEASE_EVIDENCE_SCHEMA_VERSION,
         "phase": "release",
         "scope": "local-source-and-package",
         "overallStatus": "incomplete",

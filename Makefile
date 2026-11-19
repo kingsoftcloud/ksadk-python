@@ -190,14 +190,23 @@ studio-react-test: build-studio-static
 		npm --prefix ksadk/studio/react-ui run test:ui; \
 		(cd ksadk/studio/react-ui && npx tsc --noEmit); \
 		npm --prefix ksadk/studio/react-ui run build; \
-		uv run pytest tests/studio/test_style_system.py -q; \
 	else \
 		echo "React Studio source is not part of this public candidate; testing reviewed compiled assets"; \
 		test -f "ksadk/studio/static/index.html"; \
 	fi
-	PYTHONPATH=. uv run python tests/studio/e2e/studio_browser_smoke.py
-	PYTHONPATH=. uv run python tests/studio/e2e/studio_workspace_navigation_smoke.py --output "$$(mktemp -d)"
-	PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
+
+# MCP 兼容性：在临时 venv 里跑 mcp 1.26 / 2.3 双版本
+test-mcp-compat:
+	@for v in 1.26.0 2.3.0; do \
+		echo "=== mcp $$v ==="; \
+		uv venv --quiet /tmp/ksadk-mcp-compat >/dev/null 2>&1; \
+		uv pip install --quiet --python /tmp/ksadk-mcp-compat/bin/python \
+			"mcp==$$v" "pytest>=7" "pytest-asyncio>=0.21" >/dev/null 2>&1; \
+		PYTHONPATH=. /tmp/ksadk-mcp-compat/bin/python -m pytest \
+			tests/test_mcp_compat.py -q || exit 1; \
+	done
+	@rm -rf /tmp/ksadk-mcp-compat
+	@echo "✅ mcp 1.26 / 2.3 双版本通过"
 
 # ============================================================
 # 构建和发布
@@ -380,10 +389,14 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/studio/test_scheduler_runtime.py tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py tests/test_deploy_env_forward.py tests/server/test_historical_agent_approval_and_blocks.py
-PUBLIC_TEST_TARGETS += tests/a2a/test_public_imports.py tests/studio/test_shared_web_final_snapshot.py
+PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py tests/test_deploy_env_forward.py tests/server/test_historical_agent_approval_and_blocks.py
+PUBLIC_TEST_TARGETS += tests/a2a/test_public_imports.py
 PUBLIC_TEST_TARGETS += tests/test_cloud_headers.py
-PUBLIC_TEST_TARGETS += tests/cli/test_cmd_config_tunnel.py
+PUBLIC_TEST_TARGETS += tests/test_mcp_tunnel.py tests/test_langgraph_tunnel.py
+PUBLIC_TEST_TARGETS += tests/test_tunnel_peers.py tests/test_tunnel_scaling.py tests/test_tunnel_peer_keys.py
+PUBLIC_TEST_TARGETS += tests/test_tunnel_connector_errors.py tests/test_tunnel_failure_responses.py tests/test_tunnel_tls.py
+PUBLIC_TEST_TARGETS += tests/test_adk_stream_delta_types.py
+PUBLIC_TEST_TARGETS += tests/runners/test_adk_composite_tunnel.py tests/runners/test_langgraph_tunnel_history.py
 PUBLIC_TEST_TARGETS += tests/test_prepare_ksadk_python_export.py
 PUBLIC_TEST_TARGETS += tests/packaging/test_alias_distribution.py
 # Public protocol contracts must remain in the local release gate as well as CI.

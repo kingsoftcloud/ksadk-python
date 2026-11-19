@@ -15,9 +15,10 @@ async def prepare_worker_identity(
     command: AgentControlCommand,
     defaults: Mapping[str, object],
     session_service: object | None,
-) -> tuple[str, Mapping[str, Any] | None]:
-    """Resolve the storage user and retain only an admitted identity payload."""
+) -> tuple[str, Mapping[str, Any] | None, str]:
+    """Resolve storage user, admitted identity and Agent from one owner snapshot."""
 
+    fallback_agent_id = str(defaults.get("agent_id") or command.agent_instance_id)
     invocation_identity = command.payload.get("invocation_identity")
     effective_user_id = str(command.tenant_id or "agent-kernel")
     if command.payload.get("teams_context_ref") is not None:
@@ -34,11 +35,12 @@ async def prepare_worker_identity(
             raise ValueError("prepared Teams session owner is unavailable")
         return existing.user_id, (
             invocation_identity if isinstance(invocation_identity, Mapping) else None
-        )
+        ), fallback_agent_id
     if not isinstance(invocation_identity, Mapping):
         existing = (
             await session_service.get_session_metadata(command.session_id)
-            if session_service is not None else None
+            if session_service is not None
+            else None
         )
         if existing is not None:
             # Kernel ingress has authorized this exact session/instance. Tenant
@@ -47,10 +49,10 @@ async def prepare_worker_identity(
             agent_id = str(defaults.get("agent_id") or command.agent_instance_id)
             if existing.agent_id != agent_id or not existing.user_id:
                 raise ValueError("prepared session Agent differs from the Kernel Build")
-            return existing.user_id, None
-        return effective_user_id, None
+            return existing.user_id, None, fallback_agent_id
+        return effective_user_id, None, fallback_agent_id
     if session_service is None:
-        return identity_native_user_id(invocation_identity), invocation_identity
+        return identity_native_user_id(invocation_identity), invocation_identity, fallback_agent_id
 
     # Hosted runtimes have two stable identifiers: the platform deployment
     # instance (used by the Kernel command) and the public AgentId used by
@@ -71,4 +73,9 @@ async def prepare_worker_identity(
         invocation_identity=invocation_identity,
         allow_agent_alias=True,
     )
-    return canonical_session.user_id, invocation_identity
+    # Use the same owner snapshot we just authorized; do not look up the
+    # session again after a concurrent deletion/recreation could replace it.
+    resolved_agent_id = (
+        canonical_session.agent_id if command.source.kind == "agui" else fallback_agent_id
+    )
+    return canonical_session.user_id, invocation_identity, resolved_agent_id

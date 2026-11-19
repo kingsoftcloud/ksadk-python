@@ -57,6 +57,10 @@ See [Integration and Configuration](https://kingsoftcloud.github.io/ksadk-python
 Model-generated A2UI must pass registered-catalog validation; complex styles can fail. Never present
 a generation failure as business success.
 
+## Private tools
+
+Google ADK and LangGraph agents can use one enterprise Connector to call private MCP tools and HTTP APIs. See the [tool tunnel guide and Connector example](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/tool-tunnel/).
+
 ## Runtime Architecture
 
 KsADK converges framework adaptation into stable runtime layers while preserving each framework's native execution semantics:

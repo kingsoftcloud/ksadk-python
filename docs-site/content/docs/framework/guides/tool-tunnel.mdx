@@ -1,0 +1,85 @@
+---
+title: "工具隧道"
+description: "用一个企业侧 Connector 让云端 Agent 调用内网 MCP 和自定义 HTTP API"
+---
+
+## 开启云端 Agent
+
+在已有项目的入口包装原生 Agent，将导出的变量配置为项目入口。在云端运行环境设置 `KSADK_TUNNEL_TOKEN`，企业侧 Connector 使用相同的值。
+
+```python
+from ksadk import Agent
+
+root_agent = Agent(native_agent, enable_tunnel=True)
+```
+
+运行时自动为 Google ADK Agent 绑定 `ksadk.tunnel.TunnelToolset`。自定义 ADK Runner 可把 `TunnelToolset(agent_id, registry)` 加入 Agent 工具列表，使用接收该 Connector 的注册表。LangGraph 自编译图还需导出 `ksadk_graph_factory(*, checkpointer, tunnel_tools)`，其中 `tunnel_tools` 是 `ksadk.tunnel.TunnelTools` 实例，使用传入的 `checkpointer` 编译图。用 LangChain `create_agent` 时，在工厂中加入 `TunnelMiddleware(tunnel_tools)`（来自 `ksadk.tunnel.middleware`）。用 `StateGraph` 时，在模型节点保存 `await tunnel_tools.discover()` 的目录快照，向模型绑定 `tunnel_tools.model_tools(catalog)`，工具节点从同一快照取 `await tunnel_tools.get_tools(catalog)`。
+
+## 启动企业侧 Connector
+
+在能访问两个内网服务的机器上安装同版 KsADK。下面的 `connector.py` 把本地 MCP 的 `lookup_inventory` 和订单 API 的 `GET /orders/{order_id}` 注册到同一个 Agent。
+
+```python
+import asyncio
+import os
+
+from ksadk.tunnel import APIOperation, LocalAPIService, LocalMCPService, TunnelConnector
+
+
+async def main():
+    connector = TunnelConnector(
+        os.environ["AGENT_URL"],
+        token=os.environ["KSADK_TUNNEL_TOKEN"],
+        gateway_headers={"Authorization": f"Bearer {os.environ['GATEWAY_TOKEN']}"},
+        services=[
+            LocalMCPService(
+                "inventory", "http://127.0.0.1:8091/mcp", tool_filter=("lookup_inventory",)
+            ),
+            LocalAPIService(
+                "orders",
+                "http://127.0.0.1:8093",
+                operations=(
+                    APIOperation(
+                        name="get_order",
+                        method="GET",
+                        path="/orders/{order_id}",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"order_id": {"type": "string"}},
+                            "required": ["order_id"],
+                        },
+                    ),
+                ),
+            ),
+        ],
+    )
+    try:
+        await connector.run()
+    finally:
+        await connector.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+将示例服务地址和操作替换为实际值。设置 `AGENT_URL` 为网关提供的 Agent HTTPS 访问前缀，设置 `GATEWAY_TOKEN` 为网关 Bearer 凭证，再执行 `python connector.py`。Connector 自动使用 WSS 并拼接隧道路由。内网服务如需鉴权，在对应的 `LocalMCPService` 或 `LocalAPIService` 的 `headers` 中提供凭证。
+
+## 工具可见性与多 Pod
+
+- 企业 Connector 对每次 MCP 工具调用执行 `tool_filter` 检查。MCP 工具目录先到达云端，再由云端筛选模型可见的工具。若工具名称、描述或参数也需保密，应在企业 MCP 服务限制 `tools/list` 的返回内容。
+- 多 Pod 共用一个 Connector。聊天请求落到其他 Pod 时，该 Pod 发现持有连接的副本并经它转发调用。如果持有连接的 Pod 暂时无法启动内部监听，该 Pod 仍可使用本地连接。工具发现和 Connector 心跳会重试启动监听。
+- 遇到不可达的副本时，运行时保留已确认的工具。如果没有可确认的工具，普通聊天和其他工具仍可使用。副本鉴权失败或服务目录格式无效时，拒绝本轮发现。
+
+## 容量与失败处理
+
+`TunnelLimits` 默认允许每个 Connector 注册 16 个服务、每个服务 256 个工具，每个调用 Pod 对同一 Connector 最多并发执行 32 个操作。单帧上限 1 MiB，单个响应上限 8 MiB，单次操作超时 60 秒。可给 `TunnelConnector` 传入 `limits=TunnelLimits(...)` 调整企业侧限制，云端仍执行自身的限制。
+
+| 调用方收到的结果 | 含义 |
+| --- | --- |
+| 工具结果 `isError=True` | MCP 服务返回了工具错误，或自定义 API 返回了 HTTP 400、404、422 等明确拒绝。API 错误结果包含状态码。 |
+| `TunnelError.indeterminate=True` | 操作可能已执行。响应丢失、超时、HTTP 408、5xx 或本地服务异常（`local_mcp_error`、`local_service_error`）都可能产生此结果。重复写入前先核实业务状态。 |
+| `TunnelError.indeterminate=False` | SDK 报告调用失败，例如工具调用被允许名单拒绝。 |
+| `peer_discovery_unavailable` | 注册表无法完成副本发现。框架根据副本是否可达、数据是否通过校验，按上节规则处理。 |
+
+SDK 不会自动重放失败的工具调用。Runner 遇到隧道异常并结束本轮时，通常以 `tunnel_tool_failed` 报告工具失败。标准事件的 `source.metadata.tunnel_failure` 记录 `outcome`（`unknown` 或 `failed`）和 `automatic_retry=false`。

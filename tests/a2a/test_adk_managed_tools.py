@@ -107,7 +107,7 @@ async def test_real_adk_function_tool_uses_kernel_approval_and_original_call(mon
     if fixed == "composed":
         from ksadk.studio.a2a_orchestration import compile_orchestration
         from ksadk.studio.contracts import RemoteAgentBinding
-        from tests.studio.test_a2a_orchestration import draft
+        from tests.studio_fixtures.test_a2a_orchestration import draft
         definition = draft(handoff=True, framework="adk")
         binding = RemoteAgentBinding.freeze(
             local_name=spec.local_name, space_id=spec.space_id, target_agent_id=spec.target_agent_id,

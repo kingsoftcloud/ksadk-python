@@ -44,11 +44,11 @@ from ksadk.studio.resource_authority import (
 PLATFORM_RESOURCE_MCP_PLUGIN_ID = "io.ksadk.mcp.platform-resources"
 PLATFORM_RESOURCE_MCP_PLUGIN_VERSION = "1.0.0"
 PLATFORM_RESOURCE_MCP_PERMISSION = "platform-resource:read"
+PLATFORM_RESOURCE_MCP_NAME = "platform-resources"
 PLATFORM_RESOURCE_MCP_REF = (
     f"plugin://{PLATFORM_RESOURCE_MCP_PLUGIN_ID}@{PLATFORM_RESOURCE_MCP_PLUGIN_VERSION}"
 )
 _ARTIFACT_PATH = "platform-resources"
-_CONNECTOR_NAME = "platform-resources"
 
 ResourceWriteAuthorizerFactory = Callable[
     [str, ResolvedPluginBundle], ResourceWriteAuthorizer | None
@@ -545,7 +545,7 @@ class PlatformResourceMCPRuntime:
                 aliases = {operation: operation for operation in operations}
                 token = connector.resource_bearer_token(aliases, active.leases)
                 spec = McpToolSpec(
-                    name=_CONNECTOR_NAME,
+                    name=PLATFORM_RESOURCE_MCP_NAME,
                     url=connector.endpoint,
                     api_key=token,
                     tool_filter=operations,

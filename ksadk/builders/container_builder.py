@@ -417,11 +417,12 @@ CMD ["python", "entrypoint.py"]
         framework = detection_result.type.value
         base_deps += requirements_for_framework(framework)
 
+        bundled_builder = CodeBuilder(project_path or self.project_dir)
+        tunnel_requirements = bundled_builder._tunnel_runtime_requirements()
         base_deps = merge_requirement_lists(
             base_deps,
-            CodeBuilder(project_path or self.project_dir)._bundled_runtime_requirements(
-                detection_result,
-            ),
+            bundled_builder._bundled_runtime_requirements(detection_result),
+            tunnel_requirements,
         )
 
         # 合并用户 requirements.txt (如果存在)
@@ -431,7 +432,6 @@ CMD ["python", "entrypoint.py"]
             if user_requirements.exists():
                 user_content = user_requirements.read_text()
                 parsed_user_requirements = parse_requirements_text(user_content)
-                bundled_builder = CodeBuilder(project_path or self.project_dir)
                 extra_requirements = bundled_builder._bundled_ksadk_extra_requirements(
                     parsed_user_requirements,
                 )
@@ -451,7 +451,7 @@ CMD ["python", "entrypoint.py"]
             if LANGGRAPH_REQUIREMENT in requirements_for_framework(framework)
             else ()
         )
-        for requirement in (*pinned_framework, *extra_requirements):
+        for requirement in (*pinned_framework, *extra_requirements, *tunnel_requirements):
             if requirement not in base_deps:
                 base_deps.append(requirement)
 
@@ -535,7 +535,6 @@ from ksadk.detection import DetectionResult, FrameworkType
 from ksadk.agui.config import agui_config_for_detection
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
 from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
-from ksadk.tunnel.config import tunnel_self_url_for_start
 import uvicorn
 
 # 检测结果 (构建时固化)
@@ -605,7 +604,6 @@ app = create_runtime_app(
         agui=agui_config_for_detection(detection_result),
         a2a=_managed_a2a_bootstrap,
         a2a_runtime_adapter=_a2a_adapter,
-        tunnel_self_url=tunnel_self_url_for_start(int(os.environ.get("PORT", 8080))),
     ),
     configure_runtime_app,
 )

@@ -430,6 +430,22 @@ class _LangGraphCanonicalStreamMixin:
             if timing := extract_timing(final_state):
                 final_result_fields["timing"] = timing
         except Exception as exc:
+            from ksadk.tunnel.failure import failure_events, tunnel_failure
+
+            if failure := tunnel_failure(exc):
+                for event in failure_events(
+                    failure,
+                    run_id=run_id,
+                    scope_id=run_scope_id,
+                    source=run_source,
+                    allocate_seq=adapter_context.allocate_placeholder_seq,
+                    open_items=(
+                        (item.scope_id, item.item_id, item.item_kind)
+                        for item in reducer.snapshot().items if item.status == "open"
+                    ),
+                ):
+                    yield event
+                return
             from ksadk.runners._langgraph_interactions import (
                 persisted_interactions,
                 submission_progress,

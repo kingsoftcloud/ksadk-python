@@ -9,6 +9,8 @@ remote side may have executed the call before the connection failed.
 
 from __future__ import annotations
 
+from ksadk._mcp_compat import tool_input_schema
+
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -181,7 +183,7 @@ async def build_native_mcp_tool_surface(
             definition = ToolDefinition(
                 name=name,
                 description=str(item.get("description") or ""),
-                parameters=item["inputSchema"],
+                parameters=tool_input_schema(item),
                 result_model_policy="typed-tool-observation/v1",
                 result_disclosure_policy="mcp-default/v1",
             )

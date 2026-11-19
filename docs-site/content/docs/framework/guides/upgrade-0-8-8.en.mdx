@@ -1,0 +1,22 @@
+---
+title: "Upgrade to 0.8.8"
+description: "0.8.8 candidate migration and compatibility"
+---
+
+## Candidate installation
+
+This version is being prepared and is not yet published. Install the reviewed candidate wheel in a new Python 3.12+ environment. Do not overwrite an existing agent environment during evaluation.
+
+## Tunnel migration
+
+Use the [tool tunnel guide](/en/docs/framework/guides/tool-tunnel/). The unified implementation incorporates community PR #115 and adds custom HTTP services, LangGraph and multi-pod routing. Enable the exported agent with `Agent(native_agent, enable_tunnel=True)` and run `TunnelConnector` with explicit `LocalMCPService`/`LocalAPIService` declarations.
+
+Upgrade the cloud SDK and enterprise Connector together. The previous YAML/CLI configuration and protocol package are replaced; no second protocol stack is shipped. Failed or indeterminate calls are not automatically replayed. Verify business state before retrying a write.
+
+## MCP and persistence
+
+The core supports MCP 1.26+ through the compatibility layer. Development tests use MCP 2.3 and FastMCP 4.2.1; optional applications must resolve a compatible dependency set. OpenTelemetry components must stay aligned. Do not keep an adapter that pins `mcp<2` in an MCP 2 environment.
+
+Back up session/checkpoint data before migration. Existing agents remain on their current SDK and images until explicitly rebuilt; new Hosted admission checks require matching agent and session ownership. Web stays at the published 0.3.18 version. This candidate does not publish a new npm package or retire existing agents.
+
+For rollback, restore the previous environment and connector version together. Keep database backups and the previous wheel; do not delete existing session tables.

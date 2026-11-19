@@ -1,235 +1,306 @@
-"""Per-application registry for connectors and their public service descriptors."""
+"""App-owned registrations and request correlation, never a process global registry."""
 
 from __future__ import annotations
 
-import logging
-import secrets
-import threading
-from typing import TYPE_CHECKING, Any
+import asyncio
+import uuid
+from contextlib import nullcontext
+from dataclasses import dataclass, field
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+# The transport, response streams and MCP client must use the same backend,
+# even when both httpx packages are installed in a legacy MCP environment.
+from ksadk._mcp_compat import httpx_module
 
-if TYPE_CHECKING:
-    from ksadk.tunnel.server import ConnectorConnection
+httpx = httpx_module()
 
-logger = logging.getLogger(__name__)
-
-SUPPORTED_PROTOCOLS = frozenset({"mcp"})
-
-
-class ServerDescriptor(BaseModel):
-    """Public description of a service exposed through a connector.
-
-    Local addresses, credentials, and query parameters deliberately have no
-    representation in this model and never leave the connector process.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    name: str
-    protocol: str = "mcp"
-    tool_filter: list[str] | None = None
-
-    @field_validator("name", "protocol")
-    @classmethod
-    def _non_empty(cls, value: str) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("descriptor names and protocols must be non-empty strings")
-        return value.strip()
-
-    @field_validator("tool_filter")
-    @classmethod
-    def _valid_tool_filter(cls, value: list[str] | None) -> list[str] | None:
-        if value is None:
-            return None
-        if any(not isinstance(item, str) or not item.strip() for item in value):
-            raise ValueError("tool_filter must contain only non-empty strings")
-        return [item.strip() for item in value]
+from .protocol import LOCAL_ERROR_CODES, TunnelError, TunnelLimits, decode_request_body, encode
 
 
-def validate_registration(
-    agent_name: Any,
-    servers: Any,
-) -> tuple[str, list[ServerDescriptor]]:
-    """Validate and detach a complete registration before changing registry state."""
+@dataclass(eq=False)
+class ConnectorConnection:
+    agent_id: str
+    services: dict[str, dict]
+    websocket: Any = field(repr=False)
+    limits: TunnelLimits
+    connector_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    pending: dict[str, asyncio.Queue] = field(default_factory=dict, repr=False)
+    _send_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    operations: set[asyncio.Timeout] = field(default_factory=set, repr=False)
+    closed: bool = False
+    owner: dict | None = None
 
-    if not isinstance(agent_name, str) or not agent_name.strip():
-        raise ValueError("agent must be a non-empty string")
-    if not isinstance(servers, list) or not servers:
-        raise ValueError("servers must be a non-empty list")
+    async def send(self, frame: dict) -> None:
+        raw = encode(frame, self.limits)
+        async with asyncio.timeout(self.limits.send_timeout):
+            async with self._send_lock:
+                await self.websocket.send_text(raw)
 
-    descriptors: list[ServerDescriptor] = []
-    seen: set[str] = set()
-    for raw in servers:
-        descriptor = (
-            raw.model_copy(deep=True)
-            if isinstance(raw, ServerDescriptor)
-            else ServerDescriptor.model_validate(raw)
-        )
-        if descriptor.protocol not in SUPPORTED_PROTOCOLS:
-            raise ValueError(f"unsupported tunnel protocol: {descriptor.protocol}")
-        if descriptor.name in seen:
-            raise ValueError(f"duplicate server name in registration: {descriptor.name}")
-        seen.add(descriptor.name)
-        descriptors.append(descriptor)
-    return agent_name.strip(), descriptors
+    async def forward(self, service: str, request: httpx.Request) -> httpx.Response:
+        body = decode_request_body(await request.aread())
+        if self.closed:
+            raise TunnelError("disconnected")
+        if len(self.pending) >= 3 * self.limits.max_inflight:
+            raise TunnelError("busy")
+        request_id = uuid.uuid4().hex
+        queue = asyncio.Queue(maxsize=32)
+        self.pending[request_id] = queue
+        stream = ResponseStream(self, request_id, queue)
+        try:
+            await self.send(
+                {
+                    "type": "http_request",
+                    "id": request_id,
+                    "server": service,
+                    "method": request.method,
+                    "path": request.url.path.strip("/"),
+                    "query": request.url.query.decode("ascii"),
+                    "headers": {
+                        k: v
+                        for k, v in request.headers.items()
+                        if k.lower() not in {"host", "content-length", "accept-encoding"}
+                    },
+                    "body": body,
+                }
+            )
+            head = await stream.receive()
+            if head["type"] != "http_response":
+                raise TunnelError("invalid_result")
+            return httpx.Response(head["status"], headers=head["headers"], stream=stream)
+        except BaseException:
+            await stream.aclose()
+            raise
+
+    def dispatch(self, frame: dict) -> None:
+        if frame.get("type") not in {"http_response", "http_chunk", "http_end", "http_error"}:
+            raise ValueError("unexpected HTTP tunnel frame")
+        frame_type = frame["type"]
+        if frame_type == "http_response":
+            status, headers = frame.get("status"), frame.get("headers")
+            if type(status) is not int or not 100 <= status <= 599 or not isinstance(headers, dict):
+                raise ValueError("invalid HTTP response head")
+            if any(not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()):
+                raise ValueError("invalid HTTP response headers")
+        elif frame_type == "http_chunk" and not isinstance(frame.get("data"), str):
+            raise ValueError("invalid HTTP response chunk")
+        queue = self.pending.get(frame["id"])
+        if queue is not None:
+            if queue.full():
+                # Never let one slow response block the shared WS reader.
+                self.pending.pop(frame["id"])
+                queue.get_nowait()
+                queue.put_nowait({"type": "http_error"})
+            else:
+                queue.put_nowait(frame)
+
+    def fail_all(self) -> None:
+        self.closed = True
+        # Wake MCP sessions too, including a caller waiting on a parsed SSE event.
+        for deadline in self.operations:
+            if not deadline.expired():
+                deadline.reschedule(asyncio.get_running_loop().time())
+        for queue in self.pending.values():
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait({"type": "http_error"})
+        self.pending.clear()
+
+
+class ResponseStream(httpx.AsyncByteStream):
+    def __init__(self, connection, request_id, queue):
+        self.connection = connection
+        self.request_id = request_id
+        self.queue = queue
+        self.done = False
+
+    async def receive(self):
+        async with asyncio.timeout(self.connection.limits.request_timeout):
+            frame = await self.queue.get()
+        if frame["type"] == "http_error":
+            code = frame.get("error")
+            raise TunnelError(
+                code
+                if isinstance(code, str) and code in LOCAL_ERROR_CODES
+                else "local_service_error"
+            )
+        return frame
+
+    async def __aiter__(self):
+        received = 0
+        try:
+            while True:
+                frame = await self.receive()
+                if frame["type"] == "http_end":
+                    self.done = True
+                    return
+                if frame["type"] != "http_chunk":
+                    raise TunnelError("invalid_result")
+                data = frame["data"].encode("utf-8")
+                received += len(data)
+                if received > self.connection.limits.max_response_bytes:
+                    raise TunnelError("frame_too_large")
+                yield data
+        finally:
+            await self.aclose()
+
+    async def aclose(self):
+        if self.queue is None:
+            return
+        self.queue = None
+        self.connection.pending.pop(self.request_id, None)
+        if not self.done and not self.connection.closed:
+            try:
+                await self.connection.send({"type": "http_cancel", "id": self.request_id})
+            except Exception:
+                pass
 
 
 class TunnelRegistry:
-    """Own connector routes for one application instance.
+    """One registry per runtime app; duplicates never replace a live connector."""
 
-    The standard runtime injects the same instance into the server and toolset.
-    No module-global registry is consulted when an instance is explicitly given.
-    """
-
-    def __init__(self) -> None:
-        self.proxy_token = secrets.token_urlsafe(32)
-        self.self_url: str | None = None
-        # The automatic Toolset is app-owned, just like this registry. Per-run
-        # ADKRunner instances attach it but never close it.
-        self.toolset: Any | None = None
-        self._lock = threading.RLock()
+    def __init__(self):
+        self._connections: dict[tuple[str, str], ConnectorConnection] = {}
         self._closed = False
-        self._connections: dict[str, ConnectorConnection] = {}
-        self._routes: dict[tuple[str, str], tuple[str, ServerDescriptor]] = {}
+        self.peers = None
 
-    def claim_tunnel_toolset(self, candidate: Any) -> Any:
-        """Atomically select one app-owned Toolset for concurrent runner loads."""
+    def add(self, connection: ConnectorConnection) -> None:
+        if self._closed:
+            raise TunnelError("closed")
+        if any(
+            (connection.agent_id, service) in self._connections for service in connection.services
+        ):
+            raise TunnelError("duplicate_service")
+        for service in connection.services:
+            self._connections[connection.agent_id, service] = connection
+        if self.peers is not None:
+            connection.owner = self.peers.owner
 
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("Tunnel registry is closed")
-            if self.toolset is None:
-                self.toolset = candidate
-            return self.toolset
+    def remove(self, connection: ConnectorConnection) -> None:
+        connection.fail_all()
+        for service in connection.services:
+            key = (connection.agent_id, service)
+            if self._connections.get(key) is connection:
+                self._connections.pop(key)
 
-    def add_connection(self, conn: ConnectorConnection) -> None:
-        """Atomically add a connector, rejecting all conflicting service names."""
+    def connections(self, agent_id: str) -> list[tuple[str, ConnectorConnection]]:
+        return [
+            (service, conn)
+            for (agent, service), conn in self._connections.items()
+            if agent == agent_id and not conn.closed
+        ]
 
-        if not isinstance(conn.connector_id, str) or not conn.connector_id:
-            raise ValueError("connector_id must be a non-empty string")
-        agent_name, descriptors = validate_registration(conn.agent_name, conn.servers)
+    async def discover_connections(self, agent_id):
+        if self.peers is None or not await self.peers.start():
+            return self.connections(agent_id)
+        local = self.connections(agent_id)
+        for _, connection in local:
+            connection.owner = self.peers.owner
+        connections = [*local, *await self.peers.discover(agent_id, has_local=bool(local))]
+        aliases = {}
+        for service, connection in connections:
+            identity = (connection.connector_id, json_owner(connection.owner))
+            if service in aliases and aliases[service] != identity:
+                raise TunnelError("ambiguous_service")
+            aliases[service] = identity
+        return connections
 
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("Tunnel registry is closed")
-            if conn.connector_id in self._connections:
-                raise ValueError("connector id is already registered")
-            for descriptor in descriptors:
-                key = (agent_name, descriptor.name)
-                if key in self._routes:
-                    raise ValueError(
-                        f"server {descriptor.name!r} is already registered for this agent"
-                    )
+    async def list_tools(self, agent_id, service, *, connector_id=None, owner=None):
+        return await self._operate(agent_id, service, connector_id, None, None, owner)
 
-            conn.agent_name = agent_name
-            conn.servers = descriptors
-            self._connections[conn.connector_id] = conn
-            for descriptor in descriptors:
-                self._routes[(agent_name, descriptor.name)] = (
-                    conn.connector_id,
-                    descriptor,
+    async def call_tool(self, agent_id, service, name, arguments, *, connector_id=None, owner=None):
+        if not isinstance(name, str) or not name or not isinstance(arguments, dict):
+            raise TunnelError("invalid_request")
+        return await self._operate(agent_id, service, connector_id, name, arguments, owner)
+
+    async def _operate(self, agent_id, service, connector_id, name, arguments, owner=None):
+        from .http_tools import TunnelTransport, api_operation, mcp_operation
+
+        conn = self._connections.get((agent_id, service))
+        if self.peers is not None:
+            if owner is not None and owner != self.peers.owner:
+                conn = await self.peers.resolve(agent_id, service, connector_id, owner)
+                if conn.owner != owner:
+                    raise TunnelError("disconnected")
+            elif owner is None and (
+                conn is None or (connector_id is not None and conn.connector_id != connector_id)
+            ):
+                connections = await self.discover_connections(agent_id)
+                conn = next(
+                    (
+                        candidate
+                        for alias, candidate in connections
+                        if alias == service
+                        and (connector_id is None or candidate.connector_id == connector_id)
+                    ),
+                    None,
                 )
-
-        logger.info(
-            "Connector %s registered for agent %s with servers %s",
-            conn.connector_id,
-            agent_name,
-            [descriptor.name for descriptor in descriptors],
-        )
-
-    def remove_connection(
-        self,
-        connector_id: str,
-        connection: ConnectorConnection | None = None,
-    ) -> None:
-        """Remove only state still owned by the specified connection."""
-
-        with self._lock:
-            current = self._connections.get(connector_id)
-            if current is None or (connection is not None and current is not connection):
-                return
-            self._connections.pop(connector_id, None)
-            for key, (owner_id, _) in list(self._routes.items()):
-                if owner_id == connector_id:
-                    self._routes.pop(key, None)
-
-        logger.info(
-            "Connector %s removed from agent %s",
-            connector_id,
-            current.agent_name,
-        )
-
-    def list_server_routes(self, agent_name: str) -> list[tuple[str, ServerDescriptor]]:
-        """Return ``(connector_id, descriptor)`` pairs for handler ownership tracking."""
-
-        with self._lock:
-            routes = [
-                (owner_id, descriptor)
-                for (agent, _), (owner_id, descriptor) in sorted(self._routes.items())
-                if agent == agent_name
-            ]
-            return [(owner_id, descriptor.model_copy(deep=True)) for owner_id, descriptor in routes]
-
-    def list_servers(self, agent_name: str) -> list[ServerDescriptor]:
-        """Return detached public descriptors for one agent in stable order."""
-
-        return [descriptor for _, descriptor in self.list_server_routes(agent_name)]
-
-    def find_connection(
-        self,
-        agent_name: str,
-        server_name: str,
-    ) -> ConnectorConnection | None:
-        """Resolve the single connector owning ``(agent_name, server_name)``."""
-
-        with self._lock:
-            route = self._routes.get((agent_name, server_name))
-            if route is None:
-                return None
-            return self._connections.get(route[0])
+        if conn is None or (connector_id is not None and connector_id != conn.connector_id):
+            raise TunnelError("disconnected")
+        if len(conn.operations) >= conn.limits.max_inflight:
+            raise TunnelError("busy")
+        deadline = asyncio.timeout(conn.limits.request_timeout)
+        peer_operation = None
+        try:
+            descriptor = conn.services[service]
+            operation = mcp_operation if descriptor["protocol"] == "mcp" else api_operation
+            async with deadline:
+                conn.operations.add(deadline)
+                scope = (
+                    self.peers.operation_scope(deadline)
+                    if self.peers is not None
+                    else nullcontext(None)
+                )
+                with scope as peer_operation:
+                    return await operation(
+                        TunnelTransport(conn, service), descriptor, name, arguments
+                    )
+        except TunnelError as exc:
+            if exc.code in {
+                "local_mcp_error",
+                "local_service_error",
+                "timeout",
+                "disconnected",
+                "frame_too_large",
+            }:
+                raise TunnelError(exc.code, indeterminate=name is not None) from None
+            raise
+        except TimeoutError:
+            code = (
+                peer_operation.error
+                if peer_operation is not None and peer_operation.error
+                else "disconnected" if conn.closed else "timeout"
+            )
+            raise TunnelError(
+                code,
+                indeterminate=name is not None
+                and code not in {"busy", "forbidden", "invalid_request"},
+            ) from None
+        except Exception:
+            code = (
+                peer_operation.error
+                if peer_operation is not None and peer_operation.error
+                else "local_service_error"
+            )
+            raise TunnelError(
+                code,
+                indeterminate=name is not None
+                and code not in {"busy", "forbidden", "invalid_request"},
+            ) from None
+        finally:
+            conn.operations.discard(deadline)
 
     async def close(self) -> None:
-        """Close the app-owned Toolset and fail all active connector requests once."""
-
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            connections = list(self._connections.values())
-            self._connections.clear()
-            self._routes.clear()
-            toolset = self.toolset
-
-        for connection in connections:
-            connection.fail_all()
-        if toolset is not None:
-            await toolset.close()
-
-    def has_agent(self, agent_name: str) -> bool:
-        with self._lock:
-            return any(conn.agent_name == agent_name for conn in self._connections.values())
+        self._closed = True
+        connections = set(self._connections.values())
+        self._connections.clear()
+        if self.peers is not None:
+            await self.peers.close()
+        for conn in connections:
+            conn.fail_all()
+        await asyncio.gather(
+            *(conn.websocket.close(code=1001) for conn in connections), return_exceptions=True
+        )
 
 
-_REGISTRY: TunnelRegistry | None = None
-_REGISTRY_LOCK = threading.Lock()
-
-
-def get_registry() -> TunnelRegistry:
-    """Return the embedded fallback registry; standard runtime injects its own."""
-
-    global _REGISTRY
-    if _REGISTRY is None:
-        with _REGISTRY_LOCK:
-            if _REGISTRY is None:
-                _REGISTRY = TunnelRegistry()
-    return _REGISTRY
-
-
-__all__ = [
-    "SUPPORTED_PROTOCOLS",
-    "ServerDescriptor",
-    "TunnelRegistry",
-    "get_registry",
-    "validate_registration",
-]
+def json_owner(owner):
+    return (owner["address"], owner["instance_id"]) if owner is not None else None

@@ -1,315 +1,384 @@
-"""Enterprise-side outbound WebSocket connector for local MCP services."""
+"""Enterprise-side outbound connector. Only configured local tools are reachable."""
 
 from __future__ import annotations
 
 import asyncio
 import codecs
-import inspect
-import json
 import logging
-from dataclasses import dataclass, field
-from functools import partial
+import math
+import random
+import ssl
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
-import httpx
-import websockets
+# The transport, response streams and MCP client must use the same backend,
+# even when both httpx packages are installed in a legacy MCP environment.
+from ksadk._mcp_compat import httpx_module
+
+httpx = httpx_module()
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
+from websockets.legacy.client import Connect
+
+from .protocol import (
+    LOCAL_ERROR_CODES,
+    VERSION,
+    TunnelError,
+    TunnelLimits,
+    decode,
+    encode,
+    identifier,
+)
+from .services import LocalAPIService, LocalMCPService, prepare_request, response_headers
 
 logger = logging.getLogger(__name__)
 
-_REGISTER_ACK_TIMEOUT_SECONDS = 10.0
 
-_HOP_BY_HOP = {
-    "authorization",
-    "connection",
-    "content-length",
-    "host",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-}
-
-
-@dataclass
-class LocalServer:
-    """A local service whose connection secrets remain in the connector."""
-
-    name: str
-    address: str = field(repr=False)
-    protocol: str = "mcp"
-    tool_filter: list[str] | None = None
-    headers: dict[str, str] = field(default_factory=dict, repr=False)
-    query: dict[str, str] = field(default_factory=dict, repr=False)
-
-    def descriptor(self) -> dict[str, Any]:
-        """Return only the public registration fields."""
-
-        return {
-            "name": self.name,
-            "protocol": self.protocol,
-            "tool_filter": self.tool_filter,
-        }
-
-
-def _local_request_url(server: LocalServer, message: dict[str, Any]) -> str:
-    """Combine the local endpoint, forwarded path/query, and local query secrets."""
-
-    parts = urlsplit(server.address)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
-        raise ValueError("local server address must be an absolute HTTP(S) URL")
-
-    forwarded_path = message.get("path", "")
-    if not isinstance(forwarded_path, str):
-        raise ValueError("forwarded path must be a string")
-    path = parts.path
-    if forwarded_path:
-        path = f"{parts.path.rstrip('/')}/{forwarded_path.lstrip('/')}"
-
-    forwarded_query = message.get("query", "")
-    if not isinstance(forwarded_query, str):
-        raise ValueError("forwarded query must be a string")
-    query_items = parse_qsl(parts.query, keep_blank_values=True)
-    query_items.extend(parse_qsl(forwarded_query, keep_blank_values=True))
-    if server.query:
-        local_keys = set(server.query)
-        query_items = [(key, value) for key, value in query_items if key not in local_keys]
-        query_items.extend(server.query.items())
-
-    return urlunsplit((parts.scheme, parts.netloc, path, urlencode(query_items, doseq=True), ""))
+class _DirectConnect(Connect):
+    def handle_redirect(self, uri: str) -> None:
+        # A gateway redirect must never forward its Authorization credential.
+        raise TunnelError("gateway_redirect_rejected")
 
 
 class TunnelConnector:
-    """Register local services and concurrently bridge forwarded HTTP requests."""
+    """A reconnecting connector. Disconnected or timed-out calls are never replayed."""
 
     def __init__(
         self,
         cloud_url: str,
-        agent: str,
-        servers: list[LocalServer],
-        token: str | None = None,
-        extra_headers: dict[str, str] | None = None,
-    ) -> None:
-        self.cloud_url = cloud_url
-        self.agent = agent
-        self.servers: dict[str, LocalServer] = {}
-        for server in servers:
-            if server.name in self.servers:
-                raise ValueError(f"duplicate local server name: {server.name}")
-            self.servers[server.name] = server
-        self.token = token
-        self.extra_headers = dict(extra_headers or {})
-        self._token_via_query = bool(token) and any(
-            key.lower() == "authorization" for key in self.extra_headers
+        *,
+        agent_id: str | None = None,
+        token: str,
+        services: list[LocalMCPService | LocalAPIService],
+        gateway_headers: dict[str, str] | None = None,
+        verify_tls: bool = True,
+        limits: TunnelLimits | None = None,
+        reconnect_min: float = 0.5,
+        reconnect_max: float = 30.0,
+        reconnect_handshake_grace: float = 120.0,
+    ):
+        parsed = urlsplit(cloud_url)
+        if (
+            parsed.scheme not in {"http", "https", "ws", "wss"}
+            or not parsed.hostname
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+        ):
+            raise ValueError("cloud_url must be a base URL without credentials/query/fragment")
+        scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme)
+        if not isinstance(verify_tls, bool):
+            raise TypeError("verify_tls must be a bool")
+        self._ssl_context = None
+        if scheme == "wss":
+            if verify_tls:
+                self._ssl_context = ssl.create_default_context()
+            else:
+                self._ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                self._ssl_context.check_hostname = False
+                self._ssl_context.verify_mode = ssl.CERT_NONE
+        self._url = urlunsplit(
+            (scheme, parsed.netloc, parsed.path.rstrip("/") + "/tunnel/connect", "", "")
         )
-        self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._send_lock = asyncio.Lock()
-
-    def _ws_url(self) -> str:
-        """Build the connector endpoint without string-replacing URL contents."""
-
-        parts = urlsplit(self.cloud_url)
-        schemes = {"http": "ws", "https": "wss", "ws": "ws", "wss": "wss"}
-        if parts.scheme not in schemes or not parts.netloc:
-            raise ValueError("cloud_url must be an absolute HTTP(S) or WS(S) URL")
-        query = parse_qsl(parts.query, keep_blank_values=True)
-        if self._token_via_query and self.token is not None:
-            query = [(key, value) for key, value in query if key != "token"]
-            query.append(("token", self.token))
-        path = f"{parts.path.rstrip('/')}/tunnel/connect"
-        return urlunsplit((schemes[parts.scheme], parts.netloc, path, urlencode(query), ""))
-
-    def _handshake_headers(self) -> dict[str, str]:
-        headers = dict(self.extra_headers)
-        if self.token and not self._token_via_query:
-            headers["Authorization"] = f"Bearer {self.token}"
-        return headers
-
-    def _register_message(self) -> dict[str, Any]:
-        return {
-            "type": "register",
-            "agent": self.agent,
-            "servers": [server.descriptor() for server in self.servers.values()],
-        }
-
-    @staticmethod
-    def _header_kwargs(headers: dict[str, str]) -> dict[str, dict[str, str]]:
-        """Select the handshake header argument used by websockets 12 through 15."""
-
-        parameters = inspect.signature(websockets.connect).parameters
-        if "additional_headers" in parameters:
-            return {"additional_headers": headers}
-        if "extra_headers" in parameters:
-            return {"extra_headers": headers}
-        raise RuntimeError("installed websockets client does not support handshake headers")
-
-    async def _send_json(self, websocket: Any, message: dict[str, Any]) -> None:
-        async with self._send_lock:
-            await websocket.send(json.dumps(message))
-
-    async def start(self) -> None:
-        """Run until disconnected, always cancelling and reaping local HTTP tasks."""
-
-        try:
-            async with httpx.AsyncClient(timeout=None) as http:
-                headers = self._header_kwargs(self._handshake_headers())
-                async with websockets.connect(self._ws_url(), **headers) as websocket:
-                    await self._send_json(websocket, self._register_message())
-                    ack = json.loads(
-                        await asyncio.wait_for(
-                            websocket.recv(),
-                            timeout=_REGISTER_ACK_TIMEOUT_SECONDS,
-                        )
-                    )
-                    if not isinstance(ack, dict) or not ack.get("ok"):
-                        error = ack.get("error") if isinstance(ack, dict) else None
-                        detail = error or "unknown error"
-                        raise RuntimeError(f"tunnel registration rejected: {detail}")
-                    logger.info(
-                        "Tunnel connected for agent %s with servers %s (connector %s)",
-                        self.agent,
-                        list(self.servers),
-                        ack.get("connector_id"),
-                    )
-
-                    async for raw in websocket:
-                        message = json.loads(raw)
-                        if not isinstance(message, dict):
-                            raise ValueError("tunnel frame must be a JSON object")
-                        frame_type = message.get("type")
-                        if frame_type == "http_request":
-                            self._start_request(websocket, http, message)
-                        elif frame_type == "http_cancel":
-                            self._cancel_request(message.get("id"))
-                        else:
-                            logger.debug("Ignoring unsupported tunnel frame type")
-        finally:
-            await self._cancel_all_tasks()
-
-    def _start_request(
-        self,
-        websocket: Any,
-        http: httpx.AsyncClient,
-        message: dict[str, Any],
-    ) -> None:
-        request_id = message.get("id")
-        if not isinstance(request_id, str) or not request_id:
-            raise ValueError("http_request requires a non-empty id")
-        if request_id in self._tasks:
-            logger.warning("Ignoring duplicate tunnel request id %s", request_id)
-            return
-        task = asyncio.create_task(self._handle_request(websocket, http, message))
-        self._tasks[request_id] = task
-        task.add_done_callback(partial(self._task_done, request_id))
-
-    def _task_done(self, request_id: str, task: asyncio.Task[None]) -> None:
-        if self._tasks.get(request_id) is task:
-            self._tasks.pop(request_id, None)
-        if not task.cancelled() and task.exception() is not None:
-            logger.debug("Tunnel request %s task failed after cleanup", request_id)
-
-    def _cancel_request(self, request_id: Any) -> None:
-        if not isinstance(request_id, str):
-            return
-        task = self._tasks.get(request_id)
-        if task is not None:
-            task.cancel()
-
-    async def _cancel_all_tasks(self) -> None:
-        tasks = list(self._tasks.values())
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._tasks.clear()
-
-    async def _handle_request(
-        self,
-        websocket: Any,
-        http: httpx.AsyncClient,
-        message: dict[str, Any],
-    ) -> None:
-        request_id = message["id"]
-        server = self.servers.get(message.get("server", ""))
-        if server is None:
-            await self._send_json(
-                websocket,
-                {"type": "http_error", "id": request_id, "error": "unknown server"},
+        self.agent_id = identifier(agent_id, "agent_id") if agent_id is not None else None
+        if not isinstance(token, str) or not token.strip():
+            raise ValueError("a non-empty tunnel token is required")
+        self._token = token
+        self._headers = dict(gateway_headers or {})
+        self.limits = limits or TunnelLimits()
+        if (
+            not isinstance(services, (list, tuple))
+            or not services
+            or len(services) > self.limits.max_services
+            or any(
+                not isinstance(service, (LocalMCPService, LocalAPIService)) for service in services
             )
-            return
+            or len({s.name for s in services}) != len(services)
+        ):
+            raise ValueError("services must be non-empty, unique and within max_services")
+        self._services = {s.name: s for s in services}
+        self._descriptors = [service.descriptor() for service in services]
+        if any(
+            max(len(item.get("tools", [])), len(item.get("tool_filter") or ()))
+            > self.limits.max_tools
+            for item in self._descriptors
+        ):
+            raise ValueError("service tool count exceeds max_tools")
+        if (
+            not math.isfinite(reconnect_min)
+            or not math.isfinite(reconnect_max)
+            or not math.isfinite(reconnect_handshake_grace)
+            or reconnect_min <= 0
+            or reconnect_max < reconnect_min
+            or reconnect_handshake_grace < 0
+        ):
+            raise ValueError("invalid reconnect bounds")
+        self._reconnect_min, self._reconnect_max = reconnect_min, reconnect_max
+        self._handshake_grace = reconnect_handshake_grace
+        self._registrations = 0
+        self._stop = asyncio.Event()
+        self.connected = asyncio.Event()
+        self._ws: Any = None
+        self._running = False
 
+    async def close(self) -> None:
+        self._stop.set()
+        if self._ws is not None:
+            await self._ws.close()
+
+    async def run(self, *, reconnect: bool = True) -> None:
+        if self._running:
+            raise RuntimeError("connector is already running")
+        self._running = True
+        delay = self._reconnect_min
+        recovery_deadline = 0.0
         try:
-            forwarded_headers = {
-                key: value
-                for key, value in (message.get("headers") or {}).items()
-                if key.lower() not in _HOP_BY_HOP
-            }
-            for key, value in server.headers.items():
-                for existing in list(forwarded_headers):
-                    if existing.lower() == key.lower():
-                        forwarded_headers.pop(existing, None)
-                forwarded_headers[key] = value
-
-            body = message.get("body", "")
-            if not isinstance(body, str):
-                raise ValueError("forwarded body must be text")
-            async with http.stream(
-                method=message.get("method", "POST"),
-                url=_local_request_url(server, message),
-                headers=forwarded_headers,
-                content=body.encode("utf-8"),
-            ) as response:
-                await self._send_json(
-                    websocket,
-                    {
-                        "type": "http_response",
-                        "id": request_id,
-                        "status": response.status_code,
-                        "headers": dict(response.headers),
-                    },
-                )
-                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-                async for chunk in response.aiter_bytes():
-                    data = decoder.decode(chunk)
-                    if data:
-                        await self._send_json(
-                            websocket,
-                            {"type": "http_chunk", "id": request_id, "data": data},
-                        )
-                final_data = decoder.decode(b"", final=True)
-                if final_data:
-                    await self._send_json(
-                        websocket,
-                        {
-                            "type": "http_chunk",
-                            "id": request_id,
-                            "data": final_data,
-                        },
+            while not self._stop.is_set():
+                registrations = self._registrations
+                try:
+                    try:
+                        await self._run_connection()
+                    finally:
+                        if self._registrations != registrations:
+                            # Begin a fixed recovery window only after a new
+                            # successful registration. Rejected attempts never
+                            # move its deadline, including duplicate ownership
+                            # while an old WebSocket is still being cleaned up.
+                            recovery_deadline = (
+                                asyncio.get_running_loop().time() + self._handshake_grace
+                            )
+                            delay = self._reconnect_min
+                    delay = self._reconnect_min
+                except ConnectionClosed as exc:
+                    code = exc.rcvd.code if exc.rcvd is not None else None
+                    if code == 4403:
+                        raise TunnelError("unauthorized") from None
+                    if code == 4400:
+                        raise TunnelError("protocol_rejected") from None
+                    if code == 4409 and not (
+                        reconnect and asyncio.get_running_loop().time() < recovery_deadline
+                    ):
+                        raise TunnelError("duplicate_service") from None
+                    if not reconnect and not self._stop.is_set():
+                        raise TunnelError("disconnected") from None
+                except TunnelError as exc:
+                    if not (
+                        exc.code == "duplicate_service"
+                        and reconnect
+                        and asyncio.get_running_loop().time() < recovery_deadline
+                    ):
+                        raise
+                except InvalidHandshake as exc:
+                    # InvalidStatusCode is a deprecated dynamic export in newer
+                    # websockets. Its stable base works across our 12–15 range.
+                    status = getattr(exc, "status_code", None)
+                    recovering = (
+                        status == 403
+                        and reconnect
+                        and asyncio.get_running_loop().time() < recovery_deadline
                     )
-                await self._send_json(websocket, {"type": "http_end", "id": request_id})
+                    if status not in {429, 500, 502, 503, 504} and not recovering:
+                        raise TunnelError("gateway_handshake_rejected") from None
+                    if not reconnect:
+                        raise TunnelError("gateway_unavailable") from None
+                except ssl.SSLCertVerificationError:
+                    raise TunnelError("tls_verification_failed") from None
+                except (OSError, TimeoutError):
+                    if not reconnect:
+                        raise TunnelError("connection_failed") from None
+                if self._stop.is_set() or not reconnect:
+                    break
+                logger.info("Tool tunnel disconnected; reconnecting without replaying calls")
+                try:
+                    await asyncio.wait_for(self._stop.wait(), delay * random.uniform(0.8, 1.2))
+                except TimeoutError:
+                    pass
+                delay = min(delay * 2, self._reconnect_max)
+        finally:
+            self._running = False
+            self.connected.clear()
+
+    async def _run_connection(self) -> None:
+        tasks: dict[str, asyncio.Task] = {}
+        send_lock = asyncio.Lock()
+        async with _DirectConnect(
+            self._url,
+            extra_headers=self._headers,
+            max_size=self.limits.max_frame_bytes,
+            max_queue=self.limits.max_inflight,
+            open_timeout=self.limits.registration_timeout,
+            close_timeout=self.limits.send_timeout,
+            ping_interval=self.limits.heartbeat_interval,
+            ping_timeout=self.limits.idle_timeout,
+            **({"ssl": self._ssl_context} if self._ssl_context is not None else {}),
+        ) as ws:
+            self._ws = ws
+
+            async def send(frame):
+                raw = encode(frame, self.limits)
+                async with asyncio.timeout(self.limits.send_timeout):
+                    async with send_lock:
+                        await ws.send(raw)
+
+            async def heartbeat():
+                while True:
+                    await asyncio.sleep(self.limits.heartbeat_interval)
+                    await send({"type": "heartbeat"})
+
+            heartbeat_task = None
+            try:
+                await send(
+                    {
+                        "type": "register",
+                        "version": VERSION,
+                        **({"agent_id": self.agent_id} if self.agent_id is not None else {}),
+                        "token": self._token,
+                        "services": self._descriptors,
+                    }
+                )
+                async with asyncio.timeout(self.limits.registration_timeout):
+                    try:
+                        ack = decode(await ws.recv(), self.limits)
+                    except (ValueError, TypeError):
+                        raise TunnelError("invalid_registration_ack") from None
+                if (
+                    set(ack) == {"type", "version", "error"}
+                    and ack["type"] == "registration_rejected"
+                    and ack["version"] == VERSION
+                    and ack["error"] in ("unauthorized", "duplicate_service")
+                ):
+                    raise TunnelError(ack["error"])
+                if (
+                    set(ack) != {"type", "version", "connector_id"}
+                    or ack.get("type") != "registered"
+                    or ack.get("version") != VERSION
+                ):
+                    raise TunnelError("invalid_registration_ack")
+                try:
+                    identifier(ack["connector_id"], "connector id")
+                except ValueError:
+                    raise TunnelError("invalid_registration_ack") from None
+                self.connected.set()
+                self._registrations += 1
+                heartbeat_task = asyncio.create_task(heartbeat())
+
+                def done(request_id, task):
+                    tasks.pop(request_id, None)
+                    if not task.cancelled():
+                        task.exception()  # receive loop observes disconnect; never leak task errors
+
+                while not self._stop.is_set():
+                    async with asyncio.timeout(self.limits.idle_timeout):
+                        try:
+                            frame = decode(await ws.recv(), self.limits)
+                        except (ValueError, TypeError):
+                            raise TunnelError("invalid_request") from None
+                    if frame == {"type": "heartbeat_ack"}:
+                        continue
+                    request_id = frame.get("id")
+                    try:
+                        identifier(request_id, "request id")
+                    except ValueError:
+                        raise TunnelError("invalid_request") from None
+                    if frame.get("type") == "http_cancel" and set(frame) == {"type", "id"}:
+                        if request_id in tasks:
+                            tasks[request_id].cancel()
+                        continue
+                    if (
+                        set(frame)
+                        != {"type", "id", "server", "method", "path", "query", "headers", "body"}
+                        or frame.get("type") != "http_request"
+                        or request_id in tasks
+                    ):
+                        raise TunnelError("invalid_request")
+                    # One admitted MCP operation may hold a GET event stream,
+                    # notification POST and tool POST concurrently. The cloud
+                    # bounds logical operations; this bounds their HTTP tasks.
+                    if len(tasks) >= 3 * self.limits.max_inflight:
+                        await send({"type": "http_error", "id": request_id, "error": "busy"})
+                        continue
+                    task = asyncio.create_task(self._handle(frame, send))
+                    tasks[request_id] = task
+                    task.add_done_callback(lambda t, rid=request_id: done(rid, t))
+            finally:
+                self.connected.clear()
+                self._ws = None
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                active = [*tasks.values(), *([heartbeat_task] if heartbeat_task else [])]
+                for task in active:
+                    task.cancel()
+                await asyncio.gather(*active, return_exceptions=True)
+
+    async def _handle(self, frame: dict, send) -> None:
+        error = "local_service_error"
+        service = None
+        try:
+            async with asyncio.timeout(self.limits.request_timeout):
+                service = (
+                    self._services.get(frame["server"])
+                    if isinstance(frame["server"], str)
+                    else None
+                )
+                if service is None:
+                    raise TunnelError("forbidden")
+                request = prepare_request(service, frame)
+                # A client per HTTP request keeps cookies and authentication
+                # state isolated between local services and cloud sessions.
+                async with httpx.AsyncClient(
+                    timeout=self.limits.request_timeout,
+                    trust_env=False,
+                    follow_redirects=False,
+                    limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+                ) as client:
+                    async with client.stream(
+                        request.method,
+                        request.url,
+                        headers=request.headers,
+                        content=request.content,
+                    ) as response:
+                        await send(
+                            {
+                                "type": "http_response",
+                                "id": frame["id"],
+                                "status": response.status_code,
+                                "headers": response_headers(response.headers),
+                            }
+                        )
+                        decoder = codecs.getincrementaldecoder("utf-8")()
+                        received = 0
+
+                        async def emit(text):
+                            # JSON escaping can cost six bytes per character.
+                            # Split only an already received network chunk;
+                            # never ask httpx to buffer an SSE event to a size.
+                            step = max(1, (self.limits.max_frame_bytes - 256) // 6)
+                            for offset in range(0, len(text), step):
+                                await send(
+                                    {
+                                        "type": "http_chunk",
+                                        "id": frame["id"],
+                                        "data": text[offset : offset + step],
+                                    }
+                                )
+
+                        async for chunk in response.aiter_bytes():
+                            received += len(chunk)
+                            if received > self.limits.max_response_bytes:
+                                raise TunnelError("frame_too_large")
+                            await emit(decoder.decode(chunk, final=False))
+                        await emit(decoder.decode(b"", final=True))
+                await send({"type": "http_end", "id": frame["id"]})
+                return
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            logger.warning(
-                "Local tunnel request %s for server %s failed (%s)",
-                request_id,
-                server.name,
-                type(exc).__name__,
-            )
-            try:
-                await self._send_json(
-                    websocket,
-                    {
-                        "type": "http_error",
-                        "id": request_id,
-                        "error": f"local request failed ({type(exc).__name__})",
-                    },
-                )
-            except Exception:
-                logger.debug("Could not report local request failure for %s", request_id)
-
-
-__all__ = ["LocalServer", "TunnelConnector"]
+        except TimeoutError:
+            error = "timeout"
+        except TunnelError as exc:
+            error = exc.code if exc.code in LOCAL_ERROR_CODES else "local_service_error"
+        except Exception:
+            # HTTP and decoding errors can contain local URLs, headers and
+            # payloads. Only a fixed protocol error code may reach the cloud.
+            if isinstance(service, LocalMCPService):
+                error = "local_mcp_error"
+        await send({"type": "http_error", "id": frame["id"], "error": error})

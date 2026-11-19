@@ -59,10 +59,6 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
         self._knowledge_base: Any = None
         # Keep runtime toolsets alive for the lifetime of the runner.
         self._runtime_toolsets: list[Any] = []
-        # Optional process-owned Tunnel dependencies supplied by Runtime factory.
-        self._tunnel_config: Any = None
-        self._tunnel_registry: Any = None
-        self._owns_tunnel_registry = False
         # ADK resumability state
         self._resumable: bool = False
         self._resume_disabled_reason: Optional[str] = None
@@ -104,16 +100,6 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             except Exception as exc:
                 logger.warning("Failed to close runtime toolset %r: %s", toolset, exc)
 
-        if self._owns_tunnel_registry:
-            registry = self._tunnel_registry
-            self._tunnel_registry = None
-            self._owns_tunnel_registry = False
-            if registry is not None:
-                try:
-                    await registry.close()
-                except Exception as exc:
-                    logger.warning("Failed to close runner-owned Tunnel registry: %s", exc)
-
     def _apply_json_patch(self):
         """Patch ADK LiteLlm to handle malformed JSON in tool-call arguments.
 
@@ -138,8 +124,13 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             import json as _stdlib_json
 
             from ksadk.compat.adk_compat import lite_llm_module
+            from ksadk.compat.adk_stream import (
+                normalize_tool_call_types,
+                normalize_tool_delta_types,
+            )
 
             adk_lite_llm = lite_llm_module()
+            normalize_tool_delta_types(adk_lite_llm)
 
             _original_fn = adk_lite_llm._message_to_generate_content_response
             if getattr(_original_fn, "__ksadk_json_patch__", False):
@@ -162,6 +153,7 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
                 if "thought_parts" in _orig_params:
                     forward_kwargs["thought_parts"] = thought_parts
                 try:
+                    normalize_tool_call_types(message)
                     result = _original_fn(message, **forward_kwargs)
                 except _stdlib_json.JSONDecodeError:
                     logger.warning(
@@ -595,8 +587,11 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             self._resume_disabled_reason_code = "ADK_VERSION_UNSUPPORTED"
 
         if resumable.app is not None:
+            app = resumable.app
+            if getattr(self, "_tunnel_binding", None) is not None:
+                app = app.model_copy(update={"root_agent": self._agent})
             runner_kwargs = dict(
-                app=resumable.app,
+                app=app,
                 session_service=self._session_service,
             )
         elif resumable.enabled:
@@ -876,59 +871,6 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             return False
         return any(path.is_dir() and (path / "SKILL.md").exists() for path in skills_dir.iterdir())
 
-    def _inject_tunnel_toolset(self) -> None:
-        """Inject the per-app dynamic Tunnel toolset when explicitly enabled."""
-        from ksadk.tunnel.config import tunnel_config_for_detection
-
-        config = self._tunnel_config or tunnel_config_for_detection(
-            self.detection_result,
-            runtime_type="adk",
-        )
-        if config is None:
-            return
-
-        from ksadk.tunnel import TunnelRegistry, TunnelToolset
-
-        registry = self._tunnel_registry
-        if registry is None:
-            registry = TunnelRegistry()
-            registry.self_url = config.self_url
-            self._tunnel_registry = registry
-            self._owns_tunnel_registry = True
-
-        candidate = TunnelToolset(
-            agent_name=config.agent_name,
-            registry=registry,
-        )
-        toolset = registry.claim_tunnel_toolset(candidate)
-        if toolset.closed:
-            raise RuntimeError("Cannot attach a closed app-owned TunnelToolset")
-
-        tools = getattr(self._agent, "tools", None)
-        if tools is None:
-            tools = []
-            self._agent.tools = tools
-        for existing in list(tools):
-            if not isinstance(existing, TunnelToolset) or existing.agent_name != config.agent_name:
-                continue
-            if existing is toolset:
-                continue
-            if existing.closed:
-                # A previous app in this interpreter was already shut down. Its
-                # closed Toolset has no live handlers and can be detached safely.
-                tools.remove(existing)
-                continue
-            raise ValueError(
-                "Agent already contains a different active TunnelToolset for "
-                f"{config.agent_name!r}; manual and app-owned registries must not be mixed"
-            )
-
-        if not any(existing is toolset for existing in tools):
-            tools.append(toolset)
-        # Deliberately not in _runtime_toolsets: per-run Runner.close() must not
-        # close this shared resource. RuntimeApp shutdown closes the registry.
-        logger.info("Attached app-owned Tunnel toolset to agent %s", config.agent_name)
-
     def _inject_mcp_toolsets(self):
         """默认注入远端 MCP toolset。"""
         try:
@@ -965,6 +907,35 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             logger.warning(f"Failed to import MCP runtime helpers: {exc}")
         except Exception as exc:
             logger.warning(f"Failed to inject MCP toolsets: {exc}")
+
+    def _inject_tunnel_toolset(self):
+        """App-owned dynamic MCP discovery, bound to deployment identity."""
+        binding = getattr(self, "_tunnel_binding", None)
+        if binding is None:
+            return
+        from ksadk.tunnel.toolset import TunnelToolset
+
+        toolset = TunnelToolset(binding.policy.agent_id, binding.registry)
+        # Composite ADK agents (e.g. SequentialAgent) delegate to their children.
+        # Attach at the first tool-capable agent on each such execution path.
+        pending = [self._agent]
+        installed = False
+        while pending:
+            agent = pending.pop()
+            if not hasattr(agent, "tools"):
+                pending.extend(getattr(agent, "sub_agents", ()))
+                continue
+            tools = list(agent.tools or [])
+            for previous in tools:
+                if isinstance(previous, TunnelToolset) and (
+                    previous._registry is not binding.registry
+                    or previous.agent_id != binding.policy.agent_id
+                ):
+                    raise ValueError("ADK agent already belongs to another tunnel binding")
+            agent.tools = [tool for tool in tools if not isinstance(tool, TunnelToolset)] + [toolset]
+            installed = True
+        if installed:
+            self._runtime_toolsets.append(toolset)
 
     def _inject_builtin_tools(self):
         """Inject ksadk built-in tools according to the runtime profile."""
@@ -1111,6 +1082,13 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
                 self.detection_result.entry_point,
                 self.detection_result.agent_variable,
             )
+
+            if deferred := getattr(self, "_deferred_tunnel", None):
+                self._tunnel_binding = deferred.resolve(self._agent, self._module)
+            if getattr(self, "_tunnel_binding", None) is not None:
+                # ADK clone rebuilds the sub-agent tree and its parent links while
+                # preserving existing models, callbacks and tool implementations.
+                self._agent = self._agent.clone()
 
             # Inject safety instruction for DeepSeek/LLMs to prevent empty tool names
             if hasattr(self._agent, "instruction"):
@@ -1296,7 +1274,7 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
 
         try:
             session = await self._session_service.get_session(
-                app_name=self._agent.name,
+                app_name=self._adk_session_app_name(),
                 user_id=user_id,
                 session_id=session_id,
             )
@@ -2066,6 +2044,16 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
 
         preserve_a2a_stream_identity(self._agent)
         events_async = self._runner.run_async(**run_kwargs)
+        if getattr(self, "_tunnel_binding", None) is not None:
+            from ksadk.runners._adk_tunnel_history import preserve_tunnel_history
+
+            events_async = preserve_tunnel_history(
+                events_async,
+                session_service=self._session_service,
+                app_name=self._adk_session_app_name(),
+                user_id=native_user_id,
+                session_id=session_id,
+            )
 
         if ksadk_invocation_id and self._resumable:
             wrapped_async = self._collect_adk_invocation_id(
@@ -2117,7 +2105,11 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             # Langfuse Exporter 会读取这些 span attributes
             agent_user_id, tags, _, _ = self._prepare_trace_metadata(session_id)
 
-            span.set_attribute("langfuse.session_id", session_id)
+            business_session_id = req_session_id or session_id
+            span.set_attribute("ksadk.session_id", business_session_id)
+            span.set_attribute("session.id", business_session_id)
+            span.set_attribute("gen_ai.conversation.id", business_session_id)
+            span.set_attribute("langfuse.session_id", business_session_id)
             if agent_user_id:
                 span.set_attribute("langfuse.user_id", agent_user_id)
             if tags:
@@ -2139,20 +2131,28 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             last_event = None
             usage: dict[str, Any] = {}
             last_usage: dict[str, Any] = {}
-            async for event in wrapped_async:
-                events_list.append(event)
-                last_event = event
-                event_usage = self._extract_event_usage(event)
-                if event_usage:
-                    usage = accumulate_usage(usage, event_usage)
-                    last_usage = event_usage  # 保留最后一个非空(窗口占用=最后一次 input)
-                if hasattr(event, "content") and event.content:
-                    if hasattr(event.content, "parts"):
-                        for part in event.content.parts:
-                            # 过滤掉思考内容 (thought=True)，只保留最终答案
-                            is_thought = getattr(part, "thought", False)
-                            if hasattr(part, "text") and part.text and not is_thought:
-                                final_response += part.text
+            tunnel_outcome = None
+            try:
+                async for event in wrapped_async:
+                    events_list.append(event)
+                    last_event = event
+                    event_usage = self._extract_event_usage(event)
+                    if event_usage:
+                        usage = accumulate_usage(usage, event_usage)
+                        last_usage = event_usage  # 保留最后一个非空(窗口占用=最后一次 input)
+                    if hasattr(event, "content") and event.content:
+                        if hasattr(event.content, "parts"):
+                            for part in event.content.parts:
+                                # 过滤掉思考内容 (thought=True)，只保留最终答案
+                                is_thought = getattr(part, "thought", False)
+                                if hasattr(part, "text") and part.text and not is_thought:
+                                    final_response += part.text
+            except Exception as exc:
+                from ksadk.tunnel.failure import tunnel_failure
+
+                tunnel_outcome = tunnel_failure(exc)
+                if tunnel_outcome is None:
+                    raise
 
             # Prefer the last event's text (usually the complete answer).
             # When the loop aborts early (MCP error, phantom tool-call),
@@ -2163,7 +2163,9 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
                     is_thought = getattr(part, "thought", False)
                     if hasattr(part, "text") and part.text and not is_thought:
                         last_event_text += part.text
-            if last_event_text:
+            if tunnel_outcome is not None:
+                final_response = tunnel_outcome.message
+            elif last_event_text:
                 final_response = last_event_text
 
             if not final_response and events_list:
@@ -2179,6 +2181,8 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
                 "output": final_response,
                 "events": events_list,
             }
+            if tunnel_outcome is not None:
+                result["metadata"] = tunnel_outcome.metadata
             if usage:
                 result["usage"] = usage
                 # last_usage = 最后一次 LLM 调用快照(input_tokens = 当前上下文窗口占用)
@@ -2237,7 +2241,11 @@ class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
             # 准备 Metadata 并设置 Span Attributes
             agent_user_id, tags, _, _ = self._prepare_trace_metadata(session_id)
 
-            span.set_attribute("langfuse.session_id", session_id)
+            business_session_id = req_session_id or session_id
+            span.set_attribute("ksadk.session_id", business_session_id)
+            span.set_attribute("session.id", business_session_id)
+            span.set_attribute("gen_ai.conversation.id", business_session_id)
+            span.set_attribute("langfuse.session_id", business_session_id)
             if agent_user_id:
                 span.set_attribute("langfuse.user_id", agent_user_id)
             if tags:

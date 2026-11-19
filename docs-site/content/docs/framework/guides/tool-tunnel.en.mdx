@@ -1,0 +1,85 @@
+---
+title: "Tool tunnels"
+description: "Connect a cloud agent to private MCP tools and HTTP APIs through one enterprise Connector"
+---
+
+## Enable the cloud agent
+
+Wrap your existing agent at the project entry point and export the wrapped variable. Set `KSADK_TUNNEL_TOKEN` in the cloud runtime and give the enterprise Connector the same value.
+
+```python
+from ksadk import Agent
+
+root_agent = Agent(native_agent, enable_tunnel=True)
+```
+
+The runtime attaches a `ksadk.tunnel.TunnelToolset` to Google ADK agents automatically. A custom ADK runner can attach `TunnelToolset(agent_id, registry)` to the agent’s tools, using the registry that accepts its Connector. For a custom compiled LangGraph, export `ksadk_graph_factory(*, checkpointer, tunnel_tools)` and compile the graph with the supplied checkpointer. The factory receives a `ksadk.tunnel.TunnelTools` instance. For LangChain’s `create_agent`, pass `TunnelMiddleware(tunnel_tools)` from `ksadk.tunnel.middleware` in the factory’s middleware list. For a `StateGraph`, save the catalog from `await tunnel_tools.discover()` in the model node, bind `tunnel_tools.model_tools(catalog)` to the model, and use `await tunnel_tools.get_tools(catalog)` with that same snapshot in the tool node.
+
+## Run the enterprise Connector
+
+Install the same KsADK version on a host that can reach both private services. Save the following as `connector.py`. It exposes the MCP tool `lookup_inventory` and the HTTP operation `GET /orders/{order_id}` through one connection.
+
+```python
+import asyncio
+import os
+
+from ksadk.tunnel import APIOperation, LocalAPIService, LocalMCPService, TunnelConnector
+
+
+async def main():
+    connector = TunnelConnector(
+        os.environ["AGENT_URL"],
+        token=os.environ["KSADK_TUNNEL_TOKEN"],
+        gateway_headers={"Authorization": f"Bearer {os.environ['GATEWAY_TOKEN']}"},
+        services=[
+            LocalMCPService(
+                "inventory", "http://127.0.0.1:8091/mcp", tool_filter=("lookup_inventory",)
+            ),
+            LocalAPIService(
+                "orders",
+                "http://127.0.0.1:8093",
+                operations=(
+                    APIOperation(
+                        name="get_order",
+                        method="GET",
+                        path="/orders/{order_id}",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"order_id": {"type": "string"}},
+                            "required": ["order_id"],
+                        },
+                    ),
+                ),
+            ),
+        ],
+    )
+    try:
+        await connector.run()
+    finally:
+        await connector.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Replace the service addresses and operations with your own. Set `AGENT_URL` to the agent’s HTTPS gateway prefix and `GATEWAY_TOKEN` to its gateway bearer credential. Run `python connector.py`. The Connector selects WSS and appends the tunnel route. Supply any private service credentials in the corresponding `LocalMCPService` or `LocalAPIService` headers.
+
+## Tool visibility and multiple Pods
+
+- The enterprise Connector enforces `tool_filter` on each MCP tool call. The cloud runtime receives the MCP catalog and filters the tools presented to the model. To keep tool names, descriptions or parameter schemas private, restrict the enterprise MCP server’s `tools/list` response.
+- One Connector serves multiple Pods. A Pod handling a chat request discovers the Pod holding the connection and forwards calls through it. If the latter’s internal listener cannot start, its local tools stay available. Tool discovery and Connector heartbeats retry listener startup.
+- If a peer is unreachable, the runtime keeps confirmed tools. If no tools can be confirmed, ordinary chat and other tools remain available. Invalid peer authentication or a malformed service catalog causes discovery to fail for that turn.
+
+## Limits and failure handling
+
+By default, `TunnelLimits` allows 16 services per Connector, 256 tools per service, 32 concurrent operations per Connector on the calling Pod, 1 MiB per frame, 8 MiB per response and 60 seconds per operation. Pass `limits=TunnelLimits(...)` to `TunnelConnector` to change its local limits. The runtime enforces its own limits.
+
+| What the caller receives | Meaning |
+| --- | --- |
+| Tool result with `isError=True` | The MCP server reported a tool error, or the API returned a client rejection such as HTTP 400, 404 or 422. An API rejection includes the status code. |
+| `TunnelError.indeterminate=True` | The operation may have taken effect. A lost reply, a timeout, HTTP 408, a 5xx response or a local service error (`local_mcp_error` or `local_service_error`) can produce this outcome. Verify the business state before repeating a write. |
+| `TunnelError.indeterminate=False` | The SDK reports a failure, for example a call rejected by the allowlist. |
+| `peer_discovery_unavailable` | The registry could not complete peer discovery. The framework’s behavior depends on reachability and validation as described above. |
+
+The SDK never automatically replays a failed tool call. When a runner ends the turn after a tunnel exception, the tool failure is normally reported as `tunnel_tool_failed`. The canonical event’s `source.metadata.tunnel_failure` records `outcome` (`unknown` or `failed`) and `automatic_retry=false`.

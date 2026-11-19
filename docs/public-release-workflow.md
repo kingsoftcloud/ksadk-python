@@ -33,6 +33,14 @@
 5. GitHub Release 与 PyPI 包必须能追溯到同一个已审核 GitHub `main` 提交；Pages 文档独立部署。
 6. `.pypirc`、私有 registry 凭证、kubeconfig、真实 API key、临时 token 不得进入仓库。
 
+## 0.8.8 源码同步候选
+
+当前候选由内部主干的新分支生成，再导出到基于 GitHub main 的公开分支，均通过 PR 审核。
+Tunnel 以内部已融合社区 PR #115 的统一实现为准。`protocol.py` 是唯一协议入口，不同时保留旧 `protocol/` 包；旧文档 URL 只引导到 `tool-tunnel`。清理仅针对候选中的已退休重复实现，内部 master 和已有分支保持保留。
+
+正式版本目标为 0.8.8，主包及兼容发行包同步，Web 保持 0.3.18。当前只准备候选，签核保持 Pending。
+SDK 发布证据 schema v3 仅包含实际执行的 SDK 门禁；已移出的 Studio 浏览器检查不再出现在 SDK 的 E2E 状态中，不能将空门禁列表称为浏览器测试通过。独立 Studio 与真实云端环境仍按各自范围验收。
+
 ## 0.8.7 候选对齐与保留规则
 
 0.8.7 已经由 PR #116 审核并合入公开 `main`。发布负责人已授权从 `main` 发布主包和兼容发行包；正式发布仍须通过完整预检、来源与审批门禁及 PyPI environment 审批。Web 继续使用已发布的 0.3.18，本次不创建新的 npm 版本。
@@ -199,7 +207,7 @@ make public-preflight PUBLIC_PREFLIGHT_MODE=source-sync \
 
 验证记录必须同时保留构建时的实际 Web 源码提交和 tarball SHA-256，区分 npm registry 的正式包与本地源码候选。包内来源声明不能代替实际构建记录。源码候选通过门禁不表示待审 Web 修复已经发布，也不授予发布权限。
 
-完整公开预检会在临时目录安装官方 DSH 工具链，再启动浏览器测试所需的 Provider 注册。主机需要 Node、pnpm、Chromium 与工具链下载网络；测试使用独立 profile，不修改用户已有插件配置。响应式浏览器检查及 Codex 插件 turn/回滚检查均为阻断项，不能以跳过后的证据声明完整通过。
+完整公开预检运行兼容、原生 Codex、官方 DSH 工具链及冷安装检查。主机需要 Node、pnpm 和工具链下载网络；测试使用独立 profile。Studio 浏览器测试已迁出本仓，SDK 证据不再记录该项；独立 Studio 的浏览器验收不能由本仓门禁替代。
 
 该模式允许保留当前已发布版本，仍拒绝降版；其余公开测试、文档、浏览器、构建和制品审计不变。默认 `release` 模式仍要求版本高于已发布版本。源码同步结果不是发布授权或发布证据。
 

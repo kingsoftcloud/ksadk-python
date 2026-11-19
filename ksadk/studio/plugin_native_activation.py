@@ -8,6 +8,7 @@ from typing import Any
 
 from ksadk.harness.native.studio_admission import studio_mapping_digest
 from ksadk.harness.native_runtime import NativeRuntimeAdapter
+from ksadk.harness.service_runtime import harness_service_configured
 from ksadk.plugins.host import PluginActivationSession, PluginHostError
 from ksadk.studio.errors import StudioError
 from ksadk.studio.run_service import StudioRunSpec
@@ -24,9 +25,10 @@ class StudioNativeActivationMixin:
     async def _native_activation_claims(
         self, spec: StudioRunSpec, session_id: str
     ) -> dict[str, str] | None:
-        if (
+        if spec.request_config.get("provider_runtime_type") != "harness":
+            return None
+        if not harness_service_configured() and (
             self._harness_engine_selector is None
-            or spec.request_config.get("provider_runtime_type") != "harness"
             or (self._harness_native_session_enabled is not None
                 and not self._harness_native_session_enabled(spec.agent_id, session_id))
         ):

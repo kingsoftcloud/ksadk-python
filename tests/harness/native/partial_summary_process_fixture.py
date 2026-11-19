@@ -15,7 +15,7 @@ from ksadk.harness.native.model import normalize_response
 from ksadk.harness.stores.native_sqlite import SQLiteRunStore
 from tests.harness.native.test_context_summary_recovery import prepared_summary
 from tests.harness.native.test_kernel import SCOPE
-from tests.studio.native_recovery_lease_fixture import lease_marker
+from tests.studio_fixtures.native_recovery_lease_fixture import lease_marker
 
 EVENT = "context.compaction_partial_sealed"
 SUMMARY = "Completed earlier observations; verification remains pending."

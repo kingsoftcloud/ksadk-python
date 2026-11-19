@@ -377,7 +377,7 @@ def test_cloud_monitor_otlp_env_adds_parallel_exporter_without_overriding_generi
         "x-extra": "value/with/slash",
     }
     assert len(trace_api.provider.processors) == 2
-    cloud_monitor_processor = trace_api.provider.processors[1]
+    cloud_monitor_processor = trace_api.provider.processors[1]._processor
     assert cloud_monitor_processor.exporter._name == "CloudMonitor OTLP"
     assert cloud_monitor_processor.exporter._service_name == "ar-demo-agent"
 
@@ -509,7 +509,7 @@ def test_cloud_monitor_traces_endpoint_takes_precedence(monkeypatch):
     exporter = _FakeHttpOTLPSpanExporter.instances[0]
     assert exporter.endpoint == "https://cloudmonitor.example.com/custom/v1/traces"
     assert exporter.headers == {"Ksc-Appkey": "app-key-demo"}
-    assert trace_api.provider.processors[0].exporter._service_name == "resource-agent"
+    assert trace_api.provider.processors[0]._processor.exporter._service_name == "resource-agent"
 
 
 def test_cloud_monitor_skips_when_app_key_and_header_missing(monkeypatch, caplog):
@@ -706,7 +706,7 @@ def test_dual_exporters_transform_only_cloud_monitor(monkeypatch):
     )
 
     generic_exporter, cloud_monitor_exporter = [
-        processor.exporter for processor in trace_api.provider.processors
+        processor._processor.exporter for processor in trace_api.provider.processors
     ]
     generic_exporter.export([source])
     cloud_monitor_exporter.export([source])
@@ -739,7 +739,7 @@ def test_shutdown_flushes_and_stops_every_managed_processor(monkeypatch):
         enable_langfuse=None,
         enable_adk_instrumentation=False,
     )
-    processors = list(trace_api.provider.processors)
+    processors = [processor._processor for processor in trace_api.provider.processors]
     assert len(processors) == 2
 
     setup.shutdown_tracing()

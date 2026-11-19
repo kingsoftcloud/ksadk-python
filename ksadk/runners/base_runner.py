@@ -391,11 +391,6 @@ class BaseRunner(ABC):
             detection=self.detection_result,
         )
         runtime_type = launch_context.runtime_type
-        from ksadk.tunnel.config import tunnel_config_from_context, tunnel_self_url_for_start
-
-        self._tunnel_config = tunnel_config_from_context(launch_context)
-        self._tunnel_registry = launch_context.services.tunnel_registry
-        self._owns_tunnel_registry = False
         registry = RuntimeRegistry()
         registry.register(
             runtime_type,
@@ -412,7 +407,6 @@ class BaseRunner(ABC):
                 a2a_runtime_adapter=RunnerRuntimeAdapter(self, runtime_type=runtime_type)
                 if managed_a2a is not None
                 else None,
-                tunnel_self_url=tunnel_self_url_for_start(port),
             ),
             configure_runtime_app,
         )

@@ -1,0 +1,22 @@
+---
+title: "升级到 0.8.8"
+description: "0.8.8 candidate migration and compatibility"
+---
+
+## 候选安装
+
+本版本正在准备，尚未正式发布。使用新的 Python 3.12+ 虚拟环境安装经过审核的候选 wheel；验证期间保留旧 Agent 环境。
+
+## Tunnel 迁移
+
+按[工具隧道指南](/cn/docs/framework/guides/tool-tunnel/)接入。统一实现已吸收社区 PR #115，并支持自定义 HTTP 服务、LangGraph 和多 Pod 路由。云端导出 `Agent(native_agent, enable_tunnel=True)`；企业侧通过显式 `LocalMCPService` / `LocalAPIService` 声明启动 `TunnelConnector`。
+
+云端 SDK 与企业 Connector 必须一起升级。旧 YAML/CLI 配置和旧协议包由统一实现替代，不同时交付两套协议栈。失败或结果不确定的调用不会自动重放；重试写操作前先核实业务状态。
+
+## MCP 与持久化
+
+核心通过兼容层支持 MCP 1.26+；开发测试使用 MCP 2.3、FastMCP 4.2.1。应用中的其它依赖仍须求解为兼容组合，OpenTelemetry 组件应保持一致。MCP 2 环境不要继续安装要求 `mcp<2` 的旧适配器。
+
+迁移前备份 session/checkpoint。存量 Agent 在显式重建前保留原 SDK 和镜像；新增 Hosted admission 校验要求 Agent 和 session 归属一致。Web 继续使用官方 0.3.18，本候选不发布新 npm 包，也不清理既有 Agent。
+
+回滚时同时恢复原 SDK 环境和 Connector 版本，保留数据库备份与旧 wheel，不删除原有 session 表。

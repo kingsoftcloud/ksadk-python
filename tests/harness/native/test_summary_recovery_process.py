@@ -15,7 +15,7 @@ from ksadk.harness.stores.native_memory import MemoryRunStore
 from ksadk.harness.stores.native_sqlite import SQLiteRunStore
 from tests.harness.native.test_context_summary_recovery import SummaryRecoveryModel, recovery_kernel
 from tests.harness.native.test_kernel import SCOPE
-from tests.studio.native_recovery_lease_fixture import RecoveryLeaseAudit
+from tests.studio_fixtures.native_recovery_lease_fixture import RecoveryLeaseAudit
 
 pytestmark = [
     pytest.mark.skipif(os.name != "posix", reason="requires SIGKILL"),

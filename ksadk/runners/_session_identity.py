@@ -44,12 +44,17 @@ class ADKSessionIdentityMixin:
             f"{owner_scope_ref}:{external_session_id}" if owner_scope_ref else external_session_id
         )
 
+    def _adk_session_app_name(self) -> str:
+        # A user-supplied App can have a different name from its root agent.
+        app_name = getattr(getattr(self, "_runner", None), "app_name", None)
+        return app_name if isinstance(app_name, str) and app_name else self._agent.name
+
     async def _get_adk_session(self, *, user_id: str, session_id: str) -> Any | None:
         if self._session_service is None or not session_id:
             return None
         try:
             return await self._session_service.get_session(
-                app_name=self._agent.name,
+                app_name=self._adk_session_app_name(),
                 user_id=user_id,
                 session_id=session_id,
             )
@@ -65,7 +70,7 @@ class ADKSessionIdentityMixin:
     ) -> Any:
         if self._short_term_memory:
             session = await self._short_term_memory.create_session(
-                app_name=self._agent.name,
+                app_name=self._adk_session_app_name(),
                 user_id=user_id,
                 session_id=session_id,
             )
@@ -73,7 +78,7 @@ class ADKSessionIdentityMixin:
             if self._session_service is None:
                 raise RuntimeError("ADK session service is not initialized")
             create_kwargs: dict[str, Any] = {
-                "app_name": self._agent.name,
+                "app_name": self._adk_session_app_name(),
                 "user_id": user_id,
             }
             if session_id and preserve_requested_id:

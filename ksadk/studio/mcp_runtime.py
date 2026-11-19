@@ -2,6 +2,22 @@
 
 from __future__ import annotations
 
+from ksadk._mcp_compat import field
+from ksadk._mcp_compat import read_timeout_seconds as mcp_read_timeout_seconds
+from ksadk._mcp_compat import tool_input_schema
+
+
+def _server_info(initialized):
+    """取 InitializeResult 的 serverInfo，兼容 mcp 1.x / 2.x。
+
+    mcp 2.x 把 Pydantic 字段从 camelCase 改成 snake_case：
+    ``serverInfo`` → ``server_info``。
+    """
+    info = getattr(initialized, "server_info", None)
+    if info is None:
+        info = getattr(initialized, "serverInfo", None)
+    return info
+
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -15,8 +31,8 @@ from mcp.client.stdio import (
     get_default_environment,
     stdio_client,
 )
-from mcp.client.streamable_http import streamablehttp_client
 
+from ksadk._mcp_compat import streamable_http
 from ksadk.studio.contracts import MCPServerRef, ToolContract
 from ksadk.studio.errors import StudioError
 from ksadk.studio.model_client import CredentialResolver
@@ -66,7 +82,7 @@ class MCPRuntimeAdapter:
                 name=tool.name,
                 version=server.version,
                 description=tool.description or "",
-                input_schema=tool.inputSchema,
+                input_schema=tool_input_schema(tool),
                 output_schema={"type": "object"},
                 executor="mcp",
                 mcp_server=server.name,
@@ -74,7 +90,7 @@ class MCPRuntimeAdapter:
             for tool in result.tools
         ]
         return {
-            "serverInfo": initialized.serverInfo.model_dump(
+            "serverInfo": _server_info(initialized).model_dump(
                 by_alias=True,
                 exclude_none=True,
                 mode="json",
@@ -99,7 +115,7 @@ class MCPRuntimeAdapter:
                     result = await session.call_tool(
                         tool_name,
                         arguments,
-                        read_timeout_seconds=timedelta(seconds=timeout_seconds),
+                        read_timeout_seconds=mcp_read_timeout_seconds(timeout_seconds),
                     )
         except StudioError:
             raise
@@ -114,7 +130,7 @@ class MCPRuntimeAdapter:
                     "errorType": type(exc).__name__,
                 },
             ) from exc
-        if result.isError:
+        if field(result, "is_error", "isError", default=False):
             raise StudioError(
                 "TOOL_EXECUTION_FAILED",
                 "MCP Tool 返回错误",
@@ -126,7 +142,7 @@ class MCPRuntimeAdapter:
                 item.model_dump(by_alias=True, exclude_none=True, mode="json")
                 for item in result.content
             ],
-            "structuredContent": result.structuredContent,
+            "structuredContent": field(result, "structured_content", "structuredContent"),
             "isError": False,
         }
 
@@ -142,10 +158,9 @@ class MCPRuntimeAdapter:
                 yield read_stream, write_stream
         elif transport in {"http", "streamable-http", "streamable_http"}:
             headers = self._http_headers(server)
-            async with streamablehttp_client(server.endpoint_url or "", headers=headers) as (
+            async with streamable_http(server.endpoint_url or "", headers=headers) as (
                 read_stream,
                 write_stream,
-                _,
             ):
                 yield read_stream, write_stream
         elif transport == "sse":

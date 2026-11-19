@@ -44,11 +44,8 @@ def test_preflight_executes_release_journeys() -> None:
         "tests/plugins/test_dsh_capability_host_e2e.py",
         "tests/plugins/test_dsh_upstream_plugin_e2e.py",
     )
-    assert "tests/studio/e2e/scheduler_browser_e2e.py" in BROWSER_GATES
-    assert "tests/studio/e2e/scheduler_harness_browser_e2e.py" in BROWSER_GATES
-    assert "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py" in BROWSER_GATES
-    assert "tests/studio/e2e/conversation_reconnect_browser_e2e.py" in BROWSER_GATES
-    assert "tests/studio/e2e/conversation_items_browser_e2e.py" in BROWSER_GATES
+    # 浏览器门禁已随 tests/studio 移除（Studio 独立成仓）
+    assert BROWSER_GATES == ()
 
 
 def test_preflight_references_only_existing_tests() -> None:
@@ -97,24 +94,29 @@ def test_preflight_enables_real_managed_dsh_toolchain_gate(monkeypatch) -> None:
         "compatibilityRegression": "passed",
         "codexNative": "passed",
         "managedDshToolchain": "passed",
-        "studioBrowser": "passed",
     }
-    install = next(
+    installs = [
         (command, environment) for command, environment in calls
         if command[1:] == ("-m", "ksadk.cli", "plugin", "toolchain", "install")
-    )
+    ]
     browser_calls = [(command, env) for command, env in calls if command[-1] in BROWSER_GATES]
     assert len(browser_calls) == len(BROWSER_GATES)
-    assert all(env == install[1] for _, env in browser_calls)
-    assert install[1]["AGENTENGINE_PLUGIN_TOOLCHAIN_HOME"]
-    assert calls.index(install) < min(calls.index(call) for call in browser_calls)
+    if BROWSER_GATES:
+        install, = installs
+        assert install[1]["AGENTENGINE_PLUGIN_TOOLCHAIN_HOME"]
+        # 浏览器门禁已随 tests/studio 移除；有门禁时才校验顺序
+        assert all(env == install[1] for _, env in browser_calls)
+        assert calls.index(install) < min(calls.index(call) for call in browser_calls)
+    else:
+        assert not installs
+        assert "studioBrowser" not in statuses
 
 
 def test_skipped_browser_gate_does_not_claim_passed(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr("scripts.release_preflight._run", lambda cmd, **kwargs: calls.append(cmd))
     statuses = run_release_test_gates(skip_browser_gates=True)
-    assert statuses["studioBrowser"] == "not_run"
+    assert "studioBrowser" not in statuses
     assert not any(command[-1] in BROWSER_GATES for command in calls)
 
 
@@ -474,6 +476,27 @@ def test_release_evidence_report_rejects_artifact_tampering(tmp_path: Path) -> N
         )
 
 
+@pytest.mark.parametrize("obsolete", ["schema", "retired_browser"])
+def test_release_evidence_rejects_obsolete_browser_attestations(tmp_path: Path, obsolete) -> None:
+    dist_dir = tmp_path / "dist"
+    _write_pair(dist_dir, STATIC_FILES)
+    artifacts = validate_distribution_archives(dist_dir, expected_source_commit=SOURCE_COMMIT)
+    digest = release_contract_digest()
+    report = build_release_evidence_report(
+        artifacts, source_commit=SOURCE_COMMIT, contract_digest=digest,
+        e2e_statuses=_passed_e2e_statuses(),
+    )
+    if obsolete == "schema":
+        report["schemaVersion"] = 2
+    else:
+        report["e2e"]["studioBrowser"] = "passed"
+    with pytest.raises(Phase2PreflightError, match="schema|statuses"):
+        validate_release_evidence_report(
+            report, artifacts=artifacts, source_commit=SOURCE_COMMIT,
+            contract_digest=digest, require_complete=True,
+        )
+
+
 def test_release_evidence_report_cannot_be_complete_when_a_key_e2e_was_not_run(
     tmp_path: Path,
 ) -> None:
@@ -485,7 +508,7 @@ def test_release_evidence_report_cannot_be_complete_when_a_key_e2e_was_not_run(
     )
     contract_digest = release_contract_digest()
     statuses = _passed_e2e_statuses()
-    statuses["studioBrowser"] = "not_run"
+    statuses["compatibilityRegression"] = "not_run"
     report = build_release_evidence_report(
         artifacts,
         source_commit=SOURCE_COMMIT,

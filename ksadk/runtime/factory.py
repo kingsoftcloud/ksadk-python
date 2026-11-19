@@ -45,15 +45,21 @@ from ksadk.runtime.launch import RuntimeLaunchContext
 def _create_harness(context: RuntimeLaunchContext) -> RuntimeAdapter:
     """Create the managed KsADK Harness adapter from an immutable launch manifest."""
 
+    from ksadk.harness.service_runtime import harness_service_from_env
+
+    config = dict(context.config)
+    prompt = str(config.get("prompt") or config.get("base_instructions") or "").strip()
+    model = str(config.get("model") or "").strip()
+    service = harness_service_from_env(instructions=prompt, model=model or None)
+    if service is not None:
+        return service
+
     import re
 
     from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
     from ksadk.harness.reasoner import ModelGatewayHarnessReasoner
     from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
 
-    config = dict(context.config)
-    prompt = str(config.get("prompt") or config.get("base_instructions") or "").strip()
-    model = str(config.get("model") or "").strip()
     if not prompt:
         raise ValueError("harness runtime requires prompt/base_instructions")
     if not model:
@@ -180,21 +186,17 @@ def _create_framework_runner(context: RuntimeLaunchContext, runtime_type: str) -
 
 
 def _create_adk(context: RuntimeLaunchContext) -> RuntimeAdapter:
-    runner = _create_framework_runner(context, "adk")
-    from ksadk.tunnel.config import tunnel_config_from_context
-
-    tunnel = tunnel_config_from_context(context)
-    if tunnel is not None:
-        # BaseRunner owns the native agent lifetime. These attributes are
-        # process-only and never enter the serialized launch manifest.
-        runner._tunnel_config = tunnel
-        runner._tunnel_registry = context.services.tunnel_registry
-        runner._owns_tunnel_registry = False
-    return ADKRuntimeAdapter(runner)
+    adapter = ADKRuntimeAdapter(_create_framework_runner(context, "adk"))
+    if context.services.tunnel_binding is not None:
+        adapter.configure_tunnel(context.services.tunnel_binding)
+    return adapter
 
 
 def _create_langgraph(context: RuntimeLaunchContext) -> RuntimeAdapter:
-    return LangGraphRuntimeAdapter(_create_framework_runner(context, "langgraph"))
+    adapter = LangGraphRuntimeAdapter(_create_framework_runner(context, "langgraph"))
+    if context.services.tunnel_binding is not None:
+        adapter.configure_tunnel(context.services.tunnel_binding)
+    return adapter
 
 
 def build_default_runtime_registry(

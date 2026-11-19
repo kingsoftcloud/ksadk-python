@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ksadk._mcp_compat import tool_input_schema
+
 import hashlib
 import json
 import re
@@ -200,10 +202,27 @@ class McpOAuthTools:
         return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
     def _tool_state(self, state):
+        """把 `ToolMessage.artifact` 里的 catalog 回填成 state 字段。
+
+        ## 为什么不能"显式 state 就早退"
+
+        `reset()` 会写入 `mcp_catalogs={}`（`begin` 节点每轮都跑），
+        所以 `"mcp_catalogs" in state` **恒为真**。早退会让 artifact 里的
+        catalog **永远读不回来**，导致：
+
+        - `bindings()` 空 → `owns()` False → 已发现的 MCP 工具被错误路由到
+          开发者的 legacy 分支
+        - 表现为**执行错工具** + **重复执行**（实测 `legacy_key_read`
+          被调 3 次，应为 2 次）
+
+        ## 修法：合并而非早退
+
+        显式 state 的 catalog **优先**（保持原 API 语义），artifact 作为补充。
+        """
         state = state if state is not None else {}
-        if "mcp_catalogs" in state:
-            return state  # Preserve the original explicit-state API.
-        catalogs, stopped = {}, False
+        catalogs = dict(state.get("mcp_catalogs") or {})
+        stopped_override = state.get("mcp_stop")
+        stopped = False if stopped_override is None else bool(stopped_override)
         turn = []
         for message in reversed(state.get("messages", [])):
             if isinstance(message, HumanMessage):
@@ -216,7 +235,9 @@ class McpOAuthTools:
             data = message.artifact.get(_CATALOG_ARTIFACT)
             if not isinstance(data, dict) or data.get("version") != 1 or data.get("scope") != scope:
                 continue
-            catalogs.update(data.get("catalogs", {}))
+            # 显式 state 优先；artifact 只补空缺的 connection。
+            for connection, catalog in data.get("catalogs", {}).items():
+                catalogs.setdefault(connection, catalog)
             stopped = stopped or data.get("stopped", False)
         return {**state, "mcp_catalogs": catalogs, "mcp_stop": stopped}
 
@@ -275,15 +296,32 @@ class McpOAuthTools:
                 _function(
                     alias,
                     f"[{connection}] {tool['name']}: {tool['description']}",
-                    tool["inputSchema"],
+                    tool_input_schema(tool),
                 )
             )
         return definitions
 
     def owns(self, call, state):
-        """Route only these OAuth calls to execute; leave all other tools alone."""
+        """Route only these OAuth calls to execute; leave all other tools alone.
+
+        ## 为什么必须先 `_tool_state`
+
+        已发现的 catalog 存在 `ToolMessage.artifact` 里（不是 state 字段），
+        只有 `_tool_state()` 会把它回填成 `state["mcp_catalogs"]`。
+
+        `route()` 传进来的是**原始 graph state**——`begin` 节点刚跑过
+        `reset()`，`mcp_catalogs` 是空的。若直接 `self.bindings(state)`，
+        已发现的 MCP 工具（如 `research__read_snapshot`）会**不被认领**，
+        被错误路由到开发者的 legacy 分支，导致**执行错工具**且
+        **重复执行**（checkpoint 里已有结果，却仍重跑一次）。
+
+        实测（2026-11-19）：`legacy_key_read` 被调用 3 次（应为 2 次）。
+        """
+        if not call:
+            return False
+        normalized = self._tool_state(state)
         return bool(
-            call and (call["name"] in self.connectors or call["name"] in self.bindings(state))
+            call["name"] in self.connectors or call["name"] in self.bindings(normalized)
         )
 
     async def execute(self, state, config: RunnableConfig):
@@ -351,7 +389,7 @@ class McpOAuthTools:
         schema = (
             {"type": "object", "properties": {}}
             if connection is not None
-            else binding[1]["inputSchema"]
+            else tool_input_schema(binding[1])
         )
         runnable = StructuredTool.from_function(
             coroutine=invoke,

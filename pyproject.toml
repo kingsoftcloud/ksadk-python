@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.8.7"
+version = "0.8.8"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -55,7 +55,7 @@ dependencies = [
     "a2ui-core==0.3.0",
     "httpx-sse>=0.4.0",
     "sse-starlette>=2.1.0",
-    "mcp>=1.26.0,<2.0.0",
+    "mcp>=1.26.0",
     # HTTP 请求 + AWS 签名
     "requests>=2.28.0",
     "requests-aws4auth>=1.2.0",
@@ -90,11 +90,14 @@ dependencies = [
     "langgraph==1.2.15",
     "langgraph-checkpoint-sqlite>=2.0.0",
     # ========= 可观测性 (默认安装) =========
-    # goal-00: 由 ==1.37.0 放宽到 [1.39, 1.41.1],取 adk 1.34.x(otel<=1.41.1)与
-    # adk 2.x(otel 1.39~1.42.1)的交集,使默认即可解析到 adk 2.x(支持 2.x)。
-    "opentelemetry-api>=1.39.0,<=1.41.1",
-    "opentelemetry-sdk>=1.39.0,<=1.41.1",
-    "opentelemetry-exporter-otlp>=1.39.0,<=1.41.1",
+    # goal-00 原先钉 [1.39, 1.41.1] 取 adk 1.34.x 与 adk 2.x 的交集。
+    #
+    # 保留 ADK 1.34/2.5 的可解析窗口；SDK/exporter 的版本约束会绑定
+    # 同版 API。新环境的 FastMCP 4.x 可将整组解析到 >=1.45.2，
+    # 不把开发工具的要求强加给所有旧 ADK 应用。
+    "opentelemetry-api>=1.39.0",
+    "opentelemetry-sdk>=1.39.0",
+    "opentelemetry-exporter-otlp>=1.39.0",
 ]
 
 [project.optional-dependencies]
@@ -108,7 +111,13 @@ langchain = [
     "langchain>=1.3.14,<2.0.0",
     "langchain-openai>=1.4.0,<2.0.0",
     "langchain-core>=1.5.0,<2.0.0",
-    "langchain-mcp-adapters>=0.3.2",
+    # langchain-mcp-adapters 已移除：最新版（0.3.2）主动 pin `mcp<2.0.0`，
+    # 而 ksadk 要升 `mcp>=2.3.0`。0.3.1 虽无上界，但在 mcp 2.3.0 下必崩
+    # （`ImportError: cannot import name 'RequestContext' from 'mcp.shared.context'`
+    # —— mcp 2.x 把它拆成了 CallOptions / DispatchContext / TransportContext）。
+    #
+    # 需要「MCP 工具 → LangChain BaseTool」时用原生 `ClientSession` 即可，
+    # 见 tests/test_mcp_standalone_native_toolnode.py::_native_mcp_tools。
 ]
 # LangGraph 支持
 langgraph = [
@@ -174,7 +183,9 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-xdist>=3.0.0",
-    "fastmcp>=2.0.0",
+    # 当前锁使用 4.2.1/MCP 2.3；旧 ADK 环境允许求解到兼容的
+    # FastMCP 2.x/3.x 与 MCP 1.26，协议差异集中在 _mcp_compat。
+    "fastmcp>=2.14.7",
     "build>=1.0.0",
     "twine>=5.0.0",
     "black>=22.0.0",

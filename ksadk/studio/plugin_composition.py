@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import replace
 
+from ksadk.harness.service_runtime import harness_service_configured
 from ksadk.harness.tools import HARNESS_SANDBOX_TOOL_NAMES
 from ksadk.plugins.builtins import (
     BUILTIN_PLUGIN_VERSION,
@@ -181,7 +182,13 @@ class StudioPluginCompositionCompiler:
                 config={"artifactPath": "platform-resources"},
             ))
         policy = CompositionPolicy(
-            runtimes={"harness": RuntimePluginSelection(provider_ref=harness_ref)},
+            runtimes={"harness": RuntimePluginSelection(
+                provider_ref=harness_ref,
+                supported_strategies=(
+                    frozenset({"direct", "plan-act-observe"})
+                    if harness_service_configured() else frozenset({"direct"})
+                ),
+            )},
             providers=providers,
             session_store=_selection(
                 SQLITE_SESSION_STORE_PLUGIN_ID,

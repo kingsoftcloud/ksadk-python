@@ -579,6 +579,8 @@ class StudioService(StudioSettingsMixin):
             resource_connections=self.resource_connections,
             resource_actor_ref="local-user",
             native_workspace_id=self.workspace_record.workspace_id,
+            service_hook_authorizer=native_harness_hook_authorizer,
+            service_hook_authorization_version=native_harness_hook_authorization_version,
         )
         self.run_service.plugin_runtime = self.plugin_runs
         self.scheduler_runtimes = StudioScheduledKernelRegistry(

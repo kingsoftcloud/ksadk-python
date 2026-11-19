@@ -2,7 +2,7 @@
 Tracing 初始化 - 标准 OTLP 双写（Langfuse 主 + CloudMonitor 次）
 
 每个 Python Agent 进程一个 TracerProvider，挂两个 OTLP/HTTP protobuf BatchSpanProcessor，
-消费同一批 ReadableSpan。仅为 CloudMonitor 克隆并补充兼容属性，不修改原始 span。
+消费同一批 ReadableSpan。导出前统一业务会话 ID，CloudMonitor 额外补充兼容属性。
 
 支持 ADK 自动插桩 via openinference-instrumentation-google-adk
 """
@@ -20,7 +20,7 @@ from typing import Any, Optional
 from urllib.parse import unquote
 
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from ksadk.tracing.exporters.inmemory_exporter import InMemoryExporter
@@ -596,8 +596,58 @@ def _build_generic_otlp_http_config() -> Optional[dict]:
     }
 
 
+class _SessionIdentitySpanProcessor(SpanProcessor):
+    """Normalize business identity before either static or routed export queues.
+
+    Capture identity at span start: ADK may overwrite its conversation ID later,
+    and a child may be exported in a different batch/context from its parent.
+    Native ADK session objects and stored session bindings are never modified.
+    """
+
+    def __init__(self, processor: SpanProcessor):
+        self._processor = processor
+
+    def on_start(self, span, parent_context=None):
+        from opentelemetry import trace
+
+        from ksadk.runtime_context import get_current_invocation_context
+
+        invocation = get_current_invocation_context()
+        parent = trace.get_current_span(parent_context)
+        session_id = (
+            (invocation.session_id if invocation else "")
+            or (span.attributes or {}).get("ksadk.session_id")
+            or (getattr(parent, "attributes", None) or {}).get("ksadk.session_id")
+        )
+        if session_id:
+            span.set_attribute("ksadk.session_id", session_id)
+        self._processor.on_start(span, parent_context=parent_context)
+
+    def on_end(self, span):
+        session_id = (span.attributes or {}).get("ksadk.session_id")
+        if session_id:
+            attributes = dict(span.attributes)
+            attributes.update(
+                {
+                    "session.id": session_id,
+                    "gen_ai.conversation.id": session_id,
+                    "langfuse.session.id": session_id,
+                }
+            )
+            if "langfuse.session_id" in attributes:
+                attributes["langfuse.session_id"] = session_id
+            span = _clone_span(span, attributes=attributes, resource=span.resource)
+        self._processor.on_end(span)
+
+    def shutdown(self):
+        self._processor.shutdown()
+
+    def force_flush(self, timeout_millis=30000):
+        return self._processor.force_flush(timeout_millis=timeout_millis)
+
+
 def _register_span_processor(provider: Any, processor: Any) -> None:
-    provider.add_span_processor(processor)
+    provider.add_span_processor(_SessionIdentitySpanProcessor(processor))
     _managed_span_processors.append(processor)
 
 

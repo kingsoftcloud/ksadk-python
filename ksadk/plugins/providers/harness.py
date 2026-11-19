@@ -19,8 +19,10 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from ksadk.harness.config import HarnessConfig, McpToolSpec, SandboxPolicy
+from ksadk.harness.native.hook_executor import HookAuthorizer
 from ksadk.harness.reasoner import HarnessReasoner, ModelGatewayHarnessReasoner
 from ksadk.harness.runtime import HarnessRuntimeAdapter
+from ksadk.harness.service_runtime import HarnessServiceRuntimeAdapter, harness_service_from_env
 from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginExecutionContext, PluginHostError
@@ -378,6 +380,8 @@ class KsADKHarnessProviderRuntime:
         user_workspace_root: Path | None = None,
         engine_selector: HarnessEngineSelector | None = None,
         native_adapter_builder: HarnessNativeAdapterBuilder | None = None,
+        service_hook_authorizer: HookAuthorizer | None = None,
+        service_hook_authorization_version: str | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
@@ -388,6 +392,8 @@ class KsADKHarnessProviderRuntime:
         self._user_workspace_root = user_workspace_root
         self._engine_selector = engine_selector
         self._native_adapter_builder = native_adapter_builder
+        self._service_hook_authorizer = service_hook_authorizer
+        self._service_hook_authorization_version = service_hook_authorization_version
         self._ready = False
         self._disposed = False
         self._last_inventory: HarnessProviderInventory | None = None
@@ -543,8 +549,11 @@ class KsADKHarnessProviderRuntime:
                     for binding in capabilities.all("memory.provider/v1")
                 ),
             )
-            engine_kind: Literal["legacy", "native"] = "legacy"
-            if self._engine_selector is not None:
+            service_adapter = harness_service_from_env(instructions=prompt)
+            engine_kind: Literal["legacy", "native", "service"] = "legacy"
+            if service_adapter is not None:
+                engine_kind = "service"
+            elif self._engine_selector is not None:
                 selected = self._engine_selector(engine_context)
                 if inspect.isawaitable(selected):
                     selected = await selected
@@ -554,17 +563,17 @@ class KsADKHarnessProviderRuntime:
                         "Harness engine selection must be legacy or native",
                     )
                 engine_kind = selected
-            if hook_bindings and engine_kind != "native":
+            if hook_bindings and engine_kind == "legacy":
                 raise PluginHostError(
                     "harness_hooks_native_required",
                     "selected harness.hook/v1 capabilities require Native execution",
                 )
-            if any(binding.contributor for binding in context_bindings) and engine_kind != "native":
+            if any(binding.contributor for binding in context_bindings) and engine_kind == "legacy":
                 raise PluginHostError(
                     "harness_context_native_required",
                     "typed Context Contributors require the selected Native execution path",
                 )
-            if engine_kind == "native":
+            if engine_kind in {"native", "service"}:
                 inventory = replace(inventory, history_owner="native_run_ledger")
                 # Only clients consuming the ephemeral callbacks may use the
                 # renewable probe. Legacy/static clients retain token expiry.
@@ -572,6 +581,18 @@ class KsADKHarnessProviderRuntime:
                     engine_context,
                     mcp_available=projection.runtime_available,
                     mcp_runtime_credentials=projection.runtime_credentials,
+                )
+            if service_adapter is not None:
+                from ksadk.plugins.providers.harness_service import (
+                    admit_service_memory,
+                    bind_service_resources,
+                )
+
+                admit_service_memory(engine_context, capabilities)
+                bind_service_resources(
+                    service_adapter, engine_context, mcp_cleanup,
+                    hook_authorizer=self._service_hook_authorizer,
+                    hook_authorization_version=self._service_hook_authorization_version,
                 )
             self._last_inventory = inventory
             return KsADKHarnessActivation(
@@ -592,6 +613,7 @@ class KsADKHarnessProviderRuntime:
                 engine_context=engine_context,
                 engine_kind=engine_kind,
                 native_adapter_builder=self._native_adapter_builder,
+                service_adapter=service_adapter,
             )
 
 
@@ -648,6 +670,10 @@ class KsADKHarnessProviderFactory:
             user_workspace_root=(Path(user_workspace_root) if user_workspace_root else None),
             engine_selector=engine_selector,
             native_adapter_builder=native_adapter_builder,
+            service_hook_authorizer=services.get("harness_service_hook_authorizer"),
+            service_hook_authorization_version=services.get(
+                "harness_service_hook_authorization_version"
+            ),
         )
         return self.runtime
 
@@ -671,8 +697,9 @@ class KsADKHarnessActivation:
         execution_policy_resolver: Any | None = None,
         user_workspace_root: Path | None = None,
         engine_context: HarnessEngineActivationContext | None = None,
-        engine_kind: Literal["legacy", "native"] = "legacy",
+        engine_kind: Literal["legacy", "native", "service"] = "legacy",
         native_adapter_builder: HarnessNativeAdapterBuilder | None = None,
+        service_adapter: HarnessServiceRuntimeAdapter | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
@@ -697,7 +724,7 @@ class KsADKHarnessActivation:
         self._ready = False
         self._disposed = False
         self._executors: list[RuntimeExecutor] = []
-        self._kernel_adapter: RuntimeAdapter | None = None
+        self._kernel_adapter: RuntimeAdapter | None = service_adapter
         self._warmup_task: asyncio.Task[Any] | None = None
         self._warmup_error: BaseException | None = None
 
@@ -735,27 +762,37 @@ class KsADKHarnessActivation:
                 "Native Harness activation requires the Scheduler runtime adapter path",
             )
         turn = HarnessTurnRequest.parse(request)
-        context_sections = [
-            text.strip()
-            for source in self._context_sources
-            if (text := await source.harness_context(self._bundle, turn)).strip()
-        ]
-        config = replace(
-            self._config,
-            prompt=_append_prompt_sections(
-                self._config.prompt,
-                [
-                    *[f"Skill {item.name}:\n{item.instructions}" for item in self._skills],
-                    *context_sections,
-                ],
-            ),
-        )
-        executor, launch_context = _build_direct_backend(
-            config,
-            agent_name=self._agent_name,
-            workspace_root=self._workspace_root,
-            reasoner=self._reasoner,
-        )
+        config = self._config
+        if self._engine_kind == "service":
+            adapter = await self.runtime_adapter()
+            registry = RuntimeRegistry()
+            registry.register("harness", lambda _context: adapter)
+            executor = RuntimeExecutor(registry)
+            launch_context = RuntimeLaunchContext(
+                runtime_type="harness", project_dir=self._workspace_root,
+            )
+        else:
+            context_sections = [
+                text.strip()
+                for source in self._context_sources
+                if (text := await source.harness_context(self._bundle, turn)).strip()
+            ]
+            config = replace(
+                self._config,
+                prompt=_append_prompt_sections(
+                    self._config.prompt,
+                    [
+                        *[f"Skill {item.name}:\n{item.instructions}" for item in self._skills],
+                        *context_sections,
+                    ],
+                ),
+            )
+            executor, launch_context = _build_direct_backend(
+                config,
+                agent_name=self._agent_name,
+                workspace_root=self._workspace_root,
+                reasoner=self._reasoner,
+            )
         self._executors.append(executor)
         preparation = await executor.prepare_start(launch_context)
         session_id, result = await invoke_runtime_conversation_once(

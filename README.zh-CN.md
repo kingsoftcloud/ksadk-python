@@ -54,6 +54,10 @@ agentengine web . --no-open
 [A2A](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/a2a-runtime/)。
 模型生成的 A2UI 仍需通过注册目录校验，复杂样式可能失败；不把生成失败包装为业务成功。
 
+## 企业内网工具
+
+Google ADK 和 LangGraph Agent 可通过同一个企业侧 Connector 调用内网 MCP 工具和 HTTP API。见[工具隧道接入指南与 Connector 示例](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/tool-tunnel/)。
+
 ## 运行时架构
 
 KsADK 把“框架适配”收敛为稳定的运行时分层，同时保留各框架的原生执行语义：

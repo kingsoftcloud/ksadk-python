@@ -87,7 +87,24 @@ def fresh_checkpoint_view(config: Any, saved: Any) -> Any:
     pending = list(saved.pending_writes or [])
     if any(channel == "__interrupt__" for _, channel, _ in pending):
         return saved
-    results = {m.tool_call_id: m for m in messages if isinstance(m, ToolMessage)}
+    # A custom graph can append other messages before it records a tool receipt.
+    # Match each receipt to the most recent preceding call with that provider ID.
+    call_positions = {}
+    results_by_call = {}
+    result_positions = set()
+    changed = False
+    for index, message in enumerate(messages):
+        if isinstance(message, AIMessage) and message.tool_calls:
+            for call in message.tool_calls:
+                call_positions[call.get("id")] = index
+        elif isinstance(message, ToolMessage) and message.tool_call_id in call_positions:
+            owner = call_positions[message.tool_call_id]
+            results = results_by_call.setdefault(owner, [])
+            results.append(message)
+            result_positions.add(index)
+            # Strict providers require the receipts immediately after their AI message.
+            if index != owner + len(results):
+                changed = True
     pending_results = {}
     updated_pending = []
     for task, channel, value in pending:
@@ -107,19 +124,23 @@ def fresh_checkpoint_view(config: Any, saved: Any) -> Any:
         updated_pending.append((task, channel, value))
 
     repaired = []
-    changed = False
-    for message in messages:
+    for index, message in enumerate(messages):
+        if index in result_positions:
+            continue  # Emitted with the original call, in receipt order.
         repaired.append(message)
         if not isinstance(message, AIMessage):
             continue
+        results = results_by_call.get(index, ())
+        repaired.extend(results)
+        answered = {result.tool_call_id for result in results}
         for call in message.tool_calls:
             call_id = call.get("id")
-            if not call_id or call_id in results:
+            if not call_id or call_id in answered:
                 continue
-            result = pending_results.get(call_id)
+            result = pending_results.get(call_id) if index == call_positions[call_id] else None
             if result is None:
                 identity = hashlib.sha256(
-                    f"{saved.checkpoint['id']}:{call_id}".encode()
+                    f"{saved.checkpoint['id']}:{index}:{call_id}".encode()
                 ).hexdigest()
                 result = ToolMessage(
                     id=f"ksadk-interrupted-{identity}", tool_call_id=call_id,
@@ -135,7 +156,7 @@ def fresh_checkpoint_view(config: Any, saved: Any) -> Any:
                     }},
                 )
             repaired.append(result)
-            results[call_id] = result
+            answered.add(call_id)
             changed = True
     if not changed:
         return saved

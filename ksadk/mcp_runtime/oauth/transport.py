@@ -5,8 +5,24 @@ import ipaddress
 import socket
 import ssl
 
-import httpcore
-import httpx
+# ## 为什么是双库导入
+#
+# `mcp` **2.3.0** 换了 HTTP 底座：`httpx` → **`httpx2`**，
+# `httpcore` → **`httpcore2`**（两个都是独立包，不是子类关系）。
+#
+# 本模块的安全保证（DNS pinning / origin 不可变 / 禁重定向）依赖
+# `AsyncNetworkBackend` + `AsyncConnectionPool` 这两个**内部 API**——
+# 必须和 `mcp` 用的是**同一套**，否则 `transport=` 传进
+# `httpx2.AsyncClient` 会直接类型不匹配。
+#
+# `httpx2` / `httpcore2` 与旧版签名逐字兼容（`connect_tcp`、
+# `AsyncConnectionPool.__init__` 实测一致），所以只需换导入。
+try:  # mcp >= 2.3
+    import httpcore2 as httpcore
+    import httpx2 as httpx
+except ImportError:  # pragma: no cover - mcp 1.x
+    import httpcore  # type: ignore[no-redef]
+    import httpx  # type: ignore[no-redef]
 
 
 class MCPNetworkBackend(httpcore.AsyncNetworkBackend):

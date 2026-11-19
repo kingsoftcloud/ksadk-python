@@ -456,7 +456,7 @@ async def test_kernel_approval_resumes_real_managed_adk_runner(flow):
             assert (await stack.store.load_run(started.run_id)).state == RunState.CANCELLED
             assert not await stack.store.list_pending_interactions(TENANT, "s1")
             assert sum(kind == "send" for kind, _ in wire.calls) == 1
-            from tests.studio.test_r85_presentation import (
+            from tests.studio_fixtures.test_r85_presentation import (
                 assert_managed_input_live_and_cursor_replay,
             )
 
@@ -526,7 +526,7 @@ async def test_kernel_approval_resumes_real_managed_adk_runner(flow):
         assert MessageToDict(sends[-1].parts[0].data) == "supplement"
         assert not await stack.store.list_pending_interactions(TENANT, "s1")
 
-        from tests.studio.test_r85_presentation import assert_managed_input_live_and_cursor_replay
+        from tests.studio_fixtures.test_r85_presentation import assert_managed_input_live_and_cursor_replay
 
         assert_managed_input_live_and_cursor_replay(
             await stack.events.read("s1", 0, 200), input_record.interaction_id

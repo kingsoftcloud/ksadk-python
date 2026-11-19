@@ -305,23 +305,6 @@ KSADK_ENABLE_MCP_TOOLS=1
 KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 ```
 
-## 内网 MCP Tunnel
-
-| 变量 | 用途 |
-| --- | --- |
-| `KSADK_ENABLE_TUNNEL` | 为 ADK Runtime 开启内网 MCP Tunnel，默认 `0` |
-| `KSADK_TUNNEL_TOKEN` | connector 注册鉴权 token；开启 Tunnel 时必传且属于敏感信息 |
-| `KSADK_TUNNEL_SELF_URL` | TunnelToolset 访问本进程代理的 loopback base URL；标准入口按实际端口生成 |
-
-这些变量是项目级 Runtime 配置，不支持通过 `agentengine config set --global` 保存到全局配置。`KSADK_TUNNEL_TOKEN` 应按项目或环境独立生成。`KSADK_TUNNEL_SELF_URL` 是特殊部署使用的可选覆盖项，通常不要写入项目或部署环境文件；标准启动入口会按实际端口推导。
-
-```bash title="bash"
-KSADK_ENABLE_TUNNEL=1
-KSADK_TUNNEL_TOKEN=<tunnel-token>
-# 仅在标准入口无法正确推导端口时设置：
-# KSADK_TUNNEL_SELF_URL=http://127.0.0.1:8080
-```
-
 ## 构建与打包
 
 | 变量 | 用途 |
@@ -434,7 +417,7 @@ KSADK_TUNNEL_TOKEN=<tunnel-token>
   - 公开文档只使用 `sk-test`、`my-model`、`https://api.example.com/v1` 这类占位值。
 </Callout>
 
-当前 Hosted UI 静态资源版本：`0.3.12`。
+当前 Hosted UI 静态资源版本：`0.3.18`。
 
 
 按用途区分部署凭据、应用变量和平台注入值的完整示例见[0.8.7 接入手册](/cn/docs/framework/guides/integration-0-8-7/)。

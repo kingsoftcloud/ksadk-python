@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
@@ -112,6 +113,38 @@ def test_bootstrap_falls_back_to_responses_without_agui():
     assert [transport["Protocol"] for transport in data["Transports"]] == ["responses"]
 
 
+@pytest.mark.parametrize(
+    ("authority", "installed", "replay"),
+    [("hosted", True, True), ("hosted", False, False), ("local", True, False)],
+)
+def test_hosted_agui_replay_requires_the_installed_kernel(
+    monkeypatch, authority, installed, replay,
+):
+    from ksadk.kernel import bootstrap, ingress
+
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(local_interactions=False),
+        worker=SimpleNamespace(_mcp_authorization=None),
+    ) if installed else None
+    monkeypatch.setattr(bootstrap, "get_agent_kernel_runtime", lambda: runtime)
+    monkeypatch.setattr(ingress, "authority_mode", lambda: authority)
+    # Hosted AG-UI observes Server-admitted tasks; it must not self-admit
+    # through the local compatibility route to advertise durable replay.
+    monkeypatch.setattr(ingress, "kernel_route_active", lambda: False)
+    executor, launch_context = _execution_for(_Runner())
+    app = create_runtime_app(RuntimeAppConfig(
+        runtime_executor=executor, launch_context=launch_context,
+        agui=AGUIConfig(enabled=True), route_groups={"ui_bootstrap", "agui"},
+    ), configure_runtime_app)
+    response = TestClient(app).post(
+        "/agentengine/api/v1/GetAgentUiBootstrap", json={"AgentId": "agent"},
+    )
+    assert response.status_code == 200
+    hosted = response.json()["Data"]["HostedChat"]
+    assert hosted["PreferredTransport"] == "ag-ui"
+    assert (hosted["Transports"][0]["Capabilities"].get("SessionEventReplay") is True) == replay
+
+
 def test_bootstrap_does_not_advertise_agui_interrupt_without_runtime_checkpoint():
     class _NoCheckpointRunner(_Runner):
         def get_runtime_capabilities(self):
@@ -219,3 +252,25 @@ def test_managed_codex_and_langgraph_declare_remote_agent_surface():
         assert surface.provider_ref == framework
         assert surface.permits_input("ksadk.presentation")
         assert any(c.name == "agent.block" and c.mode == "translated" for c in surface.outputs)
+
+
+@pytest.mark.parametrize("preference,enabled,expected", [
+    ("", True, "ag-ui"), ("auto", True, "ag-ui"),
+    ("responses", True, "responses"), ("ag-ui", True, "ag-ui"),
+    ("invalid", True, "ag-ui"), (" RESPONSES ", True, "responses"),
+    ("ag-ui", False, "responses"), ("responses", False, "responses"),
+])
+def test_chat_preference_preserves_available_endpoints(monkeypatch, preference, enabled, expected):
+    monkeypatch.setenv("KSADK_CHAT_PREFERRED_TRANSPORT", preference)
+    executor, launch_context = _execution_for(_Runner())
+    app = create_runtime_app(RuntimeAppConfig(
+        runtime_executor=executor, launch_context=launch_context,
+        agui=AGUIConfig(enabled=enabled), route_groups={"ui_bootstrap", "agui"},
+    ), configure_runtime_app)
+    result = TestClient(app).post("/agentengine/api/v1/GetAgentUiBootstrap",
+        json={"AgentId": "agent"}).json()["Data"]["HostedChat"]
+    assert result["PreferredTransport"] == expected
+    assert [t["Protocol"] for t in result["Transports"]] == (
+        ["ag-ui", "responses"] if enabled else ["responses"])
+    if enabled:
+        assert result["Transports"][0]["Capabilities"]["Interrupt"] is True

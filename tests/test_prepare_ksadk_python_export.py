@@ -61,6 +61,8 @@ def test_export_plan_includes_public_preflight_contract_files():
         ".github/workflows/publish-pypi.yml",
         "scripts/build_alias_distribution.py",
         "docs/public-release-workflow.md",
+        "docs-site/content/docs/framework/guides/tool-tunnel.mdx",
+        "docs-site/content/docs/framework/guides/tool-tunnel.en.mdx",
         "docs/reference/ksadk环境变量参考.md",
         "scripts/check_release_version.py",
         "scripts/open_source_audit.py",
@@ -76,13 +78,7 @@ def test_export_plan_includes_public_preflight_contract_files():
         "tests/plugins/test_dsh_node_provider_e2e.py",
         "tests/events/fixtures/runtime_projection_golden.json",
         "tests/packaging/test_release_preflight.py",
-        "tests/studio/e2e/conversation_items_browser_e2e.py",
-        "tests/studio/e2e/studio_browser_smoke.py",
-        "tests/studio/e2e/studio_e2e_support.py",
-        "tests/studio/e2e/studio_responsive_smoke.py",
-        "tests/studio/test_style_system.py",
         "tests/test_config_env_registry.py",
-        "tests/cli/test_cmd_config_tunnel.py",
         "tests/runners/test_adapter_contract.py",
         "ksadk/studio/react-ui/package.json",
         "ksadk/studio/react-ui/package-lock.json",
@@ -117,7 +113,10 @@ def test_export_contains_ci_tests_and_their_local_imports():
         for source in gate_sources
         for path in re.findall(r"tests/[\w/.-]+\.py", source.read_text())
     }
-    assert gate_tests <= exported, f"CI tests excluded: {sorted(gate_tests - exported)}"
+    for line in (root / "Makefile").read_text().splitlines():
+        if line.startswith("PUBLIC_TEST_TARGETS "):
+            gate_tests.update(re.findall(r"tests/[\w/.-]+\.py", line))
+    assert gate_tests <= exported, f"Release tests excluded: {sorted(gate_tests - exported)}"
 
     missing_imports = set()
     for path in sorted(exported):
@@ -150,8 +149,6 @@ def test_export_keeps_native_recovery_and_shared_test_fixtures():
         "tests/harness/native/partial_summary_process_fixture.py",
         "tests/harness/native/summary_recovery_process_fixture.py",
         "tests/harness/native/compaction_reserve_process_fixture.py",
-        "tests/studio/native_recovery_lease_fixture.py",
-        "tests/studio/test_native_default_install.py",
         "tests/a2a/fixtures/remote_agent/v1/a2a_stream_tool_terminal.jsonl",
         "tests/fixtures/adk_two_llm_outputs.json",
     }

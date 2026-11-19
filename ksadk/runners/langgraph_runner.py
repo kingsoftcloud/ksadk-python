@@ -19,6 +19,7 @@ from ksadk.runners._langgraph_checkpoint_binding import (
     LocalCheckpointBindingMixin,
     bind_native_checkpointer,
 )
+from ksadk.runners._langgraph_factory import LangGraphFactoryMixin
 from ksadk.runners._langgraph_fresh_turn import fresh_memory_input, fresh_user_checkpoint
 from ksadk.runners._langgraph_output import extract_output
 from ksadk.runners._langgraph_runner_streams import _LangGraphStreamMixin
@@ -38,7 +39,7 @@ from ksadk.sessions.db_budget import session_db_budget
 
 
 class LangGraphRunner(
-    LangGraphSessionIdentityMixin, LocalCheckpointBindingMixin, _LangGraphStreamMixin, BaseRunner
+    LangGraphFactoryMixin, LangGraphSessionIdentityMixin, LocalCheckpointBindingMixin, _LangGraphStreamMixin, BaseRunner
 ):
     """LangGraph 框架运行时
 
@@ -65,21 +66,7 @@ class LangGraphRunner(
         self._managed_checkpoint_pool: Any = None
         self._identity_thread_bindings: dict[str, str] = {}
         self._identity_thread_lock = asyncio.Lock()
-
-    def _sdk_mcp_agent(self, graph=None):
-        graph = self._agent if graph is None else graph
-        builder = getattr(graph, "builder", None)
-        return vars(builder).get("_ksadk_mcp_agent") if hasattr(builder, "__dict__") else None
-
-    def _graph_factory(self, *, module=None, agent=None):
-        module = self._module if module is None else module
-        agent = self._agent if agent is None else agent
-        factory = getattr(module, "ksadk_graph_factory", None)
-        if callable(factory):
-            return factory
-        if self._sdk_mcp_agent(agent) is not None:
-            return lambda *, checkpointer: bind_native_checkpointer(agent, checkpointer)
-        return None
+        self._tunnel_tools = None
 
     def load_agent(self) -> None:
         self._load_agent(force_reload=False)
@@ -97,18 +84,21 @@ class LangGraphRunner(
             self.detection_result.agent_variable,
             force_reload=force_reload,
         )
+        if deferred := getattr(self, "_deferred_tunnel", None):
+            self._tunnel_binding = deferred.resolve(agent, module)
         local_saver = getattr(self, "_sdk_local_saver", None)
-        if local_saver is not None and getattr(agent, "checkpointer", None) is None:
+        has_tunnel = self._configured_tunnel_tools() is not None
+        if has_tunnel:
+            agent = self._build_loaded_tunnel_graph(module, agent, managed_saver, local_saver)
+        elif local_saver is not None and getattr(agent, "checkpointer", None) is None:
             factory = self._graph_factory(module=module, agent=agent)
             agent = (
                 factory(checkpointer=local_saver)
                 if callable(factory)
                 else bind_native_checkpointer(agent, local_saver)
             )
-        if managed_saver is not None:
-            # Reloading the model recreates the module's default MemorySaver.
-            # Recompile with our existing durable saver and pool so every
-            # session retains its checkpoint and its stable thread identity.
+        if managed_saver is not None and not has_tunnel:
+            # Preserve the existing durable saver and session identity on reload.
             factory = self._graph_factory(module=module, agent=agent)
             if not callable(factory):
                 raise TypeError("Managed LangGraph model reload requires ksadk_graph_factory")
@@ -1379,6 +1369,10 @@ class LangGraphRunner(
             return output
 
         except Exception as e:
+            from ksadk.tunnel.failure import tunnel_failure
+
+            if failure := tunnel_failure(e):
+                return {"output": failure.message, "metadata": failure.metadata}
             if "Interrupt" in type(e).__name__:
                 state, error = await self._read_graph_state(config, include_subgraphs=True)
                 if state is None:
