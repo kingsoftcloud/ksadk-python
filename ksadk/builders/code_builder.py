@@ -302,7 +302,9 @@ class CodeBuilder(BaseBuilder):
         ".ttf",
         ".map",
     }
-    TUNNEL_MCP_REQUIREMENT = "mcp>=1.26.0,<2.0.0"
+    # The shared runtime selects the actual MCP HTTP backend and supports both
+    # SDK generations; deployment must not contradict a supported MCP 2.x pin.
+    TUNNEL_MCP_REQUIREMENT = "mcp>=1.26.0"
     TUNNEL_WEBSOCKETS_REQUIREMENT = "websockets>=12.0,<16.0"
     BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS = (
         "a2a-sdk[fastapi]==1.1.0",

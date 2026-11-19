@@ -670,7 +670,7 @@ def test_tunnel_deployment_respects_protocol_versions(tmp_path, framework, sourc
 
     detection = SimpleNamespace(type=SimpleNamespace(value=framework))
     (tmp_path / "agent.py").write_text(source)
-    protocol = {"mcp>=1.26.0,<2.0.0", "websockets>=12.0,<16.0"}
+    protocol = {"mcp>=1.26.0", "websockets>=12.0,<16.0"}
     for user_pins in (
         "", "mcp>=1.1.0\nwebsockets", "mcp==1.26.0\nwebsockets==13.0",
         "mcp==1.1.0\nwebsockets==16.0",
@@ -684,6 +684,30 @@ def test_tunnel_deployment_respects_protocol_versions(tmp_path, framework, sourc
                 assert protocol <= set(requirements)
             elif user_pins:
                 assert protocol.isdisjoint(requirements)
+
+
+@pytest.mark.parametrize("framework", ["adk", "langgraph"])
+@pytest.mark.parametrize("builder_kind", ["code", "container"])
+@pytest.mark.parametrize("mcp_version", ["1.26.0", "2.3.0"])
+def test_tunnel_deployment_accepts_supported_mcp_pin(tmp_path, framework, builder_kind, mcp_version):
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    from ksadk.builders.code_builder import CodeBuilder
+    from ksadk.builders.container_builder import ContainerBuilder
+
+    (tmp_path / "agent.py").write_text(
+        "from ksadk import Agent\nroot_agent = Agent(graph, enable_tunnel=True)\n"
+    )
+    (tmp_path / "requirements.txt").write_text(f"mcp=={mcp_version}\n")
+    detection = SimpleNamespace(type=SimpleNamespace(value=framework))
+    if builder_kind == "code":
+        requirements = CodeBuilder(tmp_path)._build_requirements_list(detection)
+    else:
+        requirements = ContainerBuilder(tmp_path)._generate_requirements(detection, tmp_path).splitlines()
+    constraints = [Requirement(raw) for raw in requirements if Requirement(raw).name == "mcp"]
+    assert constraints
+    assert all(Version(mcp_version) in item.specifier for item in constraints), requirements
 
 
 def test_builder_preserves_tunnel_deployment_config(tmp_path, monkeypatch):
