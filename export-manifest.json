@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-19T09:18:12.836411+00:00",
-  "sourceCommit": "24ad003694e462e486795f8b9f991ab45764c6d8",
+  "generatedAt": "2026-11-19T09:21:18.388362+00:00",
+  "sourceCommit": "830e474de108b4a377678df31da79b900b908f62",
   "sourceTree": "clean",
   "targetRepository": "https://github.com/kingsoftcloud/ksadk-python",
   "documentation": "https://kingsoftcloud.github.io/ksadk-python/",
