@@ -38,7 +38,7 @@
 当前候选由内部主干的新分支生成，再导出到基于 GitHub main 的公开分支，均通过 PR 审核。
 Tunnel 以内部已融合社区 PR #115 的统一实现为准。`protocol.py` 是唯一协议入口，不同时保留旧 `protocol/` 包；旧文档 URL 只引导到 `tool-tunnel`。清理仅针对候选中的已退休重复实现，内部 master 和已有分支保持保留。
 
-正式版本目标为 0.8.8，主包及兼容发行包同步，Web 保持 0.3.18。当前只准备候选，签核保持 Pending。
+版本为 0.8.8，主包及兼容发行包同步，Web 保持 0.3.18。实际签核以 `docs/maintainer-approval-record.md` 及其链接的真实审核记录为准；发布状态与日期以 GitHub Release 和 PyPI 记录为准，候选准备与签核不会自动触发发布。
 SDK 发布证据 schema v3 仅包含实际执行的 SDK 门禁；已移出的 Studio 浏览器检查不再出现在 SDK 的 E2E 状态中，不能将空门禁列表称为浏览器测试通过。独立 Studio 与真实云端环境仍按各自范围验收。
 
 ## 0.8.7 候选对齐与保留规则
@@ -55,9 +55,10 @@ SDK 发布证据 schema v3 仅包含实际执行的 SDK 门禁；已移出的 St
 同步前后比较全部 SDK 源码与资源、公开路径清单以及 diff；任何缺失或没有审计依据的
 覆盖都阻止候选交付。分支、现有工作目录和原工作区的未提交内容不在清理范围内。
 
-`docs/maintainer-approval-record.md` 必须记录当前版本；候选阶段各正式 sign-off 保持
-Pending，不能复制上一版本的 Approved 行。此状态应使 `make public-publish-gate` 拒绝发布，
-但不代替或跳过源码、构建、安装及完整预检。
+`docs/maintainer-approval-record.md` 必须记录当前版本；候选初始化时各正式 sign-off 保持
+Pending，不能复制上一版本的 Approved 行。真实负责人明确签核后，才可记录其账号、
+Approved、日期和审核依据。存在 Pending 时 `make public-publish-gate` 必须拒绝发布；
+签核不代替或跳过源码、构建、安装、完整预检及最终 PR 审核，也不授权自动发布。
 
 ## PostgreSQL 兼容检查
 
@@ -114,7 +115,9 @@ git diff --check
 
 如果本次需要绑定新的 UI 版本，确认 `KSADK_WEB_VERSION` 默认值、README、docs-site、approval record 都引用同一个 npm 版本。
 
-Phase 2 发布还必须在最终内部 `master` 提交上重新生成本地制品证据，并在 npm 包发布、Hosted UI 以 digest 部署、发布候选环境浏览器矩阵完成后运行：
+以下 Phase 2 是历史跨仓联合交付流程，适用于同时交付 SDK、Web、Hosted UI 和 Studio 的发布单元，不是本次复用 Web 0.3.18 的 SDK 0.8.8 发布前置。当前 SDK 本地证据为 schema v3，Studio 浏览器验收已迁入独立仓库；本次必须完成完整 `make public-preflight`、实际签核、最终 PR 审核及可信 PyPI 工作流门禁，不能以历史工具或空浏览器测试声明代替。
+
+若另行进行这种跨仓联合交付，Phase 2 要求在最终内部 `master` 提交上重新生成本地制品证据，并在 npm 包发布、Hosted UI 以 digest 部署、发布候选环境浏览器矩阵完成后运行：
 
 ```bash
 make release-candidate-gate \

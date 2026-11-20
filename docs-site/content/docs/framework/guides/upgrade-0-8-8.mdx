@@ -1,11 +1,11 @@
 ---
 title: "升级到 0.8.8"
-description: "0.8.8 candidate migration and compatibility"
+description: "0.8.8 migration and compatibility"
 ---
 
-## 候选安装
+## 安装与升级
 
-本版本正在准备，尚未正式发布。使用新的 Python 3.12+ 虚拟环境安装经过审核的候选 wheel；验证期间保留旧 Agent 环境。
+使用新的 Python 3.12+ 虚拟环境升级，保留旧 Agent 环境以便回滚。发布前使用经过审核的候选 wheel；正式版本的可用状态以 [GitHub Release](https://github.com/kingsoftcloud/ksadk-python/releases) 和 [PyPI](https://pypi.org/project/ksadk/) 为准。两处确认 `0.8.8` 已发布后，可安装对应的 PyPI 版本及应用所需 extras。
 
 ## Tunnel 迁移
 
@@ -17,7 +17,7 @@ description: "0.8.8 candidate migration and compatibility"
 
 核心通过兼容层支持 MCP 1.26+；开发测试使用 MCP 2.3、FastMCP 4.2.2。应用中的其它依赖仍须求解为兼容组合，OpenTelemetry 组件应保持一致。MCP 2 环境不要继续安装要求 `mcp<2` 的旧适配器。
 
-迁移前备份 session/checkpoint。存量 Agent 在显式重建前保留原 SDK 和镜像；新增 Hosted admission 校验要求 Agent 和 session 归属一致。Web 继续使用官方 0.3.18，本候选不发布新 npm 包，也不清理既有 Agent。
+迁移前备份 session/checkpoint。存量 Agent 在显式重建前保留原 SDK 和镜像；新增 Hosted admission 校验要求 Agent 和 session 归属一致。Web 继续复用官方 0.3.18，本版本不要求发布新的 npm 包，也不清理既有 Agent。
 
 回滚时同时恢复原 SDK 环境和 Connector 版本，保留数据库备份与旧 wheel，不删除原有 session 表。
 

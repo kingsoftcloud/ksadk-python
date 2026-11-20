@@ -1,11 +1,11 @@
 ---
 title: "Upgrade to 0.8.8"
-description: "0.8.8 candidate migration and compatibility"
+description: "0.8.8 migration and compatibility"
 ---
 
-## Candidate installation
+## Installation and upgrade
 
-This version is being prepared and is not yet published. Install the reviewed candidate wheel in a new Python 3.12+ environment. Do not overwrite an existing agent environment during evaluation.
+Upgrade in a new Python 3.12+ environment and retain the previous agent environment for rollback. Before publication, use the reviewed candidate wheel. Check [GitHub Releases](https://github.com/kingsoftcloud/ksadk-python/releases) and [PyPI](https://pypi.org/project/ksadk/) for publication status; once both confirm `0.8.8`, install that PyPI version with the extras required by your application.
 
 ## Tunnel migration
 
@@ -17,7 +17,7 @@ Upgrade the cloud SDK and enterprise Connector together. The previous YAML/CLI c
 
 The core supports MCP 1.26+ through the compatibility layer. Development tests use MCP 2.3 and FastMCP 4.2.2; optional applications must resolve a compatible dependency set. OpenTelemetry components must stay aligned. Do not keep an adapter that pins `mcp<2` in an MCP 2 environment.
 
-Back up session/checkpoint data before migration. Existing agents remain on their current SDK and images until explicitly rebuilt; new Hosted admission checks require matching agent and session ownership. Web stays at the published 0.3.18 version. This candidate does not publish a new npm package or retire existing agents.
+Back up session/checkpoint data before migration. Existing agents remain on their current SDK and images until explicitly rebuilt; new Hosted admission checks require matching agent and session ownership. This version reuses the published Web 0.3.18 package; it does not require a new npm release or retire existing agents.
 
 For rollback, restore the previous environment and connector version together. Keep database backups and the previous wheel; do not delete existing session tables.
 
