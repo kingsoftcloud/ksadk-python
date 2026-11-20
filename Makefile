@@ -413,6 +413,7 @@ PUBLIC_TEST_TARGETS += tests/a2a/test_workload_token_public_compat.py
 PUBLIC_TEST_TARGETS += tests/runners/test_adk_a2a_stream_review.py
 PUBLIC_TEST_TARGETS += tests/events/adapters/test_adk.py
 PUBLIC_TEST_TARGETS += tests/agui/test_foreground_local_interactions.py
+PUBLIC_TEST_TARGETS += tests/memory/test_agent_user_scope_id.py tests/memory/test_memory_namespace_compat.py
 
 public-status:
 	@echo "==> internal worktree"

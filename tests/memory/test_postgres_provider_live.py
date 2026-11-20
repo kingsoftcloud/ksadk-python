@@ -84,6 +84,20 @@ def provider(database):
         value.close()
 
 
+def test_legacy_agent_user_scope_keeps_existing_postgres_memory(provider):
+    from ksadk.memory.coordinator import agent_user_scope_id
+
+    legacy = "agent:example-agent:user:example-user"
+    saved = provider.upsert(record(scope_id=legacy), expected_version=None)
+    current = agent_user_scope_id(agent_id="example-agent", user_id="example-user")
+    assert provider.search(replace(query(), scopes=[("user", current)])).records == [saved]
+    assert provider.get(saved.memory_id) == saved
+    updated = provider.upsert(replace(saved, content="SQL preserved update"), expected_version=1)
+    assert updated.scope_id == legacy and updated.version == 2
+    foreign = agent_user_scope_id(agent_id="other-agent", user_id="example-user")
+    assert not provider.search(replace(query(), scopes=[("user", foreign)])).records
+
+
 def test_current_models_empty_results_and_crud(provider):
     assert provider.search(query()).status == "ok"
     assert not provider.delete(MemoryDeleteRequest("absent", "user", "u")).deleted

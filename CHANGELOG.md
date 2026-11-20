@@ -21,6 +21,9 @@
 - 修复 AG-UI 原生 session 身份、恢复与 Hosted admission 归属校验，支持配置首选聊天传输。
 - 同步 Harness 服务装配、平台资源、历史与 Memory 上下文支持；保留既有 A2A、AG-UI、A2UI、OAuth 与 API key MCP 能力。
 
+- 修复云端长期记忆的 `AgentUserId` 格式；仅在 AICP 请求边界编码，保留本地 SQLite/PostgreSQL 已有 Agent × User 命名空间和历史记录，所有云端操作使用一致身份。
+- 补齐 API key MCP 的 MCP 1.x/2.3 客户端选择、RunAgent 回退与无 Kernel Agent 的接入边界。
+
 ### 依赖、构建与验证
 
 - MCP 核心兼容窗口为 `>=1.26.0`；开发测试使用 FastMCP 4.x 与 MCP 2.x，独立矩阵验证 MCP 1.26/2.3。OpenTelemetry 组件随所选 ADK/FastMCP 成组解析，保留旧 ADK 的兼容安装窗口。

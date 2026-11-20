@@ -46,6 +46,8 @@ from ksadk.memory.models import (
     map_session_state,
 )
 
+from ksadk.memory.scope_ids import aicp_user_id
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCENE_ID = "_sys_general"
@@ -285,7 +287,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             session_id = metadata.get("session_id") or kwargs.get("session_id")
             params = {
                 "MemoryCollectionId": memory_collection_id,
-                "AgentUserId": user_id,
+                "AgentUserId": aicp_user_id(user_id),
                 "SceneId": self._effective_scene_id(),
                 "DataType": "conversation",
                 "Data": {"Conversation": conversation},
@@ -311,7 +313,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                     return False
             self.last_session_status = {
                 "SessionId": session_id,
-                "AgentUserId": user_id,
+                "AgentUserId": aicp_user_id(user_id),
                 "MemoryCollectionId": memory_collection_id,
             }
 
@@ -344,7 +346,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             self.last_error = ""
             params = {
                 "MemoryCollectionId": memory_collection_id,
-                "AgentUserId": user_id,
+                "AgentUserId": aicp_user_id(user_id),
                 "Query": query,
                 "Limit": top_k,
                 "SceneId": self._effective_scene_id(),
@@ -404,7 +406,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         memory_collection_id = self._effective_memory_collection_id()
         params = {
             "MemoryCollectionId": memory_collection_id,
-            "AgentUserId": user_id,
+            "AgentUserId": aicp_user_id(user_id),
             "Query": query,
             "Limit": top_k,
             "SceneId": self._effective_scene_id(),
@@ -434,7 +436,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         client = self._get_client()
         params: dict[str, Any] = {
             "MemoryCollectionId": self._effective_memory_collection_id(),
-            "AgentUserId": user_id,
+            "AgentUserId": aicp_user_id(user_id),
             "Page": page,
             "PageSize": page_size,
         }
@@ -463,7 +465,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             "MemoryCollectionId": self._effective_memory_collection_id(),
             "MemoryId": memory_id,
             "Content": content,
-            "AgentUserId": user_id,
+            "AgentUserId": aicp_user_id(user_id),
         }
         try:
             response = client.call("UpdateMemory", params, options={"IsPostJson": True})
@@ -549,7 +551,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         params = {
             "MemoryCollectionId": self._effective_memory_collection_id(),
             "MemoryId": memory_id,
-            "AgentUserId": user_id,
+            "AgentUserId": aicp_user_id(user_id),
         }
         try:
             response = client.call("DeleteMemory", params, options={"IsPostJson": True})
@@ -821,7 +823,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             collection = self._effective_memory_collection_id()
             for page in range(1, max_pages + 1):
                 response = client.call("ListSessions", {
-                    "MemoryCollectionId": collection, "AgentUserId": user_id,
+                    "MemoryCollectionId": collection, "AgentUserId": aicp_user_id(user_id),
                     "Page": page, "PageSize": page_size,
                 }, options={"IsPostJson": True})
                 data = self._parse_json_response(response)
@@ -870,7 +872,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 for item in items:
                     if item["SessionId"] == session_id:
                         if (
-                            item.get("AgentUserId", user_id) != user_id
+                            item.get("AgentUserId", aicp_user_id(user_id)) != aicp_user_id(user_id)
                             or item.get("MemoryCollectionId", collection) != collection
                         ):
                             return None, "MEMORY_STATUS_SCOPE_MISMATCH"

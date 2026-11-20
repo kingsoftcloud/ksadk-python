@@ -54,6 +54,9 @@ def test_export_plan_includes_public_preflight_contract_files():
     plan = module.build_export_plan(Path(__file__).resolve().parents[1])
 
     required_paths = {
+        "ksadk/memory/scope_ids.py",
+        "tests/memory/test_agent_user_scope_id.py",
+        "tests/memory/test_memory_namespace_compat.py",
         "contracts/plugin/v1/manifest.json",
         "contracts/conversation/v1/manifest.json",
         "contracts/scheduler/v1/manifest.json",

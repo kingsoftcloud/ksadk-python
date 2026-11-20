@@ -22,3 +22,15 @@ description: "0.8.8 candidate migration and compatibility"
 回滚时同时恢复原 SDK 环境和 Connector 版本，保留数据库备份与旧 wheel，不删除原有 session 表。
 
 保留 ADK 1.34.3 或 2.5.0 的项目须同时约束 `mcp>=1.26.0,<2`；旧 ADK 依赖 MCP 1.x 的内部接口。ADK 2.14.x 可使用 MCP 2.3。请在同一次安装中求解全部依赖，不能仅替换 ADK。
+
+## Memory 历史兼容
+
+本地 SQLite/PostgreSQL 的 `agent:<agent>:user:<user>` 逻辑命名空间保持不变，旧记录不搬迁、不复制或删除。云端请求在 AICP 协议边界才编码为合法 `AgentUserId`，写入、查询、状态、更新与遗忘使用同一编码；已有合法云端 ID 和资源绑定分区保持原值。查询结果继续保留调用方的逻辑身份。
+
+备份长期记忆存储与 session/checkpoint；三者用途不同。本版本不会通过清空数据库修复格式问题。运行短暂内部候选并手动改写过 scope 的项目应先核对自己的记录，不能把两套分区直接合并。
+
+## AG-UI、RunAgent 与普通 Agent
+
+`KSADK_CHAT_PREFERRED_TRANSPORT=responses` 让 Hosted UI 首选 RunAgent Responses；它不关闭 Kernel，也不移除已有 AG-UI endpoint。同一 session 的历史与 OAuth 授权仍可复用。恢复时显式设为 `ag-ui`；合并式环境更新中，仅省略旧 key 不一定会清除它。
+
+普通无 Kernel Agent 可以使用 RunAgent 聊天、API key MCP 和自己的持久化 checkpoint。当前 OAuth MCP 需要 `KSADK_ENABLE_KERNEL=1` 及平台准入；关闭 Kernel 时会返回 `MCP_OAUTH_KERNEL_REQUIRED`。该前置条件不是传输回退配置可以绕过的。配置见[环境变量参考](/cn/docs/references/environment-variables/)，客户端组合见[MCP OAuth 与 API key 接入](/cn/docs/framework/guides/mcp-oauth/)。

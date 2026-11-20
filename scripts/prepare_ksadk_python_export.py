@@ -118,6 +118,8 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    "tests/memory/test_agent_user_scope_id.py",
+    "tests/memory/test_memory_namespace_compat.py",
     "tests/cli/test_web_tracing.py",
     "tests/runtime/test_harness_service_runtime.py",
     "tests/server/test_runtime_tracing_bootstrap.py",

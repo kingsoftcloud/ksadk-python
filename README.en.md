@@ -37,11 +37,13 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
-## 0.8.7: Capabilities and Integration
+## 0.8.8: Capabilities and Integration
 
-0.8.7 requires Python 3.12+ and bundles Web companion `0.3.18`.
+0.8.8 requires Python 3.12+ and bundles Web companion `0.3.18`.
 This table describes this version. Before installing, check that the GitHub Release and both PyPI
 distributions use the expected version.
+
+See the [0.8.8 upgrade guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/upgrade-0-8-8/) for Tunnel migration, Memory compatibility, dependency choices, and transport settings. Version 0.8.8 remains a candidate until its GitHub Release is published; use the reviewed wheel for evaluation.
 
 | Capability | Integration |
 | --- | --- |

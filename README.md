@@ -39,10 +39,12 @@ agentengine run -i
 agentengine web . --no-open
 ```
 
-## 0.8.7：能力与接入
+## 0.8.8：能力与接入
 
-0.8.7 要求 Python 3.12+，内置 Web companion 为 `0.3.18`。
+0.8.8 要求 Python 3.12+，内置 Web companion 为 `0.3.18`。
 下表介绍本版本能力；安装前核对 GitHub Release 与两个 PyPI 发行包的版本。
+
+[0.8.8 升级指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/upgrade-0-8-8/)说明 Tunnel 迁移、Memory 历史兼容、依赖选择和聊天传输配置。正式 GitHub Release 发布前，0.8.8 仍为候选，评估时使用经过审核的 wheel。
 
 | 能力 | 如何接入 |
 | --- | --- |
