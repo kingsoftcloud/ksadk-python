@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Mapping
 from typing import Any
 
@@ -118,6 +119,9 @@ async def build_ui_bootstrap(request, invocation_identity, *, state, executor, l
             "Cancel": cancel_run_supported,
         },
     }
+    from ksadk.kernel.bootstrap import get_agent_kernel_runtime
+
+    kernel_runtime = get_agent_kernel_runtime()
     hosted_chat_transports = []
     if state.agui_agent is not None and state.agui_config is not None:
         from ksadk.agui.config import AGUI_PROTOCOL_VERSION
@@ -134,6 +138,10 @@ async def build_ui_bootstrap(request, invocation_identity, *, state, executor, l
                     "Cancel": True,
                     **({"SessionEventReplay": True} if (
                         _kernel_ingress.kernel_route_active()
+                        # Hosted AG-UI reads the shared Kernel log after
+                        # Server admission; local self-admission stays off.
+                        or (kernel_runtime is not None
+                            and _kernel_ingress.authority_mode() == "hosted")
                         or (state.local_interactions is not None
                             and state.local_interactions.prepared)
                     ) else {}),
@@ -147,6 +155,14 @@ async def build_ui_bootstrap(request, invocation_identity, *, state, executor, l
         and bool(getattr(state.agui_config, "preferred", False))
         else "responses"
     )
+    # Preference only: retain every endpoint for existing runs and interrupts.
+    requested_transport = os.getenv("KSADK_CHAT_PREFERRED_TRANSPORT", "").strip().lower()
+    if requested_transport == "responses":
+        preferred_transport = "responses"
+    elif requested_transport == "ag-ui" and any(
+        item["Protocol"] == "ag-ui" for item in hosted_chat_transports
+    ):
+        preferred_transport = "ag-ui"
     # Producer declaration is separate from transport availability. Consumers
     # intersect this surface with their renderer catalogue before selecting a
     # presentation profile; an older runtime has no such declaration.
@@ -169,9 +185,7 @@ async def build_ui_bootstrap(request, invocation_identity, *, state, executor, l
                 ),
             ),
         ).model_dump(mode="json", by_alias=True)
-    from ksadk.kernel.bootstrap import get_agent_kernel_runtime
     from ksadk.mcp_runtime.oauth.contract import CAPABILITY as MCP_AUTH_CAPABILITY
-    kernel_runtime = get_agent_kernel_runtime()
     oauth_ready = bool(kernel_runtime and kernel_runtime.worker._mcp_authorization)
     return _action_response(
         "GetAgentUiBootstrap",

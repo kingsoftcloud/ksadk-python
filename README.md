@@ -39,10 +39,12 @@ agentengine run -i
 agentengine web . --no-open
 ```
 
-## 0.8.7：能力与接入
+## 0.8.8：能力与接入
 
-0.8.7 要求 Python 3.12+，内置 Web companion 为 `0.3.18`。
+0.8.8 要求 Python 3.12+，内置 Web companion 为 `0.3.18`。
 下表介绍本版本能力；安装前核对 GitHub Release 与两个 PyPI 发行包的版本。
+
+[0.8.8 升级指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/upgrade-0-8-8/)说明 Tunnel 迁移、Memory 历史兼容、依赖选择和聊天传输配置。正式 GitHub Release 发布前，0.8.8 仍为候选，评估时使用经过审核的 wheel。
 
 | 能力 | 如何接入 |
 | --- | --- |
@@ -56,6 +58,10 @@ agentengine web . --no-open
 [OAuth MCP](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/mcp-oauth/) 和
 [A2A](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/a2a-runtime/)。
 模型生成的 A2UI 仍需通过注册目录校验，复杂样式可能失败；不把生成失败包装为业务成功。
+
+## 企业内网工具
+
+Google ADK 和 LangGraph Agent 可通过同一个企业侧 Connector 调用内网 MCP 工具和 HTTP API。见[工具隧道接入指南与 Connector 示例](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/tool-tunnel/)。
 
 ## 运行时架构
 

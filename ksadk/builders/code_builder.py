@@ -36,7 +36,6 @@ from ksadk.builders.framework_requirements import (
     STARLETTE_REQUIREMENT,
     code_requirements_for_framework,
 )
-from ksadk.builders.project_imports import project_imports_any
 from ksadk.builders.requirements_utils import (
     merge_requirement_lists,
     parse_requirements_text,
@@ -290,6 +289,7 @@ class CodeBuilder(BaseBuilder):
         ".md",
         ".html",
         ".js",
+        ".mjs",
         ".css",
         ".svg",
         ".ico",
@@ -303,6 +303,10 @@ class CodeBuilder(BaseBuilder):
         ".ttf",
         ".map",
     }
+    # The shared runtime selects the actual MCP HTTP backend and supports both
+    # SDK generations; deployment must not contradict a supported MCP 2.x pin.
+    TUNNEL_MCP_REQUIREMENT = "mcp>=1.26.0"
+    TUNNEL_WEBSOCKETS_REQUIREMENT = "websockets>=12.0,<16.0"
     BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS = (
         "a2a-sdk[fastapi]==1.1.0",
         # Shared Runtime imports the official validator even for non-UI Agents.
@@ -323,14 +327,16 @@ class CodeBuilder(BaseBuilder):
         "kingsoftcloud-sdk-python>=1.5.8.94",
         "cryptography>=44.0.0",
         "rfc8785==0.1.4",
-        "websockets>=12.0,<16.0",
+        TUNNEL_WEBSOCKETS_REQUIREMENT,
         "qrcode>=7.4.0",
         "rfc8785>=0.1.4",
     )
-    BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS = (
-        "mcp>=1.1.0",
-        "langchain-mcp-adapters>=0.0.1",
-    )
+    # 装进**用户项目**的 MCP runtime 依赖。
+    #
+    # 2026-11-18：`mcp>=1.1.0` → `>=2.3.0`，并移除 `langchain-mcp-adapters`
+    # （它 pin `mcp<2.0.0`，会把用户项目拉回 mcp 1.x，与 ksadk 自身要求的
+    # mcp>=2.3.0 冲突）。用户需要 LangChain 工具适配时自行安装。
+    BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS = ("mcp>=2.3.0",)
     BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS = (
         "asyncpg>=0.30.0,<1.0.0",
         "greenlet>=1.0.0",
@@ -662,6 +668,10 @@ class CodeBuilder(BaseBuilder):
             requirements.extend(self.BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS)
         if framework == "langgraph" or self._mcp_runtime_enabled():
             requirements.extend(self.BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS)
+        # Preserve the default for imported/re-exported factories. Explicit
+        # tunnel declarations also retain their protocol bounds after user pins.
+        if self._project_imports_any({"ksadk.Agent", "ksadk.agent"}):
+            requirements.append(self.TUNNEL_MCP_REQUIREMENT)
         # A managed LangGraph runtime receives its Session store at deployment,
         # including when the developer builds a standalone ZIP or image offline.
         if framework == "langgraph" or self._postgres_session_runtime_enabled():
@@ -679,13 +689,6 @@ class CodeBuilder(BaseBuilder):
             return True
         if self._env_flag_enabled("KSADK_BUILD_ENABLE_MCP"):
             return True
-        if self._project_env_value("KSADK_ENABLE_TUNNEL").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            return True
         if self._project_env_has_configured_value("KSADK_MCP_SERVERS"):
             return True
         if self._project_env_value("KSADK_ENABLE_MCP_TOOLS").strip().lower() in {
@@ -695,7 +698,14 @@ class CodeBuilder(BaseBuilder):
             "on",
         }:
             return True
-        return self._project_imports_any({"mcp", "langchain_mcp_adapters", "ksadk.tunnel"})
+        return self._project_imports_any({"mcp", "langchain_mcp_adapters"})
+
+    def _tunnel_runtime_requirements(self) -> tuple[str, ...]:
+        from .project_imports import uses_tunnel
+
+        if any(uses_tunnel(path) for path in self._iter_project_py_files()):
+            return (self.TUNNEL_MCP_REQUIREMENT, self.TUNNEL_WEBSOCKETS_REQUIREMENT)
+        return ()
 
     def _postgres_session_runtime_enabled(self) -> bool:
         if self._env_flag_enabled("KSADK_BUILD_ENABLE_POSTGRES_SESSION"):
@@ -764,11 +774,10 @@ class CodeBuilder(BaseBuilder):
         return normalized.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://"))
 
     def _project_imports_any(self, module_names: set[str]) -> bool:
-        files = (
-            path for path in self._iter_project_py_files()
-            if not self._should_skip_project_file(path)
-        )
-        return project_imports_any(files, module_names)
+        from .project_imports import imports_any
+
+        return any(imports_any(path, module_names) for path in self._iter_project_py_files()
+                   if not self._should_skip_project_file(path))
 
     def _iter_project_py_files(self):
         for path in self._iter_project_files():
@@ -1050,9 +1059,11 @@ class CodeBuilder(BaseBuilder):
         return requirements_path
 
     def _build_requirements_list(self, detection_result) -> List[str]:
+        tunnel_requirements = self._tunnel_runtime_requirements()
         final_deps = merge_requirement_lists(
             self._get_base_requirements(detection_result),
             self._bundled_runtime_requirements(detection_result),
+            tunnel_requirements,
         )
 
         extra_requirements: tuple[str, ...] = ()
@@ -1074,6 +1085,7 @@ class CodeBuilder(BaseBuilder):
         for requirement in (
             *code_requirements_for_framework(detection_result.type.value),
             *extra_requirements,
+            *tunnel_requirements,
         ):
             if requirement not in final_deps:
                 final_deps.append(requirement)
@@ -2267,7 +2279,6 @@ from ksadk.detection import DetectionResult, FrameworkType
 from ksadk.agui.config import agui_config_for_detection
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
 from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
-from ksadk.tunnel.config import tunnel_self_url_for_start
 import uvicorn
 
 # 检测结果 (构建时固化)
@@ -2338,7 +2349,6 @@ app = create_runtime_app(
         agui=agui_config_for_detection(detection_result),
         a2a=_managed_a2a_bootstrap,
         a2a_runtime_adapter=_a2a_adapter,
-        tunnel_self_url=tunnel_self_url_for_start(int(os.environ.get("PORT", 8080))),
     ),
     configure_runtime_app,
 )

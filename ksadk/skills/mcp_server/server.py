@@ -1,4 +1,4 @@
-"""FastMCP stdio server that bridges ksadk skill tools into MCP-compatible runtimes.
+"""MCPServer (mcp 2.x) stdio server that bridges ksadk skill tools into MCP-compatible runtimes.
 
 This module exposes two MCP tools:
 
@@ -40,17 +40,39 @@ def _refresh_callbacks():
 
 
 def _import_mcp_server_class():
-    """Import the MCP server class, compatible with both old and new MCP SDK."""
+    """Import the MCP server class across MCP SDK 1.x / 2.x.
+
+    ## 为什么要三段
+
+    `mcp` 2.3.0 把 `FastMCP` 改名成 `MCPServer`，并挪到
+    `mcp.server.mcpserver`（**删除**了 `mcp.server.fastmcp` 路径）。
+
+    平台镜像里可能装着任一版本，直接硬编码一条路径会在另一个版本上
+    `ModuleNotFoundError`——而 MCP Server 起不来时**只是工具不可用**，
+    很难定位。所以按新 → 旧逐级回退。
+
+    优先级：
+    1. `mcp.server.mcpserver.MCPServer`（mcp >= 2.3）
+    2. `mcp.server.mcpserver.server.MCPServer`（mcp 2.0~2.2 的内部路径）
+    3. `mcp.server.fastmcp.FastMCP`（mcp 1.x）
+    """
     try:
-        from mcp.server.fastmcp import FastMCP
-        return FastMCP
+        from mcp.server.mcpserver import MCPServer
+        return MCPServer
     except ImportError:
+        pass
+    try:
         from mcp.server.mcpserver.server import MCPServer
         return MCPServer
+    except ImportError:
+        pass
+    from ksadk._mcp_compat import MCPServer as MCPServer  # type: ignore[no-redef]
+
+    return MCPServer
 
 
 def _create_mcp_server():
-    """Create and return a FastMCP server with skill tools registered."""
+    """Create and return an MCPServer with skill tools registered."""
     MCPServerClass = _import_mcp_server_class()
 
     from ksadk.skills.manifest_cache import get_manifest_cache

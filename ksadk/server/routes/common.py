@@ -42,6 +42,7 @@ from ..invocation_identity import (
     trusted_invocation_identity_headers,
 )
 from . import dependencies as deps
+from .harness_service_view import register_harness_service_view
 from .routers import health_meta_router
 
 logger = logging.getLogger(__name__)
@@ -146,6 +147,7 @@ def _register_integrated_routers(app: FastAPI, state: RuntimeAppState) -> None:
     goal-01:由模块级 ``app.include_router(...)`` 改为在 factory 的 configure
     回调里调用,普通 app 与 HarnessApp 各自装配,互不共享。
     """
+    register_harness_service_view(app)
     app.include_router(
         create_workspace_files_router(
             root_getter=_workspace_root_dir,

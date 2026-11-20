@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from ksadk.harness.native.hook_executor import HookAuthorizer
 from ksadk.harness.reasoner import (
     HarnessReasoner,
     HarnessReasoningTurn,
@@ -818,6 +819,8 @@ class StudioPluginRuntime(StudioNativeActivationMixin):
         resource_actor_ref: str = "local-user",
         native_tenant_id: str = "local-studio",
         native_workspace_id: str | None = None,
+        service_hook_authorizer: HookAuthorizer | None = None,
+        service_hook_authorization_version: str | None = None,
         codex_local_launch_resolver: Any = None,
         runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
@@ -845,6 +848,8 @@ class StudioPluginRuntime(StudioNativeActivationMixin):
         self._resource_actor_ref = resource_actor_ref
         self._native_tenant_id = native_tenant_id
         self._native_workspace_id = native_workspace_id
+        self._service_hook_authorizer = service_hook_authorizer
+        self._service_hook_authorization_version = service_hook_authorization_version
         self._codex_local_launch_resolver = codex_local_launch_resolver
         self._runtime_executor = runtime_executor
         self._legacy_bundles = LegacyBundleAdapter(legacy_harness_sources)
@@ -1181,6 +1186,10 @@ class StudioPluginRuntime(StudioNativeActivationMixin):
             if provider_id == KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID:
                 services["harness_reasoner"] = (
                     self._harness_reasoner or self._bound_harness_reasoner(verified)
+                )
+                services["harness_service_hook_authorizer"] = self._service_hook_authorizer
+                services["harness_service_hook_authorization_version"] = (
+                    self._service_hook_authorization_version
                 )
                 if self._harness_engine_selector is not None:
                     services["harness_engine_selector"] = self._harness_engine_selector

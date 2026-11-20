@@ -47,6 +47,43 @@ def test_source_merge_preserves_auth_and_does_not_mutate_input(monkeypatch):
     assert original["x-traffic-source"] == "old"
 
 
+@pytest.mark.parametrize("component_env", [None, "", "prod", "pre", " PRE "])
+def test_cloud_headers_do_not_manage_component_env(monkeypatch, component_env):
+    if component_env is None:
+        monkeypatch.delenv("KSADK_COMPONENT_ENV", raising=False)
+    else:
+        monkeypatch.setenv("KSADK_COMPONENT_ENV", component_env)
+    original = {
+        "Authorization": "Bearer fixture",
+        "X-Ksadk-Component-Env": "pre",
+        "x-ksadk-component-env": "old",
+        "X-KSC-CUSTOM-SOURCE": "explicit-route",
+    }
+
+    assert build_cloud_headers(original, traffic_source="agentkit") == {
+        "Authorization": "Bearer fixture",
+        "X-Traffic-Source": "agentkit",
+        "X-Ksadk-Component-Env": "pre",
+        "x-ksadk-component-env": "old",
+        "X-KSC-CUSTOM-SOURCE": "explicit-route",
+    }
+    assert build_cloud_headers(traffic_source="agentkit") == {"X-Traffic-Source": "agentkit"}
+    assert original["X-Ksadk-Component-Env"] == "pre"
+    assert original["x-ksadk-component-env"] == "old"
+
+
+def test_component_route_is_registered_and_deploy_forwarded(monkeypatch):
+    from ksadk.common.cloud_headers import resolve_component_env
+    from ksadk.configs.env_registry import ENV_VAR_REGISTRY
+    from ksadk.deployment.env_forward import should_forward_process_env
+
+    specs = {item.name: item for item in ENV_VAR_REGISTRY}
+    assert specs["KSADK_COMPONENT_ENV"].default == ""
+    assert should_forward_process_env("KSADK_COMPONENT_ENV")
+    monkeypatch.setenv("KSADK_COMPONENT_ENV", " PRE ")
+    assert resolve_component_env() == "PRE"
+
+
 @pytest.fixture
 def cloud_upstream():
     calls = []
@@ -103,12 +140,19 @@ def cloud_upstream():
 
 @pytest.mark.parametrize("source", ["agentkit", "studio-fixture"])
 @pytest.mark.parametrize("kind", ["knowledge", "memory"])
-def test_aicp_sdk_emits_source_before_signing(cloud_upstream, monkeypatch, source, kind):
+@pytest.mark.parametrize("component_env", [None, "", "prod", "pre", " PRE "])
+def test_aicp_sdk_emits_source_before_signing(
+    cloud_upstream, monkeypatch, source, kind, component_env
+):
     from ksadk.knowledge_base.client import KnowledgeBaseClient
     from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
 
     endpoint, calls = cloud_upstream
     monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", source)
+    if component_env is None:
+        monkeypatch.delenv("KSADK_COMPONENT_ENV", raising=False)
+    else:
+        monkeypatch.setenv("KSADK_COMPONENT_ENV", component_env)
     kwargs = dict(
         endpoint=endpoint.removeprefix("http://"),
         scheme="http",
@@ -128,15 +172,27 @@ def test_aicp_sdk_emits_source_before_signing(cloud_upstream, monkeypatch, sourc
             "DeleteMemory",
             "ListSessions",
         ]
-    options = {"IsPostJson": True, "CustomHeaders": {"X-Test": "kept", "x-traffic-source": "old"}}
+    options = {"IsPostJson": True, "CustomHeaders": {
+        "X-Test": "kept", "x-traffic-source": "old",
+    }}
+    if component_env in {"pre", " PRE "}:
+        options["CustomHeaders"].update(
+            {"x-ksc-custom-source": "old-route", "X-KSC-CUSTOM-SOURCE": "old-route-2"}
+        )
     for action in actions:
         owner._get_client().call(action, {}, options=options)
     assert options["CustomHeaders"]["x-traffic-source"] == "old"
+    if component_env in {"pre", " PRE "}:
+        assert options["CustomHeaders"]["x-ksc-custom-source"] == "old-route"
     assert len(calls) == len(actions)
     for _, _, raw, _ in calls:
         headers = httpx.Headers(raw)
         assert headers["X-Traffic-Source"] == source
         assert headers["X-Test"] == "kept"
+        assert "X-Ksadk-Component-Env" not in headers
+        assert headers.get("X-KSC-CUSTOM-SOURCE") == (
+            "pre" if component_env in {"pre", " PRE "} else None
+        )
         assert "fake-access/" in headers["Authorization"]
         assert headers["Content-Type"].split(";")[0] == "application/json"
 
@@ -149,6 +205,7 @@ def test_e2b_sdk_create_reconnect_and_cleanup_emit_source(cloud_upstream, monkey
 
     endpoint, calls = cloud_upstream
     monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", source)
+    monkeypatch.setenv("KSADK_COMPONENT_ENV", "pre")
     monkeypatch.setenv("E2B_API_URL", endpoint)
     monkeypatch.setenv("E2B_API_KEY", "fake-e2b-key")
     for key in ("E2B_DEBUG", "E2B_SANDBOX_URL", "E2B_ACCESS_TOKEN"):
@@ -165,6 +222,9 @@ def test_e2b_sdk_create_reconnect_and_cleanup_emit_source(cloud_upstream, monkey
     )
     reconnected = backend.reconnect_session(session_locator=session.sandbox_id)
     assert reconnected._sandbox.connection_config.sandbox_headers["X-Traffic-Source"] == source
+    assert "X-Ksadk-Component-Env" not in httpx.Headers(
+        reconnected._sandbox.connection_config.sandbox_headers
+    )
     session.kill()
     assert [(method, path) for method, path, _, _ in calls] == [
         ("POST", "/sandboxes"),
@@ -172,6 +232,8 @@ def test_e2b_sdk_create_reconnect_and_cleanup_emit_source(cloud_upstream, monkey
         ("DELETE", "/sandboxes/sandbox-fixture"),
     ]
     assert all(httpx.Headers(headers)["X-Traffic-Source"] == source for _, _, headers, _ in calls)
+    assert all("x-ksc-custom-source" not in httpx.Headers(h) for _, _, h, _ in calls)
+    assert all("x-ksadk-component-env" not in httpx.Headers(h) for _, _, h, _ in calls)
 
 
 def test_control_clients_emit_source(cloud_upstream, monkeypatch):
@@ -181,6 +243,7 @@ def test_control_clients_emit_source(cloud_upstream, monkeypatch):
 
     endpoint, calls = cloud_upstream
     monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", "control-fixture")
+    monkeypatch.setenv("KSADK_COMPONENT_ENV", "pre")
     client = AgentEngineClient(
         region="cn-beijing-6", dry_run=True, extra_headers={"x-traffic-source": "old"}
     )
@@ -190,12 +253,16 @@ def test_control_clients_emit_source(cloud_upstream, monkeypatch):
     assert headers["X-Traffic-Source"] == "control-fixture"
     assert "x-traffic-source" not in headers
     assert headers["X-Ksc-Source"] == "ksadk-cli"
+    assert "X-KSC-CUSTOM-SOURCE" not in headers
+    assert "X-Ksadk-Component-Env" not in httpx.Headers(headers)
     kop = KOPClient(base_url=endpoint)
     try:
         kop.post_action("ListAToASpaceAgents")
     finally:
         kop._session_obj().close()
     assert httpx.Headers(calls[0][2])["X-Traffic-Source"] == "control-fixture"
+    assert "x-ksc-custom-source" not in httpx.Headers(calls[0][2])
+    assert "x-ksadk-component-env" not in httpx.Headers(calls[0][2])
     seen = []
 
     def handler(request):
@@ -207,6 +274,8 @@ def test_control_clients_emit_source(cloud_upstream, monkeypatch):
     )
     skills.list_skill_spaces()
     assert seen[0].headers["X-Traffic-Source"] == "control-fixture"
+    assert "X-Ksadk-Component-Env" not in seen[0].headers
+    assert "X-KSC-CUSTOM-SOURCE" not in seen[0].headers
 
 
 def test_global_cloud_config_roundtrip(monkeypatch):

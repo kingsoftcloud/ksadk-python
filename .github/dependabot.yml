@@ -17,7 +17,7 @@ updates:
     # patch 级更新仍然放行，用于接收缺陷修复和安全修复。
     ignore:
       # OTLP 三件套（api / sdk / exporter-otlp）由 google-adk 1.34.x 与
-      # 2.x 的 otel 版本交集决定，当前窗口为 >=1.39.0,<=1.41.1。
+      # 2.x 的 otel 版本交集决定，最低为 1.39.0；具体上限由所选 ADK 版本决定。
       - dependency-name: "opentelemetry-*"
         update-types:
           - "version-update:semver-minor"

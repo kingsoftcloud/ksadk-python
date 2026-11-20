@@ -33,6 +33,16 @@ A2A 内部控制面和云评测数据集客户端。知识库和记忆库通过�
 `trafficSource` 字段接收来源快照，不依赖继承父进程环境；修改配置后须重新创建客户端/激活 Worker。
 通用网页请求、用户自建 HTTP 客户端和第三方模型请求不受此配置影响。
 
+设置 `KSADK_COMPONENT_ENV=pre` 后，知识库、KSmem 请求及 mem0 插件配置的
+`extraHeaders` 会加入 `X-KSC-CUSTOM-SOURCE: pre`；忽略大小写和两侧空格。
+未设置、空值或其他值不自动注入该路由头，鉴权头和调用方显式传入的路由头保持不变。
+知识库和 KSmem 在签名前注入；隔离资源 Worker 通过初始化消息传递环境快照，
+环境改变后需重新创建客户端或激活 Worker，mem0 需重新生成插件配置。
+此规则不扩展到沙箱、Skill、AgentEngine/KOP 或其他客户端；
+`X-Traffic-Source` 的来源归因行为保持不变。
+SDK 不再生成或特殊处理 `X-Ksadk-Component-Env`；调用方显式传入时按普通请求头保留。
+mem0 插件配置同样只使用 `X-KSC-CUSTOM-SOURCE` 表示预发路由，升级后需重新生成配置。
+
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `OPENAI_API_KEY` | 条件必传 | 部分 OpenAI 兼容实现也支持 `MODEL_API_KEY` | 是 | 开发者 / 模型网关 Secret | 使用 OpenAI 兼容模型时需要。 |
@@ -72,16 +82,6 @@ A2A 内部控制面和云评测数据集客户端。知识库和记忆库通过�
 | `KSADK_ENABLE_MCP_TOOLS` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `1`，设为 `0/false/no/off` 禁用自动注入。 |
 | `KSADK_MCP_KEY` | 否 | 无 | 是 | 开发者 / 平台 Secret | MCP 服务 API key；ksyun web search provider 未配 `KSADK_WEB_SEARCH_API_KEY` 时也回退到此。 |
 | `KSADK_MCP_SERVERS` | 条件必传 | 无 | 是 | 开发者 / 平台 Secret | JSON 数组，配置 MCP server url、api_key、tool_filter、tool_name_prefix。可能包含 token。 |
-
-#### 2.3.1 ADK 内网 MCP Tunnel
-
-| 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
-| --- | --- | --- | --- | --- | --- |
-| `KSADK_ENABLE_TUNNEL` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `0`。设为 `1/true/yes/on` 时为 ADK Runtime 开启内网 MCP Tunnel；其他 Runtime 不支持。 |
-| `KSADK_TUNNEL_TOKEN` | 开启 Tunnel 时必传 | 无 | 是 | 开发者 / 平台 Secret | connector 注册到 `/tunnel/connect` 时使用的共享 token。不得写入源码或日志。 |
-| `KSADK_TUNNEL_SELF_URL` | 否 | 无 | 否 | 开发者 / Runtime | `TunnelToolset` 访问本进程代理的 loopback base URL。标准启动入口按实际端口生成，仅特殊部署需要显式覆盖。 |
-
-上述变量均为项目级 Runtime 配置，不支持通过 `agentengine config set --global` 保存到全局配置。Tunnel token 应按项目或环境独立生成。标准部署只需要开启开关和 token；`KSADK_TUNNEL_SELF_URL` 通常不要写入项目或部署环境文件，由标准启动入口按实际端口推导。
 
 ### 2.4 Skill Runtime 本地模式
 
@@ -313,6 +313,10 @@ A2A 内部控制面和云评测数据集客户端。知识库和记忆库通过�
 | `KSADK_ENABLE_MCP_TOOLS` | ADK Runner | 否 | `1` | 无 | 否 | 开发者 / 平台 | 否 | 控制远端 MCP tools 自动注入。 |
 | `KSADK_MCP_KEY` | MCP runtime | 否 | 未设置 | 无 | 是 | 开发者 / 平台 Secret | 否 | MCP 服务 API key；ksyun web search provider 未配 `KSADK_WEB_SEARCH_API_KEY` 时也回退到此。 |
 | `KSADK_MCP_SERVERS` | MCP runtime | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 Secret | 否 | JSON 数组。可能包含 MCP server api_key。 |
+| `KSADK_TUNNEL_PEER_SECRET` | ADK / LangGraph Runtime | 否 | 从 tunnel token 与 Runtime ID 自动派生 | 无 | 是 | 部署平台（可选覆盖） | 否 | 覆盖自动派生的 Pod 间 HMAC 密钥，至少 32 字节；同一 Runtime 各副本必须一致。 |
+| `KSADK_TUNNEL_PEER_SERVICE` | ADK / LangGraph Runtime | 否 | Runtime ID 加 -headless | 无 | 否 | 部署平台 | 否 | 集群内发现副本的 headless Service 名称。 |
+| `KSADK_TUNNEL_PEER_PORT` | ADK / LangGraph Runtime | 否 | 8092 | 无 | 否 | 部署平台 | 否 | 内部副本间 WebSocket 监听端口，需允许同 Runtime 的 Pod 互访。 |
+| `KSADK_TUNNEL_TOKEN` | ADK / LangGraph Runtime | 启用隧道时提供 | 未设置 | 无 | 是 | 开发者 / 平台 Secret | 否 | 云端校验 Connector 注册的共享凭证。网关 API Key 单独配置。 |
 
 ## 8. 会话、短期记忆和长期记忆
 
@@ -907,3 +911,14 @@ Kernel 续聊只查询 continuation 元数据；managed A2A 的根事件按当�
 `KSADK_A2A_CHECKPOINT_READY_SECONDS` 默认 45 秒。在发布 A2A 审批/输入等待前，等同一次 native checkpoint 后台写入完成并出现可恢复的 pending state，只读轮询、不执行图或工具；不可恢复错误立即失败，取消传播。到期仍明确拒绝，不凭空宣称持久化成功。
 
 `KSADK_A2A_INVOCATION_SECONDS` 默认 600 秒，统一用于 LangGraph、ADK 与 Codex 托管调用的整次 invocation；显式 RemoteAgentSpec.timeout_seconds 优先。准入、检查点准备及网络各阶段消耗同一次剩余时间，恢复旧调用不会刷新原 deadline。首事件/空闲仍默认 300 秒，不修改授权 TTL。该总期限适用于长工具研究，不用于历史 HTTP 读取。
+
+## 0.8.8 Harness 服务与聊天传输
+
+| 变量 | 说明 |
+| --- | --- |
+| `KSADK_CHAT_PREFERRED_TRANSPORT` | `ag-ui` / `responses`：优先选择可用的聊天传输，其他端点继续可用。 |
+| `KSADK_HARNESS_SERVICE_URL` | 显式指定外部 Harness 服务地址；不设置时沿用现有运行路径。 |
+| `KSADK_HARNESS_SERVICE_TOKEN` | 服务访问凭据，必须通过私密环境注入。 |
+| `KSADK_HARNESS_SERVICE_WORKSPACE` | 已存在的本地工作区绝对路径，用于服务适配器挂载。 |
+| `KSADK_HARNESS_SERVICE_CA_FILE` | 验证服务 TLS 证书所需的可信 CA 文件。 |
+| `KSADK_HARNESS_SERVICE_DURABLE_APPROVALS` | 仅服务支持持久化审批协议时设置 `1`，默认关闭。 |

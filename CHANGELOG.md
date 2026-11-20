@@ -8,6 +8,34 @@
 
 ## [未发布]
 
+## [0.8.8]
+
+### 新增与修复
+
+- 知识库与 KSmem 支持 `KSADK_COMPONENT_ENV=pre` 组件路由；隔离资源 Worker 传递初始化快照，签名前加入路由头，其他云客户端沿用既有环境选择。
+- mem0 插件配置增加 `extraHeaders`，传递来源及组件路由；要求目标插件支持该字段，旧 `openclaw-mem0` 1.0.6 不兼容。
+
+- 统一社区 Tunnel 与内部工具隧道：同一 Connector 支持 MCP 和自定义 HTTP API、ADK 与 LangGraph，并补齐多 Pod 路由、弹性 peer 发现、断线与在途调用恢复。失败或结果不确定的业务调用不自动重放。
+- 隧道通过导出 Agent 的 `enable_tunnel=True` 启用；企业 Connector 与云端使用同版 SDK。旧 YAML/CLI 配置和旧协议包迁移到统一入口，原文档 URL 保留迁移说明。
+- 修复 Code/Container 构建器为 Tunnel 强制追加旧 MCP `<2` 上限的问题；保留 MCP 1.26 支持，并允许使用 SDK 已验证的 MCP 2.3 依赖组合。
+- Code 包保留 Node 插件的 `.mjs` 入口及相对导入资产，避免从 wheel 打包托管运行时时遗漏插件文件。
+- 构建时通过真实 MCP `list_tools()` 探测工具；修复 OAuth 授权后等待恢复、原生 ToolNode 绑定及 MCP 1.x/2.x HTTP 客户端选择和字段差异。
+- 修复 MCP 2 的 OAuth HTTP 403 分类和工具结果字段别名；隔离后台 GET 拒绝与业务 POST 结果，保留调用结果不确定时禁止自动重放的边界。
+- 修复 AG-UI 原生 session 身份、恢复与 Hosted admission 归属校验，支持配置首选聊天传输。
+- 同步 Harness 服务装配、平台资源、历史与 Memory 上下文支持；保留既有 A2A、AG-UI、A2UI、OAuth 与 API key MCP 能力。
+
+- 修复云端长期记忆的 `AgentUserId` 格式；仅在 AICP 请求边界编码，保留本地 SQLite/PostgreSQL 已有 Agent × User 命名空间和历史记录，所有云端操作使用一致身份。
+- 补齐 API key MCP 的 MCP 1.x/2.3 客户端选择、RunAgent 回退与无 Kernel Agent 的接入边界。
+
+### 依赖、构建与验证
+
+- MCP 核心兼容窗口为 `>=1.26.0`；开发测试使用 FastMCP 4.x 与 MCP 2.x，独立矩阵验证 MCP 1.26/2.3。OpenTelemetry 组件随所选 ADK/FastMCP 成组解析，保留旧 ADK 的兼容安装窗口。
+- 旧 ADK 1.34.3 / 2.5.0 明确搭配 MCP 1.x（最低 1.26）；ADK 2.14.x 与 MCP 2.3 独立验证，避免上游遗漏版本上限导致安装成功但工具导入失败。
+- 不再依赖不兼容 MCP 2.x 的 `langchain-mcp-adapters`，原生 MCP ToolNode 使用 SDK 适配。
+- 保留社区 Dependabot 的受控依赖升级策略；公开导出补齐新回归和共享 fixture，排除旧 Tunnel 重复协议与退休的 Studio 测试。
+- SDK 本地发布证据升级为 schema v3，移除已迁出的 Studio 浏览器状态，避免空测试列表误报通过。该变化不代表独立 Studio 已完成浏览器验收。
+- 主包与兼容发行包版本同为 0.8.8；Web 保持官方 0.3.18。实际发布状态与日期以 GitHub Release 和 PyPI 记录为准；本条记录版本变更，不触发正式发布。
+
 ## [0.8.7] - 2026-11-12
 
 主包 `ksadk` 与兼容发行包 `agentengine-sdk-python` 同步为 `0.8.7`；最低 Python 版本继续为 3.12，Web companion 固定为已发布的 `@kingsoftcloud/ksadk-web@0.3.18`。

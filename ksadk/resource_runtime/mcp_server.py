@@ -7,7 +7,7 @@ import time
 from dataclasses import asdict
 from uuid import uuid4
 
-from mcp.server.fastmcp import FastMCP
+from ksadk._mcp_compat import MCPServer
 
 
 def _enabled(kind: str) -> bool:
@@ -25,8 +25,8 @@ def _subject() -> str:
     return value
 
 
-def create_server() -> FastMCP:
-    server = FastMCP("KsADK Platform Resources")
+def create_server() -> MCPServer:
+    server = MCPServer("KsADK Platform Resources")
 
     if _enabled("memory-instance"):
         from ksadk.memory.service import LongTermMemoryService, format_memory_entries

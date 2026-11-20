@@ -20,8 +20,6 @@ on:
       - "tests/packaging/test_alias_distribution.py"
       - "tests/test_cloud_headers.py"
       - "tests/test_prepare_ksadk_python_export.py"
-      - "tests/studio/test_native_default_install.py"
-      - "tests/studio/e2e/**"
       - "scripts/open_source_audit.py"
       - "scripts/audit_release_artifacts.py"
       - "scripts/build_alias_distribution.py"

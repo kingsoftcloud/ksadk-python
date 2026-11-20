@@ -90,6 +90,7 @@ jobs:
             tests/plugins/test_teams_postgres.py \
             tests/a2a/test_selected_kernel_database.py \
             tests/server/test_checkpoint_resume_audit.py \
+            tests/runners/test_langgraph_tunnel_history.py::test_postgres_recovery_matches_delayed_receipt_to_its_call \
             tests/server/test_postgres_jsonb_codec_guard.py \
             tests/server/test_checkpoint_resume_attempt_audit.py \
             tests/test_tool_receipt_claim_concurrency.py \
@@ -142,6 +143,17 @@ jobs:
           PY
           if [ "$test_code" -eq 0 ]; then test_code=$grants_code; fi
           exit "$test_code"
+
+  tunnel-tls:
+    name: Tunnel TLS on Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv run --python ${{ matrix.python }} --extra dev python -m pytest -q tests/test_tunnel_tls.py
 
   test:
     runs-on: ubuntu-latest
@@ -284,6 +296,8 @@ jobs:
           --health-retries 5
     env:
       KSADK_TEST_EXPECTED_ADK_VERSION: ${{ matrix.google-adk }}
+      # Older ADK imports MCP 1.x private modules; its 2.5 metadata omits this upper bound.
+      MCP_REQUIREMENT: ${{ matrix.google-adk == '2.14.0' && 'mcp>=2.3.0' || 'mcp>=1.26.0,<2' }}
       KSADK_WEB_VERSION: "0.3.18"
       KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
       KSADK_TEST_FRAMEWORK_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
@@ -339,7 +353,7 @@ jobs:
       # 常规测试用 xdist 并行；真实进程测试在下方独立 job 中执行，
       # 避免进程表和内存累积，两个分组都必须通过。
       - name: Pin google-adk for this matrix leg
-        run: uv pip install "google-adk==${{ matrix.google-adk }}"
+        run: uv pip install ".[all,dev]" "google-adk==${{ matrix.google-adk }}" "$MCP_REQUIREMENT"
 
       - name: Install disposable PostgreSQL test server
         run: uv pip install "pgserver==0.1.4"
@@ -348,8 +362,60 @@ jobs:
         env:
           EXPECTED_GOOGLE_ADK: ${{ matrix.google-adk }}
         run: |
-          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "mcp", "fastmcp", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
           uv run --no-sync pytest tests/ -q -m "not local_process_heavy" -n auto
+
+  # MCP SDK 版本兼容性。
+  #
+  # `ksadk/_mcp_compat.py` 声称同时支持 mcp 1.x / 2.x，但 `fastmcp 4.2.1`
+  # 硬性要求 `mcp>=2.3.0`——常规测试全部 `from fastmcp import FastMCP`，
+  # **1.x 路径永远跑不到**。
+  #
+  # 这里只跑 `tests/test_mcp_compat.py`（**不依赖 fastmcp**），
+  # 用它 pin 双版本做真实回归。
+  #
+  # 踩过的坑（2026-11-19）：`httpx_module()` 曾用「能否 import
+  # `streamable_http_client`」判断版本，但 mcp 1.26 **同时导出了新旧两个名字**，
+  # 导致 1.26 被误判成 2.x → `import httpx2` → `ModuleNotFoundError`。
+  # 只跑 2.3 的 CI 发现不了。
+  test-mcp-compat:
+    name: MCP compat (mcp ${{ matrix.mcp }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mcp: ["1.26.0", "2.3.0"]
+    env:
+      KSADK_TEST_EXPECTED_MCP_VERSION: ${{ matrix.mcp }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # 只装 `mcp` + `pytest`，**不装 fastmcp**——fastmcp 4.x 要求 mcp>=2.3.0，
+      # 装了就没法测 1.x。
+      - name: Install minimal MCP test deps
+        run: uv pip install --system "mcp==${{ matrix.mcp }}" "pytest>=7" "pytest-asyncio>=0.21"
+
+      - name: Verify resolved MCP version
+        run: |
+          python -c '
+          import os
+          from importlib.metadata import version
+          actual = version("mcp")
+          expected = os.environ["KSADK_TEST_EXPECTED_MCP_VERSION"]
+          print(f"mcp under test: {actual}")
+          assert actual == expected, (actual, expected)
+          '
+
+      - name: Run MCP compat tests
+        run: python -m pytest tests/test_mcp_compat.py -q
 
   # 真实 fork 子进程的 sandbox/skill/browser 测试(local_process_heavy)。
   # 使用独立 job 和串行 pytest，避免常规测试累积的资源占用。
@@ -359,6 +425,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       KSADK_TEST_EXPECTED_ADK_VERSION: ${{ matrix.google-adk }}
+      # Older ADK imports MCP 1.x private modules; its 2.5 metadata omits this upper bound.
+      MCP_REQUIREMENT: ${{ matrix.google-adk == '2.14.0' && 'mcp>=2.3.0' || 'mcp>=1.26.0,<2' }}
       KSADK_WEB_VERSION: "0.3.18"
     strategy:
       fail-fast: false
@@ -404,7 +472,7 @@ jobs:
         run: uv pip install --upgrade ".[all,dev]"
 
       - name: Pin google-adk for this matrix leg
-        run: uv pip install "google-adk==${{ matrix.google-adk }}"
+        run: uv pip install ".[all,dev]" "google-adk==${{ matrix.google-adk }}" "$MCP_REQUIREMENT"
 
       # Default resolution can upgrade Playwright, so install its matching browser
       # afterward and keep the verified ADK pin with --no-sync.
@@ -417,7 +485,7 @@ jobs:
         # Native recovery regressions must remain in the public candidate.
         # Missing tests and zero collection must fail this gate.
         run: |
-          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
+          uv run --no-sync python -c 'import os; from importlib.metadata import version; actual = version("google-adk"); expected = os.environ["EXPECTED_GOOGLE_ADK"]; print("google-adk under test:", actual); assert actual == expected, (actual, expected); print("resolved packages:", {name: version(name) for name in ("google-adk", "mcp", "fastmcp", "pydantic", "openai", "langchain-core", "langgraph", "asyncpg", "psycopg")})'
           test -f tests/harness/native/test_partial_summary_process.py
           test -f tests/harness/native/test_summary_recovery_process.py
           test -f tests/harness/native/test_compaction_reserve_process_recovery.py

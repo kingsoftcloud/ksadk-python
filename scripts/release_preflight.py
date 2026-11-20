@@ -48,15 +48,12 @@ RELEASE_CONTRACT_MANIFESTS = (
 COMPATIBILITY_TESTS = (
     "tests/compat/test_release_082_asset_compat.py",
     "tests/compat/test_release_legacy_compat.py",
-    "tests/studio/test_framework_bundle_integrity.py",
     "tests/packaging/test_release_preflight.py",
 )
 CREDENTIAL_FREE_NATIVE_TESTS = (
-    "tests/studio/test_native_default_install.py",
     "tests/e2e/test_codex_plugin_bridge_e2e.py",
     "tests/e2e/test_codex_provider_app_server_e2e.py",
     "tests/e2e/test_codex_subagent_provider_e2e.py",
-    "tests/studio/test_dsh_agent_binding.py",
 )
 MANAGED_DSH_TOOLCHAIN_TESTS = (
     "tests/e2e/test_dsh_managed_toolchain_e2e.py",
@@ -64,25 +61,20 @@ MANAGED_DSH_TOOLCHAIN_TESTS = (
     "tests/plugins/test_dsh_capability_host_e2e.py",
     "tests/plugins/test_dsh_upstream_plugin_e2e.py",
 )
-BROWSER_GATES = (
-    "tests/studio/e2e/scheduler_browser_e2e.py",
-    "tests/studio/e2e/scheduler_harness_browser_e2e.py",
-    "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
-    "tests/studio/e2e/conversation_reconnect_browser_e2e.py",
-    "tests/studio/e2e/conversation_items_browser_e2e.py",
-)
+# 浏览器门禁脚本已随 `tests/studio/` 移除——Studio 独立成仓，浏览器 E2E
+# 在那边维护。这里保留空元组，让 `for browser_gate in BROWSER_GATES` 自然跳过。
+BROWSER_GATES: tuple[str, ...] = ()
 SOURCE_E2E_STATUS_KEYS = (
     "compatibilityRegression",
     "codexNative",
     "managedDshToolchain",
-    "studioBrowser",
 )
 RELEASE_E2E_STATUS_KEYS = (
     *SOURCE_E2E_STATUS_KEYS,
     "cleanWheelInstall",
     "cleanSdistInstall",
 )
-RELEASE_EVIDENCE_SCHEMA_VERSION = 2
+RELEASE_EVIDENCE_SCHEMA_VERSION = 3
 
 CLEAN_INSTALL_SMOKE = """
 from pathlib import Path
@@ -740,11 +732,10 @@ def run_release_test_gates(*, skip_browser_gates: bool = False) -> dict[str, str
             "KSADK_DSH_UPSTREAM_E2E": "1",
         },
     )
-    if skip_browser_gates:
-        return {
-            name: "not_run" if name == "studioBrowser" else "passed"
-            for name in SOURCE_E2E_STATUS_KEYS
-        }
+    # Studio browser verification belongs to its separate repository. Never
+    # manufacture a passed browser result by iterating an empty gate list.
+    if skip_browser_gates or not BROWSER_GATES:
+        return {name: "passed" for name in SOURCE_E2E_STATUS_KEYS}
     # Provider registration is required before StudioService construction.
     # Native tests install isolated toolchains of their own; browser processes
     # share a separate disposable installation, never the user's profiles.

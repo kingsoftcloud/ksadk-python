@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ksadk._mcp_compat import tool_input_schema
+
 import hashlib
 import json
 import re
@@ -106,7 +108,7 @@ class NativeMcpDisclosure:
                 continue
             if not isinstance(name, str) or not _MODEL_NAME.fullmatch(name) or name in tools:
                 raise ValueError("native_mcp_tool_name_invalid_or_duplicate")
-            ToolInputValidator(item["inputSchema"])
+            ToolInputValidator(tool_input_schema(item))
             tools[name] = item
         if allowed and set(tools) != allowed:
             raise ValueError("native_mcp_locked_tool_missing")
@@ -124,8 +126,8 @@ class NativeMcpDisclosure:
             try:
                 tools = await self._tools(arguments["server_id"])
                 tool = tools.get(name)
-                if tool is not None and schema_digest(tool["inputSchema"]) == schemas[name]:
-                    schema = tool["inputSchema"]
+                if tool is not None and schema_digest(tool_input_schema(tool)) == schemas[name]:
+                    schema = tool_input_schema(tool)
             except Exception:
                 pass  # Discovery failure is a definite callback error, not an effect retry.
         return request.model_copy(
@@ -177,7 +179,7 @@ class NativeMcpDisclosure:
         tool = tools.get(name)
         if tool is None:
             return ToolResult(status="error", content={"code": "mcp_tool_not_bound"})
-        current = schema_digest(tool["inputSchema"])
+        current = schema_digest(tool_input_schema(tool))
         if action == "mcp_read_tool_schema":
             return ToolResult(
                 status="ok",
@@ -186,13 +188,13 @@ class NativeMcpDisclosure:
                     "server_id": server_id,
                     "tool_name": name,
                     "description": tool.get("description", ""),
-                    "input_schema": tool["inputSchema"],
+                    "input_schema": tool_input_schema(tool),
                 },
             )
         if schemas[name] != current:
             return ToolResult(status="error", content={"code": "mcp_schema_changed"})
         values = arguments["arguments"]
-        if rejection := ToolInputValidator(tool["inputSchema"]).rejection(values):
+        if rejection := ToolInputValidator(tool_input_schema(tool)).rejection(values):
             return ToolResult(status="error", content=rejection)
         check_effect_admission()
         return await self.invoke(request, server_ref=server_id, tool_name=name, arguments=values)

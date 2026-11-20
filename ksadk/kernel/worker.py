@@ -614,7 +614,7 @@ class AgentKernelWorker(WorkerInteractionMixin, WorkerControlMixin):
         }
         if approval_mode in approval_overrides:
             request_config["approval_mode"] = approval_overrides[approval_mode]
-        effective_user_id, invocation_identity = await prepare_worker_identity(
+        effective_user_id, invocation_identity, session_agent_id = await prepare_worker_identity(
             command=command,
             defaults=defaults,
             session_service=self._session_service,
@@ -644,7 +644,7 @@ class AgentKernelWorker(WorkerInteractionMixin, WorkerControlMixin):
             input=command.payload.get("content"),
             user_id=effective_user_id,
             session_id=command.session_id,
-            agent_id=str(defaults.get("agent_id") or command.agent_instance_id),
+            agent_id=session_agent_id,
             model=selected_model,
             config=request_config,
             # durable run_id 优先传给 adapter；adapter 不认时以

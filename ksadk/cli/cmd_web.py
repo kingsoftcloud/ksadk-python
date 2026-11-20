@@ -251,6 +251,14 @@ def web(agent_dir: str, port: int, host: str, model: str, no_open: bool):
 
     setup_environment(agent_path)
 
+    # 托管 Code 包直接启动 web，必须在加载 Agent 前初始化采集与上报。
+    try:
+        from ksadk.tracing import setup_tracing
+
+        setup_tracing()
+    except Exception as e:
+        print_warn(f"Tracing 初始化失败: {e}")
+
     # 检测框架
     detector = FrameworkDetector(str(agent_path))
     result = detector.detect()
@@ -313,7 +321,7 @@ def web(agent_dir: str, port: int, host: str, model: str, no_open: bool):
 
     try:
         print_info("初始化 RuntimeAdapter...")
-        runtime_app = create_runtime_web_app(result, agent_path, port=port)
+        runtime_app = create_runtime_web_app(result, agent_path)
     except Exception as e:
         print_exception("RuntimeAdapter 初始化失败", e)
         raise SystemExit(1)

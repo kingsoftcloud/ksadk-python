@@ -10,13 +10,15 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
-    "LocalServer": "ksadk.tunnel.connector",
+    "LocalMCPService": "ksadk.tunnel.services",
+    "LocalAPIService": "ksadk.tunnel.services",
+    "APIOperation": "ksadk.tunnel.services",
     "TunnelConnector": "ksadk.tunnel.connector",
-    "ServerDescriptor": "ksadk.tunnel.registry",
+    "TunnelError": "ksadk.tunnel.protocol",
+    "TunnelLimits": "ksadk.tunnel.protocol",
     "TunnelRegistry": "ksadk.tunnel.registry",
-    "get_registry": "ksadk.tunnel.registry",
-    "mount_tunnel": "ksadk.tunnel.server",
     "TunnelToolset": "ksadk.tunnel.toolset",
+    "TunnelTools": "ksadk.tunnel.langgraph",
 }
 
 __all__ = list(_EXPORTS)

@@ -18,10 +18,10 @@
     "---[Network]统一事件与互操作---",
     "agui-a2ui",
     "mcp-oauth",
+    "tool-tunnel",
     "hosted-ui-events",
     "channel-connector",
     "a2a-runtime",
-    "tunnel",
     "---[Cloud]构建与部署---",
     "managed-runtime",
     "build-and-package",
@@ -31,6 +31,7 @@
     "observability-tracing",
     "web-ui-source",
     "integration-0-8-7",
+    "upgrade-0-8-8",
     "upgrade-0-8-7",
     "upgrade-0-8-6"
   ]

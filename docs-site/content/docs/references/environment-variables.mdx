@@ -6,6 +6,18 @@ title: 环境变量参考
   本页列出本地运行和发布流水线中最常用的 KsADK 环境变量。提交到仓库的文件只放占位值，真实值放本地 `.env` 或 CI secrets。
 </Callout>
 
+
+## 云组件路由（0.8.8）
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_TRAFFIC_SOURCE` | 云请求的来源标记，默认 `agentkit`；用于 `X-Traffic-Source`，不选择运行环境。 |
+| `KSADK_COMPONENT_ENV` | 默认空值；设为 `pre` 时，知识库、KSmem 请求及 mem0 插件配置增加 `X-KSC-CUSTOM-SOURCE: pre`。忽略大小写和两侧空格。 |
+
+组件路由不改变 AgentEngine、Skill、Sandbox、模型或 MCP 服务的环境。未设置或使用其他值时不自动添加组件路由头，调用方显式提供的路由头继续保留。知识库与 KSmem 在签名前注入；客户端创建时保存配置，资源 Worker 使用父进程传入的快照。修改变量后需重新创建客户端或激活 Worker；mem0 需重新生成配置。
+
+mem0 配置包含 `extraHeaders`，需要支持该字段的插件。旧 `openclaw-mem0` 1.0.6 不接受该配置；使用 mem0 前先确认目标插件支持，不能把配置生成成功当作插件启动成功。此要求不影响普通 Agent 的聊天、Tunnel、AG-UI、A2UI、A2A 或 OAuth MCP。
+
 ## 模型 Provider
 
 <Callout type="info">
@@ -305,23 +317,6 @@ KSADK_ENABLE_MCP_TOOLS=1
 KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 ```
 
-## 内网 MCP Tunnel
-
-| 变量 | 用途 |
-| --- | --- |
-| `KSADK_ENABLE_TUNNEL` | 为 ADK Runtime 开启内网 MCP Tunnel，默认 `0` |
-| `KSADK_TUNNEL_TOKEN` | connector 注册鉴权 token；开启 Tunnel 时必传且属于敏感信息 |
-| `KSADK_TUNNEL_SELF_URL` | TunnelToolset 访问本进程代理的 loopback base URL；标准入口按实际端口生成 |
-
-这些变量是项目级 Runtime 配置，不支持通过 `agentengine config set --global` 保存到全局配置。`KSADK_TUNNEL_TOKEN` 应按项目或环境独立生成。`KSADK_TUNNEL_SELF_URL` 是特殊部署使用的可选覆盖项，通常不要写入项目或部署环境文件；标准启动入口会按实际端口推导。
-
-```bash title="bash"
-KSADK_ENABLE_TUNNEL=1
-KSADK_TUNNEL_TOKEN=<tunnel-token>
-# 仅在标准入口无法正确推导端口时设置：
-# KSADK_TUNNEL_SELF_URL=http://127.0.0.1:8080
-```
-
 ## 构建与打包
 
 | 变量 | 用途 |
@@ -434,7 +429,19 @@ KSADK_TUNNEL_TOKEN=<tunnel-token>
   - 公开文档只使用 `sk-test`、`my-model`、`https://api.example.com/v1` 这类占位值。
 </Callout>
 
-当前 Hosted UI 静态资源版本：`0.3.12`。
+当前 Hosted UI 静态资源版本：`0.3.18`。
 
 
 按用途区分部署凭据、应用变量和平台注入值的完整示例见[0.8.7 接入手册](/cn/docs/framework/guides/integration-0-8-7/)。
+
+
+## 0.8.8 Harness 服务与聊天传输
+
+| 变量 | 说明 |
+| --- | --- |
+| `KSADK_CHAT_PREFERRED_TRANSPORT` | `ag-ui` / `responses`：优先选择可用的聊天传输，其他端点继续可用。 |
+| `KSADK_HARNESS_SERVICE_URL` | 显式指定外部 Harness 服务地址；不设置时沿用现有运行路径。 |
+| `KSADK_HARNESS_SERVICE_TOKEN` | 服务访问凭据，必须通过私密环境注入。 |
+| `KSADK_HARNESS_SERVICE_WORKSPACE` | 已存在的本地工作区绝对路径，用于服务适配器挂载。 |
+| `KSADK_HARNESS_SERVICE_CA_FILE` | 验证服务 TLS 证书所需的可信 CA 文件。 |
+| `KSADK_HARNESS_SERVICE_DURABLE_APPROVALS` | 仅服务支持持久化审批协议时设置 `1`，默认关闭。 |

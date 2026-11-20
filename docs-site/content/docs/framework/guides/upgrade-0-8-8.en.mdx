@@ -1,0 +1,44 @@
+---
+title: "Upgrade to 0.8.8"
+description: "0.8.8 migration and compatibility"
+---
+
+## Installation and upgrade
+
+Upgrade in a new Python 3.12+ environment and retain the previous agent environment for rollback. Before publication, use the reviewed candidate wheel. Check [GitHub Releases](https://github.com/kingsoftcloud/ksadk-python/releases) and [PyPI](https://pypi.org/project/ksadk/) for publication status; once both confirm `0.8.8`, install that PyPI version with the extras required by your application.
+
+## Tunnel migration
+
+Use the [tool tunnel guide](/en/docs/framework/guides/tool-tunnel/). The unified implementation incorporates community PR #115 and adds custom HTTP services, LangGraph and multi-pod routing. Enable the exported agent with `Agent(native_agent, enable_tunnel=True)` and run `TunnelConnector` with explicit `LocalMCPService`/`LocalAPIService` declarations.
+
+Upgrade the cloud SDK and enterprise Connector together. The previous YAML/CLI configuration and protocol package are replaced; no second protocol stack is shipped. Failed or indeterminate calls are not automatically replayed. Verify business state before retrying a write.
+
+## MCP and persistence
+
+The core supports MCP 1.26+ through the compatibility layer. Development tests use MCP 2.3 and FastMCP 4.2.2; optional applications must resolve a compatible dependency set. OpenTelemetry components must stay aligned. Do not keep an adapter that pins `mcp<2` in an MCP 2 environment.
+
+Back up session/checkpoint data before migration. Existing agents remain on their current SDK and images until explicitly rebuilt; new Hosted admission checks require matching agent and session ownership. This version reuses the published Web 0.3.18 package; it does not require a new npm release or retire existing agents.
+
+For rollback, restore the previous environment and connector version together. Keep database backups and the previous wheel; do not delete existing session tables.
+
+Projects retaining ADK 1.34.3 or 2.5.0 must also constrain `mcp>=1.26.0,<2`: those releases use MCP 1.x internals. ADK 2.14.x supports MCP 2.3. Resolve the complete environment together instead of replacing ADK alone.
+
+## Memory compatibility
+
+The local SQLite/PostgreSQL logical namespace `agent:<agent>:user:<user>` is unchanged. Existing rows are not moved, copied, or deleted. Only the AICP wire boundary encodes a valid `AgentUserId`, consistently across save, query, status, update, and forget operations. Existing valid cloud IDs and resource-bound partitions retain their values; returned records keep the caller's logical identity.
+
+This targeted repair covers long-term Memory user IDs, including the 68-character trusted identity key. KnowledgeBaseIds, internal session identities and business SessionIds retain their values. Custom cloud Memory session IDs must still satisfy the service's existing limit; this release does not rewrite all identity rules.
+
+Back up long-term memory separately from sessions and checkpoints. This release does not clear a database to fix identity formatting. Projects that manually changed scopes while running a short-lived internal candidate must inspect their records rather than blindly merging partitions.
+
+## AG-UI, RunAgent, and ordinary agents
+
+`KSADK_CHAT_PREFERRED_TRANSPORT=responses` makes Hosted UI prefer RunAgent Responses. It does not disable Kernel or remove the existing AG-UI endpoint. History and OAuth grants remain reusable within the same session. Restore explicitly with `ag-ui`; omitting the old key from a merged environment update may leave its previous value intact.
+
+An ordinary agent without Kernel can use RunAgent chat, API key MCP, and its own durable checkpoints. OAuth MCP currently requires `KSADK_ENABLE_KERNEL=1` and platform admission; disabling Kernel returns `MCP_OAUTH_KERNEL_REQUIRED`. A transport preference cannot bypass this requirement. See [environment variables](/en/docs/references/environment-variables/) and [MCP client integration](/en/docs/framework/guides/mcp-oauth/).
+
+## Knowledge and Memory component routing
+
+`KSADK_COMPONENT_ENV=pre` enables the component preproduction route for Knowledge, KSmem and generated mem0 configuration. Unset values do not add a route header. It does not switch the whole Agent or other services. Clients and isolated Workers use initialization snapshots: recreate or reactivate them after environment changes, and regenerate mem0 configuration.
+
+The mem0 configuration now includes `extraHeaders`; the target plugin must support it. Legacy `openclaw-mem0` 1.0.6 is incompatible. Existing ordinary Agent protocols and local Memory namespaces remain unchanged. See [environment variables](/en/docs/references/environment-variables/).

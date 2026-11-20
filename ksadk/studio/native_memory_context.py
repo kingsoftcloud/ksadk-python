@@ -37,6 +37,13 @@ def _time(value):
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
+def memory_record_expiry(record):
+    expires = [
+        value for value in (_time(record.expires_at), _time(record.valid_to)) if value is not None
+    ]
+    return min(expires) if expires else None
+
+
 def admitted_memory_records(result, *, principal, scopes, top_k):
     """One host data admission for recall and explicit search projections."""
     if not isinstance(result, MemorySearchResult) or result.status not in {"ok", "not_configured"}:
@@ -54,12 +61,12 @@ def admitted_memory_records(result, *, principal, scopes, top_k):
             raise ValueError("native_memory_record_unbound")
         if record.content_hash != content_hash(record.content):
             raise ValueError("native_memory_content_mismatch")
-        expiry = [_time(value) for value in (record.expires_at, record.valid_to) if value]
+        expiry = memory_record_expiry(record)
         valid_from = _time(record.valid_from)
         if (
             record.status != "active"
             or record.sensitivity == "high"
-            or any(value <= now for value in expiry)
+            or (expiry is not None and expiry <= now)
             or (valid_from is not None and valid_from > now)
         ):
             continue
@@ -142,12 +149,7 @@ class StudioMemoryContextSource:
             scopes=recall.scopes,
             top_k=recall.top_k,
         ):
-            expires = [
-                value
-                for value in (_time(record.expires_at), _time(record.valid_to))
-                if value is not None
-            ]
-            expiry = min(expires) if expires else None
+            expiry = memory_record_expiry(record)
             fragments.append(
                 ContextFragment(
                     fragment_format="ksadk.context-fragment/v1",

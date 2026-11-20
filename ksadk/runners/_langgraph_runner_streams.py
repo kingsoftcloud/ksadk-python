@@ -413,6 +413,12 @@ class _LangGraphStreamMixin(_LangGraphCanonicalStreamMixin):
                     final_output_last_usage = self._extract_last_usage(output)
 
         except Exception as e:
+            from ksadk.tunnel.failure import tunnel_failure
+
+            if failure := tunnel_failure(e):
+                yield {"type": "text", "delta": failure.message}
+                yield {"type": "final", "output": failure.message, "metadata": failure.metadata}
+                return
             if "Interrupt" in type(e).__name__:
                 state, error = await self._read_graph_state(config, include_subgraphs=True)
                 if state is None:

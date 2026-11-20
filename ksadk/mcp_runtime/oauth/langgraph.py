@@ -8,6 +8,8 @@ from .client import BrokerError, MCPToolOutcomeUnknown
 
 SCHEMA = "mcp.authorization/v1"
 MARKER = "x-ksadk-mcp-authorization"
+
+from ksadk._mcp_compat import tool_input_schema  # noqa: E402
 _declaration = ContextVar("mcp_oauth_declaration", default=None)
 _extension = ContextVar("mcp_oauth_extension", default=None)
 
@@ -92,13 +94,14 @@ def classify_mcp_error(error):
     if isinstance(error, BrokerError):
         return error.code
     import httpx
+    from ksadk._mcp_compat import httpx_module
 
     children = getattr(error, "exceptions", ())
     for child in children:
         code = classify_mcp_error(child)
         if code != "CONNECTION_FAILED":
             return code
-    if isinstance(error, httpx.HTTPStatusError):
+    if isinstance(error, (httpx.HTTPStatusError, httpx_module().HTTPStatusError)):
         challenge = error.response.headers.get("WWW-Authenticate", "")
         if error.response.status_code == 403:
             return (
@@ -114,18 +117,43 @@ def classify_mcp_error(error):
 @asynccontextmanager
 async def connect(credential):
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
 
+    from ksadk._mcp_compat import streamable_http
     from .transport import http_client_factory
 
-    async with streamablehttp_client(
-        credential["resource"],
-        headers={"Authorization": "Bearer " + credential["access_token"]},
-        httpx_client_factory=http_client_factory(credential),
-    ) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            yield session
+    authorization_error = None
+
+    async def remember_authorization_error(response):
+        nonlocal authorization_error
+        # MCP 2 replaces non-JSON-RPC HTTP errors with a generic MCPError.
+        # Retain only the safe authorization category, never the token/body/URL.
+        # A background GET/DELETE denial is not proof a business POST declined.
+        if response.request.method != "POST":
+            return
+        if response.status_code == 401:
+            authorization_error = "REAUTHORIZATION_REQUIRED"
+        elif response.status_code == 403:
+            authorization_error = (
+                "INSUFFICIENT_SCOPE"
+                if "insufficient_scope" in response.headers.get("WWW-Authenticate", "")
+                else "BUSINESS_PERMISSION_DENIED"
+            )
+
+    async with http_client_factory(credential)(
+        headers={"Authorization": "Bearer " + credential["access_token"]}, timeout=30,
+    ) as http_client:
+        http_client.event_hooks["response"].append(remember_authorization_error)
+        try:
+            async with streamable_http(
+                credential["resource"], http_client=http_client,
+            ) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    yield session
+        except Exception:
+            if authorization_error is not None:
+                raise BrokerError(authorization_error) from None
+            raise
 
 
 async def prepare_connection(client, wait_id):
@@ -202,17 +230,21 @@ async def _authorized_credential(
 
 async def _catalog(session, credential):
     """Read all catalog pages and apply the immutable connection filter."""
+    from ksadk._mcp_compat import list_tools_page
+
     allowed = credential.get("allowed_tools", [])
     tools, cursors = {}, set()
     cursor = None
     while True:
-        page = await session.list_tools(cursor=cursor) if cursor else await session.list_tools()
+        # mcp 2.x 的 `list_tools` 不接受 `cursor` 关键字（改成
+        # `params=PaginatedRequestParams(cursor=...)`），用兼容层统一。
+        page = await list_tools_page(session, cursor)
         for tool in page.tools:
             if not allowed or tool.name in allowed:
                 if tool.name in tools:
                     raise BrokerError("MCP_TOOL_CATALOG_INVALID")
                 tools[tool.name] = tool
-        cursor = page.nextCursor
+        cursor = getattr(page, 'next_cursor', None) or getattr(page, 'nextCursor', None)
         if not cursor:
             return tools
         if cursor in cursors or len(cursors) >= 100:
@@ -275,7 +307,7 @@ async def list_mcp_tools(config_id: str, *, request_key: str):
             {
                 "name": tool.name,
                 "description": tool.description or "",
-                "inputSchema": tool.inputSchema,
+                "inputSchema": tool_input_schema(tool),
             }
             for tool in tools.values()
         ]
@@ -318,12 +350,12 @@ async def call_mcp_tool(
             ):
                 if tool not in catalog:
                     raise BrokerError("MCP_TOOL_UNAVAILABLE")
-                validate_input_schema(catalog[tool].inputSchema, arguments)
+                validate_input_schema(tool_input_schema(catalog[tool]), arguments)
                 call_digest = digest([credential["config_ref"], tool, arguments])
                 result = await extension.claim_dispatch(run_id, request_key, call_digest)
                 if result is None:
                     dispatched = True
-                    result = (await session.call_tool(tool, arguments)).model_dump(mode="json")
+                    result = (await session.call_tool(tool, arguments)).model_dump(mode="json", by_alias=True)
                     await extension.finish_dispatch(run_id, request_key, call_digest, result)
         except BrokerError as exc:
             if not dispatched:

@@ -250,12 +250,17 @@ async def test_sdk_graph_auto_checkpoint_and_custom_factory_precedence(tmp_path,
 async def test_local_kernel_custom_graph_with_unchanged_key_client(
     local_env, tmp_path, provider, mode
 ):
-    import httpx
+    from ksadk._mcp_compat import httpx_module
+
+    # mcp 2.x 用的是独立的 httpx2 包——给 mcp 传客户端必须用同一套，
+    # 否则会静默挂起（不是报错）。
+    httpx = httpx_module()
     from langchain_core.language_models.chat_models import BaseChatModel
     from langchain_core.outputs import ChatGeneration, ChatResult
     from langchain_core.tools import tool
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+
+    from ksadk._mcp_compat import streamable_http
 
     from ksadk.mcp_runtime import MCPServerConfig
     from tests.test_mcp_oauth_local import ask, completed, consent, stack
@@ -275,9 +280,9 @@ async def test_local_kernel_custom_graph_with_unchanged_key_client(
                 transport=httpx.ASGITransport(provider), headers=headers, timeout=timeout, auth=auth
             )
 
-        async with streamablehttp_client(
+        async with streamable_http(
             key_config.url, headers=key_config.headers, httpx_client_factory=http
-        ) as (read, write, _):
+        ) as (read, write):
             async with ClientSession(read, write) as client:
                 await client.initialize()
                 result = await client.call_tool("read_snapshot", {})

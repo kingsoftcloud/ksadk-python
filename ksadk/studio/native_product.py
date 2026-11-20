@@ -877,10 +877,9 @@ class StudioNativeProductComposer:
             # Missing only in legacy sealed Builds. New Builds carry an
             # explicit object even when neither count is bounded.
             native_limits = execution.native_limits
-            model_call_budget = (native_limits.max_model_calls if native_limits is not None
-                                 else min(100, execution.max_steps))
-            tool_call_budget = (native_limits.max_tool_calls if native_limits is not None
-                                else min(400, max(4, execution.max_steps * 4)))
+            call_limits = execution.native_call_limits()
+            model_call_budget = call_limits.max_model_calls
+            tool_call_budget = call_limits.max_tool_calls
             reserve_basis = (model_call_budget if native_limits is not None
                              else execution.max_steps)
             workspace_port = StudioNativeWorkspacePort(

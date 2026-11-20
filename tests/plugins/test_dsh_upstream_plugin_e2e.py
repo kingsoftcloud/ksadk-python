@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 import pytest
 from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
+from ksadk._mcp_compat import field, httpx_module, streamable_http
 
 from ksadk.plugins.bridges.dsh import (
     DshPluginMutationError,
@@ -132,13 +132,13 @@ async def test_real_upstream_cordis_plugin_runs_unmodified_through_profile_mcp(
             stderr = "\n".join(host.stderr_tail) if host.stderr_tail else "<empty>"
             pytest.fail(f"capability host failed to start; sidecar stderr:\n{stderr}")
         assert lease.web_route_count == 2
-        async with httpx.AsyncClient(
+        async with httpx_module().AsyncClient(
             headers=lease.headers(), timeout=10, trust_env=False
         ) as mcp_client:
-            async with streamable_http_client(
+            async with streamable_http(
                 lease.endpoint,
                 http_client=mcp_client,
-            ) as (read_stream, write_stream, _session_id):
+            ) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     tools = await session.list_tools()
@@ -154,7 +154,7 @@ async def test_real_upstream_cordis_plugin_runs_unmodified_through_profile_mcp(
                     result = await session.call_tool(
                         UPSTREAM_TOOL, {"path": str(probe)}
                     )
-                    assert result.isError is False
+                    assert field(result, "is_error", "isError") is False
                     assert result.content[0].text == "upstream-roundtrip"
     finally:
         if host is not None:

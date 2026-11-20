@@ -26,6 +26,16 @@ def _require_env_value(name: str) -> str:
     return str(os.getenv(name) or "").strip()
 
 
+def _resolve_traffic_source() -> str:
+    """Resolve X-Traffic-Source header value, matching ksadk build_cloud_headers."""
+    return str(os.getenv("KSADK_TRAFFIC_SOURCE", "agentkit") or "agentkit").strip() or "agentkit"
+
+
+def _resolve_component_env() -> str:
+    """Resolve KSADK_COMPONENT_ENV for the memory preproduction route."""
+    return str(os.getenv("KSADK_COMPONENT_ENV", "") or "").strip()
+
+
 class Mem0Provider:
     """Provider for the mem0 memory backend."""
 
@@ -47,6 +57,9 @@ class Mem0Provider:
         user_id = _require_env_value(user_id_env)
         base_url = _require_env_value(base_url_env)
 
+        traffic_source = _resolve_traffic_source()
+        component_env = _resolve_component_env()
+
         config_patch: dict[str, Any] = {
             "plugins": {
                 "slots": {
@@ -60,6 +73,13 @@ class Mem0Provider:
                             "apiKey": api_key,
                             "baseUrl": base_url,
                             "userId": user_id,
+                            "extraHeaders": {
+                                "X-Traffic-Source": traffic_source,
+                                **(
+                                    {"X-KSC-CUSTOM-SOURCE": "pre"}
+                                    if component_env.lower() == "pre" else {}
+                                ),
+                            },
                         },
                     },
                 },

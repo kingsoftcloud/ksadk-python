@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import time
 import logging
+import time
 import traceback
-from pathlib import Path
 from collections.abc import AsyncGenerator, AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from ksadk.events.adapters.adk import ADKAdapterContext, ADKEventAdapter
@@ -53,8 +53,19 @@ async def canonical_events(
     last_usage: dict[str, Any] = {}
     approval_ids: set[str] = set()
     message_snapshots: dict[tuple[str, str], dict[str, str]] = {}
+    pending_tool_calls = set()
     managed_descriptors = {}
     root_transfer_target = None
+
+    def source() -> SourceRef:
+        return SourceRef(
+            framework="adk",
+            metadata={
+                "session_id": session_id,
+                **({"last_usage": last_usage} if last_usage else {}),
+                **({"usage": usage} if usage else {}),
+            },
+        )
 
     def envelope(event_type: str, occurrence: str = "run") -> dict[str, Any]:
         return {
@@ -72,17 +83,11 @@ async def canonical_events(
             ),
             "seq": context.allocate_seq(),
             "timestamp": time.time(),
-            "source": SourceRef(
-                framework="adk",
-                metadata={
-                    "session_id": session_id,
-                    **({"last_usage": last_usage} if last_usage else {}),
-                    **({"usage": usage} if usage else {}),
-                },
-            ),
+            "source": source(),
         }
 
     stream_failure: str | None = None
+    tunnel_outcome = None
     stream_failure_code = "adk_stream_error"
     yield RunStarted(**envelope("run.started"), status="running")
     try:
@@ -101,6 +106,12 @@ async def canonical_events(
 
             approval_signals = list(runner._extract_approval_signals(native_event))
             for event in adapter.map(native_event, context):
+                if isinstance(event, ItemCompleted):
+                    for part in event.snapshot.parts:
+                        if isinstance(part, ToolCallContent):
+                            pending_tool_calls.add((event.scope_id, part.call_id))
+                        elif isinstance(part, ToolResultContent):
+                            pending_tool_calls.discard((event.scope_id, part.call_id))
                 if isinstance(event, ItemCompleted) and event.item_kind in {"message", "artifact"}:
                     message_snapshots[(event.scope_id, event.item_id)] = {
                         part.part_id: part.text
@@ -176,6 +187,9 @@ async def canonical_events(
                         ),
                     )
     except Exception as exc:  # noqa: BLE001
+        from ksadk.tunnel.failure import tunnel_failure
+
+        tunnel_outcome = tunnel_failure(exc)
         if getattr(runner, "_managed_a2a_bootstrap", None) is not None:
             # Keep diagnostic locations server-side. Never log exception text,
             # source lines or local values: provider errors can embed credentials.
@@ -238,6 +252,20 @@ async def canonical_events(
             cached_tokens=int(usage.get("cached_tokens") or 0),
             reasoning_tokens=int(usage.get("reasoning_tokens") or 0),
         )
+
+    if tunnel_outcome is not None:
+        from ksadk.tunnel.failure import failure_events
+
+        for event in failure_events(
+            tunnel_outcome,
+            run_id=run_id,
+            scope_id=root_scope_id,
+            source=source(),
+            allocate_seq=context.allocate_seq,
+            pending_calls=sorted(pending_tool_calls),
+        ):
+            yield event
+        return
 
     output_refs = context.output_refs
     if not output_refs and managed_descriptors:

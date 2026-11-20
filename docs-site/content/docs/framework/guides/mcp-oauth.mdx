@@ -76,9 +76,13 @@ OAuth 等待要求持久化 checkpoint，内存 saver 无法提供该保证。�
 
 ## API Key MCP 与混合工具
 
-API Key 服务不经过 OAuth Broker。额外安装 `langchain-mcp-adapters>=0.3.2`，按服务方协议配置
+API Key 服务不经过 OAuth Broker。先选择与项目一致的 MCP 主版本，不要在 MCP 2 环境安装要求 `mcp<2` 的旧适配器。按服务方协议配置
 运行时变量：`SEARCH_MCP_URL=https://search.example.com/mcp`、`SEARCH_MCP_API_KEY=your-service-api-key`。
 这里的 Bearer header 仅是常见示例；服务要求其他 header 时按其文档调整。
+
+### 保留 MCP 1.x 客户端
+
+已有客户端可继续使用。此示例仅适用于 `mcp>=1.26.0,<2` 与 `langchain-mcp-adapters==0.3.2` 的组合；旧 ADK 1.34/2.5 同样使用 MCP 1.x。请在同一次安装中求解全部依赖，不在 MCP 2.3 环境照此加装适配器。
 
 ```python
 import os
@@ -92,6 +96,63 @@ async def search_tools():
     }})
     # Replace this allowlist with read-only tool names published by your service.
     return [tool for tool in await client.get_tools() if tool.name == "search_documents"]
+
+async def all_tools(state):
+    return await oauth.get_tools(state, tools=await search_tools())
+```
+
+### MCP 2.3 原生客户端
+
+MCP 2.3 使用自己的 `httpx2` 传输。以下示例直接使用该版本的公开 `ClientSession` API，不依赖旧适配器；不要将其复制到 MCP 1.x 环境。将只读工具名 `search_documents` 替换为服务方提供的名称。
+
+```python
+import json
+import os
+from contextlib import asynccontextmanager
+
+import httpx2
+from langchain_core.tools import StructuredTool
+from mcp import ClientSession, types
+from mcp.client.streamable_http import streamable_http_client
+
+@asynccontextmanager
+async def search_session():
+    headers = {"Authorization": "Bearer " + os.environ["SEARCH_MCP_API_KEY"]}
+    async with httpx2.AsyncClient(headers=headers, timeout=30, follow_redirects=False) as client:
+        async with streamable_http_client(os.environ["SEARCH_MCP_URL"], http_client=client) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                await session.initialize()
+                yield session
+
+async def search_tools():
+    specs, cursor, seen = [], None, set()
+    async with search_session() as session:
+        while True:
+            page = await session.list_tools(params=types.PaginatedRequestParams(cursor=cursor))
+            specs.extend(page.tools)
+            cursor = page.next_cursor
+            if not cursor:
+                break
+            if cursor in seen:
+                raise RuntimeError("MCP catalog pagination repeated")
+            seen.add(cursor)
+    tools = []
+    for spec in specs:
+        if spec.name != "search_documents":
+            continue
+        async def invoke(_name=spec.name, /, **arguments):
+            async with search_session() as session:
+                result = await session.call_tool(_name, arguments)
+            if result.is_error:
+                raise RuntimeError("API key MCP tool failed")
+            if result.structured_content is not None:
+                return json.dumps(result.structured_content, ensure_ascii=False)
+            return "\n".join(block.text for block in result.content if hasattr(block, "text"))
+        tools.append(StructuredTool.from_function(
+            coroutine=invoke, name=spec.name, description=spec.description or spec.name,
+            args_schema=spec.input_schema,
+        ))
+    return tools
 
 async def all_tools(state):
     return await oauth.get_tools(state, tools=await search_tools())
@@ -150,3 +211,5 @@ OAuth 还需要 `KSADK_ENABLE_KERNEL=1`，以及平台批准的 Broker、可信�
 
 API Key MCP 可与这些工具对象接入同一个应用，但验证 OAuth 与 A2A 时使用独立工具集和新会话，
 不要把 OAuth 授权成功当作 A2A 已注册、已授权或已完成远端任务。
+
+MCP 服务仅在企业内网可达时，参见[工具隧道接入指南](/cn/docs/framework/guides/tool-tunnel/)。

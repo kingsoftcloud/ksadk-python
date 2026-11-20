@@ -115,6 +115,18 @@ generate_ui = build_ksadk_a2ui_tool({
 AG-UI。提交交互使用服务端返回的 `RunId`、`InteractionId`、`ExpectedRevision` 和幂等键；
 不要把输入 JSON 当作普通聊天消息重发，也不要在不确定是否已受理时重新入队原任务。
 
+## 云端 AG-UI 与 MCP OAuth
+
+云端 Gateway 将 AG-UI 请求交给现有 Server 任务准入，SDK 只投影该任务的事件。
+升级 SDK、Gateway、Server 后，OAuth 授权完成会继续原 LangGraph 任务，无需再次提问。
+未使用托管 Kernel 的运行时保持原 AG-UI 执行路径。
+
+自建 AG-UI 客户端需处理 `CUSTOM` 事件：`name` 为 `ksadk.session_event`，
+`value.event_type` 为 `mcp.authorization.requested` 或 `mcp.authorization.updated`。
+使用其中的等待 ID、revision 和现有授权操作展示授权卡；浏览器跳转和回调仍走现有 Broker。
+OAuth 等待不通过普通 `resume` 表单提交。连接中断后，用相同 `threadId`、`runId` 和请求内容重连，
+不要生成新的业务请求；已受理任务会复用原命令及工具执行结果。
+
 ## 验证与失败处理
 
 先检查 Session 和 checkpoint 分别 ready，再验证表单能显示、填写、提交、恢复到完成。
@@ -124,3 +136,14 @@ AG-UI。提交交互使用服务端返回的 `RunId`、`InteractionId`、`Expect
 把失败呈现给用户，或按业务规则使用不带 A2UI presentation 的 Schema 表单后备流程。
 `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` 默认 20 秒，有效范围 1–120 秒；它不等于数据库超时，
 增大它也不能修正无效组件。不要删除校验或把失败返回值包装成成功界面。
+
+
+## 临时切换聊天首选协议
+
+在 Agent 环境变量中设置 `KSADK_CHAT_PREFERRED_TRANSPORT=responses`，重新启动 Agent 并刷新页面，新的聊天请求将使用 RunAgent 的 Responses 流。
+
+不设置、留空或设置为 `auto` 时保留原来的选择；`ag-ui` 表示在该入口可用时优先使用 AG-UI。无法识别的值沿用原选择，不会关闭服务。
+
+此设置只改变能力接口的 `HostedChat.PreferredTransport`，不会关闭 AG-UI、Kernel、表单或 OAuth 接口。Web 必须包含“表单恢复入口独立于聊天首选协议”的配套改动，才能在切换后继续提交原 AG-UI 表单。正在运行的任务继续按原任务 ID 订阅，OAuth 仍由原等待点恢复；不会把失败请求自动重发到另一协议。
+
+重启 Pod 本身可能中断连接。运行中任务跨 Pod 恢复仍要求已经配置持久化 session、Kernel 和框架 checkpoint；这个变量不增加或替代持久化能力。恢复默认时删除变量并重新启动 Agent、刷新页面。

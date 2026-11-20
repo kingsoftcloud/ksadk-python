@@ -137,9 +137,6 @@ class RuntimeAppState:
         self.agui_agent: Any = None
         self.agui_config: Any = None
         self.local_interactions: Any = None
-        # Optional per-app Tunnel configuration. The registry itself lives in
-        # launch_context.services so the HTTP mount and ADKRunner share it.
-        self.tunnel: Any = None
         self.persistence_capability = PersistenceCapabilityCoordinator()
 
     def resolve_session_service(self) -> Any:
@@ -242,7 +239,7 @@ class RuntimeAppConfig:
         teams_host_factory: Any | None = None,
         a2ui_catalog_registry: Any | None = None,
         local_mcp_oauth: bool = False,
-        tunnel_self_url: str | None = None,
+        auto_tracing: bool = True,
     ) -> None:
         self.runtime_type = runtime_type
         self.route_groups: set[str] = (
@@ -264,14 +261,8 @@ class RuntimeAppConfig:
         self.a2ui_catalog_registry = a2ui_catalog_registry
         # Composition-only switch. Never populated from Agent YAML or env.
         self.local_mcp_oauth = local_mcp_oauth
-        self.tunnel: Any = None
-        if launch_context is not None:
-            from ksadk.tunnel.config import prepare_tunnel_context
-
-            self.launch_context, self.tunnel = prepare_tunnel_context(
-                launch_context,
-                self_url=tunnel_self_url,
-            )
+        # Composition-only opt-out for callers such as `ksadk run --no-trace`.
+        self.auto_tracing = auto_tracing
 
 
 # ---------------------------------------------------------------------------
@@ -358,14 +349,6 @@ async def shutdown_runtime_resources(state: RuntimeAppState) -> None:
     if state.local_interactions is not None:
         await state.local_interactions.close()
 
-    if state.launch_context is not None:
-        tunnel_registry = state.launch_context.services.tunnel_registry
-        if tunnel_registry is not None:
-            try:
-                await tunnel_registry.close()
-            except Exception:
-                logger.exception("failed to close Tunnel registry on shutdown")
-
     for service in state.session_services():
         close = getattr(service, "aclose", None)
         if callable(close):
@@ -400,6 +383,35 @@ def _is_agent_execution_path(path: str, method: str) -> bool:
     return False
 
 
+def _setup_runtime_tracing() -> None:
+    """Initialize configured OTLP tracing before composing a Runtime app.
+
+    Unconfigured processes and application-owned providers stay untouched.
+    The existing setup function serializes initialization and owns exporters.
+    """
+    if os.getenv("OTEL_SDK_DISABLED", "").strip().lower() == "true":
+        return
+    if not any(os.getenv(name, "").strip() for name in (
+        "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "CLOUD_MONITOR_OTLP_ENDPOINT", "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT",
+        "CLOUD_MONITOR_OTLP_HEADERS", "CLOUD_MONITOR_OTLP_TRACES_HEADERS",
+        "CLOUD_MONITOR_APP_KEY",
+    )):
+        return
+    try:
+        from opentelemetry import trace
+
+        # Includes explicit SDK setup, routed tracing and OTel auto-instrumentation.
+        # Do not replace a user's provider or attach a second static exporter.
+        if not isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider):
+            return
+        from ksadk.tracing import setup_tracing
+
+        setup_tracing()
+    except Exception:
+        logger.warning("Runtime tracing initialization failed; continuing without automatic tracing", exc_info=True)
+
+
 def create_runtime_app(
     config: RuntimeAppConfig,
     configure: Optional[ConfigureApp] = None,
@@ -419,6 +431,13 @@ def create_runtime_app(
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import Response
 
+    from ksadk.tunnel.runtime import DeferredTunnel, configure_app_tunnel
+
+    if config.auto_tracing:
+        _setup_runtime_tracing()
+
+    config, tunnel_binding = configure_app_tunnel(config)
+
     if config.a2ui_catalog_registry is not None:
         from ksadk.a2ui.registry import A2uiCatalogRegistry
 
@@ -435,7 +454,6 @@ def create_runtime_app(
         session_service_provider=config.session_service_provider,
         session_backend_provider=config.session_backend_provider,
     )
-    state.tunnel = config.tunnel
     from ksadk.kernel.teams_runtime_bootstrap import CloudTeamsRuntimeHost
 
     teams_host = config.teams_host_factory or CloudTeamsRuntimeHost.from_env()
@@ -450,6 +468,9 @@ def create_runtime_app(
             clear_agent_kernel_runtime,
         )
         from ksadk.runtime.factory import kernel_start_request_defaults
+
+        if tunnel_binding is not None:
+            await tunnel_binding.start()
 
         adapter_provider = _kernel_adapter_provider(config)
         from ksadk.kernel.session_storage import postgres_kernel_enabled
@@ -476,6 +497,8 @@ def create_runtime_app(
                 **({"before_start": teams_host.before_start} if teams_host is not None else {}),
             )
         except BaseException:
+            if tunnel_binding is not None:
+                await tunnel_binding.close()
             if teams_host is not None:
                 await teams_host.close()
                 _kernel_ingress.set_teams_ingress_gate(None)
@@ -511,6 +534,8 @@ def create_runtime_app(
                 await state.a2a_bootstrap.start()
             yield
         finally:
+            if tunnel_binding is not None:
+                await tunnel_binding.close()
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.stop()
             if state.local_interactions is not None:
@@ -536,6 +561,15 @@ def create_runtime_app(
     )
     state.app = app
     app.state.runtime = state
+    if tunnel_binding is not None:
+        from ksadk.tunnel.server import mount_tunnel
+
+        if isinstance(tunnel_binding, DeferredTunnel):
+            from ksadk.tunnel.server import install_connector_fallback
+
+            install_connector_fallback(app, tunnel_binding)
+        else:
+            mount_tunnel(app, policies=[tunnel_binding.policy], registry=tunnel_binding.registry)
     if teams_host is not None:
         from ksadk.kernel.teams_host_http import create_teams_host_router
 

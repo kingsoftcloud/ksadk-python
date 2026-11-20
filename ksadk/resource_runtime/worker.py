@@ -14,7 +14,11 @@ import httpx
 from pydantic import ConfigDict, Field, SecretStr, field_validator, model_validator
 from requests.exceptions import RequestException
 
-from ksadk.common.cloud_headers import DEFAULT_TRAFFIC_SOURCE, resolve_traffic_source
+from ksadk.common.cloud_headers import (
+    DEFAULT_TRAFFIC_SOURCE,
+    resolve_component_env,
+    resolve_traffic_source,
+)
 from ksadk.knowledge_base.client import KnowledgeBaseClient
 from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
 from ksadk.memory.models import MemorySearchRequest
@@ -72,12 +76,13 @@ class KnowledgeWorkerBinding(ExplicitWorkerBinding):
     resource_kind: ClassVar[str] = "knowledge-base"
 
     def create_service(
-        self, *, traffic_source: str = DEFAULT_TRAFFIC_SOURCE
+        self, *, traffic_source: str = DEFAULT_TRAFFIC_SOURCE, component_env: str = ""
     ) -> BoundKnowledgeService:
         endpoint = urlsplit(self.endpoint)
         client = KnowledgeBaseClient(
             dataset_id=self.config.binding.resource.id,
             traffic_source=traffic_source,
+            component_env=component_env,
             region=self.config.binding.resource.region,
             endpoint=endpoint.netloc,
             scheme=endpoint.scheme,
@@ -92,12 +97,17 @@ class MemoryWorkerBinding(ExplicitWorkerBinding):
     resource_kind: ClassVar[str] = "memory-instance"
 
     def create_provider(
-        self, identity: InvocationIdentity, *, traffic_source: str = DEFAULT_TRAFFIC_SOURCE
+        self,
+        identity: InvocationIdentity,
+        *,
+        traffic_source: str = DEFAULT_TRAFFIC_SOURCE,
+        component_env: str = "",
     ) -> AicpMemoryProvider:
         endpoint = urlsplit(self.endpoint)
         backend = SdkLTMBackend(
             index="bound-resource",
             traffic_source=traffic_source,
+            component_env=component_env,
             memory_collection_id=self.config.binding.resource.id,
             namespace=self.config.binding.resource.id,
             agent_id=identity.agent_id,
@@ -233,6 +243,7 @@ class WorkerInitialization(PluginContractModel):
     # Resolve in the trusted parent and serialize on stdin; never inherit the
     # parent's environment or mutate global process state in a shared host.
     traffic_source: str = Field(default_factory=resolve_traffic_source)
+    component_env: str = Field(default_factory=resolve_component_env)
     resource_snapshot: ResourceSnapshot
     bindings: tuple[
         KnowledgeWorkerBinding
@@ -363,9 +374,13 @@ def main() -> int:
                 else binding.create_provider(
                     scopes[binding.config.binding.id].identity,
                     traffic_source=initialization.traffic_source,
+                    component_env=initialization.component_env,
                 )
                 if isinstance(binding, MemoryWorkerBinding)
-                else binding.create_service(traffic_source=initialization.traffic_source)
+                else binding.create_service(
+                    traffic_source=initialization.traffic_source,
+                    component_env=initialization.component_env,
+                )
                 if isinstance(binding, KnowledgeWorkerBinding)
                 else binding.create_service()
             )

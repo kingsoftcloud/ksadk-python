@@ -1,7 +1,7 @@
 # Google ADK 多版本兼容矩阵
 
-> 更新日期：2026-11-12。保留 2026-07-21 对 **1.34.3** 与 **2.5.0** 的历史探测，
-> 0.8.7 候选另验证当前默认解析的 **2.14.0** 及其实际依赖组合。
+> 更新日期：2026-11-19。保留 2026-07-21 对 **1.34.3** 与 **2.5.0** 的历史探测，
+> 0.8.8 候选另验证 **2.14.0**，开发锁使用 **2.14.1**；各组合单独记录证据。
 > 唯一收口点:`ksadk/compat/adk_compat.py`。业务代码不直接 `import google.adk`。
 
 ## 版本窗口
@@ -13,9 +13,9 @@
 | 最低验证锚点 | **1.34.3** | 依赖下限保持 1.34.0；不承诺整个 1.x 系列。1.0.0 缺少当前运行时所需的 App、恢复和事件能力。 |
 | 上界 | **<3.0.0** | 保留既有兼容窗口；验证点包括 2.5.0 与 2.14.0，其他依赖组合仍须通过实际导入和测试。 |
 
-## 0.8.7 当前默认安装组合
+## 默认安装与历史验证组合
 
-开发 `uv.lock` 继续固定 Google ADK 2.5.0。直接从候选 wheel 安装会按包约束重新解析依赖；
+0.8.8 开发 `uv.lock` 固定 Google ADK 2.14.1。直接从候选 wheel 安装会按包约束重新解析依赖；以下保留 0.8.7 的历史证据：
 2026-11-11 的实际默认组合包含 Google ADK 2.14.0、Pydantic 2.14.3、
 LangChain Core 1.7.7、OpenAI 3.49.0、SQLAlchemy 2.1.8 与 asyncpg 0.32.0。
 因此安装成功、锁文件测试以及默认解析测试分别保存证据，不能互相替代。
@@ -77,26 +77,23 @@ ksadk 运行时 import 的**全部符号**在 1.34.3 与 2.5.0 **均存在**。�
 |---|---|---|---|
 | Agent 名称非法的报错措辞 | 构造后不立即校验,ksadk 后续给出友好提示;错误消息含 `...valid identifier` | 构造时即用 pydantic 校验并抛 `ValidationError`,消息为 `...valid Python identifier`(多了 "Python") | `ADKRunner._invalid_agent_name_load_error` 的匹配器由 `"valid identifier"` 放宽为 `"valid"`+`"identifier"` 双关键字,两版都转化为同一条 actionable hint(如 `agent_0707agent_adk`)。**行为已统一,无降级。** |
 
-## 依赖解析:opentelemetry 窗口取两版交集,默认解析到 adk 2.x
+## 依赖解析：按 ADK 与 MCP 的实际约束成组求解
 
-`google-adk` 各版本对 otel 的要求:
+0.8.8 核心保留 `google-adk>=1.34.0,<3.0.0` 与 MCP `>=1.26.0`。
+OpenTelemetry 三件套最低为 1.39.0；SDK/exporter 元数据绑定对应 API 版本，
+由所选 ADK 与 FastMCP 决定最终整组版本，不在 SDK 核心强制 1.45.2。
 
-- adk **1.34.x**:`opentelemetry-api/sdk >=1.36,<=1.41.1`、`starlette>=0.49.1,<1`。
-- adk **2.5.x**:`opentelemetry-api/sdk >=1.39,<=1.42.1`、`starlette>=1.3.1,<2`。
-
-otel 区间存在交集 **[1.39, 1.41.1]**(两版都满足);starlette 区间互斥(0.x vs 1.x,
-但两版 adk 不需要同装,故不冲突)。
-
-据此 ksadk `pyproject.toml` 的 otel 约束由 `==1.37.0` 放宽为 `>=1.39.0,<=1.41.1`。效果：
-
-- 开发锁文件固定 **google-adk 2.5.0**（otel 1.41.1、starlette 1.3.1、google-genai 2.12.1）；
-  该锁文件不约束普通 wheel 安装，当前默认解析见上文。
-- adk 1.34.x 仍可装(CI matrix 用 `uv pip install google-adk==1.34.3` 覆盖验证,otel 1.41.1
-  落在 1.34.x 允许的 `<=1.41.1` 内,starlette 由 uv 降到 0.x)。
-- `fastapi<1.0.0` 与 starlette 1.3.1 兼容(fastapi 0.136.x 要求 `starlette>=0.46.0` 无上界),无冲突。
-
-> 说明:otel 由 1.37.0 升到 1.41.1,ksadk tracing 全量测试在 otel 1.41.1 下绿,未发现回归。
-> 若平台其他组件对 otel 有更窄要求,需在各自约束里单独声明。
+- ADK 1.34.3 的 OTEL 上限为 1.41.1，ADK 2.5.0 为 1.42.1。
+- FastMCP 4.2.2 需要 MCP 2.x 与 OTEL >=1.45.2，因此不能与上述旧 ADK 同装。
+- 当前开发锁使用新版 ADK 与 FastMCP 4.2.2/MCP 2.3；旧 ADK 环境允许求解到
+  兼容的 FastMCP 2.x/3.x 与 MCP 1.x（最低 1.26）。开发依赖不再排除这个组合。
+- **ADK 1.34.3 / 2.5.0 必须搭配 `mcp>=1.26.0,<2`**。2.5.0 的上游元数据遗漏了 MCP 上限，
+  求解成功仍会因旧的 `mcp.shared.session` 导入失败，不能将它与 MCP 2.x 混装。
+  保留旧 ADK 的项目应在同一次安装中明确约束 MCP，例如：
+  `uv pip install 'ksadk[all]' 'google-adk==2.5.0' 'mcp>=1.26.0,<2'`。
+  新 ADK 2.14.x 与 MCP 2.3 走独立矩阵；OAuth、Tunnel 的 MCP 双版本兼容不替代 ADK 自身的版本要求。
+- CI 固定 ADK 和对应 MCP 窗口时同时求解项目完整 extras，防止单独安装一个旧 ADK 后留下
+  与 FastMCP 不兼容的现有环境；实际解析版本与运行结果需分别记录。
 
 ## 使用 2.x-only 能力的纪律
 

@@ -1,7 +1,7 @@
 """Read-only deterministic MCP server for A2A acceptance, using real stdio transport."""
-from mcp.server.fastmcp import FastMCP
+from ksadk._mcp_compat import MCPServer
 
-server = FastMCP("a2a-acceptance")
+server = MCPServer("a2a-acceptance")
 
 @server.tool()
 def echo(text: str) -> str:

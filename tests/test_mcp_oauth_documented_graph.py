@@ -101,3 +101,46 @@ async def test_toolnode_executes_one_pending_call_per_checkpoint_on_cold_resume(
     result = await restored.ainvoke(Command(resume=True), config)
     assert discovered == ["connect"] and executed == ["query-1", "query-2"]
     assert result["messages"][-1].content == "done"
+
+
+@pytest.mark.parametrize("guide_name", ["mcp-oauth.mdx", "mcp-oauth.en.mdx"])
+async def test_documented_mcp2_api_key_client_executes_a_real_tool(monkeypatch, guide_name):
+    from importlib.metadata import version
+
+    if int(version("mcp").split(".")[0]) < 2:
+        pytest.skip("This documented client explicitly targets MCP 2.3; MCP 1.x uses its existing adapter")
+    from fastmcp import FastMCP
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
+    from tests.test_mcp_runtime import _run_fastmcp_http_server
+
+    document = Path(__file__).resolve().parents[1] / "docs-site/content/docs/framework/guides" / guide_name
+    source = next(block for block in re.findall(r"```python\n(.*?)```", document.read_text(), re.S) if "import httpx2" in block)
+    namespace = {}
+    exec(compile(source, str(document), "exec"), namespace)
+    calls = []
+    server = FastMCP("documented-key-client")
+
+    @server.tool
+    def search_documents(query: str) -> str:
+        calls.append(query)
+        return "documented-result-" + query
+
+    @server.tool
+    def unrelated_tool() -> str:
+        raise AssertionError("Unlisted tools must not execute")
+
+    async def require_key(request, call_next):
+        if request.headers.get("Authorization") != "Bearer fixture-documentation-key":
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
+    app = server.http_app(path="/mcp", transport="streamable-http")
+    app.add_middleware(BaseHTTPMiddleware, dispatch=require_key)
+    with _run_fastmcp_http_server(app) as base:
+        monkeypatch.setenv("SEARCH_MCP_URL", base + "/mcp")
+        monkeypatch.setenv("SEARCH_MCP_API_KEY", "fixture-documentation-key")
+        tools = await namespace["search_tools"]()
+        assert [tool.name for tool in tools] == ["search_documents"]
+        assert "documented-result-example" in await tools[0].ainvoke({"query": "example"})
+        assert calls == ["example"]

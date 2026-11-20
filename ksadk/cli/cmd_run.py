@@ -181,10 +181,8 @@ def _run_custom(
     """Run one detected project through the canonical RuntimeAdapter composition."""
 
     # 初始化 Tracing
-    if not no_trace:
+    if not no_trace and os.getenv("OTEL_SDK_DISABLED", "").strip().lower() != "true":
         try:
-            import os
-
             from ksadk.tracing import setup_tracing
 
             has_otlp = bool(
@@ -212,7 +210,7 @@ def _run_custom(
         raise SystemExit(2)
 
     try:
-        runtime_app = create_runtime_web_app(result, agent_path, port=port)
+        runtime_app = create_runtime_web_app(result, agent_path, auto_tracing=not no_trace)
     except Exception as e:
         print_exception("RuntimeAdapter 初始化失败", e)
         raise SystemExit(1)

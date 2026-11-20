@@ -131,7 +131,29 @@ class LocalBroker:
             if wait_id in self.data["waits"]:
                 wait = self.wait(wait_id)
                 self.vault.save()
-                return {"status": "resume_wait"} if lookup else self.view(wait)
+                if not lookup:
+                    return self.view(wait)
+                # ## `lookup=True` 不能无条件返回 `resume_wait`
+                #
+                # `_authorized_credential()` 只在 `status == "authorized"` 时
+                # 才跳过 `interrupt()`。若这里无条件返回 `resume_wait`，
+                # **每次都 interrupt**——consent 完成后 run 永远停在
+                # `RunState.WAITING`（实测 6 个用例卡死，`legacy_key_read`
+                # 被重复执行 3 次）。
+                #
+                # 正确语义：wait 已存在 ≠ 未授权。要按 grant 的实际状态判断，
+                # 已授权就直接返回 credential，让调用方走直连路径。
+                wait_config = self.config(wait)
+                wait_grant = self.data["grants"].get(wait["config_id"], {})
+                wait_ready = wait_grant.get("status") == "active" and not refresh_due(
+                    wait_grant["expires"], wait_grant["tokens"], self.clock()
+                )
+                if wait_ready:
+                    return {
+                        "status": "authorized",
+                        "credential": self._credential(wait_grant, wait_config),
+                    }
+                return {"status": "resume_wait"}
             declaration = self.declarations.get(name) or declaration
             if declaration is None:
                 raise BrokerError("MCP_CONFIGURATION_NOT_FOUND")

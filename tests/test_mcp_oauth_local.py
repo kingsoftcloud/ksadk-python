@@ -80,10 +80,16 @@ def local_env(tmp_path, monkeypatch):
 def provider(monkeypatch):
     app = create_provider("https://fixture.example.test")
 
+    # mcp 2.x 用独立的 httpx2 包。给 mcp 传客户端必须用**同一套** httpx，
+    # 否则类型不匹配——实测表现是**静默挂起**（8s 超时），不是报错。
+    from ksadk._mcp_compat import httpx_module
+
+    _httpx = httpx_module()
+
     def factory(credential):
         def client(headers=None, timeout=None, auth=None):
-            return httpx.AsyncClient(
-                transport=httpx.ASGITransport(app), headers=headers, timeout=timeout, auth=auth
+            return _httpx.AsyncClient(
+                transport=_httpx.ASGITransport(app), headers=headers, timeout=timeout, auth=auth
             )
 
         return client

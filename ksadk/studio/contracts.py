@@ -519,6 +519,14 @@ class ExecutionSpec(ContractModel):
     sandbox: str | None = None
     approval_mode: str | None = None
 
+    def native_call_limits(self) -> NativeExecutionLimits:
+        if self.native_limits is not None:
+            return self.native_limits
+        return NativeExecutionLimits(
+            max_model_calls=min(100, self.max_steps),
+            max_tool_calls=min(400, max(4, self.max_steps * 4)),
+        )
+
     @model_serializer(mode="wrap")
     def omit_unconfigured_native_limits(self, serialize):
         payload = serialize(self)

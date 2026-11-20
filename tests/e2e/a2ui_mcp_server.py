@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from ksadk._mcp_compat import MCPServer
 
-mcp = FastMCP("a2ui-local-business")
+mcp = MCPServer("a2ui-local-business")
 
 
 @mcp.tool()

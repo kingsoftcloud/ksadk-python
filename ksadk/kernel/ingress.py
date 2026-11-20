@@ -983,32 +983,42 @@ def _build_kernel_router() -> Any:
                 session_id, trusted=trusted, after_seq=after_seq,
                 should_stop=_client_disconnected, timeout=subscribe_timeout,
             )
-            async for item in with_heartbeats(source, seconds=heartbeat_seconds()):
-                if item is None:
+            frames = with_heartbeats(source, seconds=heartbeat_seconds())
+            try:
+                async for item in frames:
                     if hosted_stream:
-                        # Heartbeats do not extend a permit's authorization.
-                        await verifier.verify(trusted.permit, subscription,
-                                              "subscribe_events", kernel._clock())
-                    yield ": heartbeat\n\n"
-                    continue
-                seq, envelope = item
+                        try:
+                            # Neither traffic nor heartbeats extend authority.
+                            await verifier.verify(trusted.permit, subscription,
+                                                  "subscribe_events", kernel._clock())
+                        except PermitExpiredError:
+                            # End this read normally. Server/client renews the
+                            # permit and resumes from its last delivered seq;
+                            # the durable task and its worker keep running.
+                            return
+                    if item is None:
+                        yield ": heartbeat\n\n"
+                        continue
+                    seq, envelope = item
 
-                payload = (
-                    envelope.payload
-                    if isinstance(envelope, dict)
-                    else getattr(envelope, "payload", {})
-                ) or {}
-                # SSE 消费方（gateway / hosted UI）需要 family/event_type/seq
-                # 判别事件流类别，payload 原样内嵌。
-                frame = dict(payload)
-                frame.setdefault("seq", seq)
-                if not isinstance(envelope, dict):
-                    frame.setdefault("family", getattr(envelope, "family", None))
-                    frame.setdefault("family_version", getattr(envelope, "family_version", None))
-                    frame.setdefault("event_type", getattr(envelope, "event_type", None))
-                    if getattr(envelope, "run_id", None):
-                        frame.setdefault("run_id", envelope.run_id)
-                yield f"id: {seq}\ndata: {json.dumps(frame, ensure_ascii=False)}\n\n"
+                    payload = (
+                        envelope.payload
+                        if isinstance(envelope, dict)
+                        else getattr(envelope, "payload", {})
+                    ) or {}
+                    # SSE 消费方（gateway / hosted UI）需要 family/event_type/seq
+                    # 判别事件流类别，payload 原样内嵌。
+                    frame = dict(payload)
+                    frame.setdefault("seq", seq)
+                    if not isinstance(envelope, dict):
+                        frame.setdefault("family", getattr(envelope, "family", None))
+                        frame.setdefault("family_version", getattr(envelope, "family_version", None))
+                        frame.setdefault("event_type", getattr(envelope, "event_type", None))
+                        if getattr(envelope, "run_id", None):
+                            frame.setdefault("run_id", envelope.run_id)
+                    yield f"id: {seq}\ndata: {json.dumps(frame, ensure_ascii=False)}\n\n"
+            finally:
+                await frames.aclose()
 
         return StreamingResponse(
             generator(), media_type="text/event-stream", headers=response_headers

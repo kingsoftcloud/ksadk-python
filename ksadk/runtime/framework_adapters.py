@@ -41,6 +41,11 @@ class ADKRuntimeAdapter(RunnerRuntimeAdapter):
     def __init__(self, runner: BaseRunner) -> None:
         super().__init__(runner, runtime_type="adk")
 
+    def configure_tunnel(self, binding) -> None:
+        from ksadk.tunnel.runtime import bind_runner
+
+        bind_runner(self._runner, binding)
+
     async def restore_run_record(self, handle: RunHandle, record: "RunRecord") -> None:
         """Rebuild private request context after native attachment has succeeded.
 
@@ -151,6 +156,11 @@ class LangGraphRuntimeAdapter(NativeLangGraphInteractionMixin, RunnerRuntimeAdap
 
     def __init__(self, runner: BaseRunner) -> None:
         super().__init__(runner, runtime_type="langgraph")
+
+    def configure_tunnel(self, binding) -> None:
+        from ksadk.tunnel.runtime import bind_runner
+
+        bind_runner(self._runner, binding)
 
     async def durable_restore(self, handle: RunHandle) -> RunHandle:
         # Recovery's adapter factory creates a cold runner, independently of

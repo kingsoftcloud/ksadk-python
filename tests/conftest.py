@@ -1,88 +1,86 @@
+"""全局测试配置。
+
+## 浏览器 E2E 默认不跑
+
+`tests/native/` 和 `tests/studio/` 里有 playwright 用例会**启动真实浏览器**、
+**接管鼠标和键盘**。本地跑全量套件时它们会抢焦点，严重影响正常工作。
+
+需要跑浏览器用例时显式开启：
+
+    KSADK_BROWSER_TESTS=1 pytest tests/
+
+## 为什么用显式列表
+
+`collect_ignore_glob` 在这种带 `/` 的相对路径上不可靠（实测漏掉了
+`test_coordinate_observer_browser_live.py`）。显式文件列表最稳。
+"""
+
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
 
-import pytest
-
-TESTS_ROOT = Path(__file__).resolve().parent
-REPO_ROOT = TESTS_ROOT.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-# 模型路由变量快照必须在任何 ksadk 导入之前完成：`ksadk.cli.__init__` 会把
-# 仓库根 `.env`（override=False）注入 os.environ，若快照晚于该导入，开发者
-# 本地的自定义 OPENAI_BASE_URL 会被固化进每个测试的"初始"环境，codex 代理
-# 探测/注入相关测试随即失去封闭性（2026-09-18 全量 triage 实测）。
-_MODEL_ROUTE_ENV_NAMES = (
-    "KSADK_CODEX_USE_PROXY",
-    "KSADK_PROXY_UPSTREAM_BASE",
-    "KSADK_PROXY_UPSTREAM_KEY",
-    "OPENAI_BASE_URL",
-    "OPENAI_API_BASE",
-    "OPENAI_API_KEY",
-    "OPENAI_MODEL_NAME",
-    "MODEL_NAME",
-)
-_INITIAL_MODEL_ROUTE_ENV = {
-    name: os.environ.get(name) for name in _MODEL_ROUTE_ENV_NAMES
+BROWSER_TESTS_ENABLED = os.environ.get("KSADK_BROWSER_TESTS", "").lower() in {
+    "1",
+    "true",
+    "yes",
 }
 
-from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime  # noqa: E402
+# 所有 import playwright 的测试文件（54 个）
+BROWSER_TEST_FILES = [
+    'architecture/test_python_module_size.py',
+    'conftest.py',
+    'e2e/check_submitted_input_browser.py',
+    'e2e/test_a2ui_version_compatibility.py',
+    'harness/native/test_browser_context.py',
+    'harness/native/test_browser_element_refs.py',
+    'harness/native/test_browser_observation_capture.py',
+    'harness/native/test_browser_scroll_protocol.py',
+    'harness/native/test_browser_session.py',
+    'harness/native/test_browser_vision_adapter.py',
+    'harness/native/test_live_browser_task.py',
+    'harness/native/test_live_browser_vision.py',
+    'harness/native/test_tool_feedback.py',
+    'harness/native/test_tool_schema_enum_types.py',
+    'harness/native/test_tool_schema_projection.py',
+    'native/game_phase2_browser_inspect.py',
+    'native/game_phase2_interaction_acceptance.py',
+    'native/game_phase2_world_action_acceptance.py',
+    'native/phase0_reconstructed_extended.py',
+    'native/phase2_live_matrix.py',
+    'native/test_coordinate_observer_browser_live.py',
+    'native/test_game_phase2_interaction_acceptance.py',
+    'native/test_game_phase2_world_action_acceptance.py',
+    'native/test_game_player_path_calibration.py',
+    'native/test_inventory_observation.py',
+    'native/test_visible_inventory_quantity.py',
+    'packaging/test_release_preflight.py',
+    'studio/e2e/agent_policy_editor_browser_e2e.py',
+    'studio/e2e/channel_workspace_browser_e2e.py',
+    'studio/e2e/conversation_items_browser_e2e.py',
+    'studio/e2e/conversation_reconnect_browser_e2e.py',
+    'studio/e2e/harness_authoring_browser_e2e.py',
+    'studio/e2e/native_child_controls_browser_e2e.py',
+    'studio/e2e/native_controls_browser_e2e.py',
+    'studio/e2e/native_durable_controls_browser_e2e.py',
+    'studio/e2e/native_durable_session_browser_e2e.py',
+    'studio/e2e/pcm_browser_smoke.py',
+    'studio/e2e/scheduler_browser_e2e.py',
+    'studio/e2e/scheduler_fault_matrix_browser_e2e.py',
+    'studio/e2e/scheduler_harness_browser_e2e.py',
+    'studio/e2e/studio_browser_smoke.py',
+    'studio/e2e/studio_creation_layout_smoke.py',
+    'studio/e2e/studio_layout_smoke.py',
+    'studio/e2e/studio_resource_forms_smoke.py',
+    'studio/e2e/studio_responsive_smoke.py',
+    'studio/e2e/studio_style_comparison.py',
+    'studio/e2e/studio_visual_review.py',
+    'studio/e2e/studio_workflow_layout_smoke.py',
+    'studio/e2e/studio_workspace_navigation_smoke.py',
+    'studio/test_native_browser_startup_failure.py',
+    'studio/test_native_tool_schema_enum_types.py',
+    'studio/test_native_tool_schema_projection.py',
+    'studio/test_pcm_e2e.py',
+    'test_openai_protocol_e2e.py',
+]
 
-
-def _restore_model_route_env() -> None:
-    for name, value in _INITIAL_MODEL_ROUTE_ENV.items():
-        if value is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = value
-
-
-@pytest.fixture(autouse=True)
-def reset_model_route_environment():
-    """Keep provider/proxy choices isolated from collection and peer tests."""
-
-    _restore_model_route_env()
-    yield
-    _restore_model_route_env()
-
-
-@pytest.fixture(autouse=True)
-def reset_cli_ui_runtime():
-    os.environ.pop("AGENTENGINE_OUTPUT_MODE", None)
-    os.environ.pop("AGENTENGINE_NO_COLOR", None)
-    os.environ.pop("AGENTENGINE_GLOBAL_DRY_RUN", None)
-    configure_ui_runtime(output_mode=OUTPUT_MODE_PRETTY, no_color=False)
-    yield
-    os.environ.pop("AGENTENGINE_OUTPUT_MODE", None)
-    os.environ.pop("AGENTENGINE_NO_COLOR", None)
-    os.environ.pop("AGENTENGINE_GLOBAL_DRY_RUN", None)
-    configure_ui_runtime(output_mode=OUTPUT_MODE_PRETTY, no_color=False)
-
-
-@pytest.fixture(autouse=True)
-def isolate_workspace_registry(tmp_path, monkeypatch):
-    """Test-created Studios must never write the user's recent-workspace list."""
-    from ksadk.studio.workspace_registry import WorkspaceRegistry
-
-    original_init = WorkspaceRegistry.__init__
-
-    def isolated_init(self, home=None):
-        original_init(self, home if home is not None else tmp_path / "registry-home")
-
-    monkeypatch.setattr(WorkspaceRegistry, "__init__", isolated_init)
-    # Default Studio tests must not discover or mutate the user's real DSH
-    # installation. Explicit toolchain fixtures still supply their own root.
-    monkeypatch.setenv("AGENTENGINE_PLUGIN_TOOLCHAIN_HOME", str(tmp_path / "toolchains"))
-
-
-@pytest.fixture(autouse=True)
-def reset_models_catalog_cache():
-    """_build_models_payload 有 60s 进程内缓存，测试间必须隔离。"""
-    from ksadk.server.routes.workspace import _MODELS_CATALOG_CACHE
-
-    _MODELS_CATALOG_CACHE.clear()
-    yield
-    _MODELS_CATALOG_CACHE.clear()
+collect_ignore = [] if BROWSER_TESTS_ENABLED else list(BROWSER_TEST_FILES)

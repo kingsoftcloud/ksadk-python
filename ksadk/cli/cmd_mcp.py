@@ -243,7 +243,7 @@ def deploy(
 
     \b
     部署后的 endpoint 兼容标准 MCP 协议，可以被:
-        - LangGraph/LangChain (via langchain-mcp-adapters)
+        - LangGraph/LangChain (via 原生 mcp ClientSession)
         - Google ADK (via MCPToolset)
         - Cursor / Claude Code
         - Dify 等外部平台

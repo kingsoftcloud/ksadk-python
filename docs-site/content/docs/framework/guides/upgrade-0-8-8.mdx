@@ -1,0 +1,44 @@
+---
+title: "升级到 0.8.8"
+description: "0.8.8 migration and compatibility"
+---
+
+## 安装与升级
+
+使用新的 Python 3.12+ 虚拟环境升级，保留旧 Agent 环境以便回滚。发布前使用经过审核的候选 wheel；正式版本的可用状态以 [GitHub Release](https://github.com/kingsoftcloud/ksadk-python/releases) 和 [PyPI](https://pypi.org/project/ksadk/) 为准。两处确认 `0.8.8` 已发布后，可安装对应的 PyPI 版本及应用所需 extras。
+
+## Tunnel 迁移
+
+按[工具隧道指南](/cn/docs/framework/guides/tool-tunnel/)接入。统一实现已吸收社区 PR #115，并支持自定义 HTTP 服务、LangGraph 和多 Pod 路由。云端导出 `Agent(native_agent, enable_tunnel=True)`；企业侧通过显式 `LocalMCPService` / `LocalAPIService` 声明启动 `TunnelConnector`。
+
+云端 SDK 与企业 Connector 必须一起升级。旧 YAML/CLI 配置和旧协议包由统一实现替代，不同时交付两套协议栈。失败或结果不确定的调用不会自动重放；重试写操作前先核实业务状态。
+
+## MCP 与持久化
+
+核心通过兼容层支持 MCP 1.26+；开发测试使用 MCP 2.3、FastMCP 4.2.2。应用中的其它依赖仍须求解为兼容组合，OpenTelemetry 组件应保持一致。MCP 2 环境不要继续安装要求 `mcp<2` 的旧适配器。
+
+迁移前备份 session/checkpoint。存量 Agent 在显式重建前保留原 SDK 和镜像；新增 Hosted admission 校验要求 Agent 和 session 归属一致。Web 继续复用官方 0.3.18，本版本不要求发布新的 npm 包，也不清理既有 Agent。
+
+回滚时同时恢复原 SDK 环境和 Connector 版本，保留数据库备份与旧 wheel，不删除原有 session 表。
+
+保留 ADK 1.34.3 或 2.5.0 的项目须同时约束 `mcp>=1.26.0,<2`；旧 ADK 依赖 MCP 1.x 的内部接口。ADK 2.14.x 可使用 MCP 2.3。请在同一次安装中求解全部依赖，不能仅替换 ADK。
+
+## Memory 历史兼容
+
+本地 SQLite/PostgreSQL 的 `agent:<agent>:user:<user>` 逻辑命名空间保持不变，旧记录不搬迁、不复制或删除。云端请求在 AICP 协议边界才编码为合法 `AgentUserId`，写入、查询、状态、更新与遗忘使用同一编码；已有合法云端 ID 和资源绑定分区保持原值。查询结果继续保留调用方的逻辑身份。
+
+此次定点修复处理长期记忆用户 ID，包括 68 字符的可信身份键；知识库 `KnowledgeBaseId`、内部会话身份及业务 `SessionId` 保持原值。自定义云端 Memory 会话 ID 仍须符合服务现有上限，其他 ID 规则不在本次统一改写。
+
+备份长期记忆存储与 session/checkpoint；三者用途不同。本版本不会通过清空数据库修复格式问题。运行短暂内部候选并手动改写过 scope 的项目应先核对自己的记录，不能把两套分区直接合并。
+
+## AG-UI、RunAgent 与普通 Agent
+
+`KSADK_CHAT_PREFERRED_TRANSPORT=responses` 让 Hosted UI 首选 RunAgent Responses；它不关闭 Kernel，也不移除已有 AG-UI endpoint。同一 session 的历史与 OAuth 授权仍可复用。恢复时显式设为 `ag-ui`；合并式环境更新中，仅省略旧 key 不一定会清除它。
+
+普通无 Kernel Agent 可以使用 RunAgent 聊天、API key MCP 和自己的持久化 checkpoint。当前 OAuth MCP 需要 `KSADK_ENABLE_KERNEL=1` 及平台准入；关闭 Kernel 时会返回 `MCP_OAUTH_KERNEL_REQUIRED`。该前置条件不是传输回退配置可以绕过的。配置见[环境变量参考](/cn/docs/references/environment-variables/)，客户端组合见[MCP OAuth 与 API key 接入](/cn/docs/framework/guides/mcp-oauth/)。
+
+## 知识库与记忆组件路由
+
+`KSADK_COMPONENT_ENV=pre` 为知识库、KSmem 和生成的 mem0 配置启用组件预发路由；未设置时不自动添加路由头。它不切换整个 Agent 或其他服务的环境。客户端和隔离 Worker 使用初始化快照，修改环境后需重新创建或激活，mem0 则需重新生成配置。
+
+mem0 配置新增 `extraHeaders`；目标插件须支持此字段，旧 `openclaw-mem0` 1.0.6 不兼容。普通 Agent 的现有协议和本地记忆命名空间保持不变。详见[环境变量参考](/cn/docs/references/environment-variables/)。

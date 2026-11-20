@@ -6,6 +6,18 @@ title: Environment Variables
   This reference lists the environment variables most projects need when running KsADK locally or in a release pipeline. Use placeholders in committed files and put real values in local `.env` files or CI secrets.
 </Callout>
 
+
+## Cloud component routing (0.8.8)
+
+| Variable | Purpose |
+| --- | --- |
+| `KSADK_TRAFFIC_SOURCE` | Cloud request attribution, default `agentkit`; sets `X-Traffic-Source` without selecting an environment. |
+| `KSADK_COMPONENT_ENV` | Unset by default. `pre` adds `X-KSC-CUSTOM-SOURCE: pre` to Knowledge, KSmem requests and mem0 plugin configuration; case and surrounding whitespace are ignored. |
+
+Component routing does not select the environment of AgentEngine, Skill, Sandbox, model or MCP services. Unset or other values do not add a component route; explicitly supplied route headers remain intact. Knowledge and KSmem inject headers before signing. Clients capture configuration at creation, and resource Workers receive a snapshot from their parent. Recreate clients or reactivate Workers after changes; regenerate mem0 configuration as needed.
+
+The generated mem0 configuration includes `extraHeaders` and requires a plugin that accepts it. Legacy `openclaw-mem0` 1.0.6 rejects this field. Verify the target plugin before using mem0; successful configuration rendering does not verify plugin startup. This requirement does not affect ordinary Agent chat, Tunnel, AG-UI, A2UI, A2A or OAuth MCP.
+
 ## Model Provider
 
 <Callout type="info">
@@ -308,23 +320,6 @@ KSADK_ENABLE_MCP_TOOLS=1
 KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 ```
 
-## On-prem MCP Tunnel
-
-| Variable | Purpose |
-| --- | --- |
-| `KSADK_ENABLE_TUNNEL` | enable the on-prem MCP Tunnel for the ADK Runtime; defaults to `0` |
-| `KSADK_TUNNEL_TOKEN` | connector registration token; required when Tunnel is enabled and sensitive |
-| `KSADK_TUNNEL_SELF_URL` | loopback base URL through which TunnelToolset reaches the in-process proxy; standard entrypoints derive it from the actual port |
-
-These variables are project-scoped Runtime configuration and cannot be saved to the global configuration with `agentengine config set --global`. Generate `KSADK_TUNNEL_TOKEN` independently for each project or environment. `KSADK_TUNNEL_SELF_URL` is an optional override for special deployments and normally should not be written to a project or deployment environment file; standard entrypoints derive it from the actual port.
-
-```bash title="bash"
-KSADK_ENABLE_TUNNEL=1
-KSADK_TUNNEL_TOKEN=<tunnel-token>
-# Set only when the standard entrypoint cannot derive the port correctly:
-# KSADK_TUNNEL_SELF_URL=http://127.0.0.1:8080
-```
-
 ## Build And Packaging
 
 | Variable | Purpose |
@@ -437,7 +432,19 @@ When one backend fails the other still works: primary failure keeps the secondar
   - Keep public docs on placeholders such as `sk-test`, `my-model`, and `https://api.example.com/v1`.
 </Callout>
 
-Current Hosted UI static asset version: `0.3.12`.
+Current Hosted UI static asset version: `0.3.18`.
 
 
 See the [0.8.7 integration guide](/en/docs/framework/guides/integration-0-8-7/) for deployment credentials, application settings, and platform-projected values.
+
+
+## 0.8.8 Harness service and chat transport
+
+| Variable | Meaning |
+| --- | --- |
+| `KSADK_CHAT_PREFERRED_TRANSPORT` | `ag-ui` / `responses`: prefer an available chat transport; other endpoints remain available. |
+| `KSADK_HARNESS_SERVICE_URL` | Explicit external Harness service URL; unset keeps the existing runtime path. |
+| `KSADK_HARNESS_SERVICE_TOKEN` | Service credential; inject privately and never commit it. |
+| `KSADK_HARNESS_SERVICE_WORKSPACE` | Existing absolute local workspace mount. |
+| `KSADK_HARNESS_SERVICE_CA_FILE` | Trusted CA file for the service TLS connection. |
+| `KSADK_HARNESS_SERVICE_DURABLE_APPROVALS` | Set `1` only if the service supports the durable approval contract; default off. |

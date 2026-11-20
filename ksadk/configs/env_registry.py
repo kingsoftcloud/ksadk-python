@@ -7,6 +7,18 @@ from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
+        "KSADK_COMPONENT_ENV",
+        "cloud",
+        "Opt-in knowledge and Memory component routing; pre adds X-KSC-CUSTOM-SOURCE before signing.",
+        "",
+    ),
+    EnvVarSpec("KSADK_CHAT_PREFERRED_TRANSPORT", "agui", "Preferred available chat transport: ag-ui or responses; existing endpoints remain available."),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_URL", "harness", "Opt-in external Harness service base URL."),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_TOKEN", "harness", "External Harness service access credential.", sensitive=True),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_WORKSPACE", "harness", "Existing absolute local workspace mount for the Harness service adapter."),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_CA_FILE", "harness", "CA file used to verify the Harness service TLS certificate."),
+    EnvVarSpec("KSADK_HARNESS_SERVICE_DURABLE_APPROVALS", "harness", "Enable the external service durable approval contract only when supported.", "0"),
+    EnvVarSpec(
         "KSADK_TRAFFIC_SOURCE",
         "cloud",
         "Cloud resource request X-Traffic-Source header.",
@@ -262,7 +274,6 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Internal bundled core requirement constant.",
     ),
     EnvVarSpec("KSADK_ENABLE_MCP_TOOLS", "mcp_runtime", "Enable ADK MCP tool injection.", "1"),
-    EnvVarSpec("KSADK_ENABLE_TUNNEL", "tunnel", "Enable ADK on-prem MCP Tunnel.", "0"),
     EnvVarSpec("KSADK_EVENTS_TABLE", "sessions", "Internal SQLite events table constant."),
     EnvVarSpec("KSADK_FEISHU_APP_ID", "cli", "Feishu helper app id used by OpenClaw diagnostics."),
     EnvVarSpec("KSADK_FEISHU_RESULT_PATH", "cli", "Feishu helper result file path."),
@@ -484,6 +495,25 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_MCP_SERVERS", "mcp_runtime", "JSON array of MCP server configs.", sensitive=True
     ),
+    EnvVarSpec(
+        "KSADK_TUNNEL_PEER_SECRET",
+        "mcp_runtime",
+        "Optional peer HMAC secret override, at least 32 bytes; otherwise derived from "
+        "the declared tunnel token and runtime ID.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_TUNNEL_PEER_SERVICE",
+        "mcp_runtime",
+        "Headless service for tunnel peer discovery; defaults to the runtime ID plus -headless.",
+    ),
+    EnvVarSpec(
+        "KSADK_TUNNEL_PEER_PORT",
+        "mcp_runtime",
+        "Internal peer WebSocket listener port.",
+        "8092",
+    ),
+    EnvVarSpec("KSADK_TUNNEL_TOKEN", "mcp_runtime", "Required application token for tool tunnel registration.", sensitive=True),
     EnvVarSpec(
         "KSADK_MCP_OAUTH_PROJECTION",
         "configs",
@@ -942,17 +972,6 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_TOOL_RESULT_PREVIEW_CHARS",
         "tools",
         "Preview character count for persisted tool outputs.",
-    ),
-    EnvVarSpec(
-        "KSADK_TUNNEL_SELF_URL",
-        "tunnel",
-        "Loopback base URL used by the Tunnel MCP proxy.",
-    ),
-    EnvVarSpec(
-        "KSADK_TUNNEL_TOKEN",
-        "tunnel",
-        "Shared token used to authenticate Tunnel connector registration.",
-        sensitive=True,
     ),
     EnvVarSpec("KSADK_UPDATED_AT", "configs", "Internal config update timestamp field."),
     EnvVarSpec("KSADK_VERSION", "configs", "Internal config version field."),

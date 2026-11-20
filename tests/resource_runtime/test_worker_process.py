@@ -405,6 +405,7 @@ async def test_supervisor_enforces_worker_capacity(upstream):
 @pytest.mark.parametrize("source", [None, "worker-fixture"])
 async def test_broker_to_real_subprocess_to_sdk_http(upstream, monkeypatch, source):
     endpoint, calls = upstream
+    monkeypatch.setenv("KSADK_COMPONENT_ENV", "pre")
     for name in ("KSYUN_ACCESS_KEY", "KSYUN_SECRET_KEY", "HTTPS_PROXY", "HTTP_PROXY"):
         monkeypatch.setenv(name, "fake-unrelated-environment-value")
     monkeypatch.delenv("KSADK_TRAFFIC_SOURCE", raising=False)
@@ -412,6 +413,8 @@ async def test_broker_to_real_subprocess_to_sdk_http(upstream, monkeypatch, sour
         monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", source)
     init = initialization(endpoint)
     assert init.pipe_payload()["trafficSource"] == (source or "agentkit")
+    assert init.pipe_payload()["componentEnv"] == "pre"
+    monkeypatch.setenv("KSADK_COMPONENT_ENV", "prod")
     monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", "changed-after-initialization")
     assert "fake-selected-secret" not in repr(init)
     assert "fake-selected-secret" not in init.model_dump_json()
@@ -438,6 +441,8 @@ async def test_broker_to_real_subprocess_to_sdk_http(upstream, monkeypatch, sour
         assert calls[0][1]["Query"] == "from-process"
         headers = {key.lower(): value for key, value in calls[0][0].items()}
         assert headers["x-traffic-source"] == (source or "agentkit")
+        assert headers["x-ksc-custom-source"] == "pre"
+        assert "x-ksadk-component-env" not in headers
         assert "fake-selected-access" in headers["authorization"]
         assert "fake-unrelated" not in str(headers)
         broker.revoke_activation("activation-a")

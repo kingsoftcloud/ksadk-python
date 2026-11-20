@@ -7,6 +7,8 @@ import json
 import logging
 from typing import Any
 
+from fastapi import HTTPException
+
 from ag_ui.core import (
     CustomEvent,
     Interrupt,
@@ -36,6 +38,10 @@ class AguiInteractionAlreadyTerminal(ValueError):
     """A stale or mixed answer batch must not submit another command."""
 
 
+class AguiKernelRejected(ValueError):
+    pass
+
+
 def public_interrupt(payload: dict[str, Any]) -> Interrupt:
     request = payload.get("request") or payload
     presentation = request.get("presentation") or {}
@@ -54,6 +60,24 @@ def public_interrupt(payload: dict[str, Any]) -> Interrupt:
 
 
 class AGUIKernelMixin:
+    async def _kernel_barrier_interrupts(self, stream, interaction_ids):
+        """Recover wait descriptions omitted by a resume subscription's cursor."""
+        interrupts = []
+        for key in interaction_ids:
+            pending = stream.run.pending.get(key)
+            if stream.readonly or pending is None:
+                record = await stream.read_interaction(key)
+                if record is None or record["run_id"] != stream.target_run:
+                    # OAuth has a separate wait ledger and stays on its stream.
+                    continue
+                if stream.readonly and record["status"] != "pending":
+                    continue
+                interrupt = public_interrupt(record)
+            else:
+                interrupt = pending.interrupt
+            interrupts.append(interrupt)
+        return interrupts
+
     async def _kernel_ready_interrupts(self, ready, run, trusted, input):
         current = await ingress.get_agent_kernel().pending_interactions(
             AgentStatusQuery(
@@ -86,7 +110,7 @@ class AGUIKernelMixin:
         ]
         return any(item is not None for item in known)
 
-    async def _kernel_run(self, input):
+    async def _kernel_run(self, input, admission=None):
         yield RunStartedEvent(
             thread_id=input.thread_id,
             run_id=input.run_id,
@@ -98,127 +122,18 @@ class AGUIKernelMixin:
             input.thread_id, input.run_id, f"{input.run_id}:assistant", f"{input.run_id}:reasoning"
         )
         try:
-            trusted = ingress.trusted_context(
-                source_kind="agui",
-                source_ref=input.run_id,
-                session_id=input.thread_id,
-                operations=(
-                    "enqueue",
-                    "submit_interaction",
-                    "interrupt",
-                    "get_status",
-                    "subscribe_events",
-                ),
-                launch_context=self._shared.launch_context,
-            )
-            initial_waits = []
-            unconsumed = {entry.interrupt_id for entry in input.resume or []}
-            target_run = None
-            if input.resume:
-                initial_waits, commands, target_run = await self._kernel_resumes(input, trusted)
-            else:
-                commands = [
-                    ingress.map_agui_request(
-                        session_id=input.thread_id,
-                        idempotency_key=input.run_id,
-                        content=self._latest_user_input(input),
-                        run_id=input.run_id,
-                        trusted=trusted,
-                        runtime_options={
-                            "model": (input.forwarded_props or {}).get("model"),
-                            "ag-ui": self._request_config(input)["ag-ui"],
-                            "conversation": {
-                                "model_metadata": (input.forwarded_props or {}).get(
-                                    "modelMetadata"
-                                ),
-                                "model_options": (input.forwarded_props or {}).get("modelOptions"),
-                                "request_metadata": {
-                                    "transport": "ag-ui",
-                                    "tool_approval_mode": (input.forwarded_props or {}).get(
-                                        "toolApprovalMode"
-                                    ),
-                                },
-                            },
-                        },
-                    )
-                ]
-            readonly_resume = bool(input.resume) and not commands
-            if readonly_resume:
-                unconsumed.clear()
-            receipts = []
-            for command in commands:
-                # Mutation permits are single-command nonces. A parallel
-                # answer batch must not reuse one nonce for distinct commands.
-                admission = ingress.trusted_context(
-                    source_kind="agui",
-                    source_ref=input.run_id,
-                    session_id=input.thread_id,
-                    operations=(command.command_type,),
-                    launch_context=self._shared.launch_context,
-                )
-                if (
-                    admission.tenant_id != trusted.tenant_id
-                    or admission.agent_instance_id != trusted.agent_instance_id
-                ):
-                    raise ValueError("Trusted admission scope changed")
-                payload = dict(command.payload)
-                if command.command_type == "submit_interaction":
-                    payload["token_ref"] = admission.permit.permit_id
-                command = command.model_copy(
-                    update={
-                        "authorization_ref": admission.permit.permit_id,
-                        "payload": payload,
-                    }
-                )
-                receipt = await ingress.submit_command(command, permit=admission.permit)
-                if receipt.status not in {"accepted", "duplicate"}:
-                    yield RunErrorEvent(
-                        message="Agent kernel rejected command", code=receipt.status.upper()
-                    )
-                    return
-                receipts.append(receipt)
-            if target_run is None:
-                target_run = execution_grant_run_id(
-                    commands[0].model_copy(update={"command_id": receipts[0].command_id})
-                )
-            # Receipts and subsequent facts are read from the same physical
-            # Session cursor. A duplicate uses its original accepted cursor.
-            # Terminal interactions already have an authoritative original Run.
-            # Replay its public facts without admitting a new answer command.
-            after_seq = min((int(item.accepted_seq or 0) for item in receipts), default=0)
-            run = _ThreadRun(
-                RunHandle(
-                    run_id=target_run or input.run_id,
-                    session_id=input.thread_id,
-                    runtime_type="ksadk",
-                )
-            )
-            for payload in initial_waits:
-                if payload["run_id"] != target_run:
-                    continue
-                interrupt = public_interrupt(payload)
-                run.pending[interrupt.id] = _PendingInterrupt(interrupt, "", payload["kind"])
-            if readonly_resume:
-                interrupts = await self._kernel_ready_interrupts(
-                    list(run.pending), run, trusted, input,
-                )
-                if interrupts:
-                    yield RunFinishedEvent(
-                        thread_id=input.thread_id, run_id=input.run_id,
-                        outcome=RunFinishedInterruptOutcome(interrupts=interrupts),
-                    )
-                    return
-            command_ids = {str(item.command_id) for item in receipts}
-            submitted_interactions = {
-                str(receipt.command_id): command.payload["interaction_id"]
-                for command, receipt in zip(commands, receipts)
-                if command.command_type == "submit_interaction"
-            }
-            async for _, envelope in ingress.subscribe_projected(
-                input.thread_id,
-                trusted=trusted,
-                after_seq=after_seq,
-            ):
+            from ksadk.agui.hosted import observe
+
+            stream = (await observe(self, input, admission) if admission is not None
+                      else await self._local_kernel_stream(input))
+            target_run, run = stream.target_run, stream.run
+            command_ids, submitted_interactions = stream.command_ids, stream.submissions
+            readonly_resume, unconsumed = stream.readonly, stream.unconsumed
+            if stream.ready:
+                yield RunFinishedEvent(thread_id=input.thread_id, run_id=input.run_id,
+                    outcome=RunFinishedInterruptOutcome(interrupts=stream.ready))
+                return
+            async for _, envelope in stream.events:
                 if envelope.family == "control":
                     if (envelope.event_type.startswith("mcp.authorization.")
                             and envelope.run_id == target_run):
@@ -251,15 +166,7 @@ class AGUIKernelMixin:
                             # Another submission may win after the pending
                             # preflight. Classify only this admitted occurrence,
                             # using its authorized public state, never its answer.
-                            current = await ingress.get_agent_kernel().public_interaction(
-                                AgentStatusQuery(
-                                    tenant_id=trusted.tenant_id,
-                                    agent_instance_id=trusted.agent_instance_id,
-                                    session_id=input.thread_id,
-                                    authorization_ref=trusted.permit.permit_id,
-                                ),
-                                interaction_id, permit=trusted.permit,
-                            )
+                            current = await stream.read_interaction(interaction_id)
                             if (current is not None and current["run_id"] == target_run
                                     and current["status"] in {"resolved", "cancelled", "expired"}):
                                 raise AguiInteractionAlreadyTerminal()
@@ -271,15 +178,13 @@ class AGUIKernelMixin:
                     if (envelope.event_type == "control.interaction_wait_ready"
                             and envelope.run_id == target_run):
                         # This cursor marks the end of this activation. A fast
-                        # answer may already have resolved the durable wait;
-                        # querying live state here would stream its resumed
-                        # output twice (also owned by the resume subscriber).
-                        interrupts = [
-                            run.pending[key].interrupt
-                            for key in envelope.payload.get("interaction_ids", [])
-                            if key in run.pending
-                        ]
-                        if interrupts and not unconsumed and not readonly_resume:
+                        # answer may already have resolved the durable wait.
+                        # Keep this activation's boundary for admitted calls;
+                        # read-only retries expose only still-pending waits.
+                        interrupts = (await self._kernel_barrier_interrupts(
+                            stream, envelope.payload.get("interaction_ids", [])
+                        )) if not unconsumed else []
+                        if interrupts:
                             async for close in self._close_open_messages(wire):
                                 yield close
                             yield RunFinishedEvent(
@@ -320,8 +225,10 @@ class AGUIKernelMixin:
                 if isinstance(ready, list):
                     # Read old private-candidate logs without producing new
                     # synthetic RunProgress facts for this transport barrier.
-                    interrupts = [run.pending[key].interrupt for key in ready if key in run.pending]
-                    if interrupts and not unconsumed and not readonly_resume:
+                    interrupts = (await self._kernel_barrier_interrupts(
+                        stream, ready
+                    )) if not unconsumed else []
+                    if interrupts:
                         async for close in self._close_open_messages(wire):
                             yield close
                         yield RunFinishedEvent(
@@ -336,6 +243,8 @@ class AGUIKernelMixin:
                     if not readonly_resume:
                         await self._update_session_metadata_after_assistant_turn(input, wire)
                     return
+        except AguiKernelRejected as exc:
+            yield RunErrorEvent(message="Agent kernel rejected command", code=str(exc).upper())
         except AguiInteractionAlreadyTerminal:
             yield RunErrorEvent(
                 message="Interaction is already terminal; refresh pending inputs before submitting",
@@ -350,9 +259,134 @@ class AGUIKernelMixin:
             yield RunErrorEvent(
                 message="Response does not satisfy the input schema", code="INPUT_RESPONSE_INVALID"
             )
+        except HTTPException as exc:
+            yield RunErrorEvent(message=str(exc.detail), code=f"AGUI_ADMISSION_{exc.status_code}")
         except Exception:
             logger.exception("AG-UI Kernel projection failed")
             yield RunErrorEvent(message="Agent kernel ingress failed", code="KERNEL_ERROR")
+
+    async def _local_kernel_stream(self, input):
+        from ksadk.agui.hosted import KernelStream
+
+        trusted = ingress.trusted_context(
+            source_kind="agui",
+            source_ref=input.run_id,
+            session_id=input.thread_id,
+            operations=(
+                "enqueue",
+                "submit_interaction",
+                "interrupt",
+                "get_status",
+                "subscribe_events",
+            ),
+            launch_context=self._shared.launch_context,
+        )
+        initial_waits = []
+        unconsumed = {entry.interrupt_id for entry in input.resume or []}
+        target_run = None
+        if input.resume:
+            initial_waits, commands, target_run = await self._kernel_resumes(input, trusted)
+        else:
+            commands = [
+                ingress.map_agui_request(
+                    session_id=input.thread_id,
+                    idempotency_key=input.run_id,
+                    content=self._latest_user_input(input),
+                    run_id=input.run_id,
+                    trusted=trusted,
+                    runtime_options={
+                        "model": (input.forwarded_props or {}).get("model"),
+                        "ag-ui": self._request_config(input)["ag-ui"],
+                        "conversation": {
+                            "model_metadata": (input.forwarded_props or {}).get(
+                                "modelMetadata"
+                            ),
+                            "model_options": (input.forwarded_props or {}).get("modelOptions"),
+                            "request_metadata": {
+                                "transport": "ag-ui",
+                                "tool_approval_mode": (input.forwarded_props or {}).get(
+                                    "toolApprovalMode"
+                                ),
+                            },
+                        },
+                    },
+                )
+            ]
+        readonly_resume = bool(input.resume) and not commands
+        if readonly_resume:
+            unconsumed.clear()
+        receipts = []
+        for command in commands:
+            # Mutation permits are single-command nonces. A parallel
+            # answer batch must not reuse one nonce for distinct commands.
+            admission = ingress.trusted_context(
+                source_kind="agui",
+                source_ref=input.run_id,
+                session_id=input.thread_id,
+                operations=(command.command_type,),
+                launch_context=self._shared.launch_context,
+            )
+            if (
+                admission.tenant_id != trusted.tenant_id
+                or admission.agent_instance_id != trusted.agent_instance_id
+            ):
+                raise ValueError("Trusted admission scope changed")
+            payload = dict(command.payload)
+            if not self._identity.is_empty:
+                payload["invocation_identity"] = self._identity.to_payload()
+            if command.command_type == "submit_interaction":
+                payload["token_ref"] = admission.permit.permit_id
+            command = command.model_copy(
+                update={
+                    "authorization_ref": admission.permit.permit_id,
+                    "payload": payload,
+                }
+            )
+            receipt = await ingress.submit_command(command, permit=admission.permit)
+            if receipt.status not in {"accepted", "duplicate"}:
+                raise AguiKernelRejected(receipt.status)
+            receipts.append(receipt)
+        if target_run is None:
+            target_run = execution_grant_run_id(
+                commands[0].model_copy(update={"command_id": receipts[0].command_id})
+            )
+        # Receipts and subsequent facts are read from the same physical
+        # Session cursor. A duplicate uses its original accepted cursor.
+        # Terminal interactions already have an authoritative original Run.
+        # Replay its public facts without admitting a new answer command.
+        after_seq = min((int(item.accepted_seq or 0) for item in receipts), default=0)
+        run = _ThreadRun(
+            RunHandle(
+                run_id=target_run or input.run_id,
+                session_id=input.thread_id,
+                runtime_type="ksadk",
+            )
+        )
+        for payload in initial_waits:
+            if payload["run_id"] != target_run:
+                continue
+            interrupt = public_interrupt(payload)
+            run.pending[interrupt.id] = _PendingInterrupt(interrupt, "", payload["kind"])
+        ready = []
+        if readonly_resume:
+            ready = await self._kernel_ready_interrupts(list(run.pending), run, trusted, input)
+        command_ids = {str(item.command_id) for item in receipts}
+        submitted_interactions = {
+            str(receipt.command_id): command.payload["interaction_id"]
+            for command, receipt in zip(commands, receipts)
+            if command.command_type == "submit_interaction"
+        }
+
+        async def read_interaction(key):
+            return await ingress.get_agent_kernel().public_interaction(
+                AgentStatusQuery(tenant_id=trusted.tenant_id,
+                    agent_instance_id=trusted.agent_instance_id, session_id=input.thread_id,
+                    authorization_ref=trusted.permit.permit_id), key, permit=trusted.permit,
+            )
+        return KernelStream(target_run, run,
+            ingress.subscribe_projected(input.thread_id, trusted=trusted, after_seq=after_seq),
+            read_interaction, readonly=readonly_resume, command_ids=command_ids,
+            submissions=submitted_interactions, unconsumed=unconsumed, ready=ready)
 
     async def _kernel_resumes(self, input, trusted):
         """Official resume entries become real Inbox commands on the original Run."""

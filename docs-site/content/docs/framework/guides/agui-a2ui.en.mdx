@@ -119,6 +119,20 @@ than assuming AG-UI is enabled for every Agent. Submit interactions with server-
 `InteractionId`, `ExpectedRevision`, and an idempotency key. Do not resend input JSON as a chat message
 or re-enqueue the original task when its admission outcome is uncertain.
 
+## Hosted AG-UI and MCP OAuth
+
+The hosted Gateway admits AG-UI requests through the existing Server task Actions;
+the SDK projects events from that same durable task. Upgrade SDK, Gateway and Server
+together to resume the original LangGraph task after authorization. Runtimes without
+a hosted Kernel retain their existing AG-UI execution path.
+
+Custom AG-UI clients must handle `CUSTOM` events named `ksadk.session_event` whose
+`value.event_type` is `mcp.authorization.requested` or `mcp.authorization.updated`.
+Use the wait ID, revision and existing authorization Actions to display consent.
+The existing Broker handles browser redirects and callbacks. OAuth waits do not use
+ordinary `resume` form submissions. After a disconnect, reconnect with the same
+`threadId`, `runId` and request content so admission reuses the original task and tool results.
+
 ## Validation and failure handling
 
 Check Session and checkpoint readiness independently, then verify display, editing, submission,

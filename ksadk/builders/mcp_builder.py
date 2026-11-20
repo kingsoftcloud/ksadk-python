@@ -6,9 +6,13 @@ MCP Builders - FastMCP 代码打包 / 容器构建
 - Container 模式: 复用现有 Docker 登录/推送逻辑，但检测/打包走 FastMCP 专属链路
 """
 
+import json
 import os
 import shutil
 import subprocess
+import sys
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
 
@@ -73,6 +77,8 @@ class MCPCodeBuilder(CodeBuilder):
                 self._save_input_fingerprint(zip_path, detection_result)
                 zip_size = zip_path.stat().st_size / (1024 * 1024)
                 click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg="green")
+                # 缓存命中也要探一次——AST 结果可能不准，而工具列表要进平台元数据
+                detection_result = self._resolve_tools(detection_result)
                 return BuildResult(
                     success=True,
                     artifact_path=zip_path,
@@ -99,6 +105,9 @@ class MCPCodeBuilder(CodeBuilder):
         if not self._install_dependencies(requirements_path):
             return BuildResult(success=False, error_message="依赖安装失败")
 
+        # 依赖装完后用**运行时真值**覆盖 AST 猜测（工厂函数注册的工具 AST 扫不到）
+        detection_result = self._resolve_tools(detection_result)
+
         # Step 3: 打包
         click.echo("\n📦 Step 3/3: 打包 zip...")
         self._package_mcp_zip(zip_path, detection_result)
@@ -119,6 +128,139 @@ class MCPCodeBuilder(CodeBuilder):
                 "deps_dir": str(self.deps_dir),
             },
         )
+
+    # 工具探测超时（秒）。导入项目 + 加载 catalog 通常 <5s，60s 足够宽松。
+    TOOL_PROBE_TIMEOUT = 60.0
+
+    def _find_probe_python(self) -> Path | None:
+        """找一个**能 import 项目依赖**的 Python 解释器。
+
+        ## 为什么不能直接用 `sys.executable`
+
+        构建机上的 ksadk 环境**未必装了项目依赖**，而且版本可能不兼容。
+        实测（2026-11-18）：ksadk venv 的 fastmcp 版本过旧，import 项目直接报
+        `No module named 'fastmcp.server.transforms'`。
+
+        ## 为什么不能用 `deps_dir`
+
+        `_install_dependencies()` 装的是**目标平台**的 wheel（Linux manylinux），
+        在 macOS 构建机上 import 不了。所以只能找**开发者本地环境**。
+
+        优先级：`<project>/.venv` → `venv` → `env` → `sys.executable`（最后兜底）。
+        """
+        for name in (".venv", "venv", "env"):
+            candidate = self.project_dir / name / "bin" / "python"
+            if candidate.is_file():
+                return candidate
+            # Windows
+            win = self.project_dir / name / "Scripts" / "python.exe"
+            if win.is_file():
+                return win
+        return Path(sys.executable) if sys.executable else None
+
+    def _probe_tools_runtime(self, detection_result: MCPDetectionResult) -> list[str] | None:
+        """**真调** `list_tools()` 拿工具列表，而不是 AST 猜。
+
+        ## 为什么需要
+
+        `MCPDetector._extract_tools()` 用 AST 扫入口文件的 `@mcp.tool` 装饰器。
+        但只要项目用**工厂函数**注册工具就扫不到：
+
+        ```python
+        # mcp_server.py
+        from ezone_mcp.server import create_server
+        mcp = create_server()      # ← 没有装饰器，AST 返回 []
+        ```
+
+        后果（2026-11-18 云端实测）：`build-metadata.json` 的 `tools` 恒为 `[]`，
+        平台「工具」tab 空白，`ksadk mcp status` 显示 `tools: []`。
+
+        **`list_tools()` 是事实，AST 是猜测。**
+
+        ## 实现
+
+        起一个**子进程**（避免污染构建进程的 import 缓存），把结果写进临时文件
+        （避免 stdout 被日志污染），任何失败都返回 `None` 让调用方回退 AST。
+
+        Returns:
+            工具名列表；探测失败返回 ``None``。
+        """
+        python = self._find_probe_python()
+        if python is None:
+            return None
+
+        module = detection_result.entry_point.replace("/", ".").replace("\\", ".")
+        if module.endswith(".py"):
+            module = module[:-3]
+        variable = detection_result.mcp_variable or "mcp"
+
+        with tempfile.TemporaryDirectory(prefix="ksadk-probe-") as tmp:
+            out_file = Path(tmp) / "tools.json"
+            # 工具枚举 API 在 fastmcp 各大版本间**变过名字**：
+            #   - fastmcp 4.x / mcp 2.x : `await mcp.list_tools() -> list[Tool]`
+            #   - fastmcp 2.x           : `await mcp.get_tools() -> dict[str, Tool]`
+            # 统一在子进程里试两条，任一成功即可。
+            script = (
+                "import asyncio, json, sys\n"
+                "out, root, module, variable = sys.argv[1:5]\n"
+                "sys.path.insert(0, root)\n"
+                "import importlib\n"
+                f"mcp = getattr(importlib.import_module(module), variable)\n"
+                "def _names():\n"
+                "    lister = getattr(mcp, 'list_tools', None)\n"
+                "    if lister is not None:\n"
+                "        return [getattr(t, 'name', None) for t in asyncio.run(lister())]\n"
+                "    getter = getattr(mcp, 'get_tools', None)\n"
+                "    if getter is None:\n"
+                "        raise AttributeError('MCP 实例既没有 list_tools 也没有 get_tools')\n"
+                "    found = asyncio.run(getter())\n"
+                "    return list(found) if isinstance(found, dict) else [getattr(t, 'name', None) for t in found]\n"
+                "json.dump([n for n in _names() if n], open(out, 'w', encoding='utf-8'))\n"
+            )
+            env = {**os.environ, "PYTHONPATH": str(self.project_dir)}
+            try:
+                completed = subprocess.run(
+                    [str(python), "-c", script, str(out_file), str(self.project_dir),
+                     module, variable],
+                    cwd=str(self.project_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=self.TOOL_PROBE_TIMEOUT,
+                    env=env,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                click.secho(f"   ⚠️ 工具探测失败（{type(exc).__name__}），回退 AST 结果", fg="yellow")
+                return None
+
+            if completed.returncode != 0 or not out_file.is_file():
+                detail = (completed.stderr or "").strip().splitlines()
+                hint = detail[-1] if detail else f"exit={completed.returncode}"
+                click.secho(f"   ⚠️ 工具探测失败（{hint}），回退 AST 结果", fg="yellow")
+                return None
+
+            try:
+                tools = json.loads(out_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+
+        if not isinstance(tools, list):
+            return None
+        return [str(name) for name in tools]
+
+    def _resolve_tools(self, detection_result: MCPDetectionResult) -> MCPDetectionResult:
+        """用运行时真值覆盖 AST 结果（探测失败则原样返回）。"""
+        probed = self._probe_tools_runtime(detection_result)
+        if probed is None:
+            return detection_result
+        if probed == list(detection_result.tools):
+            return detection_result
+        click.echo(
+            f"   工具: 运行时探测到 {len(probed)} 个"
+            + (f"（AST 只扫到 {len(detection_result.tools)} 个）" if detection_result.tools else
+               "（AST 扫不到动态注册的工具）")
+        )
+        return replace(detection_result, tools=probed)
 
     def _prepare_mcp_requirements(self, detection_result: MCPDetectionResult) -> Path:
         """准备 MCP 依赖"""

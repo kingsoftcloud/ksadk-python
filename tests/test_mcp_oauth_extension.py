@@ -7,6 +7,7 @@ import httpx
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from ksadk._mcp_compat import httpx_module
 from ksadk.interaction.langgraph_interrupt import normalize_interrupt
 from ksadk.mcp_runtime import MCPServerConfig, build_connection_params
 from ksadk.mcp_runtime.oauth.client import BrokerError
@@ -85,13 +86,56 @@ def test_durability_is_not_silently_downgraded():
         (503, "", "CONNECTION_FAILED"),
     ],
 )
-def test_mcp_failure_classification(status, challenge, expected):
-    error = httpx.HTTPStatusError(
+@pytest.mark.parametrize("http_backend", [httpx, httpx_module()])
+def test_mcp_failure_classification(status, challenge, expected, http_backend):
+    error = http_backend.HTTPStatusError(
         "transport message may contain secrets",
-        request=httpx.Request("POST", "https://mcp.example.test"),
-        response=httpx.Response(status, headers={"WWW-Authenticate": challenge}),
+        request=http_backend.Request("POST", "https://mcp.example.test"),
+        response=http_backend.Response(status, headers={"WWW-Authenticate": challenge}),
     )
     assert classify_mcp_error(ExceptionGroup("group", [error])) == expected
+
+
+@pytest.mark.asyncio
+async def test_background_get_denial_does_not_make_a_failed_post_retryable(monkeypatch):
+    import asyncio
+
+    from ksadk.mcp_runtime.oauth.langgraph import connect
+
+    backend = httpx_module()
+    get_denied = asyncio.Event()
+
+    async def handler(request):
+        if request.method == "GET":
+            get_denied.set()
+            return backend.Response(403)
+        if request.method == "DELETE":
+            return backend.Response(200)
+        body = json.loads(request.content)
+        if "id" not in body:
+            return backend.Response(202)
+        if body["method"] == "initialize":
+            return backend.Response(200, headers={"Mcp-Session-Id": "fixture"}, json={
+                "jsonrpc": "2.0", "id": body["id"], "result": {
+                    "protocolVersion": body["params"]["protocolVersion"],
+                    "capabilities": {}, "serverInfo": {"name": "fixture", "version": "1"},
+                },
+            })
+        # The business request may have run; no result arrived.
+        return backend.Response(503)
+
+    client = backend.AsyncClient(transport=backend.MockTransport(handler))
+    monkeypatch.setattr(
+        "ksadk.mcp_runtime.oauth.transport.http_client_factory",
+        lambda credential: lambda **kwargs: client,
+    )
+    async with asyncio.timeout(5):
+        with pytest.raises(Exception) as failure:
+            async with connect({"resource": "https://fixture.example/mcp", "access_token": "fake"}) as session:
+                await get_denied.wait()
+                await session.call_tool("write", {})
+    assert classify_mcp_error(failure.value) == "CONNECTION_FAILED"
+    assert client.is_closed
 
 
 def test_completion_signatures_cannot_be_reused_as_workload_credentials():

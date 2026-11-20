@@ -33,6 +33,9 @@ _EXPORTS = {
     "StagnationPolicy": ("ksadk.harness.run_control", "StagnationPolicy"),
     "HarnessRuntime": ("ksadk.harness.runtime", "HarnessRuntime"),
     "HarnessRuntimeAdapter": ("ksadk.harness.runtime", "HarnessRuntimeAdapter"),
+    "HarnessServiceRuntimeAdapter": (
+        "ksadk.harness.service_runtime", "HarnessServiceRuntimeAdapter",
+    ),
     "HarnessSandboxExecutor": ("ksadk.harness.sandbox", "HarnessSandboxExecutor"),
     "SandboxPolicyDenied": ("ksadk.harness.sandbox", "SandboxPolicyDenied"),
     "ToolDeliverySemantics": (

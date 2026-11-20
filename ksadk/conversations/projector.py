@@ -36,6 +36,7 @@ from ksadk.events.content import (
     ToolResultContent,
 )
 from ksadk.events.usage import usage_mode
+from ksadk.harness.service_presentation import engine_presentation, engine_view_hash
 from ksadk.kernel.contracts import SessionEventEnvelope
 
 _INTERACTION_EVENT_TYPES = frozenset(
@@ -334,6 +335,11 @@ def project_conversation_item(
     if isinstance(event, (RunCompleted, RunFailed, RunCanceled, RunInterrupted)):
         payload.update(_run_outcome_payload(event.source.metadata))
     payload.update(public_item_presentation(event, kind))
+    engine_view = event.source.metadata.get("harness_service_presentation")
+    if event.source.framework == "ksadk" and isinstance(engine_view, dict):
+        presentation = engine_presentation(engine_view_hash(engine_view), engine_view.get("event"))
+        if presentation:
+            payload["harnessView"] = presentation
     if kind == "tool_call" and event.source.metadata.get("engine_kind") == "native":
         # Native public results contain a sealed execution status, not arbitrary
         # business output. An approval receipt is nonterminal even in old logs

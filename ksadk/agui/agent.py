@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from importlib import import_module
 from typing import Any, AsyncIterator, Callable, Mapping, Optional, cast
@@ -52,6 +53,7 @@ from ksadk.runtime.adapter import (
     StartRequest,
 )
 from ksadk.runtime.executor import RuntimeExecutor
+from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY, PlatformIdentityContext
 
 EventStoreFactory = Callable[[], Any]
 SessionServiceFactory = Callable[[], Any]
@@ -91,6 +93,9 @@ class KsadkAGUIAgent(AGUIKernelMixin, AGUIResumeMixin, AGUIProjectionMixin):
         _shared: Optional[_SharedRuntime] = None,
     ) -> None:
         self.name = name
+        self._identity = PlatformIdentityContext()
+        self._admission = None
+        self._session = None
         if _shared is not None:
             self._shared = _shared
         else:
@@ -105,7 +110,44 @@ class KsadkAGUIAgent(AGUIKernelMixin, AGUIResumeMixin, AGUIProjectionMixin):
             )
 
     def clone(self) -> "KsadkAGUIAgent":
-        return type(self)(name=self.name, _shared=self._shared)
+        from ksadk.agui.request_identity import agui_admission, agui_request_identity
+
+        agent = type(self)(name=self.name, _shared=self._shared)
+        agent._identity = agui_request_identity.get() or PlatformIdentityContext()
+        agent._admission = agui_admission.get()
+        return agent
+
+    def _session_agent_id(self) -> str:
+        if self._identity.is_empty:
+            return self.name
+        return (
+            os.getenv("AGENT_RUNTIME_ID", "").strip()
+            or str(self._shared.launch_context.config.get("agent_id") or "")
+            or self.name
+        )
+
+    async def _authorize_session(self, input: RunAgentInput) -> None:
+        from ksadk.conversations.runtime_persistence import (
+            ensure_conversation_session,
+            require_conversation_session,
+        )
+
+        # Legacy/local requests without a platform identity retain the native
+        # session and resume behavior. Hosted preparation checks identity first.
+        if self._identity.is_empty:
+            return
+        factory = self._shared.session_service_factory
+        if factory is None:
+            return
+        forwarded = input.forwarded_props if isinstance(input.forwarded_props, dict) else {}
+        resolve = require_conversation_session if input.resume else ensure_conversation_session
+        self._session = await resolve(
+            agent_id=self._session_agent_id(),
+            user_id=str(forwarded.get("userId") or forwarded.get("user_id") or "agui-user"),
+            session_id=input.thread_id,
+            session_service_provider=factory,
+            invocation_identity=self._identity,
+        )
 
     async def run(self, input: RunAgentInput) -> AsyncIterator[BaseEvent]:
         from ksadk.agui.config import AGUI_PROTOCOL_VERSION
@@ -115,6 +157,28 @@ class KsadkAGUIAgent(AGUIKernelMixin, AGUIResumeMixin, AGUIProjectionMixin):
             yield RunErrorEvent(
                 message="Unsupported AG-UI protocol version", code="UNSUPPORTED_PROTOCOL_VERSION"
             )
+            return
+
+        # Authorize before starting a runner or resuming a cached thread. The
+        # request's forwardedProps are compatibility hints, never an owner.
+        from fastapi import HTTPException
+
+        try:
+            await self._authorize_session(input)
+        except HTTPException as exc:
+            yield RunErrorEvent(
+                message="Session not found" if exc.status_code == 404 else str(exc.detail),
+                code="SESSION_NOT_FOUND" if exc.status_code == 404 else "SESSION_IDENTITY_CONFLICT",
+            )
+            return
+        except Exception:
+            logger.exception("AG-UI session admission failed for thread=%s", input.thread_id)
+            yield RunErrorEvent(message="Session admission failed", code="RUNTIME_ERROR")
+            return
+
+        if self._admission is not None:
+            async for event in self._kernel_run(input, admission=self._admission):
+                yield event
             return
 
         if (
@@ -263,12 +327,17 @@ class KsadkAGUIAgent(AGUIKernelMixin, AGUIResumeMixin, AGUIProjectionMixin):
             request_config = self._request_config(input)
             request = StartRequest(
                 input=self._latest_user_input(input),
-                user_id=str(forwarded.get("userId") or forwarded.get("user_id") or "agui-user"),
+                user_id=(self._session.user_id if self._session is not None else
+                         str(forwarded.get("userId") or forwarded.get("user_id") or "agui-user")),
                 session_id=input.thread_id,
-                agent_id=self.name,
+                agent_id=self._session.agent_id if self._session is not None else self._session_agent_id(),
                 model=str(forwarded.get("model") or "") or None,
                 config=request_config,
-                metadata={"invocation_id": input.run_id, "transport": "ag-ui"},
+                metadata={
+                    "invocation_id": input.run_id, "transport": "ag-ui",
+                    **({TRUSTED_IDENTITY_METADATA_KEY: self._identity.to_payload()}
+                       if not self._identity.is_empty else {}),
+                },
             )
             handle = await self._shared.executor.start(
                 self._shared.launch_context,
@@ -319,7 +388,7 @@ class KsadkAGUIAgent(AGUIKernelMixin, AGUIResumeMixin, AGUIProjectionMixin):
                 source=SourceRef(
                     framework="ksadk",
                     metadata={
-                        "agent_id": self.name,
+                        "agent_id": request.agent_id,
                         "user_id": request.user_id,
                         "session_id": input.thread_id,
                         "input": self._json_safe(request.input),

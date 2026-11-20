@@ -25,7 +25,7 @@ from tests.harness.native.partial_summary_process_fixture import (
     write,
 )
 from tests.harness.native.test_kernel import SCOPE
-from tests.studio.native_recovery_lease_fixture import RecoveryLeaseAudit
+from tests.studio_fixtures.native_recovery_lease_fixture import RecoveryLeaseAudit
 
 
 def assert_final(final, kernel, model):

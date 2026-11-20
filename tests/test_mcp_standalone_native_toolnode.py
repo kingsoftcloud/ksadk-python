@@ -82,10 +82,60 @@ async def test_single_oauth_mcp_native_kernel_cold_resume(local_env, tmp_path, p
         assert s.local.oauth.broker.data["waits"][wait["wait_id"]]["runtime_ref"] == target
 
 
+async def _native_mcp_tools(url: str, headers: dict[str, str]) -> list:
+    """用**原生 mcp client** 取工具，替代 `langchain-mcp-adapters`。
+
+    ## 为什么要自己写
+
+    `langchain-mcp-adapters` 最新版（0.3.2）**主动 pin** `mcp<2.0.0`，
+    而 ksadk 要升 `mcp>=2.3.0`。0.3.1 虽无上界，但在 mcp 2.3.0 下必崩：
+
+        ImportError: cannot import name 'RequestContext' from 'mcp.shared.context'
+
+    （mcp 2.x 把 `RequestContext` 拆成了 `CallOptions` / `DispatchContext` /
+    `TransportContext`。）
+
+    本测试只需要「把远程 MCP 工具转成 LangChain BaseTool」这一点能力，
+    用原生 `ClientSession` 十行就能覆盖，不值得让整个依赖图被卡在 mcp 1.x。
+    """
+    from langchain_core.tools import StructuredTool
+    from mcp import ClientSession
+
+    from ksadk._mcp_compat import streamable_http, tool_input_schema
+
+    async def _call(name: str, arguments: dict) -> str:
+        async with streamable_http(url, headers) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(name, arguments)
+                return "".join(getattr(block, "text", "") for block in (result.content or []))
+
+    async with streamable_http(url, headers) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            specs = (await session.list_tools()).tools
+
+    tools = []
+    for spec in specs:
+
+        async def _invoke(_name: str = spec.name, /, **kwargs) -> str:
+            return await _call(_name, kwargs)
+
+        _invoke.__name__ = spec.name
+        tools.append(
+            StructuredTool.from_function(
+                coroutine=_invoke,
+                name=spec.name,
+                description=spec.description or "",
+                args_schema=tool_input_schema(spec),
+            )
+        )
+    return tools
+
+
 @pytest.mark.parametrize("nested", [False, True])
 async def test_single_key_mcp_uses_unwrapped_client_tools(monkeypatch, local_env, tmp_path, provider, nested):
     from fastmcp import FastMCP
-    from langchain_mcp_adapters.client import MultiServerMCPClient
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
 
@@ -116,16 +166,9 @@ async def test_single_key_mcp_uses_unwrapped_client_tools(monkeypatch, local_env
     app = server.http_app(path="/mcp", transport="streamable-http")
     app.add_middleware(BaseHTTPMiddleware, dispatch=require_key)
     with _run_fastmcp_http_server(app) as base:
-        client = MultiServerMCPClient(
-            {
-                "key": {
-                    "url": base + "/mcp",
-                    "transport": "streamable_http",
-                    "headers": {"Authorization": "Bearer fixture-static-key"},
-                }
-            }
+        original = await _native_mcp_tools(
+            base + "/mcp", {"Authorization": "Bearer fixture-static-key"}
         )
-        original = await client.get_tools()
 
         async def get_tools(state):
             return original  # Direct client tools, no OAuth wrappers.
@@ -138,7 +181,7 @@ async def test_single_key_mcp_uses_unwrapped_client_tools(monkeypatch, local_env
         result = await asyncio.wait_for(
             graph().ainvoke({"messages": [HumanMessage(content="read")]}), timeout=15
         )
-        assert calls == [1] and authorized
+        assert calls == [1] and authorized, result
         # The same developer-owned client also runs through local Web with a
         # nonempty Key-only MCP declaration. Neither call needs an OAuth vault.
         entries = [{"name": "key", "auth_mode": "api_key", "url": base + "/mcp"}]

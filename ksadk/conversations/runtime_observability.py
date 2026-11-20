@@ -442,6 +442,7 @@ def _set_conversation_span_attributes(
         span.set_attribute("langfuse.trace.name", runner_name)
         span.set_attribute("langfuse.session.id", session_id)
         span.set_attribute("session.id", session_id)
+        span.set_attribute("gen_ai.conversation.id", session_id)
         span.set_attribute("langfuse.user.id", user_id)
         span.set_attribute("user.id", user_id)
         if model:

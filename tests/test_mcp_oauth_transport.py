@@ -1,11 +1,9 @@
 import asyncio
 from unittest.mock import AsyncMock
 
-import httpcore
-import httpx
 import pytest
 
-from ksadk.mcp_runtime.oauth.transport import MCPNetworkBackend, MCPTransport
+from ksadk.mcp_runtime.oauth.transport import MCPNetworkBackend, MCPTransport, httpcore, httpx
 
 
 @pytest.mark.asyncio

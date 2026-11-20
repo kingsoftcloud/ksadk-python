@@ -6,6 +6,10 @@ state/checkpoints. This does not mutate compiled graphs or supply memory hooks.
 """
 from __future__ import annotations
 
+from ksadk._mcp_compat import tool_input_schema
+
+from ksadk._mcp_compat import field
+
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -48,7 +52,7 @@ async def create_bound_resource_tools(
                 inventory = await session.list_tools()
                 by_name = {tool.name: tool for tool in inventory.tools}
                 if (
-                    inventory.nextCursor
+                    field(inventory, "next_cursor", "nextCursor")
                     or len(by_name) != len(inventory.tools)
                     or set(by_name) != set(aliases)
                 ):
@@ -67,7 +71,7 @@ async def create_bound_resource_tools(
                         except Exception:
                             raise ToolException("RESOURCE_MCP_CALL_FAILED") from None
                         payload = result.model_dump(mode="json", by_alias=True, exclude_none=True)
-                        if result.isError:
+                        if field(result, "is_error", "isError", default=False):
                             # Preserve structured diagnostics and tell ToolNode the
                             # call failed. Never return a failed business call as success.
                             raise ToolException(json.dumps(payload, ensure_ascii=False))
@@ -80,7 +84,7 @@ async def create_bound_resource_tools(
                         coroutine=invoke,
                         name=name,
                         description=descriptor.description or name,
-                        args_schema=descriptor.inputSchema,
+                        args_schema=tool_input_schema(descriptor),
                         infer_schema=False,
                         response_format="content_and_artifact",
                         handle_tool_error=True,

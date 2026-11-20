@@ -1,135 +1,78 @@
-"""Dynamic ADK toolset backed by the current application's tunnel registry."""
+"""ADK integration, loaded only when the application requests ADK tools."""
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import os
-from urllib.parse import quote
+from ksadk._mcp_compat import tool_input_schema
 
-from ksadk.compat.adk_compat import BaseTool, BaseToolset, ReadonlyContext
-from ksadk.tunnel.protocol import get_protocol
-from ksadk.tunnel.protocol.base import BaseProtocol
-from ksadk.tunnel.registry import TunnelRegistry, get_registry
+from typing import Any
 
-logger = logging.getLogger(__name__)
+from ksadk.compat.adk_compat import BaseTool, BaseToolset
+from ksadk.compat.adk_compat import genai_types as types
+
+from .discovery import TunnelToolHandle, discover_tools
+from .discovery import tool_name as _tool_name
+from .protocol import identifier
+from .registry import TunnelRegistry
+
+
+class TunnelTool(BaseTool):
+    def __init__(self, *, agent_id, service, connector_id, descriptor, registry, owner=None):
+        super().__init__(
+            name=_tool_name(service, descriptor.name), description=descriptor.description or ""
+        )
+        self._agent_id = agent_id
+        self._service = service
+        self._connector_id = connector_id
+        self._descriptor = descriptor
+        self._registry = registry
+        self._owner = owner
+
+    def _get_declaration(self):
+        return types.FunctionDeclaration(
+            name=self.name,
+            description=self.description,
+            parameters_json_schema=tool_input_schema(self._descriptor),
+        )
+
+    async def run_async(self, *, args: dict[str, Any], tool_context: Any) -> dict:
+        return await TunnelToolHandle(
+            self._agent_id,
+            self._service,
+            self._connector_id,
+            self._descriptor,
+            self._registry,
+            self._owner,
+        ).call(args)
 
 
 class TunnelToolset(BaseToolset):
-    """Refresh protocol handlers as online services and descriptors change."""
+    """Read the app registry every ADK discovery; no loopback HTTP or tool cache."""
 
-    def __init__(
-        self,
-        agent_name: str,
-        registry: TunnelRegistry | None = None,
-        self_url: str | None = None,
-    ) -> None:
+    def __init__(self, agent_id: str, registry: TunnelRegistry):
         super().__init__()
-        self.agent_name = agent_name
-        self._registry = registry if registry is not None else get_registry()
-        self._self_url = self_url
-        self._handlers: dict[str, BaseProtocol] = {}
-        self._handler_owners: dict[str, str] = {}
-        self._lock = asyncio.Lock()
+        self.agent_id = identifier(agent_id, "agent_id")
+        self._registry = registry
         self._closed = False
+        # New ADK releases optionally cache an invocation; the tunnel deliberately
+        # re-reads online registrations on every discovery in both ADK versions.
+        if hasattr(self, "_use_invocation_cache"):
+            self._use_invocation_cache = False
 
-    @property
-    def registry(self) -> TunnelRegistry:
-        return self._registry
+    async def get_tools(self, readonly_context=None):
+        if self._closed:
+            return []
 
-    @property
-    def closed(self) -> bool:
-        return self._closed
-
-    def _self_base_url(self) -> str:
-        if self._self_url is not None:
-            return self._self_url.rstrip("/")
-        if self._registry.self_url is not None:
-            return self._registry.self_url.rstrip("/")
-        configured = os.environ.get("KSADK_TUNNEL_SELF_URL")
-        if configured:
-            return configured.rstrip("/")
-        return f"http://127.0.0.1:{os.environ.get('PORT') or '8000'}"
-
-    async def get_tools(
-        self,
-        readonly_context: ReadonlyContext | None = None,
-    ) -> list[BaseTool]:
-        async with self._lock:
-            if self._closed:
-                return []
-            routes = self._registry.list_server_routes(self.agent_name)
-            online = {server.name: (owner_id, server) for owner_id, server in routes}
-
-            for stale in set(self._handlers) - set(online):
-                handler = self._handlers.pop(stale)
-                self._handler_owners.pop(stale, None)
-                await self._safe_close(stale, handler)
-
-            for name, (owner_id, server) in online.items():
-                existing = self._handlers.get(name)
-                owner_changed = self._handler_owners.get(name) != owner_id
-                if existing is not None and (existing.descriptor != server or owner_changed):
-                    self._handlers.pop(name, None)
-                    self._handler_owners.pop(name, None)
-                    await self._safe_close(name, existing)
-                    existing = None
-                if existing is None:
-                    proxy_url = (
-                        f"{self._self_base_url()}/tunnel/mcp/"
-                        f"{quote(self.agent_name, safe='')}/{quote(name, safe='')}"
-                    )
-                    try:
-                        existing = get_protocol(server.protocol)(
-                            server,
-                            proxy_url,
-                            self._registry.proxy_token,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Could not create tunnel handler for agent %s server %s (%s)",
-                            self.agent_name,
-                            name,
-                            type(exc).__name__,
-                        )
-                        continue
-                    self._handlers[name] = existing
-                    self._handler_owners[name] = owner_id
-
-            tools: list[BaseTool] = []
-            for name, handler in self._handlers.items():
-                try:
-                    tools.extend(await handler.get_tools(readonly_context))
-                except Exception as exc:
-                    logger.warning(
-                        "Could not load tunnel tools for agent %s server %s (%s)",
-                        self.agent_name,
-                        name,
-                        type(exc).__name__,
-                    )
-            return tools
-
-    async def close(self) -> None:
-        async with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            handlers = list(self._handlers.items())
-            self._handlers.clear()
-            self._handler_owners.clear()
-            for name, handler in handlers:
-                await self._safe_close(name, handler)
-
-    async def _safe_close(self, name: str, handler: BaseProtocol) -> None:
-        try:
-            await handler.close()
-        except Exception as exc:
-            logger.warning(
-                "Could not close tunnel handler for agent %s server %s (%s)",
-                self.agent_name,
-                name,
-                type(exc).__name__,
+        return [
+            TunnelTool(
+                agent_id=self.agent_id,
+                service=tool.service,
+                connector_id=tool.connector_id,
+                descriptor=tool.descriptor,
+                registry=self._registry,
+                owner=tool.owner,
             )
+            for tool in await discover_tools(self.agent_id, self._registry)
+        ]
 
-
-__all__ = ["TunnelToolset"]
+    async def close(self):
+        self._closed = True

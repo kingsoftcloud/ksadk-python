@@ -138,6 +138,14 @@ def test_zip_contains_build_info(tmp_path, monkeypatch):
     common = tmp_path / "ksadk_runtime_common"
     _touch(pkg / "__init__.py", b"")
     routes = _touch(pkg / "a2a" / "routes.py", b"routes-content")
+    provider_entry = _touch(
+        pkg / "plugins/providers/bundles/ksadk-dsh-companion-host/index.mjs",
+        b"import { client } from './client.mjs'; export { client };",
+    )
+    provider_client = _touch(
+        pkg / "plugins/providers/bundles/ksadk-dsh-companion-host/client.mjs",
+        b"export const client = {};",
+    )
     _touch(common / "__init__.py", b"")
 
     monkeypatch.setattr(
@@ -165,12 +173,15 @@ def test_zip_contains_build_info(tmp_path, monkeypatch):
 
     assert payload["schema"] == BUILD_INFO_SCHEMA
     ksadk_info = payload["packages"]["ksadk"]
-    assert ksadk_info["file_count"] == 2
+    assert ksadk_info["file_count"] == 4
     # 用同一函数对 zip 内文件复算,验证可追溯
     rel_files = [(r, p) for n, r, p in bundled if n == "ksadk"]
     assert ksadk_info["content_fingerprint_sha256"] == _bundled_content_fingerprint(rel_files)
     assert payload["packages"]["ksadk_runtime_common"]["file_count"] == 1
     assert "ksadk/a2a/routes.py" in names
+    with zipfile.ZipFile(zip_path) as zf:
+        for asset in (provider_entry, provider_client):
+            assert zf.read("ksadk/" + asset.relative_to(pkg).as_posix()) == asset.read_bytes()
 
 
 def test_deployment_contract_is_read_only_from_the_built_zip(tmp_path):
