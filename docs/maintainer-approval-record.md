@@ -1,6 +1,6 @@
 # KsADK Public Release Approval Record
 
-Candidate only: this record does not authorize PyPI publication. The 0.8.8 runtime now includes the component-routing update from internal master. Prior candidate sign-offs do not cover this changed source; final verification and actual reviewer decisions must be recorded for the new candidate. Web remains 0.3.18.
+The 0.8.8 role sign-offs are recorded for the current runtime, including the component-routing update from internal master. The account holder explicitly authorized the current-source confirmation linked below; earlier candidate decisions remain historical evidence. Web remains 0.3.18. Final independent PR approval, merge, release verification and the existing PyPI environment approval are still required; recording these decisions does not trigger publication.
 
 ## Required Approval Decisions
 
@@ -42,16 +42,22 @@ The added component route is opt-in through `KSADK_COMPONENT_ENV=pre`; Knowledge
 - OAuth MCP still requires Kernel. Ordinary no-Kernel Agents must retain chat, API key tools and persistent sessions without enabling Kernel to hide this requirement.
 - Existing Web 0.3.18 findings (9 high, 3 moderate, 5 low) and unsupported A2UI `Card.theme` remain known limitations. Studio browser acceptance belongs to its separate repository.
 
+## Current Candidate Sign-Off
+
+On 2026-11-20, @lijiafu618-alt explicitly authorized submitting the [current-source confirmation](https://github.com/kingsoftcloud/ksadk-python/pull/124#issuecomment-7037274696) through the account and confirmed all three roles below. It covers public candidate `dccb4c63c0aec405dbab5671138646c127b21172`, runtime source `c6f9071bcfe1e2d75ac6986f99ab0373317e2f62`, its recorded verification and the known limitations above. The confirmation explicitly identifies the delegated submission; it is not represented as an independent code review.
+
+Subsequent sign-off archival and clean-export metadata updates do not expand this runtime scope. The same PR must receive an independent final-head approval from a non-author with Write access after its checks pass. A runtime change requires renewed verification and an actual decision for that changed source.
+
 ## Previous Candidate Sign-Off
 
 The [actual earlier comment](https://github.com/kingsoftcloud/ksadk-python/pull/124#issuecomment-7030218229) recorded @lijiafu618-alt's three role decisions for `c67e1fce8f82c2695f750d97a9172c7c0a9c3e6b` on 2026-11-20. Those historical decisions are preserved as evidence and are not asserted to approve the new routing source or its added limitations.
 
-Before a later authorized publication, set `approved_source_commit` to the newly reviewed runtime source above, record actual sign-offs, and use the final reviewed GitHub main commit for the v0.8.8 tag/Release and Trusted Publishing. Keep the PyPI environment approval. This task does not authorize publication, production operations, master deletion or a new PR.
+For a later authorized publication, `approved_source_commit` must match the runtime source above; the repository variable has been prepared with that value. Use the final independently reviewed GitHub main commit for the v0.8.8 tag/Release and Trusted Publishing, and keep the PyPI environment approval. This sign-off archival task does not authorize automatic publication, production operations, master deletion or a new PR.
 
 ## Approval Sign-Off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer | Pending | Pending | - |
-| Security reviewer | Pending | Pending | - |
-| Release owner | Pending | Pending | - |
+| Maintainer | @lijiafu618-alt | Approved | 2026-11-20 |
+| Security reviewer | @lijiafu618-alt | Approved | 2026-11-20 |
+| Release owner | @lijiafu618-alt | Approved | 2026-11-20 |
