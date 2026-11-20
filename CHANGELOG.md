@@ -12,6 +12,9 @@
 
 ### 新增与修复
 
+- 知识库与 KSmem 支持 `KSADK_COMPONENT_ENV=pre` 组件路由；隔离资源 Worker 传递初始化快照，签名前加入路由头，其他云客户端沿用既有环境选择。
+- mem0 插件配置增加 `extraHeaders`，传递来源及组件路由；要求目标插件支持该字段，旧 `openclaw-mem0` 1.0.6 不兼容。
+
 - 统一社区 Tunnel 与内部工具隧道：同一 Connector 支持 MCP 和自定义 HTTP API、ADK 与 LangGraph，并补齐多 Pod 路由、弹性 peer 发现、断线与在途调用恢复。失败或结果不确定的业务调用不自动重放。
 - 隧道通过导出 Agent 的 `enable_tunnel=True` 启用；企业 Connector 与云端使用同版 SDK。旧 YAML/CLI 配置和旧协议包迁移到统一入口，原文档 URL 保留迁移说明。
 - 修复 Code/Container 构建器为 Tunnel 强制追加旧 MCP `<2` 上限的问题；保留 MCP 1.26 支持，并允许使用 SDK 已验证的 MCP 2.3 依赖组合。

@@ -6,6 +6,12 @@ from ksadk.configs.env_registry_studio import STUDIO_ENV_VAR_REGISTRY_ITEMS
 from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+    EnvVarSpec(
+        "KSADK_COMPONENT_ENV",
+        "cloud",
+        "Opt-in knowledge and Memory component routing; pre adds X-KSC-CUSTOM-SOURCE before signing.",
+        "",
+    ),
     EnvVarSpec("KSADK_CHAT_PREFERRED_TRANSPORT", "agui", "Preferred available chat transport: ag-ui or responses; existing endpoints remain available."),
     EnvVarSpec("KSADK_HARNESS_SERVICE_URL", "harness", "Opt-in external Harness service base URL."),
     EnvVarSpec("KSADK_HARNESS_SERVICE_TOKEN", "harness", "External Harness service access credential.", sensitive=True),

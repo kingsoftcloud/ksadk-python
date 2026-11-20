@@ -1,6 +1,6 @@
 # KsADK Public Release Approval Record
 
-Candidate review signed off: this record does not authorize PyPI publication. It records the actual 0.8.8 candidate decisions submitted on 2026-11-20; no reviewer sign-off from 0.8.7 is carried forward. Independent approval of the final PR head is still required before merge. The Web npm version remains 0.3.18.
+Candidate only: this record does not authorize PyPI publication. The 0.8.8 runtime now includes the component-routing update from internal master. Prior candidate sign-offs do not cover this changed source; final verification and actual reviewer decisions must be recorded for the new candidate. Web remains 0.3.18.
 
 ## Required Approval Decisions
 
@@ -23,42 +23,35 @@ Candidate review signed off: this record does not authorize PyPI publication. It
 | Clean export from reviewed candidate | No |
 | Rewritten Git history after secret scan | No |
 
-The 0.8.8 candidate starts from the current internal baseline and retains reviewed public fixes.
-This candidate is not a publication authorization. The recorded sign-off reviews candidate `c67e1fce8f82c2695f750d97a9172c7c0a9c3e6b`; the record/export metadata commit must receive final PR review and fresh verification.
+- `ksadk-python`: runtime source `c6f9071bcfe1e2d75ac6986f99ab0373317e2f62`, incorporating internal master `3f55fcbdd84bd2e5645914ed8ec848c56fc9ada4`; the candidate adds environment registration, public regression coverage and documentation without changing the upstream component-routing implementation. Final export metadata and verification remain subject to PR #124 review.
+- `ksadk-web`: published `@kingsoftcloud/ksadk-web@0.3.18`, source `3a1dde1f0b86ebd547d34a4787cc5fa57ea36319`, bundled with Python runtime source `c6f9071bcfe1e2d75ac6986f99ab0373317e2f62`; no npm publication is requested.
 
-- `ksadk-python`: reviewed runtime source `bb33d27ba7bc28b78502939ccf4041f102d9e204`, exported from `e281013fbe4789c7b3a669a5ef85af6b09ee7fa8`. Candidate `c67e1fce8f82c2695f750d97a9172c7c0a9c3e6b` was signed off with the same runtime. PR #124 must review its final record/export metadata commit; runtime changes after this anchor require a new recorded anchor and fresh verification.
-- `ksadk-web`: published `@kingsoftcloud/ksadk-web@0.3.18`, source `3a1dde1f0b86ebd547d34a4787cc5fa57ea36319`, bundled with Python runtime review anchor `bb33d27ba7bc28b78502939ccf4041f102d9e204`; no npm publication is requested.
+## Verification and Review Scope
 
-## Recorded Evidence for Approval
+Branch protection and publish environment must be verified against `.github/BRANCH_PROTECTION.md` before merge or publication.
 
-Branch protection and publish environment must be verified against `.github/BRANCH_PROTECTION.md` before merge/publication.
+All public changes remain in [PR #124](https://github.com/kingsoftcloud/ksadk-python/pull/124). Review the final head, clean-export parity, complete `make public-preflight`, package provenance, cold installs, documentation build and current CI. Reuse the same three preproduction Agents for chat, AG-UI/session history, A2UI, separate A2A and OAuth MCP phases, API key MCP, Tunnel, the RunAgent preference and an ordinary Agent without Kernel. Do not carry forward results from an older wheel as a new deployment test.
 
-Verification is attached to [PR #124](https://github.com/kingsoftcloud/ksadk-python/pull/124). The recorded candidate sign-off accepts the following evidence; the final PR head still requires independent review:
+The added component route is opt-in through `KSADK_COMPONENT_ENV=pre`; Knowledge/KSmem inject `X-KSC-CUSTOM-SOURCE: pre` before signing, and resource Workers receive a parent snapshot. This does not select the environment of other services. Business IDs, existing local Memory namespaces, database schemas and the outbound Memory user-ID repair are retained.
 
-- Matching SDK/runtime sources in the clean export and both candidate branches; no direct master/main merge.
-- Complete `make public-preflight`, package provenance, cold installs, alias distribution and documentation build for the final public candidate.
-- PostgreSQL 9.6–16 matrix and legacy Memory retention, including real 0.8.7-to-candidate SQLite/PostgreSQL checks.
-- Real preproduction verification of the same three Agents, including the ordinary Agent with Kernel disabled. OAuth and A2A must use separate test phases.
-- Memory identity tests cover the 68-character trusted user key, preserve internal/session identities and existing valid cloud IDs, and use one encoding for save/query/status/update/forget.
+## Known Limitations and Disposition
 
-Earlier 0.8.7 or earlier 0.8.8 candidate decisions are not carried forward. In the [actual sign-off comment](https://github.com/kingsoftcloud/ksadk-python/pull/124#issuecomment-7030218229), `@lijiafu618-alt` explicitly accepted all three roles, the verification scope and the known limitations for candidate `c67e1fce8f82c2695f750d97a9172c7c0a9c3e6b` on 2026-11-20. The comment does not authorize immediate publication. Its role sign-offs do not replace the separate GitHub review required from a non-author for the final PR head.
+- Generated mem0 configuration now contains `extraHeaders`. The checked legacy `openclaw-mem0` 1.0.6 schema rejects it even without the pre route. The requester explicitly excluded legacy-plugin compatibility from this task and asked to validate ordinary Agents; compatible plugin consumption is a requirement, not a passed legacy OpenClaw test.
+- The mem0-specific source resolver does not yet apply the core SDK's printable-ASCII validation. Invalid configured header values are outside this validation; do not claim that parity is fixed.
+- No dedicated preproduction Memory collection is available. Live cloud Memory CRUD was explicitly waived; retain protocol-boundary and legacy persistence checks without describing them as cloud CRUD.
+- OAuth MCP still requires Kernel. Ordinary no-Kernel Agents must retain chat, API key tools and persistent sessions without enabling Kernel to hide this requirement.
+- Existing Web 0.3.18 findings (9 high, 3 moderate, 5 low) and unsupported A2UI `Card.theme` remain known limitations. Studio browser acceptance belongs to its separate repository.
 
-## Known Limitations and Security Disposition
+## Previous Candidate Sign-Off
 
-The Security reviewer explicitly accepted retaining the existing Web 0.3.18 dependency findings and unsupported A2UI `Card.theme` behavior for this candidate in the linked sign-off comment. They are not claimed as fixed, and this source synchronization does not validate every cloud deployment. SDK release evidence schema v3 excludes the retired Studio browser check; browser acceptance belongs to the separate Studio repository.
+The [actual earlier comment](https://github.com/kingsoftcloud/ksadk-python/pull/124#issuecomment-7030218229) recorded @lijiafu618-alt's three role decisions for `c67e1fce8f82c2695f750d97a9172c7c0a9c3e6b` on 2026-11-20. Those historical decisions are preserved as evidence and are not asserted to approve the new routing source or its added limitations.
 
-The production-dependency audit of the unchanged Studio/Web lock on 2026-11-20 reported 17 findings: 9 high, 3 moderate and 5 low. These are dependency findings, not proof that every advisory is reachable in a prebuilt Hosted UI. The recorded decision is to accept the existing findings for the 0.8.8 candidate rather than require a Web change in this PR; it is the reviewer's decision in the linked comment, not an automated security acceptance.
-
-This release limits the additional identity repair to outbound Memory `AgentUserId`. It does not shorten trusted identity keys or change local Memory namespaces, business SessionIds, KnowledgeBaseIds, database schemas, Server/Gateway or the Web version. Custom cloud Memory SessionIds must continue to satisfy the service's existing limit. No-Kernel OAuth MCP remains unsupported by its existing contract.
-
-No dedicated preproduction Memory collection is configured for this validation. The requester and the recorded sign-off accepted protocol-boundary tests for `AgentUserId`, actual 0.8.7 legacy persistence checks and the three preproduction Agents' feature verification in place of a live cloud Memory CRUD test. Do not report cloud Memory CRUD as passed. The sign-off also acknowledges that no-Kernel OAuth MCP retains its Kernel requirement.
-
-The release owner must use the recorded runtime anchor `bb33d27ba7bc28b78502939ccf4041f102d9e204` as `approved_source_commit` for the trusted publish workflow, or use the repository variable configured to that value. Do not reuse an earlier release's value. A future Release/tag and package build must originate from the final reviewed GitHub main commit. This record and a passing approval gate do not trigger or authorize immediate publication; the current task remains limited to candidate preparation and final PR review.
+Before a later authorized publication, set `approved_source_commit` to the newly reviewed runtime source above, record actual sign-offs, and use the final reviewed GitHub main commit for the v0.8.8 tag/Release and Trusted Publishing. Keep the PyPI environment approval. This task does not authorize publication, production operations, master deletion or a new PR.
 
 ## Approval Sign-Off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer | @lijiafu618-alt | Approved | 2026-11-20 |
-| Security reviewer | @lijiafu618-alt | Approved | 2026-11-20 |
-| Release owner | @lijiafu618-alt | Approved | 2026-11-20 |
+| Maintainer | Pending | Pending | - |
+| Security reviewer | Pending | Pending | - |
+| Release owner | Pending | Pending | - |

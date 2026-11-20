@@ -6,6 +6,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -124,7 +125,9 @@ async def test_memory_worker_real_process_preserves_ids_and_partitions(
     try:
         for user, activation in [("user-a", "activation-a"), ("user-b", "activation-b")]:
             monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", "source-" + user)
+            monkeypatch.setenv("KSADK_COMPONENT_ENV", "pre" if user == "user-a" else "prod")
             init = memory_initialization(endpoint, user, activation)
+            monkeypatch.setenv("KSADK_COMPONENT_ENV", "pre")
             monkeypatch.setenv("KSADK_TRAFFIC_SOURCE", "changed-after-initialization")
             assert isinstance(init.bindings[0], MemoryWorkerBinding)
             assert "fake-selected-secret" not in init.model_dump_json()
@@ -148,6 +151,9 @@ async def test_memory_worker_real_process_preserves_ids_and_partitions(
         assert len(calls) == 2
         sources = [{k.lower(): v for k, v in h.items()}["x-traffic-source"] for h, _ in calls]
         assert sources == ["source-user-a", "source-user-b"]
+        routes = [httpx.Headers(h).get("X-KSC-CUSTOM-SOURCE") for h, _ in calls]
+        assert routes == ["pre", None]
+        assert all("X-Ksadk-Component-Env" not in httpx.Headers(h) for h, _ in calls)
         assert calls[0][1]["AgentUserId"] != calls[1][1]["AgentUserId"]
         assert all(body["MemoryCollectionId"] == "memory-selected" for _, body in calls)
         assert all("fake-unrelated" not in str(headers) for headers, _ in calls)

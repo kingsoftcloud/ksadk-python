@@ -33,6 +33,16 @@ A2A 内部控制面和云评测数据集客户端。知识库和记忆库通过�
 `trafficSource` 字段接收来源快照，不依赖继承父进程环境；修改配置后须重新创建客户端/激活 Worker。
 通用网页请求、用户自建 HTTP 客户端和第三方模型请求不受此配置影响。
 
+设置 `KSADK_COMPONENT_ENV=pre` 后，知识库、KSmem 请求及 mem0 插件配置的
+`extraHeaders` 会加入 `X-KSC-CUSTOM-SOURCE: pre`；忽略大小写和两侧空格。
+未设置、空值或其他值不自动注入该路由头，鉴权头和调用方显式传入的路由头保持不变。
+知识库和 KSmem 在签名前注入；隔离资源 Worker 通过初始化消息传递环境快照，
+环境改变后需重新创建客户端或激活 Worker，mem0 需重新生成插件配置。
+此规则不扩展到沙箱、Skill、AgentEngine/KOP 或其他客户端；
+`X-Traffic-Source` 的来源归因行为保持不变。
+SDK 不再生成或特殊处理 `X-Ksadk-Component-Env`；调用方显式传入时按普通请求头保留。
+mem0 插件配置同样只使用 `X-KSC-CUSTOM-SOURCE` 表示预发路由，升级后需重新生成配置。
+
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `OPENAI_API_KEY` | 条件必传 | 部分 OpenAI 兼容实现也支持 `MODEL_API_KEY` | 是 | 开发者 / 模型网关 Secret | 使用 OpenAI 兼容模型时需要。 |

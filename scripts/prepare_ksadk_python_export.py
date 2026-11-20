@@ -306,6 +306,7 @@ PUBLIC_TEST_FILES = {
     "tests/test_open_source_audit.py",
     "tests/test_public_release_positioning.py",
     "tests/test_runtime_common_packaging.py",
+    "tests/test_runtime_common_memory_backend.py",
     "tests/resource_runtime/test_activation_approvals.py",
     "tests/resource_runtime/test_memory_worker.py",
     "tests/resource_runtime/test_worker_process.py",

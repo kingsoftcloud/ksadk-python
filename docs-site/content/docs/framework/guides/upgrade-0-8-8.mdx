@@ -36,3 +36,9 @@ description: "0.8.8 migration and compatibility"
 `KSADK_CHAT_PREFERRED_TRANSPORT=responses` 让 Hosted UI 首选 RunAgent Responses；它不关闭 Kernel，也不移除已有 AG-UI endpoint。同一 session 的历史与 OAuth 授权仍可复用。恢复时显式设为 `ag-ui`；合并式环境更新中，仅省略旧 key 不一定会清除它。
 
 普通无 Kernel Agent 可以使用 RunAgent 聊天、API key MCP 和自己的持久化 checkpoint。当前 OAuth MCP 需要 `KSADK_ENABLE_KERNEL=1` 及平台准入；关闭 Kernel 时会返回 `MCP_OAUTH_KERNEL_REQUIRED`。该前置条件不是传输回退配置可以绕过的。配置见[环境变量参考](/cn/docs/references/environment-variables/)，客户端组合见[MCP OAuth 与 API key 接入](/cn/docs/framework/guides/mcp-oauth/)。
+
+## 知识库与记忆组件路由
+
+`KSADK_COMPONENT_ENV=pre` 为知识库、KSmem 和生成的 mem0 配置启用组件预发路由；未设置时不自动添加路由头。它不切换整个 Agent 或其他服务的环境。客户端和隔离 Worker 使用初始化快照，修改环境后需重新创建或激活，mem0 则需重新生成配置。
+
+mem0 配置新增 `extraHeaders`；目标插件须支持此字段，旧 `openclaw-mem0` 1.0.6 不兼容。普通 Agent 的现有协议和本地记忆命名空间保持不变。详见[环境变量参考](/cn/docs/references/environment-variables/)。

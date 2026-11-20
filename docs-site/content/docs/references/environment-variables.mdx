@@ -6,6 +6,18 @@ title: 环境变量参考
   本页列出本地运行和发布流水线中最常用的 KsADK 环境变量。提交到仓库的文件只放占位值，真实值放本地 `.env` 或 CI secrets。
 </Callout>
 
+
+## 云组件路由（0.8.8）
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_TRAFFIC_SOURCE` | 云请求的来源标记，默认 `agentkit`；用于 `X-Traffic-Source`，不选择运行环境。 |
+| `KSADK_COMPONENT_ENV` | 默认空值；设为 `pre` 时，知识库、KSmem 请求及 mem0 插件配置增加 `X-KSC-CUSTOM-SOURCE: pre`。忽略大小写和两侧空格。 |
+
+组件路由不改变 AgentEngine、Skill、Sandbox、模型或 MCP 服务的环境。未设置或使用其他值时不自动添加组件路由头，调用方显式提供的路由头继续保留。知识库与 KSmem 在签名前注入；客户端创建时保存配置，资源 Worker 使用父进程传入的快照。修改变量后需重新创建客户端或激活 Worker；mem0 需重新生成配置。
+
+mem0 配置包含 `extraHeaders`，需要支持该字段的插件。旧 `openclaw-mem0` 1.0.6 不接受该配置；使用 mem0 前先确认目标插件支持，不能把配置生成成功当作插件启动成功。此要求不影响普通 Agent 的聊天、Tunnel、AG-UI、A2UI、A2A 或 OAuth MCP。
+
 ## 模型 Provider
 
 <Callout type="info">

@@ -6,6 +6,18 @@ title: Environment Variables
   This reference lists the environment variables most projects need when running KsADK locally or in a release pipeline. Use placeholders in committed files and put real values in local `.env` files or CI secrets.
 </Callout>
 
+
+## Cloud component routing (0.8.8)
+
+| Variable | Purpose |
+| --- | --- |
+| `KSADK_TRAFFIC_SOURCE` | Cloud request attribution, default `agentkit`; sets `X-Traffic-Source` without selecting an environment. |
+| `KSADK_COMPONENT_ENV` | Unset by default. `pre` adds `X-KSC-CUSTOM-SOURCE: pre` to Knowledge, KSmem requests and mem0 plugin configuration; case and surrounding whitespace are ignored. |
+
+Component routing does not select the environment of AgentEngine, Skill, Sandbox, model or MCP services. Unset or other values do not add a component route; explicitly supplied route headers remain intact. Knowledge and KSmem inject headers before signing. Clients capture configuration at creation, and resource Workers receive a snapshot from their parent. Recreate clients or reactivate Workers after changes; regenerate mem0 configuration as needed.
+
+The generated mem0 configuration includes `extraHeaders` and requires a plugin that accepts it. Legacy `openclaw-mem0` 1.0.6 rejects this field. Verify the target plugin before using mem0; successful configuration rendering does not verify plugin startup. This requirement does not affect ordinary Agent chat, Tunnel, AG-UI, A2UI, A2A or OAuth MCP.
+
 ## Model Provider
 
 <Callout type="info">

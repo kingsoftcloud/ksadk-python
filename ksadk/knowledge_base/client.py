@@ -44,7 +44,11 @@ from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ksadk.common.aicp_env import resolve_aicp_connection
-from ksadk.common.cloud_headers import build_cloud_headers, resolve_traffic_source
+from ksadk.common.cloud_headers import (
+    build_component_headers,
+    resolve_component_env,
+    resolve_traffic_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +98,7 @@ class KnowledgeBaseClient(BaseModel):
     secret_key: str = ""
     session_token: str = ""
     traffic_source: str = Field(default_factory=resolve_traffic_source)
+    component_env: str = Field(default_factory=resolve_component_env)
     region: str = "cn-beijing-6"
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
@@ -198,8 +203,10 @@ class KnowledgeBaseClient(BaseModel):
         class ObservedAicpClient(aicp_module.AicpClient):
             def call(self, action, params, options=None):
                 options = dict(options or {})
-                options["CustomHeaders"] = build_cloud_headers(
-                    options.get("CustomHeaders"), traffic_source=owner.traffic_source
+                options["CustomHeaders"] = build_component_headers(
+                    options.get("CustomHeaders"),
+                    traffic_source=owner.traffic_source,
+                    component_env=owner.component_env,
                 )
                 return super().call(action, params, options)
 
