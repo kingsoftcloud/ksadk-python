@@ -27,6 +27,8 @@ description: "0.8.8 candidate migration and compatibility"
 
 本地 SQLite/PostgreSQL 的 `agent:<agent>:user:<user>` 逻辑命名空间保持不变，旧记录不搬迁、不复制或删除。云端请求在 AICP 协议边界才编码为合法 `AgentUserId`，写入、查询、状态、更新与遗忘使用同一编码；已有合法云端 ID 和资源绑定分区保持原值。查询结果继续保留调用方的逻辑身份。
 
+此次定点修复处理长期记忆用户 ID，包括 68 字符的可信身份键；知识库 `KnowledgeBaseId`、内部会话身份及业务 `SessionId` 保持原值。自定义云端 Memory 会话 ID 仍须符合服务现有上限，其他 ID 规则不在本次统一改写。
+
 备份长期记忆存储与 session/checkpoint；三者用途不同。本版本不会通过清空数据库修复格式问题。运行短暂内部候选并手动改写过 scope 的项目应先核对自己的记录，不能把两套分区直接合并。
 
 ## AG-UI、RunAgent 与普通 Agent

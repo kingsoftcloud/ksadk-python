@@ -12,6 +12,19 @@ from ksadk.memory.models import MemoryRecord
 from ksadk.memory.providers.local_sqlite import SqliteMemoryProvider
 
 
+@pytest.mark.parametrize("length", [1, 63, 64, 65, 68, 127, 128, 129, 255, 256, 257, 10000])
+@pytest.mark.parametrize("character", ["a", ":", "界"])
+def test_memory_wire_user_id_boundaries_preserve_only_valid_existing_ids(length, character):
+    from ksadk.memory.scope_ids import aicp_user_id
+
+    logical = character * length
+    encoded = aicp_user_id(logical)
+    assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", encoded)
+    assert aicp_user_id(logical) == encoded
+    if character == "a" and length <= 64:
+        assert encoded == logical
+
+
 @pytest.mark.parametrize("logical_id", ["", "   ", "agent:example-agent:user:", "agent::user:example-user"])
 def test_missing_wire_identity_is_rejected_before_cloud_call(logical_id):
     from ksadk.memory.scope_ids import aicp_user_id
@@ -56,6 +69,8 @@ def test_sqlite_legacy_agent_memory_survives_reopen_and_update(tmp_path):
     ("agent:a_b:user:c", hashlib.sha256(b"agent-user-scope/v1|a_b|c").hexdigest()[:32]),
     ("local-user", "local-user"),
     ("mp1-existing-partition", "mp1-existing-partition"),
+    ("aeu_" + "a" * 64, hashlib.sha256(("agent-user-scope/v1||aeu_" + "a" * 64).encode()).hexdigest()[:32]),
+    ("a2a-user-v1:" + "b" * 64, hashlib.sha256(("agent-user-scope/v1||a2a-user-v1:" + "b" * 64).encode()).hexdigest()[:32]),
 ])
 def test_sdk_roundtrip_uses_one_safe_wire_identity_without_changing_logical_id(logical_id, wire_id):
     from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
@@ -100,3 +115,52 @@ def test_sdk_roundtrip_uses_one_safe_wire_identity_without_changing_logical_id(l
     # This only calls the in-process fixture, never an external delete API.
     assert backend.delete_memory(user_id=logical_id, memory_id="fixture-memory", strict=True).ok
     assert set(client.calls) == {"CreateMemorySdk", "QueryMemorySdk", "ListMemories", "ListSessions", "UpdateMemory", "DeleteMemory"}
+
+
+def test_trusted_adk_identity_memory_tools_share_safe_cloud_partition(monkeypatch):
+    from ksadk.memory import tool
+    from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
+    from ksadk.memory.service import LongTermMemoryService
+    from ksadk.runners._session_identity import ADKSessionIdentityMixin
+    from ksadk.runtime_context import PlatformIdentityContext, PlatformInvocationContext, platform_invocation_scope
+    from ksadk.sessions.invocation_identity import identity_native_user_id
+
+    class MemoryApi:
+        def __init__(self):
+            self.saved = {}
+            self.identities = []
+
+        def call(self, action, params, options=None):
+            user = params["AgentUserId"]
+            assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", user)
+            self.identities.append(user)
+            if action == "CreateMemorySdk":
+                self.saved[user] = params["Data"]["Conversation"][0]["Content"][0]["Text"]
+                return json.dumps({"Code": 0, "RequestId": "fixture-save"})
+            assert action == "QueryMemorySdk"
+            memories = [{"MemoryId": "fixture-memory", "Memory": self.saved[user]}] if user in self.saved else []
+            return json.dumps({"Data": [{"Memories": memories}]})
+
+    api = MemoryApi()
+    backend = SdkLTMBackend(index="fixture-collection", access_key="fixture-ak", secret_key="fixture-sk")
+    backend._aicp_client = api
+    monkeypatch.setattr(tool, "_service", LongTermMemoryService(backend=backend))
+
+    def context(subject):
+        identity = PlatformIdentityContext(identity_namespace="fixture-identity", tenant_id="fixture-tenant", subject_type="user", subject_id=subject)
+        return PlatformInvocationContext(
+            agent_id="fixture-agent", user_id=identity_native_user_id(identity), session_id="fixture-session",
+            history=[], input_content=[], input_messages=[], input_parts=[], attachments=[], attachment_results=[],
+            current_attachments=[], current_attachment_results=[], has_current_files=False, runner_type="adk", identity=identity,
+        )
+
+    owner = context("owner")
+    assert len(owner.user_id) == 68
+    with platform_invocation_scope(owner):
+        assert ADKSessionIdentityMixin()._invocation_session_owner()[0] == owner.user_id
+        assert tool.save_memory("fixture user prefers Friday exhibitions")["status"] == "persisted"
+        assert "Friday exhibitions" in tool.load_memory("exhibitions")
+        assert owner.user_id == identity_native_user_id(owner.identity)
+    assert len(set(api.identities)) == 1 and len(api.identities[0]) == 32
+    with platform_invocation_scope(context("different-owner")):
+        assert "Friday exhibitions" not in tool.load_memory("exhibitions")

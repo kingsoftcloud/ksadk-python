@@ -27,6 +27,8 @@ Projects retaining ADK 1.34.3 or 2.5.0 must also constrain `mcp>=1.26.0,<2`: tho
 
 The local SQLite/PostgreSQL logical namespace `agent:<agent>:user:<user>` is unchanged. Existing rows are not moved, copied, or deleted. Only the AICP wire boundary encodes a valid `AgentUserId`, consistently across save, query, status, update, and forget operations. Existing valid cloud IDs and resource-bound partitions retain their values; returned records keep the caller's logical identity.
 
+This targeted repair covers long-term Memory user IDs, including the 68-character trusted identity key. KnowledgeBaseIds, internal session identities and business SessionIds retain their values. Custom cloud Memory session IDs must still satisfy the service's existing limit; this release does not rewrite all identity rules.
+
 Back up long-term memory separately from sessions and checkpoints. This release does not clear a database to fix identity formatting. Projects that manually changed scopes while running a short-lived internal candidate must inspect their records rather than blindly merging partitions.
 
 ## AG-UI, RunAgent, and ordinary agents
