@@ -28,7 +28,11 @@
     "guides/attachments-multimodal",
     "guides/workspace-files",
     "---[Network]Events and Interoperability---",
+    "guides/agui-a2ui",
+    "guides/mcp-oauth",
+    "guides/tool-tunnel",
     "guides/hosted-ui-events",
+    "guides/channel-connector",
     "guides/a2a-runtime",
     "---[Cloud]Build and Deploy---",
     "guides/managed-runtime",
@@ -37,6 +41,10 @@
     "guides/runtime-products",
     "---[Wrench]Operations and Maintenance---",
     "guides/observability-tracing",
-    "guides/web-ui-source"
+    "guides/web-ui-source",
+    "guides/integration-0-8-7",
+    "guides/upgrade-0-8-8",
+    "guides/upgrade-0-8-7",
+    "guides/upgrade-0-8-6"
   ]
 }

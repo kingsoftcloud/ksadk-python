@@ -277,6 +277,20 @@ def test_docs_content_and_navigation_have_complete_english_variants():
     assert "fallbackLanguage: null" in i18n_config
 
 
+def test_framework_sidebar_includes_every_listed_capability_guide():
+    # The framework root flattens guide entries; the child menu alone does not
+    # expose a page in the rendered sidebar.
+    for metadata in ("meta.json", "meta.en.json"):
+        root = DOCS_CONTENT_ROOT / "framework"
+        sidebar = json.loads((root / metadata).read_text())["pages"]
+        guides = json.loads((root / "guides" / metadata).read_text())["pages"]
+        missing = [
+            page for page in guides
+            if not page.startswith("---") and f"guides/{page}" not in sidebar
+        ]
+        assert not missing, f"{metadata}: guides hidden from framework sidebar: {missing}"
+
+
 def test_docs_navigation_exposes_the_083_user_journeys():
     chinese = _read("docs-site/content/docs/framework/meta.json")
     english = _read("docs-site/content/docs/framework/meta.en.json")
