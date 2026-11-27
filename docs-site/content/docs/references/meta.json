@@ -7,6 +7,7 @@
     "---[Settings]配置与接口---",
     "project-config",
     "environment-variables",
+    "agent-web-api",
     "openai-compatible-api",
     "---[Activity]运行时合同---",
     "remote-runtime-api",

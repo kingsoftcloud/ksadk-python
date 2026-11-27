@@ -104,16 +104,13 @@ Agent Kernel centralizes trusted control, Harness owns composition and lifecycle
 
 ## Docs And Examples
 
-- Documentation: <https://kingsoftcloud.github.io/ksadk-python/>
-- Quick Start: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/quickstart/>
-- Why KsADK: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/why-ksadk/>
-- Architecture: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/architecture/>
-- Ecosystem Positioning: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/comparison/>
-- Observability: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/>
-- Cloud Deployment: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/cloud-deployment/>
-- Hosted UI and Event Replay: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/hosted-ui-events/>
-- Environment Variables: <https://kingsoftcloud.github.io/ksadk-python/en/docs/references/environment-variables/>
-- Samples: <https://github.com/kingsoftcloud/ksadk-samples>
+[Documentation home](https://kingsoftcloud.github.io/ksadk-python/) — browse the full guides and references.
+
+- **Getting started**: [Quick start](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/quickstart/) · [Why KsADK](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/why-ksadk/) · [Architecture](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/architecture/) · [Ecosystem positioning](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/comparison/)
+- **Core capabilities**: [Tool tunnel](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/tool-tunnel/) · [OAuth / API key MCP](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/mcp-oauth/) · [AG-UI / A2UI](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agui-a2ui/) · [A2A](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/a2a-runtime/) · [Channel Connector](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/channel-connector/)
+- **Deployment and operations**: [Cloud deployment](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/cloud-deployment/) · [Observability](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/) · [Hosted UI and event replay](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/hosted-ui-events/) · [Environment variables](https://kingsoftcloud.github.io/ksadk-python/en/docs/references/environment-variables/) · [0.8.8 upgrade guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/upgrade-0-8-8/)
+- **API reference**: [Agent Web API](https://kingsoftcloud.github.io/ksadk-python/en/docs/references/agent-web-api/)
+- **Examples**: [Sample repository](https://github.com/kingsoftcloud/ksadk-samples)
 
 ## Related Projects
 

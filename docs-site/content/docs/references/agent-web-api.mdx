@@ -1,0 +1,891 @@
+---
+title: "Agent Web API"
+description: "Agent 聊天界面的会话、运行、历史、交互、文件、反馈和 MCP OAuth 接口参考"
+---
+
+## 概述
+
+本手册用于为 Agent 构建聊天界面，涵盖界面初始化、会话、消息历史、对话运行、恢复与交互、附件、工作区、反馈和 MCP OAuth 授权。文件预览与本地原生终端作为按需启用的扩展单独说明。
+
+所有路径均相对于服务提供的 Agent 访问地址。调用前先获取界面能力，只使用当前服务声明支持的功能。
+
+## 请求与认证
+
+| 项目 | 约定 |
+| --- | --- |
+| 访问地址 | 使用 Agent 服务提供的访问地址，不自行拼接平台内部域名 |
+| API 认证 | 自动化客户端按访问服务要求携带 `Authorization: Bearer <API_KEY>`；浏览器可使用已建立的访问会话 |
+| JSON 请求 | `Content-Type: application/json` |
+| 流式请求 | `Accept: text/event-stream`，并按接口要求设置 `Stream=true` |
+| 上传文件 | `multipart/form-data`，由 HTTP 客户端生成 boundary |
+| 字段命名 | JSON 与 Query 字段名区分大小写 |
+
+AgentId、UserId、SessionId 等用于定位资源，不代替身份认证和授权。请求 ID、会话 ID、InvocationId、RunId、CheckpointId 和模型响应 ID 的用途不同，不能互相替换。
+
+## 响应与错误
+
+普通 JSON Action 成功响应采用以下结构：
+
+```json
+{ "Code": 0, "Message": "Success", "RequestId": "req-example", "Action": "CreateSession", "Data": { "Session": { "SessionId": "session-example", "AgentId": "agent-example", "UserId": "user-example" } } }
+```
+
+`Data` 的内容由具体接口定义。MCP OAuth 成功响应不保证带有 RequestId 和 Action。文件下载返回原始字节；SSE 不使用整包 JSON 响应。
+
+| 错误情况 | 客户端处理 |
+| --- | --- |
+| HTTP 400 / 422 | 检查参数、类型、范围和字段组合 |
+| HTTP 401 / 403 | 重新建立合法访问会话或检查权限；不要自动重试业务操作 |
+| HTTP 404 | 检查资源标识、会话归属和当前功能是否启用 |
+| HTTP 429 | 请求或队列受限；按服务返回的重试提示处理 |
+| HTTP 409 | 刷新交互版本、授权状态或历史上下文；不能直接更换幂等键重复提交 |
+| HTTP 503 / 504 | 后端暂不可用或查询超时；根据错误原因重试读取，确认写操作结果后再决定是否重发 |
+| HTTP 200 且 Code 非 0 | 业务失败；读取 Message、ReasonCode 或 detail |
+
+非成功响应可能使用 `Message`、`ReasonCode`、`detail` 或 `error` 返回错误信息。浏览器访问会话失效时也可能收到 HTML 401/403 页面；不能把它当作正常 API JSON。
+
+## 接口目录
+
+| 类别 | 方法与路径 | 用途 |
+| --- | --- | --- |
+| 初始化 | `POST /agentengine/api/v1/GetAgentUiBootstrap` | 获取界面能力 |
+| 初始化 | `POST /agentengine/api/v1/ListAgentModels` | 获取模型目录 |
+| 会话与历史 | `POST /agentengine/api/v1/CreateSession` | 创建会话 |
+| 会话与历史 | `POST /agentengine/api/v1/ListSessions` | 查询会话列表 |
+| 会话与历史 | `POST /agentengine/api/v1/GetSession` | 获取会话 |
+| 会话与历史 | `POST /agentengine/api/v1/DeleteSession` | 删除会话 |
+| 会话与历史 | `POST /agentengine/api/v1/ListSessionMessages` | 读取聊天历史 |
+| 会话与历史 | `POST /agentengine/api/v1/ListSessionEvents` | 读取会话事件 |
+| 对话与运行 | `POST /agentengine/api/v1/RunAgent` | 执行对话 |
+| 对话与运行 | `GET /agentengine/api/v1/SubscribeRunEvents` | 续订运行事件 |
+| 对话与运行 | `POST /agentengine/api/v1/CancelRun` | 取消运行 |
+| 恢复与交互 | `POST /agentengine/api/v1/ListSessionCheckpoints` | 查询恢复点 |
+| 恢复与交互 | `POST /agentengine/api/v1/GetCheckpointResumePreview` | 预览恢复操作 |
+| 恢复与交互 | `POST /agentengine/api/v1/ResumeRun` | 恢复运行 |
+| 恢复与交互 | `POST /agentengine/api/v1/ListToolReceipts` | 查询工具回执 |
+| 恢复与交互 | `POST /agentengine/api/v1/SubmitInteraction` | 提交交互结果 |
+| 附件与工作区 | `POST /agentengine/api/v1/UploadFile` | 上传附件 |
+| 附件与工作区 | `GET /agentengine/api/v1/AttachmentContent` | 下载附件 |
+| 附件与工作区 | `POST /agentengine/api/v1/ListWorkspaceFiles` | 列出工作区文件 |
+| 附件与工作区 | `POST /agentengine/api/v1/AddWorkspaceFile` | 上传工作区文件 |
+| 附件与工作区 | `POST /agentengine/api/v1/DeleteWorkspaceFile` | 删除工作区文件 |
+| 附件与工作区 | `GET /agentengine/api/v1/GetWorkspaceFileContent` | 下载工作区文件 |
+| 附件与工作区 | `GET /agentengine/api/v1/ExportWorkspaceZip` | 导出工作区 |
+| 消息反馈 | `POST /agentengine/api/v1/GetResponseFeedback` | 读取消息反馈 |
+| 消息反馈 | `POST /agentengine/api/v1/UpsertResponseFeedback` | 保存消息反馈 |
+| 消息反馈 | `POST /agentengine/api/v1/DeleteResponseFeedback` | 删除消息反馈 |
+| MCP OAuth | `POST /agentengine/api/v1/GetMcpAuthorizationWait` | 读取授权状态 |
+| MCP OAuth | `POST /agentengine/api/v1/OpenMcpAuthorization` | 打开授权 |
+| MCP OAuth | `POST /agentengine/api/v1/RetryMcpAuthorization` | 重试授权 |
+| MCP OAuth | `POST /agentengine/api/v1/RetryMcpConnection` | 重试连接 |
+| MCP OAuth | `POST /agentengine/api/v1/CancelMcpAuthorizationWait` | 取消授权等待 |
+| AG-UI | `POST /agentengine/agui`（默认地址） | 标准 AG-UI 对话与结构化交互 |
+
+请求示例中的 agent-example、session-example 等均为占位标识。实际调用时使用服务返回的值。
+
+## 初始化
+
+### 获取界面能力
+
+`POST /agentengine/api/v1/GetAgentUiBootstrap`
+
+获取 Agent 信息、可用聊天传输、文件、历史和恢复能力。客户端初始化时调用。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `SessionId` | body | `string / null` | 否 | `null` | 会话标识。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example"}
+```
+
+**返回**：Agent 为 Agent 基本信息；Capabilities 为能力声明；HostedChat 为可用聊天传输；ApiFormats 为支持的输出格式；WorkspaceFiles 为文件能力；SessionBackend 为会话后端信息。
+
+先根据 Capabilities 判断是否展示交互、恢复、文件、OAuth 和终端功能。AG-UI 的实际地址从 HostedChat.Transports 中获取。
+
+### 获取模型目录
+
+`POST /agentengine/api/v1/ListAgentModels`
+
+获取当前 Agent 可选择的模型及当前模型。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `Name` | body | `string / null` | 否 | `null` | 兼容字段；当前模型列表由 Agent 的运行配置决定。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example"}
+```
+
+**返回**：Models 为模型数组；Current 为当前模型；Source 为模型目录来源。
+
+## 会话与历史
+
+### 创建会话
+
+`POST /agentengine/api/v1/CreateSession`
+
+创建会话；指定已有 SessionId 时按服务端会话策略处理。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `"user"` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `SessionId` | body | `string / null` | 否 | `null` | 会话标识。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example"}
+```
+
+**返回**：Session：会话对象，结构见公共返回对象。
+
+### 查询会话列表
+
+`POST /agentengine/api/v1/ListSessions`
+
+分页读取指定 Agent 的会话列表。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `Page` | body | `integer` | 否 | `1` | 页码，从 1 开始。 最小 1。 |
+| `PageSize` | body | `integer` | 否 | `20` | 每页条数。 最小 1；最大 1000。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","Page":1,"PageSize":20}
+```
+
+**返回**：Sessions：会话数组；Total：会话总数；Page：当前页；PageSize：每页条数。可附带 DataSource、Degraded、SessionContractVersion。
+
+同一翻页序列使用一致的 AgentId、UserId 和 PageSize。不要把分页查询中省略 UserId 等同于获得跨用户访问权限。
+
+### 获取会话
+
+`POST /agentengine/api/v1/GetSession`
+
+读取指定会话的元数据和当前运行信息。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example"}
+```
+
+**返回**：Session：会话对象。
+
+### 删除会话
+
+`POST /agentengine/api/v1/DeleteSession`
+
+删除会话及关联记录，并取消该会话仍在进行的后台流。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example"}
+```
+
+**返回**：Deleted：删除成功时为 true。
+
+### 读取聊天历史
+
+`POST /agentengine/api/v1/ListSessionMessages`
+
+读取适合聊天界面展示的消息投影，支持向前翻页和增量读取。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `AfterSeqId` | body | `integer / null` | 否 | `null` | 只读取该序号之后的事件或消息。 最小 0。 |
+| `BeforeSeqId` | body | `integer / null` | 否 | `null` | 只读取该序号之前的事件或消息。 最小 1。 |
+| `Limit` | body | `integer` | 否 | `50` | 最多返回条数。 最小 1；最大 200。 |
+| `IncludeReasoning` | body | `boolean` | 否 | `false` | 是否包含可返回的推理内容。 |
+| `IncludeToolEvents` | body | `boolean` | 否 | `false` | 是否包含工具执行事件。 |
+| `IncludeAttachments` | body | `boolean` | 否 | `true` | 是否包含附件信息。 |
+| `HistoryEpoch` | body | `string / null` | 否 | `null` | 使用服务端上次返回的历史版本标识。 |
+| `CursorSource` | body | `string / null` | 否 | `null` | 使用服务端上次返回的游标来源。 取值 runtime, control。 |
+| `SnapshotSeqId` | body | `integer / null` | 否 | `null` | 使用服务端上次返回的历史快照序号。 最小 0。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","Limit":50,"IncludeReasoning":false}
+```
+
+**返回**：SessionId：会话标识；Messages：消息数组；LatestSeqId：最新事件序号；HasMore：是否还有更早记录；NextCursor：下一页提示；HistoryEpoch、SnapshotSeqId、CursorSource：后续查询应保留的历史上下文。
+
+CursorSource、HistoryEpoch、SnapshotSeqId 应沿用上次响应，不自行生成。服务端要求重载历史时，清空旧游标后重新读取。
+
+### 读取会话事件
+
+`POST /agentengine/api/v1/ListSessionEvents`
+
+读取会话事件，用于恢复进度、工具结果和原始时间线。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `SessionId` | body | `string / null` | 否 | `null` | 会话标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `CheckpointIds` | body | `array<string>` | 否 | `[]` | 按 checkpoint 标识过滤。 |
+| `EventTypes` | body | `array<string>` | 否 | `[]` | 按事件类型过滤；空数组表示不按类型过滤。 |
+| `Offset` | body | `integer / null` | 否 | `null` | 结果偏移量，从 0 开始。 最小 0。 |
+| `Limit` | body | `integer` | 否 | `200` | 最多返回条数。 最小 1；最大 2000。 |
+| `AfterSeqId` | body | `integer / null` | 否 | `null` | 只读取该序号之后的事件或消息。 最小 0。 |
+| `BeforeSeqId` | body | `integer / null` | 否 | `null` | 只读取该序号之前的事件或消息。 最小 1。 |
+| `EventOrder` | body | `string / null` | 否 | `null` | 事件排列顺序。 |
+| `CursorSource` | body | `string / null` | 否 | `null` | 使用服务端上次返回的游标来源。 取值 runtime, control。 |
+| `HistoryEpoch` | body | `string / null` | 否 | `null` | 使用服务端上次返回的历史版本标识。 |
+| `SnapshotSeqId` | body | `integer / null` | 否 | `null` | 使用服务端上次返回的历史快照序号。 最小 0。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","AfterSeqId":0,"Limit":200}
+```
+
+**返回**：Events：事件数组；Total、Offset、Limit：查询结果信息；HasMore：是否还有记录；可能附带历史版本与快照信息。
+
+与聊天消息不同，事件可能包含工具、状态和交互变化；不应把原始事件直接拼接成聊天消息。
+
+## 对话与运行
+
+### 执行对话
+
+`POST /agentengine/api/v1/RunAgent`
+
+执行一轮 Agent 对话，支持同步、SSE 和能力允许时的后台模式。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `Messages` | body | `array<object>` | 否 | `[]` | 消息数组；每项包含 role 与 content。 |
+| `UserId` | body | `string / null` | 否 | `"user"` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `AccountId` | body | `string / null` | 否 | `null` | 账号关联标识；不替代服务端认证。 |
+| `SessionId` | body | `string / null` | 否 | `null` | 会话标识。 |
+| `InvocationId` | body | `string / null` | 否 | `null` | 本次调用标识，用于续订、取消和事件关联。 |
+| `ApiFormat` | body | `string` | 否 | `"responses"` | 输出协议：responses 或 chat_completions。 |
+| `Stream` | body | `boolean` | 否 | `false` | 是否返回 SSE 流。 |
+| `Background` | body | `boolean` | 否 | `false` | 是否请求后台执行；使用前确认运行能力。 |
+| `Model` | body | `string / null` | 否 | `null` | 本次选择的模型标识；从模型目录获取。 |
+| `ModelMetadata` | body | `object / null` | 否 | `null` | 模型能力信息。 |
+| `ModelOptions` | body | `object / null` | 否 | `null` | 模型推理选项；支持项取决于所用模型。 |
+| `Metadata` | body | `object / null` | 否 | `null` | 请求附加元数据；不用于伪造身份或服务端权限。 |
+| `ResponsesInput` | body | `JSON value / null` | 否 | `null` | Responses 格式输入；用于文本、多模态或恢复输入。 |
+| `PreviousResponseId` | body | `string / null` | 否 | `null` | 上一轮 Responses 响应标识。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","InvocationId":"inv-example","Messages":[{"role":"user","content":"你好"}],"ApiFormat":"responses","Stream":true}
+```
+
+**返回**：同步前台执行时，Data 为 ApiFormat 对应的 Responses 或 Chat Completions 对象。返回 SSE 时按事件流解析。后台模式的返回见下表。
+
+| 执行方式 | 返回内容 |
+| --- | --- |
+| 前台同步 | JSON Action 外壳，Data 为模型响应 |
+| 前台流式 | SSE；运行失败或交互等待可能在流中报告 |
+| 后台，返回运行句柄时 | JSON Action；Data 包含 SessionId、InvocationId、Status、Background、SubscribeUrl |
+| Kernel 受理的流式或后台请求 | SSE，采用 Responses 事件投影；不承诺返回 JSON 句柄 |
+
+普通前台流式请求设置 Stream=true。Background=true 只在服务明确允许后台执行时使用，返回形式可能与前台 SSE 不同；续订时使用 SubscribeRunEvents。Messages 与 ResponsesInput 按所选输入协议提供，恢复输入还可能需要 PreviousResponseId。断开 HTTP 连接不等价于取消任务；需要停止执行时调用 CancelRun。
+
+### 续订运行事件
+
+`GET /agentengine/api/v1/SubscribeRunEvents`
+
+在断线重连或后台运行时，订阅指定 invocation 的增量事件。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `SessionId` | query | `string` | 是 | `—` | 会话标识。 |
+| `InvocationId` | query | `string` | 是 | `—` | 本次调用标识，用于续订、取消和事件关联。 |
+| `AfterSeqId` | query | `integer` | 否 | `0` | 只读取该序号之后的事件或消息。 |
+| `AgentId` | query | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `UserId` | query | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+
+请求示例：
+
+```http
+GET /agentengine/api/v1/SubscribeRunEvents?SessionId=session-example&InvocationId=inv-example&AfterSeqId=0
+Authorization: Bearer <API_KEY>
+```
+
+**返回**：text/event-stream；每个 data 帧为会话事件对象，终止标志为 data: [DONE]。心跳是以冒号开头的 SSE 注释帧。
+
+### 取消运行
+
+`POST /agentengine/api/v1/CancelRun`
+
+按 InvocationId 请求停止当前运行。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `SessionId` | body | `string / null` | 否 | `null` | 会话标识。 |
+| `InvocationId` | body | `string` | 是 | `—` | 本次调用标识，用于续订、取消和事件关联。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","InvocationId":"inv-example"}
+```
+
+**返回**：Cancelled 表示取消已请求或被运行时接受；Found 表示是否定位到运行；Status 为当前取消状态；RuntimeCancelStatus 为运行时取消结果。`Cancelled=true` 不保证后台任务在此时已经结束，应继续观察运行事件。
+
+InvocationId 必须来自实际运行。在带可信业务身份的请求中必须提供 AgentId、SessionId；其他请求也建议同时提供以限定取消范围。取消接口不能使用 Responses id 或 CheckpointId 代替 InvocationId。
+
+## 恢复与交互
+
+### 查询恢复点
+
+`POST /agentengine/api/v1/ListSessionCheckpoints`
+
+查询 Agent 或指定会话的 checkpoint，并按恢复条件筛选。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `SessionId` | body | `array<string> / string / null` | 否 | `null` | 会话标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `CheckpointId` | body | `array<string> / string / null` | 否 | `null` | checkpoint 标识；从会话 checkpoint 列表获取。 |
+| `RunId` | body | `string / null` | 否 | `null` | 运行标识。 |
+| `OnlyResumable` | body | `boolean` | 否 | `false` | 是否仅返回可恢复的 checkpoint。 |
+| `Framework` | body | `string / null` | 否 | `null` | 按框架过滤。 |
+| `ResumeStatus` | body | `array<string>` | 否 | `[]` | 按恢复状态过滤。 |
+| `ResumeTypes` | body | `array<string>` | 否 | `[]` | 按恢复类型过滤。 |
+| `Offset` | body | `integer / null` | 否 | `null` | 结果偏移量，从 0 开始。 最小 0。 |
+| `Limit` | body | `integer` | 否 | `100` | 最多返回条数。 最小 1；最大 1000。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","OnlyResumable":true}
+```
+
+**返回**：Checkpoints：恢复点数组；Total：结果计数；ResumableTotal：可恢复计数；HasResumableCheckpoint：是否存在可恢复记录。
+
+### 预览恢复操作
+
+`POST /agentengine/api/v1/GetCheckpointResumePreview`
+
+在提交恢复前检查目标 checkpoint 的可恢复性和阻断原因。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `RunId` | body | `string` | 是 | `—` | 运行标识。 |
+| `CheckpointId` | body | `string` | 是 | `—` | checkpoint 标识；从会话 checkpoint 列表获取。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","RunId":"run-example","CheckpointId":"checkpoint-example"}
+```
+
+**返回**：Preview：目标恢复点的预览与准入结果。
+
+### 恢复运行
+
+`POST /agentengine/api/v1/ResumeRun`
+
+从指定会话的 checkpoint 恢复执行。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `RunId` | body | `string` | 是 | `—` | 运行标识。 |
+| `CheckpointId` | body | `string` | 是 | `—` | checkpoint 标识；从会话 checkpoint 列表获取。 |
+| `ResumeAttemptId` | body | `string / null` | 否 | `null` | 恢复尝试标识，用于区分恢复请求。 |
+| `InvocationId` | body | `string / null` | 否 | `null` | 本次调用标识，用于续订、取消和事件关联。 |
+| `Stream` | body | `boolean` | 否 | `false` | 是否返回 SSE 流。 |
+| `Background` | body | `boolean` | 否 | `false` | 是否请求后台执行；使用前确认运行能力。 |
+| `Model` | body | `string / null` | 否 | `null` | 本次选择的模型标识；从模型目录获取。 |
+| `ModelMetadata` | body | `object / null` | 否 | `null` | 模型能力信息。 |
+| `ModelOptions` | body | `object / null` | 否 | `null` | 模型推理选项；支持项取决于所用模型。 |
+| `Metadata` | body | `object / null` | 否 | `null` | 请求附加元数据；不用于伪造身份或服务端权限。 |
+| `ResumeInstructionEnabled` | body | `boolean` | 否 | `false` | 是否启用恢复附加指令。 |
+| `ResumeInstruction` | body | `string / null` | 否 | `null` | 恢复时附加的指令。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","RunId":"run-example","CheckpointId":"checkpoint-example","ResumeAttemptId":"resume-example","Stream":true}
+```
+
+**返回**：同步恢复时返回 JSON Action；正常流式恢复返回 SSE；后台恢复返回 JSON 句柄，Data 包含 SessionId、RunId、CheckpointId、ResumeAttemptId、InvocationId、Status、Background、SubscribeUrl。重复的已处理恢复尝试可返回 Status=already_processed、AlreadyProcessed=true；终态 checkpoint 的空操作可返回 Status=noop 及 Reason。这两种情况即使 Stream=true 也可能返回 JSON，客户端应检查 Content-Type。
+
+先调用 GetCheckpointResumePreview。每次独立的恢复尝试使用新的 ResumeAttemptId，同一次尝试重试则保持标识不变。
+
+### 查询工具回执
+
+`POST /agentengine/api/v1/ListToolReceipts`
+
+读取运行或 checkpoint 关联的工具执行回执。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `RunId` | body | `string / null` | 否 | `null` | 运行标识。 |
+| `CheckpointId` | body | `string / null` | 否 | `null` | checkpoint 标识；从会话 checkpoint 列表获取。 |
+| `Offset` | body | `integer` | 否 | `0` | 结果偏移量，从 0 开始。 最小 0。 |
+| `Limit` | body | `integer` | 否 | `200` | 最多返回条数。 最小 1；最大 500。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example"}
+```
+
+**返回**：ToolReceipts：回执数组；Total、Offset、Limit：分页信息。回执不确定时不能据此自动重放有副作用的工具。
+
+### 提交交互结果
+
+`POST /agentengine/api/v1/SubmitInteraction`
+
+提交审批、拒绝、结构化输入或取消决定。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `UserId` | body | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `RunId` | body | `string` | 是 | `—` | 运行标识。 |
+| `InteractionId` | body | `string` | 是 | `—` | 待处理交互标识。 |
+| `ExpectedRevision` | body | `integer` | 是 | `—` | 期望的交互或授权等待版本；从当前状态获取。 最小 1。 |
+| `InteractionAction` | body | `string` | 是 | `—` | 交互决定；取值 approve、reject、submit 或 cancel。 |
+| `Response` | body | `JSON value` | 否 | `null` | 交互响应，支持任意合法 JSON 值；结构化提交必须显式携带本字段。 |
+| `IdempotencyKey` | body | `string` | 是 | `—` | 幂等键；同一次提交重试时保持不变。 最短 1；最长 256。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","RunId":"run-example","InteractionId":"interaction-example","ExpectedRevision":1,"InteractionAction":"approve","Response":null,"IdempotencyKey":"interaction-example-approve"}
+```
+
+**返回**：Data 为命令回执，包含 schema_version、command_id、status 及条件返回的 message_id、run_id、accepted_seq 或 error。
+
+此兼容入口要求活动的本地 Kernel。托管服务通过相应授权入口完成同类操作，不能自行伪造许可。InteractionAction 的四个值为 approve、reject、submit、cancel；兼容请求也接受 Action 作为决定字段。submit 时必须显式包含 Response，Response=null 也是合法的 JSON 值，不能与省略字段混同。ExpectedRevision 必须取当前交互版本；同一次决定重试时保持 IdempotencyKey 不变。受理回执可以使用 HTTP 202，重复命令可以使用 HTTP 200；accepted/duplicate 只表示命令受理，不代表交互已经执行完成。
+
+## 附件与工作区
+
+### 上传附件
+
+`POST /agentengine/api/v1/UploadFile`
+
+上传图片或文档，取得可放入后续消息的文件引用。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `file` | form | `binary` | 是 | `—` | 上传文件。 |
+
+请求示例：
+
+```bash
+curl --fail-with-body "$BASE_URL/agentengine/api/v1/UploadFile" -H "Authorization: Bearer $API_KEY" -F "file=@./example.txt"
+```
+
+**返回**：FileData.fileUri：文件引用；displayName：显示名；mimeType：媒体类型；sizeBytes：文件大小。
+
+### 下载附件
+
+`GET /agentengine/api/v1/AttachmentContent`
+
+读取上传接口返回的文件引用。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `FileUri` | query | `string` | 是 | `—` | 上传接口返回的 fileUri。 |
+| `SessionId` | query | `string / null` | 否 | `null` | 会话标识。 |
+| `AgentId` | query | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `UserId` | query | `string / null` | 否 | `null` | 逻辑用户标识；访问范围仍受认证身份约束。 |
+
+请求示例：
+
+```http
+GET /agentengine/api/v1/AttachmentContent?FileUri=file-example
+Authorization: Bearer <API_KEY>
+```
+
+**返回**：文件原始字节。按 Content-Type 渲染或保存，不按 JSON Action 外壳解析。
+
+FileUri 来自 UploadFile，不是任意本地文件路径或外部 URL。受身份隔离的附件可能还需要 AgentId 或 SessionId 以定位其访问范围。
+
+### 列出工作区文件
+
+`POST /agentengine/api/v1/ListWorkspaceFiles`
+
+列出工作区指定目录的文件和子目录。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `Path` | body | `string` | 否 | `"."` | 工作区内的相对路径。 |
+| `Recursive` | body | `boolean` | 否 | `false` | 是否递归列出子目录。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","Path":".","Recursive":false}
+```
+
+**返回**：目录信息和 Entries 条目数组；条目包含 Name、Path、Type、SizeBytes、MimeType、ModifiedAt。
+
+### 上传工作区文件
+
+`POST /agentengine/api/v1/AddWorkspaceFile`
+
+将文件写入工作区指定相对路径。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `file` | form | `binary` | 是 | `—` | 上传文件。 |
+| `AgentId` | form | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `Path` | form | `string` | 是 | `—` | 工作区内的相对路径。 |
+
+请求示例：
+
+```bash
+curl --fail-with-body "$BASE_URL/agentengine/api/v1/AddWorkspaceFile" -H "Authorization: Bearer $API_KEY" -F "file=@./example.txt" -F "Path=notes/example.txt"
+```
+
+**返回**：Entry：上传后的文件条目，包含 Path、Name、Type、SizeBytes、MimeType、ModifiedAt。
+
+使用 multipart/form-data，客户端自动设置 boundary；Path 是目标文件相对路径，file 是文件内容。
+
+### 删除工作区文件
+
+`POST /agentengine/api/v1/DeleteWorkspaceFile`
+
+删除工作区中的指定文件。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `Path` | body | `string` | 是 | `—` | 工作区内的相对路径。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","Path":"notes/example.txt"}
+```
+
+**返回**：Deleted：删除成功时为 true。
+
+### 下载工作区文件
+
+`GET /agentengine/api/v1/GetWorkspaceFileContent`
+
+读取工作区文件的原始内容，可用于图片、文档和文本预览。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `FilePath` | query | `string` | 是 | `—` | 工作区内待下载文件的相对路径。 |
+| `AgentId` | query | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+
+请求示例：
+
+```http
+GET /agentengine/api/v1/GetWorkspaceFileContent?FilePath=notes%2Fexample.txt
+Authorization: Bearer <API_KEY>
+```
+
+**返回**：文件原始字节。Content-Type 表示文件类型；按返回的 Content-Disposition 决定显示或下载。
+
+FilePath 是工作区相对路径，不允许使用绝对路径或越过工作区边界。
+
+### 导出工作区
+
+`GET /agentengine/api/v1/ExportWorkspaceZip`
+
+将指定工作区目录导出为 ZIP 文件。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | query | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `Path` | query | `string` | 否 | `"."` | 工作区内的相对路径。 |
+
+请求示例：
+
+```http
+GET /agentengine/api/v1/ExportWorkspaceZip?Path=.
+Authorization: Bearer <API_KEY>
+```
+
+**返回**：ZIP 二进制文件，按附件响应保存。
+
+## 消息反馈
+
+### 读取消息反馈
+
+`POST /agentengine/api/v1/GetResponseFeedback`
+
+读取当前用户对指定响应的反馈。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `ResponseId` | body | `string` | 是 | `—` | 被反馈的模型响应标识。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","ResponseId":"response-example"}
+```
+
+**返回**：Feedback：反馈对象；未反馈时为 null。
+
+### 保存消息反馈
+
+`POST /agentengine/api/v1/UpsertResponseFeedback`
+
+创建或更新当前用户对指定响应的赞/踩及说明。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `ResponseId` | body | `string` | 是 | `—` | 被反馈的模型响应标识。 |
+| `Rating` | body | `string` | 是 | `—` | 反馈值：up 或 down。 |
+| `Comment` | body | `string / null` | 否 | `""` | 反馈说明。 |
+| `EventId` | body | `string / null` | 否 | `null` | 关联事件标识。 |
+| `TraceId` | body | `string / null` | 否 | `null` | 关联 trace 标识。 |
+| `RootSpanId` | body | `string / null` | 否 | `null` | 关联根 span 标识。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","ResponseId":"response-example","Rating":"up","Comment":"回答有帮助"}
+```
+
+**返回**：Feedback：保存后的反馈对象。
+
+Rating 只接受 up 或 down。ResponseId 应对应当前会话的实际助手响应。
+
+### 删除消息反馈
+
+`POST /agentengine/api/v1/DeleteResponseFeedback`
+
+撤销指定响应的反馈。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | 是 | `—` | 目标 Agent 标识。 |
+| `SessionId` | body | `string` | 是 | `—` | 会话标识。 |
+| `ResponseId` | body | `string` | 是 | `—` | 被反馈的模型响应标识。 |
+
+请求示例：
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","ResponseId":"response-example"}
+```
+
+**返回**：Deleted：是否删除了已有反馈。
+
+## MCP OAuth
+
+仅在服务声明支持 MCP 授权时使用。本地项目与托管访问的授权状态不能混用；授权流程由服务端管理，不在聊天消息中传递令牌或秘密。
+
+| 方法与路径 | 用途 |
+| --- | --- |
+| `POST /agentengine/api/v1/GetMcpAuthorizationWait` | 读取当前 MCP 授权等待的状态和允许执行的操作。 |
+| `POST /agentengine/api/v1/OpenMcpAuthorization` | 为待授权的 MCP 服务取得浏览器授权地址。 |
+| `POST /agentengine/api/v1/RetryMcpAuthorization` | 在授权失败或被拒绝后重新发起授权。 |
+| `POST /agentengine/api/v1/RetryMcpConnection` | 在授权凭据仍有效时重试 MCP 服务连接。 |
+| `POST /agentengine/api/v1/CancelMcpAuthorizationWait` | 取消当前授权等待，阻止迟到的授权结果继续该等待。 |
+
+五个接口使用以下公共请求参数：
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `WaitId` | body | `string` | 是 | `—` | 当前 MCP 授权等待标识。 最短 1；最长 64。 |
+| `ExpectedRevision` | body | `integer / null` | 否 | `null` | 期望的交互或授权等待版本；从当前状态获取。 最小 1。 |
+| `AgentId` | body | `string / null` | 否 | `null` | 目标 Agent 标识。 |
+| `SessionId` | body | `string / null` | 否 | `null` | 会话标识。 |
+| `IdempotencyKey` | body | `string / null` | 否 | `null` | 可选兼容字段；本组操作以 ExpectedRevision 检查状态版本，不承诺按此字段去重。 |
+
+读取等待状态示例：
+
+```json
+{"WaitId":"wait-example","AgentId":"agent-example","SessionId":"session-example"}
+```
+
+打开、重试或取消时，应传入当前等待状态返回的 ExpectedRevision：
+
+```json
+{"WaitId":"wait-example","ExpectedRevision":1,"AgentId":"agent-example","SessionId":"session-example"}
+```
+
+授权状态 Data：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| wait_id / run_id / config_id | string | 等待、运行与连接配置标识 |
+| revision | integer | 当前版本，后续操作使用此值 |
+| status | string | 授权/连接当前状态 |
+| display_name | string | MCP 服务显示名 |
+| scopes | string[] | 本次授权范围 |
+| allowed_actions | string[] | 当前状态允许执行的操作 |
+| requires_resume | boolean | 是否涉及等待后的恢复 |
+| deadline | number | 授权等待截止时间，Unix 时间秒 |
+| error | string / null | 失败原因 |
+| authorization_url | string，可选 | OpenMcpAuthorization 返回的浏览器打开地址 |
+
+先读取等待状态。allowed_actions 中 query、open、retry_authorization、retry_connection、cancel 分别对应查询、打开授权、重试授权、重试连接和取消等待；仅执行当前状态允许的操作。浏览器完成真实授权后重新读取状态。取消后，不应把迟到的回调当作新的授权成功。业务状态冲突可返回 HTTP 409，并携带 ReasonCode；刷新状态后再决定下一步。
+
+## AG-UI 对话
+
+`POST /agentengine/agui` 为默认地址；优先使用初始化返回的 HostedChat.Transports 中 AG-UI Endpoint。
+
+用途：接收标准 AG-UI 运行输入，返回文本、工具、状态和结构化交互事件。A2UI 卡片通过相应消息/事件承载，不需要调用单独的 A2UI HTTP 接口。
+
+| 参数 | 位置 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `threadId` | body | `string` | 是 | `—` | AG-UI 会话标识。 |
+| `runId` | body | `string` | 是 | `—` | AG-UI 运行标识。 |
+| `protocolVersion` | body | `string / null` | 否 | `null` | 请求采用的 AG-UI 协议版本。 |
+| `parentRunId` | body | `string / null` | 否 | `null` | 父运行标识，用于关联派生运行。 |
+| `state` | body | `JSON value / null` | 否 | `null` | 图的初始或当前状态。 |
+| `messages` | body | `array<JSON value>` | 是 | `—` | AG-UI 消息数组。 |
+| `tools` | body | `array<object> / null` | 否 | `null` | 客户端声明的工具列表。 |
+| `context` | body | `array<object> / null` | 否 | `null` | 上下文条目列表。 |
+| `forwardedProps` | body | `JSON value / null` | 否 | `null` | 传递给 Agent 的扩展属性。 |
+| `resume` | body | `array<object> / null` | 否 | `null` | 待恢复交互的响应列表。 |
+
+**返回**：`text/event-stream`。客户端按 AG-UI 事件协议处理开始、文本、工具、状态、交互、结束或错误事件。
+
+RunAgentInput 中的 messages 为消息数组；tools 为工具描述；context 为上下文数组；forwardedProps 为扩展属性。threadId 用于关联会话，runId 用于标识运行。不要把 AG-UI runId 与其他协议的 InvocationId 随意互换。
+
+AG-UI 不可用时，应按初始化声明选择允许的聊天传输；不能只改 URL 就认为服务已经具备交互、恢复或 OAuth 能力。
+
+## 公共返回对象
+
+### Session 会话
+
+| 字段 | 说明 |
+| --- | --- |
+| SessionId / AgentId / UserId | 会话及其所属 Agent、用户 |
+| Title / TitleSource / Summary | 标题、标题来源和摘要 |
+| FirstPrompt / LastPrompt | 首条与末条用户输入预览 |
+| ActiveInvocationId / ActiveRunStatus | 当前或最近运行的调用标识与状态 |
+| ActiveRunMode / ActiveRunTrigger | 运行模式与触发方式 |
+| CreatedAt / UpdatedAt / Version | Unix 时间秒表示的创建/更新时间，以及整数版本号 |
+| State | 允许公开的会话状态 |
+| Continuity | 运行时连续性信息 |
+
+### Message 聊天消息
+
+| 字段 | 说明 |
+| --- | --- |
+| MessageId / Role / Content | 消息标识、角色和内容 |
+| Timestamp / SeqId / InvocationId | 时间、事件序号和所属调用 |
+| Reasoning / Blocks | 可返回的推理及有序内容块 |
+| ToolEvents | 工具执行与审批状态 |
+| Attachments | 附件引用、名称、类型、大小和访问地址 |
+
+### SessionEvent 会话事件
+
+| 字段 | 说明 |
+| --- | --- |
+| EventId / SessionId | 事件及会话标识 |
+| Author / EventType | 产生方与事件类型 |
+| Content | 类型相关的事件内容 |
+| Timestamp / SeqId | 时间与序号 |
+| InvocationId | 所属运行调用，有值时返回 |
+
+### Feedback 反馈
+
+| 字段 | 说明 |
+| --- | --- |
+| AgentId / SessionId / ResponseId | 反馈目标 |
+| Rating / Comment | up/down 与反馈文字 |
+| EventId / TraceId / RootSpanId | 关联事件和调用链 |
+| CreatedAt / UpdatedAt | 创建和更新时间 |
+
+## SSE 使用约定
+
+使用支持增量读取的 HTTP 客户端，按空行拆分 SSE 帧，不按一次网络读取对应一个 JSON 对象。冒号开头的帧为心跳注释。SubscribeRunEvents 的 data 为事件对象，接收到 `[DONE]` 后本轮订阅结束。RunAgent 的非 Kernel 分支按 ApiFormat 返回兼容事件；Kernel 分支使用具名 Responses 事件，例如 response.completed、response.failed、response.canceled。交互等待也可能返回 response.incomplete 并关闭前台流，不能把连接关闭一律视为成功。AG-UI 按 AG-UI 协议解析。
+
+断线续订使用同一 SessionId、InvocationId 和最后确认的 AfterSeqId；不要通过重发用户消息模拟恢复。HTTP 200 不代表流中的运行一定成功，仍需处理运行失败和中断事件。
+
+## 可选文件预览与本地原生终端
+
+以下入口仅在对应能力启用时使用。原生终端不等同于对所有托管用户开放的远程 Shell。
+
+### 文件预览资源
+
+`GET /_ksadk/workspace/v1/files/{file_path}`
+
+file_path 为工作区相对路径，可包含多段目录。各路径段分别进行 URL 编码。返回文件原始内容，按 Content-Type 渲染；HTML 页面依赖的相对图片、样式等资源可通过同一工作区路径读取。
+
+### 创建或复用终端会话
+
+`POST /_ksadk/terminal/sessions`
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| session_id | string | 否 | 空 | 关联聊天会话 |
+| mode | string | 否 | tui | 终端模式，以运行时支持的模式为准 |
+| cols / rows | integer | 否 | 80 / 24 | 终端尺寸 |
+| force_new | boolean | 否 | false | 是否强制创建新终端 |
+| cwd | string | 否 | 不指定 | 工作目录，受运行时限制 |
+
+请求示例：
+
+```json
+{"session_id":"session-example","mode":"tui","cols":80,"rows":24,"force_new":false}
+```
+
+返回 `{"session":{...}}`，其中 terminal_session_id 用于后续连接和关闭。
+
+### 查询终端会话
+
+`GET /_ksadk/terminal/sessions`
+
+Query 参数 session_id 和 mode 均可选，用于筛选。返回 `{"sessions":[...]}`。
+
+### 关闭终端会话
+
+`DELETE /_ksadk/terminal/sessions/{terminal_session_id}`
+
+返回 deleted 和 terminal_session_id；会话不存在时可返回 HTTP 404。
+
+### 连接终端 WebSocket
+
+`WS /_ksadk/terminal/ws?terminal_session_id=<TERMINAL_SESSION_ID>`
+
+远程安全连接使用 WSS；握手必须协商 `Sec-WebSocket-Protocol: ks-terminal.v1`。terminal_session_id 来自终端创建结果。服务端拒绝终端能力或身份访问时，客户端应停止连接，不通过修改身份头绕过。

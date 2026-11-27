@@ -101,16 +101,13 @@ Agent Kernel 收口可信控制，Harness 管理装配与生命周期，可插�
 
 ## 文档与样例
 
-- 文档：<https://kingsoftcloud.github.io/ksadk-python/>
-- 快速开始：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/quickstart/>
-- 为什么需要 KsADK：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/why-ksadk/>
-- 架构：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/architecture/>
-- 生态定位对比：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/comparison/>
-- 可观测：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/observability-tracing/>
-- 云端部署：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/cloud-deployment/>
-- Hosted UI 与事件回放：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/hosted-ui-events/>
-- 环境变量：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/references/environment-variables/>
-- 样例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
+[文档首页](https://kingsoftcloud.github.io/ksadk-python/)：完整使用手册与参考文档。
+
+- **入门**：[快速开始](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/quickstart/) · [为什么需要 KsADK](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/why-ksadk/) · [架构](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/architecture/) · [生态定位对比](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/comparison/)
+- **核心能力**：[Tunnel 工具隧道](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/tool-tunnel/) · [OAuth / API Key MCP](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/mcp-oauth/) · [AG-UI / A2UI](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agui-a2ui/) · [A2A](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/a2a-runtime/) · [Channel Connector](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/channel-connector/)
+- **部署与运维**：[云端部署](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/cloud-deployment/) · [可观测](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/observability-tracing/) · [Hosted UI 与事件回放](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/hosted-ui-events/) · [环境变量](https://kingsoftcloud.github.io/ksadk-python/cn/docs/references/environment-variables/) · [0.8.8 升级指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/upgrade-0-8-8/)
+- **接口参考**：[Agent Web API](https://kingsoftcloud.github.io/ksadk-python/cn/docs/references/agent-web-api/)
+- **样例**：[样例仓库](https://github.com/kingsoftcloud/ksadk-samples)
 
 ## 相关项目
 

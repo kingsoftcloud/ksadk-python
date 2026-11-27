@@ -29,6 +29,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/tool-tunnel/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/a2a-runtime/",
     f"{DOCS_ROOT_URL}cn/docs/references/environment-variables/",
+    f"{DOCS_ROOT_URL}cn/docs/references/agent-web-api/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -49,6 +50,7 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/tool-tunnel/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/a2a-runtime/",
     f"{DOCS_ROOT_URL}en/docs/references/environment-variables/",
+    f"{DOCS_ROOT_URL}en/docs/references/agent-web-api/",
 }
 
 _DOCS_LINK_PATTERN = re.compile(
@@ -275,6 +277,20 @@ def test_docs_content_and_navigation_have_complete_english_variants():
 
     i18n_config = _read("docs-site/lib/i18n.ts")
     assert "fallbackLanguage: null" in i18n_config
+
+
+def test_framework_sidebar_includes_every_listed_capability_guide():
+    # The framework root flattens guide entries; the child menu alone does not
+    # expose a page in the rendered sidebar.
+    for metadata in ("meta.json", "meta.en.json"):
+        root = DOCS_CONTENT_ROOT / "framework"
+        sidebar = json.loads((root / metadata).read_text())["pages"]
+        guides = json.loads((root / "guides" / metadata).read_text())["pages"]
+        missing = [
+            page for page in guides
+            if not page.startswith("---") and f"guides/{page}" not in sidebar
+        ]
+        assert not missing, f"{metadata}: guides hidden from framework sidebar: {missing}"
 
 
 def test_docs_navigation_exposes_the_083_user_journeys():
@@ -770,3 +786,39 @@ def test_public_release_materials_do_not_include_internal_environment_details():
         text = _read(relative_path)
         for fragment in forbidden:
             assert fragment not in text, f"{relative_path} contains {fragment}"
+
+
+def test_agent_web_api_is_discoverable_in_both_languages():
+    for suffix, locale in (("", "cn"), (".en", "en")):
+        meta = json.loads(_read(f"docs-site/content/docs/references/meta{suffix}.json"))
+        assert meta["pages"].count("agent-web-api") == 1
+        target = f"/{locale}/docs/references/agent-web-api"
+        for page in ("index", "remote-runtime-api"):
+            assert target in _read(f"docs-site/content/docs/references/{page}{suffix}.mdx")
+
+
+def test_agent_web_api_language_variants_have_matching_contract_tables():
+    """Translation must preserve endpoint spelling and request contract cells."""
+    cn = _read("docs-site/content/docs/references/agent-web-api.mdx")
+    en = _read("docs-site/content/docs/references/agent-web-api.en.mdx")
+    endpoints = re.compile(r"`((?:POST|GET|DELETE|WS) /[^`]+)`")
+    assert endpoints.findall(cn) == endpoints.findall(en)
+    assert len(set(endpoints.findall(cn))) == 37
+
+    def contract_rows(text):
+        result = []
+        for line in text.splitlines():
+            if not line.startswith("| `"):
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if len(cells) == 6 and cells[1] in {"body", "query", "form"}:
+                required = {"是": True, "否": False, "Yes": True, "No": False}[cells[3]]
+                result.append((cells[0], cells[1], cells[2], required, cells[4]))
+        return result
+
+    assert len(contract_rows(cn)) > 150
+    assert contract_rows(cn) == contract_rows(en)
+    for text in (cn, en):
+        for unsupported in ("CompactSession", "SubmitAgentControl", "GetAgentStatus", "SubscribeSessionEvents"):
+            assert f"/agentengine/api/v1/{unsupported}" not in text
+        assert "/_ksadk/terminal/v1/" not in text
