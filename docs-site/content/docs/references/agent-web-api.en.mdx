@@ -1,0 +1,885 @@
+---
+title: "Agent Web API"
+description: "Sessions, runs, history, interactions, files, feedback, and MCP OAuth for Agent chat interfaces"
+---
+
+## Overview
+
+Use this reference to build an Agent chat interface: initialize capabilities, manage sessions, read history, run conversations, resume execution, handle interactions, access files, submit feedback, and complete MCP OAuth authorization. Optional file-preview and native-terminal endpoints are documented separately.
+
+Paths are relative to the Agent access URL supplied by the service. Read the capabilities first and use only features declared by the current deployment.
+
+## Requests and authentication
+
+| Item | Convention |
+| --- | --- |
+| Base URL | Use the access URL provided by the Agent service |
+| Authentication | Automation clients supply Authorization: Bearer API_KEY as required by the service; browser clients may use an established access session |
+| JSON | Content-Type: application/json |
+| Streaming | Accept: text/event-stream and Stream=true where required |
+| Upload | multipart/form-data; the HTTP client generates the boundary |
+| Field names | JSON and query parameter names are case-sensitive |
+
+AgentId, UserId, and SessionId locate resources but do not grant authorization. Request, session, invocation, run, checkpoint, and model-response IDs have distinct meanings and are not interchangeable.
+
+## Responses and errors
+
+Ordinary JSON Actions use this success envelope:
+
+```json
+{"Code":0,"Message":"Success","RequestId":"req-example","Action":"CreateSession","Data":{"Session":{"SessionId":"session-example","AgentId":"agent-example","UserId":"user-example"}}}
+```
+
+Data depends on the operation. MCP OAuth success responses do not guarantee RequestId or Action. Downloads return raw bytes; SSE is an incremental event stream rather than one JSON response.
+
+| Result | Client handling |
+| --- | --- |
+| HTTP 400 / 422 | Check fields, types, bounds, and field combinations |
+| HTTP 401 / 403 | Re-establish a valid access session or correct permissions; do not blindly replay operations |
+| HTTP 404 | Check identifiers, ownership, and whether the feature is enabled |
+| HTTP 409 | Refresh revision or history state; changing an idempotency key is not a safe automatic retry |
+| HTTP 429 | Handle rate or queue limits using the service retry guidance |
+| HTTP 503 / 504 | Retry eligible reads; establish the outcome of a write before repeating it |
+| HTTP 200 with Code other than 0 | Treat as a business failure and inspect Message, ReasonCode, or detail |
+
+Errors may use Message, ReasonCode, detail, or error. An expired browser access session can also produce an HTML 401/403 response; do not treat it as normal API JSON.
+
+## Endpoint directory
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /agentengine/api/v1/GetAgentUiBootstrap` | Get UI capabilities |
+| `POST /agentengine/api/v1/ListAgentModels` | List models |
+| `POST /agentengine/api/v1/CreateSession` | Create a session |
+| `POST /agentengine/api/v1/ListSessions` | List sessions |
+| `POST /agentengine/api/v1/GetSession` | Get a session |
+| `POST /agentengine/api/v1/DeleteSession` | Delete a session |
+| `POST /agentengine/api/v1/ListSessionMessages` | Read chat history |
+| `POST /agentengine/api/v1/ListSessionEvents` | Read session events |
+| `POST /agentengine/api/v1/RunAgent` | Run an Agent |
+| `GET /agentengine/api/v1/SubscribeRunEvents` | Subscribe to run events |
+| `POST /agentengine/api/v1/CancelRun` | Cancel a run |
+| `POST /agentengine/api/v1/ListSessionCheckpoints` | List checkpoints |
+| `POST /agentengine/api/v1/GetCheckpointResumePreview` | Preview checkpoint recovery |
+| `POST /agentengine/api/v1/ResumeRun` | Resume a run |
+| `POST /agentengine/api/v1/ListToolReceipts` | List tool receipts |
+| `POST /agentengine/api/v1/SubmitInteraction` | Submit an interaction |
+| `POST /agentengine/api/v1/UploadFile` | Upload an attachment |
+| `GET /agentengine/api/v1/AttachmentContent` | Download an attachment |
+| `POST /agentengine/api/v1/ListWorkspaceFiles` | List workspace files |
+| `POST /agentengine/api/v1/AddWorkspaceFile` | Upload a workspace file |
+| `POST /agentengine/api/v1/DeleteWorkspaceFile` | Delete a workspace file |
+| `GET /agentengine/api/v1/GetWorkspaceFileContent` | Download a workspace file |
+| `GET /agentengine/api/v1/ExportWorkspaceZip` | Export a workspace directory |
+| `POST /agentengine/api/v1/GetResponseFeedback` | Get response feedback |
+| `POST /agentengine/api/v1/UpsertResponseFeedback` | Save response feedback |
+| `POST /agentengine/api/v1/DeleteResponseFeedback` | Delete response feedback |
+| `POST /agentengine/api/v1/GetMcpAuthorizationWait` | Get authorization state |
+| `POST /agentengine/api/v1/OpenMcpAuthorization` | Open authorization |
+| `POST /agentengine/api/v1/RetryMcpAuthorization` | Retry authorization |
+| `POST /agentengine/api/v1/RetryMcpConnection` | Retry MCP connection |
+| `POST /agentengine/api/v1/CancelMcpAuthorizationWait` | Cancel authorization wait |
+| `POST /agentengine/agui` | AG-UI conversation |
+
+Identifiers in the examples are placeholders; replace them with values returned by your service.
+
+## Initialization
+
+### Get UI capabilities
+
+`POST /agentengine/api/v1/GetAgentUiBootstrap`
+
+Initialize the client with Agent identity, available chat transports, history, recovery, file, OAuth, and terminal capabilities.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `SessionId` | body | `string / null` | No | `null` | Session identifier. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example"}
+```
+
+**Response:** Data.Agent contains Agent metadata; Capabilities contains feature declarations; HostedChat contains available transports; ApiFormats lists output formats; WorkspaceFiles describes file capabilities; SessionBackend describes session storage.
+
+Use Capabilities to decide which controls to display. Obtain the AG-UI Endpoint from HostedChat.Transports.
+
+### List models
+
+`POST /agentengine/api/v1/ListAgentModels`
+
+Read the available model catalog and current selection.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `Name` | body | `string / null` | No | `null` | Compatibility field; the current model catalog is determined by the Agent runtime configuration. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example"}
+```
+
+**Response:** Data.Models is the model array; Current is the current model; Source identifies the catalog origin.
+
+## Sessions and history
+
+### Create a session
+
+`POST /agentengine/api/v1/CreateSession`
+
+Create a session. An explicitly supplied existing SessionId is handled according to the service session policy.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `"user"` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `SessionId` | body | `string / null` | No | `null` | Session identifier. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example"}
+```
+
+**Response:** Data.Session is a Session object.
+
+### List sessions
+
+`POST /agentengine/api/v1/ListSessions`
+
+Read sessions for an Agent using page-based pagination.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `Page` | body | `integer` | No | `1` | Page number, starting at 1. minimum 1. |
+| `PageSize` | body | `integer` | No | `20` | Number of sessions per page. minimum 1; maximum 1000. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","Page":1,"PageSize":20}
+```
+
+**Response:** Data contains Sessions, Total, Page, and PageSize; it may also include DataSource, Degraded, and SessionContractVersion.
+
+Keep AgentId, UserId, and PageSize consistent across pages. Omitting UserId does not grant cross-user access.
+
+### Get a session
+
+`POST /agentengine/api/v1/GetSession`
+
+Read session metadata and its current or most recent run information.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example"}
+```
+
+**Response:** Data.Session is a Session object.
+
+### Delete a session
+
+`POST /agentengine/api/v1/DeleteSession`
+
+Delete a session and associated records, cancelling its outstanding detached streams.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example"}
+```
+
+**Response:** Data.Deleted is true on successful deletion.
+
+### Read chat history
+
+`POST /agentengine/api/v1/ListSessionMessages`
+
+Read projected chat messages, with backward pagination and incremental queries.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `AfterSeqId` | body | `integer / null` | No | `null` | Read events or messages after this sequence number. minimum 0. |
+| `BeforeSeqId` | body | `integer / null` | No | `null` | Read events or messages before this sequence number. minimum 1. |
+| `Limit` | body | `integer` | No | `50` | Maximum number of returned items. minimum 1; maximum 200. |
+| `IncludeReasoning` | body | `boolean` | No | `false` | Include reasoning content that the service permits returning. |
+| `IncludeToolEvents` | body | `boolean` | No | `false` | Include tool execution events. |
+| `IncludeAttachments` | body | `boolean` | No | `true` | Include attachment metadata. |
+| `HistoryEpoch` | body | `string / null` | No | `null` | History epoch returned by the preceding response. |
+| `CursorSource` | body | `string / null` | No | `null` | Cursor source returned by the preceding response. allowed runtime, control. |
+| `SnapshotSeqId` | body | `integer / null` | No | `null` | History snapshot sequence returned by the preceding response. minimum 0. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","Limit":50,"IncludeReasoning":false}
+```
+
+**Response:** Data contains SessionId, Messages, LatestSeqId, HasMore, NextCursor, and history context such as HistoryEpoch, SnapshotSeqId, and CursorSource.
+
+Reuse the returned CursorSource, HistoryEpoch, and SnapshotSeqId. When the service requires a history reload, discard the old cursor before querying again.
+
+### Read session events
+
+`POST /agentengine/api/v1/ListSessionEvents`
+
+Read events for progress recovery, tool results, and the event timeline.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `SessionId` | body | `string / null` | No | `null` | Session identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `CheckpointIds` | body | `array<string>` | No | `[]` | Filter by checkpoint identifiers. |
+| `EventTypes` | body | `array<string>` | No | `[]` | Filter by event type; an empty array disables this filter. |
+| `Offset` | body | `integer / null` | No | `null` | Result offset, starting at 0. minimum 0. |
+| `Limit` | body | `integer` | No | `200` | Maximum number of returned items. minimum 1; maximum 2000. |
+| `AfterSeqId` | body | `integer / null` | No | `null` | Read events or messages after this sequence number. minimum 0. |
+| `BeforeSeqId` | body | `integer / null` | No | `null` | Read events or messages before this sequence number. minimum 1. |
+| `EventOrder` | body | `string / null` | No | `null` | Event ordering. |
+| `CursorSource` | body | `string / null` | No | `null` | Cursor source returned by the preceding response. allowed runtime, control. |
+| `HistoryEpoch` | body | `string / null` | No | `null` | History epoch returned by the preceding response. |
+| `SnapshotSeqId` | body | `integer / null` | No | `null` | History snapshot sequence returned by the preceding response. minimum 0. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","AfterSeqId":0,"Limit":200}
+```
+
+**Response:** Data contains Events, Total, Offset, Limit, and optional HasMore and history context.
+
+Events can represent tool activity, status changes, or interactions; do not append every raw event as a chat message.
+
+## Conversations and runs
+
+### Run an Agent
+
+`POST /agentengine/api/v1/RunAgent`
+
+Execute a conversation turn synchronously, as SSE, or in a supported background mode.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `Messages` | body | `array<object>` | No | `[]` | Message array containing role and content. |
+| `UserId` | body | `string / null` | No | `"user"` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `AccountId` | body | `string / null` | No | `null` | Account correlation identifier; not an authentication credential. |
+| `SessionId` | body | `string / null` | No | `null` | Session identifier. |
+| `InvocationId` | body | `string / null` | No | `null` | Invocation identifier used for event subscription and cancellation. |
+| `ApiFormat` | body | `string` | No | `"responses"` | Output format: responses or chat_completions. |
+| `Stream` | body | `boolean` | No | `false` | Request SSE output. |
+| `Background` | body | `boolean` | No | `false` | Request background execution when supported. |
+| `Model` | body | `string / null` | No | `null` | Model identifier selected from the model catalog. |
+| `ModelMetadata` | body | `object / null` | No | `null` | Model capability metadata. |
+| `ModelOptions` | body | `object / null` | No | `null` | Inference options supported by the selected model. |
+| `Metadata` | body | `object / null` | No | `null` | Additional request metadata; it does not grant identity or permissions. |
+| `ResponsesInput` | body | `JSON value / null` | No | `null` | Responses-style input, including multimodal or continuation input. |
+| `PreviousResponseId` | body | `string / null` | No | `null` | Identifier of the preceding Responses response. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","InvocationId":"inv-example","Messages":[{"role":"user","content":"Hello"}],"ApiFormat":"responses","Stream":true}
+```
+
+**Response:** A synchronous foreground call wraps a Responses or Chat Completions result in Data. Streaming branches return SSE. See execution modes below.
+
+For ordinary foreground streaming set Stream=true. Use Background=true only when the service declares support. Messages and ResponsesInput follow the selected input protocol; continuation input may also require PreviousResponseId. Disconnecting HTTP does not itself cancel a run; use CancelRun to stop it.
+
+| Execution mode | Response |
+| --- | --- |
+| Synchronous foreground | JSON Action; Data contains a model response |
+| Streaming foreground | SSE, including possible failure or interaction-wait events |
+| Background returning a handle | JSON Action; Data contains SessionId, InvocationId, Status, Background, SubscribeUrl |
+| Kernel-admitted streaming or background | SSE using Responses event projection; a JSON handle is not guaranteed |
+
+### Subscribe to run events
+
+`GET /agentengine/api/v1/SubscribeRunEvents`
+
+Subscribe to incremental events for one session and invocation after reconnecting or starting a background run.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `SessionId` | query | `string` | Yes | `—` | Session identifier. |
+| `InvocationId` | query | `string` | Yes | `—` | Invocation identifier used for event subscription and cancellation. |
+| `AfterSeqId` | query | `integer` | No | `0` | Read events or messages after this sequence number. |
+| `AgentId` | query | `string / null` | No | `null` | Target Agent identifier. |
+| `UserId` | query | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+
+Example request:
+
+```http
+GET /agentengine/api/v1/SubscribeRunEvents?SessionId=session-example&InvocationId=inv-example&AfterSeqId=0
+Authorization: Bearer <API_KEY>
+```
+
+**Response:** text/event-stream. Each data frame contains a SessionEvent; data: [DONE] terminates the subscription. SSE comments beginning with a colon are heartbeats.
+
+### Cancel a run
+
+`POST /agentengine/api/v1/CancelRun`
+
+Request cancellation by InvocationId.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `SessionId` | body | `string / null` | No | `null` | Session identifier. |
+| `InvocationId` | body | `string` | Yes | `—` | Invocation identifier used for event subscription and cancellation. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","InvocationId":"inv-example"}
+```
+
+**Response:** Data.Cancelled indicates cancellation was requested or accepted; Found indicates whether a run was located; Status and RuntimeCancelStatus describe the cancellation state. Cancelled=true does not guarantee the task has already stopped.
+
+Use the actual InvocationId. Requests carrying a trusted business identity must also provide AgentId and SessionId; other requests should provide both to scope cancellation. A response ID or CheckpointId cannot replace InvocationId.
+
+## Recovery and interactions
+
+### List checkpoints
+
+`POST /agentengine/api/v1/ListSessionCheckpoints`
+
+Read checkpoints for an Agent or selected sessions, filtered by recovery conditions.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `SessionId` | body | `array<string> / string / null` | No | `null` | Session identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `CheckpointId` | body | `array<string> / string / null` | No | `null` | Checkpoint identifier returned by the checkpoint listing. |
+| `RunId` | body | `string / null` | No | `null` | Run identifier. |
+| `OnlyResumable` | body | `boolean` | No | `false` | Return only resumable checkpoints. |
+| `Framework` | body | `string / null` | No | `null` | Filter by framework. |
+| `ResumeStatus` | body | `array<string>` | No | `[]` | Filter by resume status. |
+| `ResumeTypes` | body | `array<string>` | No | `[]` | Filter by resume type. |
+| `Offset` | body | `integer / null` | No | `null` | Result offset, starting at 0. minimum 0. |
+| `Limit` | body | `integer` | No | `100` | Maximum number of returned items. minimum 1; maximum 1000. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","OnlyResumable":true}
+```
+
+**Response:** Data contains Checkpoints, Total, ResumableTotal, and HasResumableCheckpoint.
+
+### Preview checkpoint recovery
+
+`POST /agentengine/api/v1/GetCheckpointResumePreview`
+
+Check whether a checkpoint can be resumed and inspect blocking reasons before submitting recovery.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `RunId` | body | `string` | Yes | `—` | Run identifier. |
+| `CheckpointId` | body | `string` | Yes | `—` | Checkpoint identifier returned by the checkpoint listing. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","RunId":"run-example","CheckpointId":"checkpoint-example"}
+```
+
+**Response:** Data.Preview contains the recovery preview and admission result.
+
+### Resume a run
+
+`POST /agentengine/api/v1/ResumeRun`
+
+Resume execution from the specified session checkpoint.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `RunId` | body | `string` | Yes | `—` | Run identifier. |
+| `CheckpointId` | body | `string` | Yes | `—` | Checkpoint identifier returned by the checkpoint listing. |
+| `ResumeAttemptId` | body | `string / null` | No | `null` | Identifier for one resume attempt; reuse it when retrying the same attempt. |
+| `InvocationId` | body | `string / null` | No | `null` | Invocation identifier used for event subscription and cancellation. |
+| `Stream` | body | `boolean` | No | `false` | Request SSE output. |
+| `Background` | body | `boolean` | No | `false` | Request background execution when supported. |
+| `Model` | body | `string / null` | No | `null` | Model identifier selected from the model catalog. |
+| `ModelMetadata` | body | `object / null` | No | `null` | Model capability metadata. |
+| `ModelOptions` | body | `object / null` | No | `null` | Inference options supported by the selected model. |
+| `Metadata` | body | `object / null` | No | `null` | Additional request metadata; it does not grant identity or permissions. |
+| `ResumeInstructionEnabled` | body | `boolean` | No | `false` | Enable an additional resume instruction. |
+| `ResumeInstruction` | body | `string / null` | No | `null` | Instruction accompanying the resume request. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","RunId":"run-example","CheckpointId":"checkpoint-example","ResumeAttemptId":"resume-example","Stream":true}
+```
+
+**Response:** Synchronous execution returns a JSON Action result; normal streaming recovery returns SSE. Background recovery returns a handle containing SessionId, RunId, CheckpointId, ResumeAttemptId, InvocationId, Status, Background, and SubscribeUrl. An already-processed retry can return Status=already_processed and AlreadyProcessed=true. A terminal checkpoint can return Status=noop and Reason. These branches can return JSON even when Stream=true; inspect Content-Type.
+
+Call GetCheckpointResumePreview first. Use a new ResumeAttemptId for a distinct recovery attempt and keep it unchanged for retries of that same attempt.
+
+### List tool receipts
+
+`POST /agentengine/api/v1/ListToolReceipts`
+
+Read tool receipts associated with a run or checkpoint.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `RunId` | body | `string / null` | No | `null` | Run identifier. |
+| `CheckpointId` | body | `string / null` | No | `null` | Checkpoint identifier returned by the checkpoint listing. |
+| `Offset` | body | `integer` | No | `0` | Result offset, starting at 0. minimum 0. |
+| `Limit` | body | `integer` | No | `200` | Maximum number of returned items. minimum 1; maximum 500. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example"}
+```
+
+**Response:** Data contains ToolReceipts, Total, Offset, and Limit. An uncertain receipt does not make replaying a side-effecting operation safe.
+
+### Submit an interaction
+
+`POST /agentengine/api/v1/SubmitInteraction`
+
+Submit an approval, rejection, structured answer, or cancellation decision.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `UserId` | body | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `RunId` | body | `string` | Yes | `—` | Run identifier. |
+| `InteractionId` | body | `string` | Yes | `—` | Identifier of the pending interaction. |
+| `ExpectedRevision` | body | `integer` | Yes | `—` | Current interaction or authorization-wait revision. minimum 1. |
+| `InteractionAction` | body | `string` | Yes | `—` | Decision: approve, reject, submit, or cancel. allowed approve, reject, submit, cancel. |
+| `Response` | body | `JSON value` | No | `null` | Any valid JSON value; structured submission must explicitly include this field. |
+| `IdempotencyKey` | body | `string` | Yes | `—` | Idempotency key; keep it unchanged when retrying the same submission. minLength 1; maxLength 256. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","RunId":"run-example","InteractionId":"interaction-example","ExpectedRevision":1,"InteractionAction":"approve","Response":null,"IdempotencyKey":"interaction-example-approve"}
+```
+
+**Response:** Data is a command receipt with schema_version, command_id, status, and conditionally message_id, run_id, accepted_seq, or error.
+
+This compatibility endpoint requires an active local Kernel; hosted deployments use their authorized interaction ingress. InteractionAction accepts approve, reject, submit, or cancel. Action is also accepted as a compatibility decision field. submit must explicitly include Response, including when its value is null. Use the current ExpectedRevision and preserve IdempotencyKey on retries. An accepted receipt can return HTTP 202 and a duplicate HTTP 200; accepted/duplicate means admitted, not fully executed.
+
+## Attachments and workspace
+
+### Upload an attachment
+
+`POST /agentengine/api/v1/UploadFile`
+
+Upload an image or document to obtain a reference usable in a later message.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `file` | form | `binary` | Yes | `—` | File content to upload. |
+
+Example request:
+
+```bash
+curl --fail-with-body "$BASE_URL/agentengine/api/v1/UploadFile" -H "Authorization: Bearer $API_KEY" -F "file=@./example.txt"
+```
+
+**Response:** Data.FileData contains fileUri, displayName, mimeType, and sizeBytes.
+
+### Download an attachment
+
+`GET /agentengine/api/v1/AttachmentContent`
+
+Read content referenced by an uploaded file URI.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `FileUri` | query | `string` | Yes | `—` | File reference returned by UploadFile. |
+| `SessionId` | query | `string / null` | No | `null` | Session identifier. |
+| `AgentId` | query | `string / null` | No | `null` | Target Agent identifier. |
+| `UserId` | query | `string / null` | No | `null` | Logical user identifier; authorization is still enforced by the authenticated identity. |
+
+Example request:
+
+```http
+GET /agentengine/api/v1/AttachmentContent?FileUri=file-example
+Authorization: Bearer <API_KEY>
+```
+
+**Response:** Raw file bytes. Render or save according to Content-Type; do not parse an Action envelope.
+
+Use the exact fileUri returned by UploadFile, not an arbitrary file path or external URL. Isolated attachments may require AgentId or SessionId to locate their access scope.
+
+### List workspace files
+
+`POST /agentengine/api/v1/ListWorkspaceFiles`
+
+Read entries in a workspace directory.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `Path` | body | `string` | No | `"."` | Path relative to the workspace root. |
+| `Recursive` | body | `boolean` | No | `false` | Include entries in subdirectories. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","Path":".","Recursive":false}
+```
+
+**Response:** Data includes directory information and an Entries array. Entries contain Name, Path, Type, SizeBytes, MimeType, and ModifiedAt.
+
+### Upload a workspace file
+
+`POST /agentengine/api/v1/AddWorkspaceFile`
+
+Write a file to a relative workspace path.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `file` | form | `binary` | Yes | `—` | File content to upload. |
+| `AgentId` | form | `string / null` | No | `null` | Target Agent identifier. |
+| `Path` | form | `string` | Yes | `—` | Path relative to the workspace root. |
+
+Example request:
+
+```bash
+curl --fail-with-body "$BASE_URL/agentengine/api/v1/AddWorkspaceFile" -H "Authorization: Bearer $API_KEY" -F "file=@./example.txt" -F "Path=notes/example.txt"
+```
+
+**Response:** Data.Entry contains Path, Name, Type, SizeBytes, MimeType, and ModifiedAt.
+
+Use multipart/form-data and let the HTTP client generate the boundary. Path is the destination relative path; file carries the content.
+
+### Delete a workspace file
+
+`POST /agentengine/api/v1/DeleteWorkspaceFile`
+
+Delete a file at a relative workspace path.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `Path` | body | `string` | Yes | `—` | Path relative to the workspace root. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","Path":"notes/example.txt"}
+```
+
+**Response:** Data.Deleted is true on success.
+
+### Download a workspace file
+
+`GET /agentengine/api/v1/GetWorkspaceFileContent`
+
+Read raw workspace file content for document, image, or text previews.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `FilePath` | query | `string` | Yes | `—` | Relative workspace path of the requested file. |
+| `AgentId` | query | `string / null` | No | `null` | Target Agent identifier. |
+
+Example request:
+
+```http
+GET /agentengine/api/v1/GetWorkspaceFileContent?FilePath=notes%2Fexample.txt
+Authorization: Bearer <API_KEY>
+```
+
+**Response:** Raw file bytes. Use Content-Type and the returned Content-Disposition to render or save the response.
+
+FilePath is relative to the workspace; absolute paths and traversal outside the workspace are not allowed.
+
+### Export a workspace directory
+
+`GET /agentengine/api/v1/ExportWorkspaceZip`
+
+Export a workspace directory as a ZIP archive.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | query | `string / null` | No | `null` | Target Agent identifier. |
+| `Path` | query | `string` | No | `"."` | Path relative to the workspace root. |
+
+Example request:
+
+```http
+GET /agentengine/api/v1/ExportWorkspaceZip?Path=.
+Authorization: Bearer <API_KEY>
+```
+
+**Response:** ZIP bytes returned as an attachment.
+
+## Feedback
+
+### Get response feedback
+
+`POST /agentengine/api/v1/GetResponseFeedback`
+
+Read feedback for an assistant response.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `ResponseId` | body | `string` | Yes | `—` | Identifier of the assistant response receiving feedback. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","ResponseId":"response-example"}
+```
+
+**Response:** Data.Feedback contains the feedback object or null when none exists.
+
+### Save response feedback
+
+`POST /agentengine/api/v1/UpsertResponseFeedback`
+
+Create or update an up/down rating and feedback text.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `ResponseId` | body | `string` | Yes | `—` | Identifier of the assistant response receiving feedback. |
+| `Rating` | body | `string` | Yes | `—` | Feedback rating: up or down. |
+| `Comment` | body | `string / null` | No | `""` | Feedback text. |
+| `EventId` | body | `string / null` | No | `null` | Related event identifier. |
+| `TraceId` | body | `string / null` | No | `null` | Related trace identifier. |
+| `RootSpanId` | body | `string / null` | No | `null` | Related root-span identifier. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","ResponseId":"response-example","Rating":"up","Comment":"Helpful answer"}
+```
+
+**Response:** Data.Feedback contains the saved feedback object.
+
+Rating accepts only up or down. ResponseId must identify an actual assistant response in the session.
+
+### Delete response feedback
+
+`POST /agentengine/api/v1/DeleteResponseFeedback`
+
+Remove feedback for an assistant response.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `AgentId` | body | `string` | Yes | `—` | Target Agent identifier. |
+| `SessionId` | body | `string` | Yes | `—` | Session identifier. |
+| `ResponseId` | body | `string` | Yes | `—` | Identifier of the assistant response receiving feedback. |
+
+Example request:
+
+```json
+{"AgentId":"agent-example","SessionId":"session-example","ResponseId":"response-example"}
+```
+
+**Response:** Data.Deleted indicates whether an existing feedback record was removed.
+
+## MCP OAuth
+
+Use these operations only when the service advertises MCP authorization. Local and hosted authorization state is not interchangeable. The service manages credentials; do not send secrets or access tokens as chat messages.
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /agentengine/api/v1/GetMcpAuthorizationWait` | Read the current authorization wait and its permitted actions. |
+| `POST /agentengine/api/v1/OpenMcpAuthorization` | Obtain the browser authorization URL for a pending MCP connection. |
+| `POST /agentengine/api/v1/RetryMcpAuthorization` | Restart authorization after a failed or denied attempt when allowed. |
+| `POST /agentengine/api/v1/RetryMcpConnection` | Retry the connection while valid credentials are still available. |
+| `POST /agentengine/api/v1/CancelMcpAuthorizationWait` | Cancel the wait and prevent a late callback from continuing that wait. |
+
+All five operations accept these fields:
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `WaitId` | body | `string` | Yes | `—` | Current MCP authorization-wait identifier. minLength 1; maxLength 64. |
+| `ExpectedRevision` | body | `integer / null` | No | `null` | Current interaction or authorization-wait revision. minimum 1. |
+| `AgentId` | body | `string / null` | No | `null` | Target Agent identifier. |
+| `SessionId` | body | `string / null` | No | `null` | Session identifier. |
+| `IdempotencyKey` | body | `string / null` | No | `null` | Optional compatibility field. This group checks state using ExpectedRevision and does not promise deduplication by this field. |
+
+Query example:
+
+```json
+{"WaitId":"wait-example","AgentId":"agent-example","SessionId":"session-example"}
+```
+
+For open, retry, or cancel, pass the revision obtained from the current state:
+
+```json
+{"WaitId":"wait-example","ExpectedRevision":1,"AgentId":"agent-example","SessionId":"session-example"}
+```
+
+| Data field | Type | Meaning |
+| --- | --- | --- |
+| wait_id / run_id / config_id | string | Wait, run, and connection identifiers |
+| revision | integer | Current revision for subsequent operations |
+| status | string | Current authorization/connection state |
+| display_name | string | MCP service display name |
+| scopes | string[] | Requested authorization scopes |
+| allowed_actions | string[] | Actions currently permitted |
+| requires_resume | boolean | Whether continuation is associated with the wait |
+| deadline | number | Wait deadline in Unix seconds |
+| error | string / null | Failure reason |
+| authorization_url | string, optional | Browser URL returned by OpenMcpAuthorization |
+
+allowed_actions values query, open, retry_authorization, retry_connection, and cancel correspond to the five operations above. Perform only currently permitted actions. Refresh state after the browser completes actual authorization. A cancelled wait must not be completed by a late callback. A state conflict can return HTTP 409 with ReasonCode; refresh before deciding the next action.
+
+## AG-UI conversation
+
+`POST /agentengine/agui` is the default endpoint; prefer the AG-UI Endpoint declared in HostedChat.Transports.
+
+Send standard AG-UI input to receive text, tools, state, and structured interactions. A2UI cards are carried by messages/events and do not require a separate A2UI HTTP API.
+
+| Parameter | Location | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `threadId` | body | `string` | Yes | `—` | AG-UI conversation identifier. |
+| `runId` | body | `string` | Yes | `—` | AG-UI run identifier. |
+| `protocolVersion` | body | `string / null` | No | `null` | AG-UI protocol version. |
+| `parentRunId` | body | `string / null` | No | `null` | Parent run identifier. |
+| `state` | body | `JSON value / null` | No | `null` | Initial or current graph state. |
+| `messages` | body | `array<JSON value>` | Yes | `—` | AG-UI message array. |
+| `tools` | body | `array<object> / null` | No | `null` | Client tool declarations. |
+| `context` | body | `array<object> / null` | No | `null` | Context entries. |
+| `forwardedProps` | body | `JSON value / null` | No | `null` | Additional Agent properties. |
+| `resume` | body | `array<object> / null` | No | `null` | Responses for pending interactions. |
+
+**Response:** text/event-stream. Process the AG-UI start, text, tool, state, interaction, completion, and error events.
+
+messages contains AG-UI messages; tools contains tool declarations; context contains context entries; forwardedProps carries additional properties. threadId associates the session and runId identifies the AG-UI run. Do not substitute IDs from another transport. If AG-UI is unavailable, choose an allowed transport from the capability response.
+
+## Shared response objects
+
+### Session
+
+| Field | Meaning |
+| --- | --- |
+| SessionId / AgentId / UserId | Session and ownership identifiers |
+| Title / TitleSource / Summary | Title, title source, and summary |
+| FirstPrompt / LastPrompt | First and latest user-input previews |
+| ActiveInvocationId / ActiveRunStatus | Current or most recent invocation and run state |
+| ActiveRunMode / ActiveRunTrigger | Execution mode and trigger |
+| CreatedAt / UpdatedAt / Version | Creation/update time in Unix seconds and integer version |
+| State | Publicly permitted session state |
+| Continuity | Runtime continuity information |
+
+### Message
+
+| Field | Meaning |
+| --- | --- |
+| MessageId / Role / Content | Message identifier, role, and content |
+| Timestamp / SeqId / InvocationId | Time, sequence, and invocation |
+| Reasoning / Blocks | Permitted reasoning and ordered content blocks |
+| ToolEvents | Tool execution and approval state |
+| Attachments | References, names, media types, sizes, and access URLs |
+
+### SessionEvent
+
+| Field | Meaning |
+| --- | --- |
+| EventId / SessionId | Event and session identifiers |
+| Author / EventType | Producer and event type |
+| Content | Event-type-specific payload |
+| Timestamp / SeqId | Time and sequence |
+| InvocationId | Associated invocation when available |
+
+### Feedback
+
+| Field | Meaning |
+| --- | --- |
+| AgentId / SessionId / ResponseId | Feedback target |
+| Rating / Comment | up/down rating and text |
+| EventId / TraceId / RootSpanId | Related event and trace |
+| CreatedAt / UpdatedAt | Creation and update timestamps |
+
+## SSE conventions
+
+Use an incremental HTTP reader and split frames on blank lines. One network chunk is not one JSON object. Lines beginning with a colon are comments/heartbeats. SubscribeRunEvents data frames contain events and [DONE] ends that subscription. Non-Kernel RunAgent streams follow ApiFormat; Kernel streams use named Responses events such as response.completed, response.failed, and response.canceled. An interaction can produce response.incomplete and close the foreground stream; connection closure is not necessarily success. Parse AG-UI streams according to AG-UI.
+
+Reconnect using the same SessionId, InvocationId, and the last confirmed AfterSeqId. Do not replay user input to simulate continuation. HTTP 200 alone does not mean the streamed run succeeded.
+
+## Optional file previews and local native terminals
+
+Use these endpoints only when enabled. Native terminals are not a generic remote shell for every hosted user.
+
+### File preview resource
+
+`GET /_ksadk/workspace/v1/files/{file_path}`
+
+file_path is relative to the workspace and may contain multiple segments. URL-encode segments separately. Render returned bytes using Content-Type; HTML previews can resolve their relative assets through the same workspace path.
+
+### Create or reuse a terminal session
+
+`POST /_ksadk/terminal/sessions`
+
+| Parameter | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| session_id | string | No | empty | Associated chat session |
+| mode | string | No | tui | Terminal mode supported by the runtime |
+| cols / rows | integer | No | 80 / 24 | Terminal dimensions |
+| force_new | boolean | No | false | Force a new terminal session |
+| cwd | string | No | unspecified | Working directory subject to runtime restrictions |
+
+```json
+{"session_id":"session-example","mode":"tui","cols":80,"rows":24,"force_new":false}
+```
+
+Returns `{"session":{...}}`. Use terminal_session_id from that object for attachment and closure.
+
+### List terminal sessions
+
+`GET /_ksadk/terminal/sessions`
+
+Optional query fields session_id and mode filter the result. Returns `{"sessions":[...]}`.
+
+### Close a terminal session
+
+`DELETE /_ksadk/terminal/sessions/{terminal_session_id}`
+
+Returns deleted and terminal_session_id. A missing session can return HTTP 404.
+
+### Attach terminal WebSocket
+
+`WS /_ksadk/terminal/ws?terminal_session_id=<TERMINAL_SESSION_ID>`
+
+Use WSS for a remote secure connection and negotiate Sec-WebSocket-Protocol: ks-terminal.v1. The terminal identifier comes from session creation. Stop on a capability or identity denial; do not attempt to bypass authorization.

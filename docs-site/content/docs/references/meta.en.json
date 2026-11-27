@@ -7,6 +7,7 @@
     "---[Settings]Configuration and APIs---",
     "project-config",
     "environment-variables",
+    "agent-web-api",
     "openai-compatible-api",
     "---[Activity]Runtime Contracts---",
     "remote-runtime-api",
